@@ -44,7 +44,8 @@ al cerrar la pestaña. Servía para una consulta suelta, no para trabajar.
 | 2 | **El requisito como lo piden las bases** + **motor de triage** (mig 198) | ✅ hecha |
 | 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | ✅ hecha |
 | 4 | **CV → ficha con IA** + **la postulación nace del documento** + el proceso entero (montos, CUI, calendario, consorcio, requisitos de empresa) | ✅ hecha |
-| 5 | **Requisitos de empresa** — *evaluar* a las empresas del grupo contra lo que ya se extrae (falta cargar su experiencia) | pendiente |
+| 5 | **Lo que falló en producción, y el CV que se verifica a mano** (mig 200) | ✅ hecha |
+| 6 | **Evaluar a las empresas** del grupo contra los requisitos de postor que ya se extraen (falta cargar su experiencia y facturación) | pendiente |
 | 6 | Calendario del proceso + kanban con documentos por etapa | pendiente |
 | 7 | Oferta económica | módulo propio, no un vínculo |
 
@@ -490,6 +491,132 @@ Solo se elimina lo ya anulado.
 - `src/lib/cv-extraccion.js` (puro, 44 tests) y `src/lib/cv-analisis.js`.
 - `src/components/jx-licitaciones.jsx`, `jx-profesionales.jsx`, `jx-ordenes.jsx`.
 - `src/sync/EvidenceUploader.js`, `api/r2.js` — tope de 30 MB para PDF.
+
+---
+
+## Entrega 5 — Lo que falló en producción, y el CV como declaración
+
+> 8-set-2026, después de que Gabriel probara la entrega 4 en producción.
+> Migración **200** aplicada. Dos pruebas reales, una que falló y otra que
+> funcionó, y las dos enseñaron algo.
+
+### El diagnóstico, con la evidencia a la vista
+
+**Prueba 1 — Anexo 12 (.docx), falló con cero extracción.** Los tres mensajes
+decían «páginas 1–1 · el rango es demasiado grande (236669 caracteres)».
+
+**Prueba 2 — convocatoria de El Peruano (PDF de una página), funcionó.** Sacó
+13 campos, 8 etapas de calendario y las reglas de consorcio por **USD 0,000**,
+y avisó por su cuenta que una fecha venía truncada y que el aviso traía
+resoluciones de COFOPRI ajenas al proceso.
+
+La hipótesis de Gabriel era que fallaba el modelo gratuito de OpenRouter. La
+prueba 2 dice que no: **ese modelo extrajo bien**. Lo que falló fue código
+nuestro, y habría fallado igual con cualquier modelo.
+
+| # | Defecto | Cómo se veía |
+|---|---|---|
+| 1 | Un `.docx` no tiene páginas: el troceo no troceaba | «El rango es demasiado grande (236669 caracteres)» |
+| 2 | El Pase 1 pedía un techo de 1.200 tokens | «El modelo no devolvió un JSON de rangos legible», en las DOS pruebas |
+| 3 | El mismo texto se mandaba hasta tres veces | alertas repetidas: la fecha truncada y el plazo de 540 días, dos veces cada uno |
+| 4 | El contador solo miraba requisitos | «0 con su cita comprobada» con 7 de 8 etapas verificadas |
+| 5 | El escaneo pagado se perdía al cerrar | «acabo de gastar USD 0,030 y no me gustaría perder eso» |
+
+**El defecto 2 no era intermitente, era sistemático.** El repo ya tenía medido
+(en `lib/openrouter.js`, para Captura Mágica) que un gratuito con ZDR gasta
+1.571 tokens de salida donde Haiku gasta 493, porque razona en voz alta antes
+del JSON. El Pase 1 le daba 1.200. Nunca llegaba a la primera llave. El
+mensaje culpaba al modelo y el límite era nuestro.
+
+### Los arreglos
+
+- **Tramos en el Word** (`CHARS_POR_TRAMO = 3000` en `bases-triage.js`). No se
+  inventan páginas —citar «página 47» de un Word es un número que no existe—
+  sino que se numeran tramos del tamaño de una página de bases, y todo el
+  mecanismo vuelve a funcionar igual. La pantalla dice «tramo».
+  Medido sobre el Anexo 12: de 236.669 caracteres solo hacen falta unos
+  64.000, porque el proceso está en el 1–8% y el personal en el 88%.
+- **`MAX_CHARS_RANGO = 90.000`** como red: un rango que se pasa se **recorta**,
+  no falla. Media lectura sirve; un error no sirve para nada.
+- **El techo del Pase 1 a 6.000 tokens**, y `cortado` se detecta y se reporta
+  distinto de «JSON ilegible».
+- **Dedup por CONTENIDO, no por rango.** Dos familias piden rangos distintos
+  ({1,1} y {1,2}) que en un documento de una página resuelven al mismo texto.
+- **Caché del escaneo** (`src/lib/cache-lectura.js`): IndexedDB propia, clave
+  = SHA-256 del archivo. Volver a subirlo dice «ya se leyó antes, USD 0.000», y
+  hay un botón para reintentar la extracción sin pagar. Base aparte de la de
+  Dexie a propósito: es descartable y no merece una migración del esquema.
+
+### El CV es una declaración, no una prueba
+
+Gabriel, abriendo el CV real: *«hay cosas que no necesitan ser escaneadas por
+OCR […] todo está en la parte inicial»*. Y: *«cómo podríamos corroborar cada
+punto de lo que él menciona […] y el administrador se encarga de colocar
+verificado»*.
+
+Medido sobre el CV de 39 páginas:
+
+| Páginas | Qué son | Letras |
+|---|---|---|
+| 1 a 4 | currículum: datos, 11 periodos, 10 cursos, referencias | 807 a 1.570 |
+| 7 a 10 | RNP, ficha RUC y suspensión de 4ta, impresas de la web | 325 a 1.474 |
+| 5, 6 y 11 a 39 | las imágenes: DNI, diplomas, constancias | 69 (solo la cabecera) |
+
+**Las 8 páginas nativas traen TODO lo declarativo**, incluidas la constancia
+del RNP y la ficha RUC. Así que **el OCR se apagó por defecto**: la lectura de
+un CV cuesta USD 0. Las 31 escaneadas son los papeles que respaldan, y
+respaldar no es leer, es que alguien MIRE el documento. Pagar USD 0,062 para
+que un modelo diga que la constancia existe no da esa certeza; mirarla sí.
+Queda una casilla para pasarlas por OCR cuando hojear no sea realista, y lo
+que ese OCR cruce **sigue quedando pendiente de verificación humana**.
+
+**Los tres niveles de la mig 200:** declarado · con archivo adjunto ·
+**verificado**. Cada dato leído nace en `'pendiente'` y guarda
+`sustento_esperado`, que es la frase que el administrador va a buscar
+hojeando: «Constancia o certificado de trabajo de PROREGIÓN como Facilitador
+Social por el periodo 2025-05-01 a 2025-07-29». Los estados son cuatro y no
+dos porque *observado* (el papel existe pero algo no cuadra) y *sin sustento*
+(se buscó y no está) llevan a decisiones distintas: lo primero se arregla
+pidiendo el papel bien, lo segundo descalifica si se presenta.
+
+Una experiencia marcada `sin_sustento` **deja de contar como sustentada**
+aunque el archivo esté adjunto — porque el archivo adjunto es el CV entero, no
+la constancia. Las `pendiente` se cuentan como antes para no cambiarle el
+número a nadie de un día para el otro, pero el evaluador avisa cuántas son.
+
+**Por qué el CV NO se comprime.** Pesa 17,4 MB y comprimirlo obligaría a
+rasterizar sus páginas: se perderían las 8 páginas de texto, que son justo de
+donde ahora sale la ficha gratis. Además las evidencias viven en Cloudflare R2,
+donde 100 CVs cuestan centavos al mes. Se guarda tal cual, con el tope de
+30 MB de la mig 199. Es la misma regla del 5-set: lo que pierde legibilidad no
+se comprime.
+
+### Lo demás que dicen unas bases (mig 200)
+
+Cinco listas nuevas en `licitaciones`, todas con su cita verificada:
+`factores_evaluacion` (lo que da puntaje), `garantias` (fiel cumplimiento y
+adelantos, con su porcentaje), `penalidades` (la fórmula de la mora y su tope),
+`documentos_presentacion` (qué va en cada sobre) y `condiciones` (adelantos,
+forma de pago, visita de obra, plazo de firma, subcontratación, seguros y
+personal obligatorio). Más `alertas`, que guarda lo que el lector marcó para
+revisar y antes se perdía al cerrar la ventana.
+
+En la pantalla son la tarjeta **«Las reglas de este proceso»**. Es lo que hoy
+alguien tiene que leer a mano en 96 páginas antes de decidir si conviene
+presentarse.
+
+### Archivos
+
+- `supabase/migrations/200_cv_verificado_y_bases_completas.sql`
+- `src/lib/cache-lectura.js` — la caché del escaneo (IndexedDB propia).
+- `src/lib/bases-triage.js` — tramos del `.docx` y `unidad` en el resumen.
+- `src/lib/bases-extraccion.js` — `MAX_CHARS_RANGO` y los cinco mapeos nuevos.
+- `src/lib/bases-analisis.js` — dedup por contenido, `alertasUnicas`, reuso de caché.
+- `src/lib/cv-extraccion.js` — `sustentoEsperadoDe`, `CAMPOS_VERIFICABLES`, estados.
+- `src/lib/cv-analisis.js` — `conOcr` apagado por defecto.
+- `src/lib/experiencia-profesional.js` — los tres niveles de sustento.
+- `api/bases-analizar.js` — techo del Pase 1 y el prompt del proceso ampliado.
+- `src/components/jx-licitaciones.jsx`, `jx-profesionales.jsx`.
 
 ---
 

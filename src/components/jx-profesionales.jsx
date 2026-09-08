@@ -31,7 +31,7 @@ import {
 } from "../lib/experiencia-profesional.js";
 import { categoriaDe } from "../lib/personal-categoria.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
-import { filaLimpia } from "../lib/cv-extraccion.js";
+import { filaLimpia, CAMPOS_VERIFICABLES } from "../lib/cv-extraccion.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 
@@ -276,6 +276,7 @@ function ProfesionalesPage({ showToast }) {
       //    pantalla, no columnas: no viajan.
       const { rnp_inscrito, ...camposFicha } = filaLimpia(ficha || {});
       void rnp_inscrito;
+      if (!camposFicha.verificaciones) camposFicha.verificaciones = {};
       const analisis = { fecha: ahora, archivo: archivo?.name || null, costo: costo?.total ?? null, modelos, paginasOcr };
       if (existente) {
         // Lo leído completa lo vacío; lo que la ficha ya tenía se respeta.
@@ -334,6 +335,53 @@ function ProfesionalesPage({ showToast }) {
     } finally { setBusy(false); enCursoRef.current = false; }
   };
 
+  /**
+   * Marcar una experiencia como comprobada (o no) contra su constancia.
+   *
+   * Es el acto que da valor a todo el módulo: hasta que alguien mira el papel,
+   * lo del CV es una declaración. Queda con quién y cuándo, porque si mañana
+   * la entidad observa el expediente hay que saber quién dio ese dato por
+   * bueno (mig 200).
+   */
+  const marcarVerificacion = async (exp, estado, nota = null) => {
+    try {
+      const ahora = new Date().toISOString();
+      await window.__db.personal_experiencia.update(exp.id, {
+        verificacion: estado,
+        verificado_por: estado === 'pendiente' ? null : userId,
+        verificado_at: estado === 'pendiente' ? null : ahora,
+        ...(nota !== null ? { verificacion_nota: nota } : {}),
+        updated_at: ahora, updated_by: userId,
+        version: (exp.version ?? 0) + 1,
+        sync_status: exp.demo === true ? 'synced'
+          : (exp.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal_experiencia' } }));
+      try { window.dispatchEvent(new Event('online')); } catch {}
+    } catch (e) { toast('No se pudo guardar la verificación: ' + (e?.message || e), 'red'); }
+  };
+
+  /** Lo mismo para un campo de la ficha (título, colegiatura, RUC, RNP…). */
+  const marcarCampoFicha = async (persona, campo, estado, nota = null) => {
+    try {
+      const ahora = new Date().toISOString();
+      const ficha = fichaPorPersona.get(persona.id);
+      if (!ficha) return toast('Guarda primero la ficha', 'amber');
+      const previas = (ficha.verificaciones && typeof ficha.verificaciones === 'object') ? ficha.verificaciones : {};
+      const verificaciones = { ...previas };
+      if (estado === 'pendiente') delete verificaciones[campo];
+      else verificaciones[campo] = { estado, por: userId, at: ahora, ...(nota ? { nota } : {}) };
+      await window.__db.personal_profesional.update(ficha.id, {
+        verificaciones, updated_at: ahora, updated_by: userId,
+        version: (ficha.version ?? 0) + 1,
+        sync_status: ficha.demo === true ? 'synced'
+          : (ficha.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+      });
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'personal_profesional' } }));
+      try { window.dispatchEvent(new Event('online')); } catch {}
+    } catch (e) { toast('No se pudo guardar la verificación: ' + (e?.message || e), 'red'); }
+  };
+
   return (
     <div className="page-wrap">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
@@ -375,7 +423,7 @@ function ProfesionalesPage({ showToast }) {
               <table className="tbl">
                 <thead><tr>
                   <th>Persona</th><th>Profesión</th><th>Colegiatura</th>
-                  <th>Experiencia (sustentada)</th><th>CV</th><th></th>
+                  <th>Experiencia (verificada)</th><th>CV</th><th></th>
                 </tr></thead>
                 <tbody>
                   {listado.length === 0 && (
@@ -405,10 +453,10 @@ function ProfesionalesPage({ showToast }) {
                           )}
                         </td>
                         <td style={{ fontSize: 11.5 }}>
-                          {formatearMeses(t.meses)}
-                          <div style={{ fontSize: 10, color: t.sinSustento ? 'var(--amber)' : 'var(--green)' }}>
-                            {formatearMeses(t.mesesSustentados)} con constancia
-                            {t.sinSustento > 0 ? ` · ${t.sinSustento} sin sustento` : ''}
+                          {formatearMeses(t.meses)} <span style={{ fontSize: 10, color: 'var(--tm)' }}>declarados</span>
+                          <div style={{ fontSize: 10, color: t.conVerificacion ? 'var(--green)' : 'var(--amber)' }}>
+                            {formatearMeses(t.mesesVerificados)} verificados
+                            {t.porVerificar > 0 ? ` · ${t.porVerificar} por revisar` : ''}
                           </div>
                         </td>
                         <td>
@@ -443,6 +491,8 @@ function ProfesionalesPage({ showToast }) {
           onAdjuntar={adjuntar}
           onVerEvidencia={verEvidencia}
           onLeerCv={canWrite ? () => setCvIa({ personaFija: detalle.persona }) : null}
+          onVerificarExp={canWrite ? marcarVerificacion : null}
+          onVerificarCampo={canWrite ? marcarCampoFicha : null}
           toast={toast}
         />
       )}
@@ -497,6 +547,9 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
   const [exps, setExps] = uS([]);
   const [marcadas, setMarcadas] = uS(() => new Set());
   const [guardando, setGuardando] = uS(false);
+  // Leer las constancias escaneadas con OCR. APAGADO: las páginas de texto
+  // traen todo lo declarativo y las escaneadas se verifican mirándolas.
+  const [conOcr, setConOcr] = uS(false);
   const guardandoRef = uR(false);
 
   const rubrosVivos = uM(() => (rubros || []).filter(r => r.activo !== false), [rubros]);
@@ -532,7 +585,7 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
     try {
       const { analizarCv } = await import('../lib/cv-analisis.js');
       const { apiFetch, apiParse } = await import('../lib/api-client');
-      const r = await analizarCv(bloques, { apiFetch, apiParse, rubros: rubrosVivos, onProgreso: setProgreso });
+      const r = await analizarCv(bloques, { apiFetch, apiParse, rubros: rubrosVivos, onProgreso: setProgreso, conOcr });
       setSalida(r);
       setPersona({ ...r.persona });
       setFicha({ ...r.ficha });
@@ -579,13 +632,15 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
       {fase === 'elegir' && (
         <div style={{ padding: '18px 4px' }}>
           <div style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
-            Sube el <b>CV en PDF</b>, con sus constancias adentro si las tiene. Primero se revisa en tu computadora
-            —gratis— y te digo cuántas páginas escaneadas hay y cuánto cuesta leerlas, antes de leerlas.
+            Sube el <b>CV en PDF</b>, con sus constancias adentro si las tiene. Se lee en tu propia computadora
+            y <b>no cuesta nada</b>: solo se leen las páginas que ya son texto, que es donde el profesional
+            escribe su experiencia, sus estudios y sus certificados.
           </div>
           <input type="file" className="fi" accept=".pdf,application/pdf" onChange={e => elegirArchivo(e.target.files?.[0])} />
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 10, lineHeight: 1.5 }}>
-            Del currículum salen la persona, la ficha y las experiencias declaradas. De las constancias escaneadas sale
-            qué periodo certifica cada una: la app las cruza y cada experiencia queda con la <b>página</b> de su constancia.
+            Las páginas escaneadas del CV son los papeles que respaldan: constancias, diplomas, el DNI. Esas
+            <b> no se leen con IA</b>, se miran. Al terminar vas a poder abrir el CV y marcar dato por dato
+            cuál está respaldado, que es lo único que después se puede presentar en un proceso.
             {personaFija ? ' Como la persona ya está en el padrón, se completa su ficha.' : ' Si la persona ya está en el padrón (por DNI), se completa su ficha en vez de duplicarla.'}
           </div>
         </div>
@@ -598,21 +653,40 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, marginTop: 10, fontSize: 12 }}>
               <div>
                 <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--green)' }}>{presupuesto.paginasNativas}</div>
-                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas de currículum (texto) · gratis</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas de currículum · se leen gratis</div>
               </div>
               <div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--amber)' }}>{presupuesto.paginasOcr}</div>
-                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas escaneadas (constancias) · hay que leerlas</div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{presupuesto.paginasEscaneadas}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas escaneadas · las vas a mirar tú</div>
               </div>
               <div>
-                <div style={{ fontSize: 20, fontWeight: 700 }}>{usd(presupuesto.costo.total)}</div>
-                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>lo que cuesta leer este CV</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--green)' }}>
+                  {usd(conOcr ? presupuesto.costoConConstancias.total : presupuesto.costo.total)}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>lo que cuesta esta lectura</div>
               </div>
             </div>
+            {presupuesto.paginasEscaneadas > 0 && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 12, cursor: 'pointer',
+                padding: '8px 10px', borderRadius: 6, background: 'var(--bg-c2)' }}>
+                <input type="checkbox" checked={conOcr} onChange={() => setConOcr(v => !v)} style={{ marginTop: 2 }} />
+                <div style={{ fontSize: 11, lineHeight: 1.45 }}>
+                  <b>Leer también las {presupuesto.paginasEscaneadas} páginas escaneadas</b>
+                  <span style={{ color: 'var(--amber)' }}> · cuesta {usd(presupuesto.costoConConstancias.total)}</span>
+                  <div style={{ color: 'var(--tm)', marginTop: 2 }}>
+                    Sirve para que la app intente adivinar qué constancia respalda cada periodo. No hace falta
+                    para cargar la ficha, y <b>no reemplaza tu revisión</b>: lo que un modelo lee sigue quedando
+                    pendiente de que alguien mire el papel. Con un CV de muchas páginas puede ahorrarte el hojeo.
+                  </div>
+                </div>
+              </label>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => { setFase('elegir'); setArchivo(null); }}>Elegir otro archivo</button>
-            <button className="btn btn-blue btn-sm" onClick={correr}>Leer el CV · {usd(presupuesto.costo.total)}</button>
+            <button className="btn btn-blue btn-sm" onClick={correr}>
+              Leer el CV · {usd(conOcr ? presupuesto.costoConConstancias.total : presupuesto.costo.total)}
+            </button>
           </div>
         </div>
       )}
@@ -641,8 +715,8 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
       {fase === 'revisar' && salida && persona && ficha && (
         <div style={{ display: 'grid', gap: 10 }}>
           <div className="card card-p" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{exps.length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>experiencias encontradas</div></div>
-            <div><div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>{exps.filter(e => e.sustento_pagina != null).length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con constancia en el archivo</div></div>
+            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{exps.length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>experiencias declaradas</div></div>
+            <div><div style={{ fontSize: 18, fontWeight: 700 }}>{salida.paginasSinLeer?.length ?? 0}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas escaneadas para revisar</div></div>
             <div><div style={{ fontSize: 18, fontWeight: 700 }}>{(ficha.capacitaciones || []).length}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>cursos y diplomados</div></div>
             <div><div style={{ fontSize: 18, fontWeight: 700 }}>{usd(salida.costo?.total)}</div><div style={{ fontSize: 10.5, color: 'var(--tm)' }}>costó de verdad · {salida.paginasOcr} páginas leídas</div></div>
             {salida.modelos?.length > 0 && <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}>leído por<br />{salida.modelos.join(' · ')}</div>}
@@ -714,7 +788,8 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
             <div style={{ fontSize: 12.5, fontWeight: 700, margin: '2px 0 6px' }}>
               Experiencias ({marcadas.size} de {exps.length} se guardan)
               <span style={{ fontWeight: 400, fontSize: 10.5, color: 'var(--tm)', marginLeft: 8 }}>
-                Las que tienen 📎 quedan sustentadas con esa página del CV; las demás se guardan como declaradas.
+                Todas entran como <b>declaradas</b>. Al guardar vas a poder abrir el CV y marcar cuál está
+                respaldada por su constancia: solo eso se presenta en un proceso.
               </span>
             </div>
             <div style={{ display: 'grid', gap: 6 }}>
@@ -728,7 +803,7 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
                       <span style={{ fontSize: 11, color: 'var(--tm)' }}>· {e.entidad || 'entidad sin nombre'}</span>
                       {e.sustento_pagina != null
                         ? <span className="badge b-green" style={{ fontSize: 9 }}>📎 constancia pág. {e.sustento_pagina}</span>
-                        : <span className="badge b-gray" style={{ fontSize: 9 }}>sin constancia</span>}
+                        : <span className="badge b-gray" style={{ fontSize: 9 }}>por verificar</span>}
                       {!e._verificada && <span className="badge b-amber" style={{ fontSize: 9 }}>cita sin verificar</span>}
                       {e.observaciones && <span style={{ fontSize: 10, color: 'var(--blue)' }}>{e.observaciones}</span>}
                     </div>
@@ -751,6 +826,11 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
                     {e.fuente_cita && (
                       <div style={{ gridColumn: '1 / -1', fontSize: 10.5, padding: '4px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontStyle: 'italic' }}>
                         «{e.fuente_cita.slice(0, 200)}»{e.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — pág. {e.fuente_pagina}</b>}
+                      </div>
+                    )}
+                    {e.sustento_esperado && (
+                      <div style={{ gridColumn: '1 / -1', fontSize: 10.5, color: 'var(--blue)' }}>
+                        Para darla por buena, busca en el CV: <b>{e.sustento_esperado}</b>
                       </div>
                     )}
                   </div>
@@ -897,9 +977,37 @@ function BuscarPlantel({ candidatos, rubros, hoy, onAbrir }) {
 // ═══════════════════════════════════════════════════════════════════
 const EXP_VACIA = { entidad: '', obra_nombre: '', cargo: '', rubro_id: '', monto: '', moneda: 'PEN', fecha_inicio: '', fecha_fin: '', obra_id: '', observaciones: '' };
 
+// ── Estados de verificación, compartidos por la ficha y la experiencia ──
+const VERIF = {
+  pendiente:    { label: 'Por verificar', icono: '○', cls: 'b-gray',  color: 'var(--tm)' },
+  verificado:   { label: 'Verificado',    icono: '✅', cls: 'b-green', color: 'var(--green)' },
+  observado:    { label: 'Observado',     icono: '⚠️', cls: 'b-amber', color: 'var(--amber)' },
+  sin_sustento: { label: 'Sin sustento',  icono: '⛔', cls: 'b-red',   color: 'var(--red)' },
+};
+const estadoDe = (v) => VERIF[v] || VERIF.pendiente;
+
+/** Los tres botones que marcan un ítem. Se repiten en la ficha y en cada
+ *  experiencia, así que viven acá una sola vez. */
+function BotonesVerificar({ valor, disabled, onMarcar }) {
+  const actual = valor || 'pendiente';
+  return (
+    <div style={{ display: 'flex', gap: 3 }}>
+      {['verificado', 'observado', 'sin_sustento'].map(v => (
+        <button key={v} className={`btn btn-xs ${actual === v ? 'btn-amber' : 'btn-ghost'}`}
+          disabled={disabled} title={VERIF[v].label}
+          onClick={() => onMarcar(actual === v ? 'pendiente' : v)}
+          style={{ padding: '2px 6px', ...(actual === v ? {} : { color: VERIF[v].color }) }}>
+          {VERIF[v].icono}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                       onClose, onGuardarFicha, onGuardarExperiencia, onBorrarExperiencia,
-                      onAdjuntar, onVerEvidencia, onLeerCv = null, toast }) {
+                      onAdjuntar, onVerEvidencia, onLeerCv = null,
+                      onVerificarExp = null, onVerificarCampo = null, toast }) {
   const Modal = window.Modal;
   const { persona, ficha, experiencias } = candidato;
   // TODOS los hooks antes de cualquier early return (regla crítica 3).
@@ -1024,16 +1132,71 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
           </div>
         </div>
 
+        {/* ── QUÉ HAY QUE CORROBORAR, Y CON QUÉ DOCUMENTO ──
+            Gabriel, 8-set-2026: «cómo podríamos corroborar cada punto de lo
+            que él menciona […] y el administrador se encarga de colocar
+            verificado». Cada fila dice qué papel lo prueba; el CV está a un
+            clic para ir a buscarlo. ── */}
+        <div className="card card-p">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Qué hay que corroborar</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                El CV es lo que la persona declara. Abre el archivo, busca cada papel y marca.
+              </div>
+            </div>
+            {ficha?.cv_evidencia_id && (
+              <button className="btn btn-blue btn-xs" onClick={() => onVerEvidencia(ficha.cv_evidencia_id)}>
+                📄 Abrir el CV para revisar
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'grid', gap: 4 }}>
+            {CAMPOS_VERIFICABLES.map(c => {
+              const v = (ficha?.verificaciones || {})[c.campo] || {};
+              const est = estadoDe(v.estado);
+              // Un campo vacío no se puede verificar: no tiene sentido pedirlo.
+              const valor = c.campo === 'titulo' ? f.titulo
+                : c.campo === 'colegiatura' ? f.colegiatura_numero
+                  : c.campo === 'habilidad' ? f.colegiatura_habil_hasta
+                    : c.campo === 'dni' ? persona?.dni
+                      : c.campo === 'ruc' ? ficha?.ruc
+                        : ficha?.rnp_numero;
+              return (
+                <div key={c.campo} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                  padding: '5px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontSize: 11 }}>
+                  <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                    <b>{c.label}:</b>{' '}
+                    {valor ? <span>{String(valor).slice(0, 60)}</span> : <span style={{ color: 'var(--tm)' }}>sin dato en la ficha</span>}
+                    <div style={{ fontSize: 10, color: 'var(--tm)' }}>Se prueba con: {c.con}</div>
+                    {v.nota && <div style={{ fontSize: 10, color: est.color }}>{v.nota}</div>}
+                  </span>
+                  <span className={`badge ${est.cls}`} style={{ fontSize: 9 }}>{est.label}</span>
+                  {canWrite && onVerificarCampo && valor && (
+                    <BotonesVerificar valor={v.estado} disabled={busy}
+                      onMarcar={(estado) => {
+                        const nota = estado === 'observado' || estado === 'sin_sustento'
+                          ? (window.prompt(`¿Qué observaste en «${c.label}»?`) || null) : null;
+                        onVerificarCampo(persona, c.campo, estado, nota);
+                      }} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {/* ── Resumen de experiencia por rubro ── */}
         <div className="card card-p">
           <div style={{ fontSize: 12.5, fontWeight: 700 }}>
-            Experiencia · {formatearMeses(total.meses)}
-            <span style={{ fontWeight: 400, color: total.sinSustento ? 'var(--amber)' : 'var(--green)', marginLeft: 8, fontSize: 11 }}>
-              {formatearMeses(total.mesesSustentados)} con constancia
+            Experiencia · {formatearMeses(total.meses)} <span style={{ fontWeight: 400, fontSize: 11, color: 'var(--tm)' }}>declarados</span>
+            <span style={{ fontWeight: 400, color: total.conVerificacion ? 'var(--green)' : 'var(--amber)', marginLeft: 8, fontSize: 11 }}>
+              {formatearMeses(total.mesesVerificados)} verificados
             </span>
           </div>
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 8 }}>
             Los meses se calculan de los periodos: si dos obras se superponen, ese tiempo cuenta UNA vez.
+            {total.porVerificar > 0 && <> Hay <b style={{ color: 'var(--amber)' }}>{total.porVerificar} sin revisar</b> contra su constancia.</>}
           </div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {[...porRubro.entries()].map(([rid, v]) => (
@@ -1051,11 +1214,12 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
           <div style={{ overflowX: 'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Obra / Entidad</th><th>Cargo</th><th>Rubro</th><th>Periodo</th><th>Tiempo</th><th>Constancia</th><th></th>
+                <th>Obra / Entidad</th><th>Cargo</th><th>Rubro</th><th>Periodo</th><th>Tiempo</th>
+                <th>Constancia</th><th>Verificación</th><th></th>
               </tr></thead>
               <tbody>
                 {(experiencias || []).length === 0 && (
-                  <tr><td colSpan={7} className="empty-state" style={{ padding: '20px 0' }}>Sin experiencia cargada.</td></tr>
+                  <tr><td colSpan={8} className="empty-state" style={{ padding: '20px 0' }}>Sin experiencia cargada.</td></tr>
                 )}
                 {(experiencias || []).slice()
                   .sort((a, b) => String(b.fecha_inicio || '').localeCompare(String(a.fecha_inicio || '')))
@@ -1087,6 +1251,30 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
                                   disabled={subiendo} onChange={e => { subirConstancia(e.target.files?.[0], x); e.target.value = ''; }} />
                               </label>
                             ) : <span style={{ fontSize: 10, color: 'var(--amber)' }}>sin constancia</span>}
+                        </td>
+                        <td>
+                          {(() => {
+                            const est = estadoDe(x.verificacion);
+                            return (
+                              <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <span className={`badge ${est.cls}`} style={{ fontSize: 8.5 }}
+                                  title={x.verificacion_nota || x.sustento_esperado || ''}>{est.label}</span>
+                                {canWrite && onVerificarExp && (
+                                  <BotonesVerificar valor={x.verificacion} disabled={busy}
+                                    onMarcar={(estado) => {
+                                      const nota = estado === 'observado' || estado === 'sin_sustento'
+                                        ? (window.prompt(`¿Qué observaste en «${x.obra_nombre || x.cargo || 'esta experiencia'}»?`) || null) : null;
+                                      onVerificarExp(x, estado, nota);
+                                    }} />
+                                )}
+                              </div>
+                            );
+                          })()}
+                          {x.sustento_esperado && (x.verificacion || 'pendiente') === 'pendiente' && (
+                            <div style={{ fontSize: 9.5, color: 'var(--blue)', marginTop: 2, maxWidth: 260 }}>
+                              Busca: {x.sustento_esperado}
+                            </div>
+                          )}
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           {canWrite && (

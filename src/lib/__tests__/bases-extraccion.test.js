@@ -389,3 +389,95 @@ describe('verificarResultado — la aduana también pasa por empresa, calendario
     expect(r.alertas.join(' ')).toMatch(/rnp|requisito de empresa/i);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 5 — el tope que faltaba y el resto de lo que dicen las bases
+// ═══════════════════════════════════════════════════════════════════
+import {
+  MAX_CHARS_RANGO, aFactoresEvaluacion, aGarantias, aPenalidades,
+  aDocumentosPresentacion, aCondiciones, aExtrasProceso, TIPO_GARANTIA_LBL,
+} from '../bases-extraccion.js';
+
+describe('textoDeRango — el tope que evitó el 422 (8-set-2026)', () => {
+  // El caso REAL: un .docx sin anclas devolvía el documento entero, 236.669
+  // caracteres contra un tope de 120.000 del servidor, y las tres familias
+  // fallaban con «El rango es demasiado grande». Cero extracción.
+  it('un documento sin anclas ya no devuelve 236.669 caracteres de una', () => {
+    const enorme = 'REQUISITOS DE CALIFICACION del personal clave.\n'.repeat(6000);
+    expect(enorme.length).toBeGreaterThan(200_000);
+    const t = textoDeRango(enorme, 1, 1);
+    expect(t.length).toBeLessThanOrEqual(MAX_CHARS_RANGO);
+    expect(t.length).toBeGreaterThan(1000);      // recorta, no vacía
+  });
+  it('queda por debajo del tope del endpoint, con margen para el prompt', () => {
+    expect(MAX_CHARS_RANGO).toBeLessThan(120_000);
+  });
+  it('corta en un salto de línea para no partir una cita al medio', () => {
+    const t = textoDeRango('linea de texto que se repite\n'.repeat(5000), 1, 1);
+    expect(t.endsWith('linea de texto que se repite')).toBe(true);
+  });
+  it('lo que entra en el tope sale intacto', () => {
+    const md = '<!-- página 3 -->\nchico';
+    expect(textoDeRango(md, 3, 3)).toContain('chico');
+  });
+});
+
+describe('aGarantias / aPenalidades / aFactores / aCondiciones (mig 200)', () => {
+  it('la garantía de fiel cumplimiento guarda su porcentaje y su cita', () => {
+    const g = aGarantias({ garantias: [{ tipo: 'fiel_cumplimiento', porcentaje: 10, detalle: 'Carta fianza solidaria', fuente_pagina: 60, fuente_cita: 'diez por ciento (10%) del monto' }] });
+    expect(g[0]).toMatchObject({ tipo: 'fiel_cumplimiento', porcentaje: 10, fuente_pagina: 60, verificada: true });
+    expect(TIPO_GARANTIA_LBL[g[0].tipo]).toBe('Fiel cumplimiento');
+  });
+  it('un tipo de garantía desconocido cae a «otra» y una vacía no entra', () => {
+    const g = aGarantias({ garantias: [{ tipo: 'magica', detalle: 'algo' }, { tipo: 'fiel_cumplimiento' }] });
+    expect(g).toHaveLength(1);
+    expect(g[0].tipo).toBe('otra');
+  });
+  it('la penalidad de mora guarda su fórmula y su tope', () => {
+    const p = aPenalidades({ penalidades: [{ tipo: 'mora', formula: '0.10 x monto / (0.40 x plazo)', tope: '10% del contrato' }] });
+    expect(p[0]).toMatchObject({ tipo: 'mora', tope: '10% del contrato' });
+  });
+  it('un factor sin nombre no entra; el puntaje se guarda como número', () => {
+    const f = aFactoresEvaluacion({ factores_evaluacion: [{ puntaje_maximo: 40 }, { factor: 'Experiencia del postor', puntaje_maximo: '40' }] });
+    expect(f).toHaveLength(1);
+    expect(f[0].puntaje_maximo).toBe(40);
+  });
+  it('las condiciones se tipifican y lo desconocido cae en «otra»', () => {
+    const c = aCondiciones({ condiciones: [
+      { tipo: 'adelanto', titulo: 'Adelanto directo del 10%' },
+      { tipo: 'inventado', detalle: 'algo raro' },
+    ] });
+    expect(c.map(x => x.tipo)).toEqual(['adelanto', 'otra']);
+  });
+  it('los documentos de presentación no se repiten', () => {
+    const d = aDocumentosPresentacion({ documentos_presentacion: [
+      { sobre: 'Sobre N° 1', documento: 'Anexo N° 1 - Declaración jurada' },
+      { sobre: 'Sobre N° 1', documento: 'ANEXO N° 1 - DECLARACION JURADA' },
+      { sobre: 'Sobre N° 2', documento: 'Oferta económica' },
+    ] });
+    expect(d).toHaveLength(2);
+    expect(d[0].obligatorio).toBe(true);
+  });
+  it('aExtrasProceso devuelve las cinco listas, aunque estén vacías', () => {
+    const e = aExtrasProceso({});
+    expect(Object.keys(e).sort()).toEqual(['condiciones', 'documentos_presentacion', 'factores_evaluacion', 'garantias', 'penalidades']);
+    expect(Object.values(e).every(l => Array.isArray(l) && l.length === 0)).toBe(true);
+  });
+});
+
+describe('verificarResultado — la aduana ahora cubre también lo de la mig 200', () => {
+  it('una garantía inventada se marca y se avisa; la real pasa', () => {
+    const md = '<!-- página 1 -->\nLa garantía de fiel cumplimiento equivale al diez por ciento (10%) del monto del convenio.';
+    const r = verificarResultado({
+      garantias: [
+        { tipo: 'fiel_cumplimiento', porcentaje: 10, fuente_pagina: 1, fuente_cita: 'equivale al diez por ciento (10%) del monto del convenio' },
+        { tipo: 'adelanto_directo', porcentaje: 30, fuente_pagina: 1, fuente_cita: 'adelanto directo del treinta por ciento' },
+      ],
+      penalidades: [], condiciones: [], factores_evaluacion: [], documentos_presentacion: [],
+    }, md);
+    expect(r.garantias[0].verificada).toBe(true);
+    expect(r.garantias[1].verificada).toBe(false);
+    expect(r.garantias).toHaveLength(2);           // no se borra: se marca
+    expect(r.alertas.join(' ')).toMatch(/adelanto directo del treinta|garantía/i);
+  });
+});

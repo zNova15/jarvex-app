@@ -39,6 +39,7 @@ import {
   urgencia, prefillObraDesde, puedePasarATrabajos, destinoAlGanar,
 } from "../lib/licitaciones.js";
 import { buscarPlantel, formatearMeses } from "../lib/experiencia-profesional.js";
+import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL } from "../lib/bases-extraccion.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
@@ -261,8 +262,26 @@ function LicitacionesPage({ showToast }) {
     requisitos: requisitos ?? 0,
   });
 
+  /** Las listas de la mig 200 que traiga la lectura, solo si hay algo. */
+  const parcheDeExtras = (extras, previo = null) => {
+    const patch = {};
+    for (const clave of ['factores_evaluacion', 'garantias', 'penalidades', 'documentos_presentacion', 'condiciones']) {
+      const lista = extras?.[clave];
+      if (!Array.isArray(lista) || !lista.length) continue;
+      // No se pisa lo que ya había: una segunda lectura SUMA lo que la
+      // primera no encontró (la convocatoria primero, las bases después).
+      const previas = Array.isArray(previo?.[clave]) ? previo[clave] : [];
+      if (!previas.length) { patch[clave] = lista; continue; }
+      const vistos = new Set(previas.map(x => JSON.stringify([x.factor, x.titulo, x.documento, x.tipo, x.detalle])));
+      const nuevas = lista.filter(x => !vistos.has(JSON.stringify([x.factor, x.titulo, x.documento, x.tipo, x.detalle])));
+      if (nuevas.length) patch[clave] = [...previas, ...nuevas];
+    }
+    return patch;
+  };
+
   const aplicarAnalisis = async (licitacionId, {
-    requisitos = [], requisitosEmpresa = [], cabecera = null, cronograma = null, costo = null, bitacora = null,
+    requisitos = [], requisitosEmpresa = [], cabecera = null, cronograma = null,
+    extras = null, alertas = null, costo = null, bitacora = null,
   }) => {
     if (enCursoRef.current) return;
     enCursoRef.current = true;
@@ -282,6 +301,13 @@ function LicitacionesPage({ showToast }) {
       // pisar uno cargado a mano con una lectura automática es peor que no leer.
       if (Array.isArray(cronograma) && cronograma.length && !(Array.isArray(prev?.cronograma) && prev.cronograma.length)) {
         patch.cronograma = cronograma;
+      }
+      Object.assign(patch, parcheDeExtras(extras, prev));
+      // Lo que el lector marcó para revisar se guarda: en la prueba del 8-set
+      // el modelo avisó que una fecha venía truncada, y eso se perdía al cerrar.
+      if (Array.isArray(alertas) && alertas.length) {
+        const previas = Array.isArray(prev?.alertas) ? prev.alertas : [];
+        patch.alertas = [...new Set([...previas, ...alertas])].slice(0, 60);
       }
       if (bitacora) patch.analisis = [...(Array.isArray(prev?.analisis) ? prev.analisis : []), entradaBitacora({ ...bitacora, costo, requisitos: filas.length })];
       if (Object.keys(patch).length) {
@@ -307,7 +333,8 @@ function LicitacionesPage({ showToast }) {
    * requisitos de empresa que la persona tildó.
    */
   const crearDesdeAnalisis = async ({
-    cabecera = {}, requisitos = [], requisitosEmpresa = [], cronograma = [], costo = null, bitacora = null,
+    cabecera = {}, requisitos = [], requisitosEmpresa = [], cronograma = [],
+    extras = null, alertas = null, costo = null, bitacora = null,
   }) => {
     if (enCursoRef.current) return null;
     enCursoRef.current = true;
@@ -322,6 +349,8 @@ function LicitacionesPage({ showToast }) {
         ...cabecera,
         cronograma: Array.isArray(cronograma) ? cronograma : [],
         consorcio: [],
+        ...parcheDeExtras(extras),
+        alertas: Array.isArray(alertas) ? alertas.slice(0, 60) : [],
         analisis: bitacora ? [entradaBitacora({ ...bitacora, costo, requisitos: filas.length })] : [],
         fuente: 'extraccion',
         created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora, version: 1,
@@ -914,6 +943,9 @@ function DetalleModal({
         )}
       </div>
 
+      {/* ── Lo demás que dicen las bases (mig 200) ── */}
+      <ReglasDelProceso lic={lic} />
+
       {/* ── Pasar a Trabajos ── */}
       <PasarATrabajos lic={lic} veredicto={v} destino={destino} canWrite={canWrite} toast={toast} />
 
@@ -954,6 +986,7 @@ function DetalleModal({
 // ═══════════════════════════════════════════════════════════════════
 
 const PASO_LBL = {
+  cache: 'Reusando lo que ya se leyó de este archivo',
   leyendo: 'Abriendo el documento',
   ocr: 'Leyendo las páginas escaneadas',
   indice: 'Buscando las secciones',
@@ -978,6 +1011,88 @@ const mostrarValor = (k, v) => {
   if (/^(valor_referencial|monto_)/.test(k)) return money(v);
   return String(v).slice(0, 110);
 };
+
+// ── Las reglas del juego: garantías, penalidades, puntajes y condiciones ──
+//
+// Gabriel, 8-set-2026: «hay mucha data por extraer de allí y organizarla».
+// Esto es esa data, ya organizada y con la frase de las bases de donde salió.
+// Es lo que hoy alguien tiene que leer a mano en 96 páginas antes de decidir
+// si conviene presentarse: cuánta garantía hay que inmovilizar, cuánto se
+// penaliza la mora, qué da puntaje y si hay adelanto.
+function ReglasDelProceso({ lic }) {
+  const [abierto, setAbierto] = uS(false);
+  const listas = [
+    { clave: 'factores_evaluacion', titulo: 'Factores de evaluación', badge: 'b-purple',
+      linea: (f) => <>{f.factor}{f.puntaje_maximo ? <b> · {f.puntaje_maximo} puntos</b> : ''}{f.criterio ? <div style={{ color: 'var(--tm)' }}>{f.criterio}</div> : null}</> },
+    { clave: 'garantias', titulo: 'Garantías', badge: 'b-blue',
+      linea: (g) => <>{TIPO_GARANTIA_LBL[g.tipo] || g.tipo}{g.porcentaje ? <b> · {g.porcentaje}%</b> : ''}{g.monto ? <b> · {money(g.monto, lic.moneda)}</b> : ''}{g.detalle ? <div style={{ color: 'var(--tm)' }}>{g.detalle}</div> : null}</> },
+    { clave: 'penalidades', titulo: 'Penalidades', badge: 'b-red',
+      linea: (p) => <>{p.tipo === 'mora' ? 'Mora' : 'Otra penalidad'}{p.formula ? <> · <code style={{ fontSize: 10 }}>{p.formula}</code></> : ''}{p.tope ? <> · tope {p.tope}</> : ''}{p.detalle ? <div style={{ color: 'var(--tm)' }}>{p.detalle}</div> : null}</> },
+    { clave: 'condiciones', titulo: 'Condiciones a considerar', badge: 'b-amber',
+      linea: (c) => <><b>{TIPO_CONDICION_LBL[c.tipo] || c.tipo}</b>{c.titulo ? ` · ${c.titulo}` : ''}{c.detalle ? <div style={{ color: 'var(--tm)' }}>{c.detalle}</div> : null}</> },
+    { clave: 'documentos_presentacion', titulo: 'Documentos a presentar', badge: 'b-gray',
+      linea: (d) => <>{d.sobre ? <b>{d.sobre} · </b> : ''}{d.documento}{d.obligatorio === false ? <span style={{ color: 'var(--tm)' }}> (opcional)</span> : ''}</> },
+  ].map(l => ({ ...l, filas: Array.isArray(lic[l.clave]) ? lic[l.clave] : [] }))
+    .filter(l => l.filas.length);
+
+  const alertas = Array.isArray(lic.alertas) ? lic.alertas : [];
+  const total = listas.reduce((t, l) => t + l.filas.length, 0);
+  if (!total && !alertas.length) return null;
+
+  return (
+    <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
+      <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
+        justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div>
+          <b style={{ fontSize: 12.5 }}>Las reglas de este proceso ({total})</b>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+            Puntajes, garantías, penalidades y condiciones, tal como las escribieron las bases.
+          </div>
+        </div>
+        <button className="btn btn-ghost btn-xs" onClick={() => setAbierto(a => !a)}>{abierto ? 'Ocultar' : 'Ver'}</button>
+      </div>
+      {abierto && (
+        <div style={{ padding: '10px 14px', display: 'grid', gap: 12 }}>
+          {listas.map(l => (
+            <div key={l.clave}>
+              <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>{l.titulo} ({l.filas.length})</div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {l.filas.map((x, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '5px 8px',
+                    borderRadius: 5, background: 'var(--bg-c2)', fontSize: 11,
+                    borderLeft: `3px solid ${x.verificada === false ? 'var(--amber)' : 'transparent'}` }}>
+                    <span className={`badge ${l.badge}`} style={{ fontSize: 8.5, flex: '0 0 auto' }}>{i + 1}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {l.linea(x)}
+                      {x.fuente_cita && (
+                        <div style={{ fontSize: 10, fontStyle: 'italic', color: 'var(--tm)', marginTop: 2 }}>
+                          «{String(x.fuente_cita).slice(0, 220)}»{x.fuente_pagina != null ? ` — pág. ${x.fuente_pagina}` : ''}
+                        </div>
+                      )}
+                      {x.verificada === false && (
+                        <div style={{ fontSize: 10, color: 'var(--amber)' }}>Sin comprobar contra el documento: revísalo antes de usarlo.</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {alertas.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4, color: 'var(--amber)' }}>
+                ⚠ Lo que el lector marcó para revisar ({alertas.length})
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 10.5, lineHeight: 1.5, color: 'var(--tm)' }}>
+                {alertas.slice(0, 20).map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── El calendario que trajo la convocatoria ────────────────────────
 function CalendarioProceso({ cronograma, hoy }) {
@@ -1199,6 +1314,10 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   const [presupuesto, setPresupuesto] = uS(null);
   const [bloques, setBloques] = uS(null);
   const [salida, setSalida] = uS(null);
+  // La huella del archivo y lo que ya se pagó por él (lib/cache-lectura.js).
+  const [huella, setHuella] = uS(null);
+  const [cacheado, setCacheado] = uS(null);
+  const [unidad, setUnidad] = uS('pagina');
   const [marcados, setMarcados] = uS(() => new Set());        // puestos (personal)
   const [marcadosEmp, setMarcadosEmp] = uS(() => new Set());  // requisitos de empresa
   const [aplicarCabecera, setAplicarCabecera] = uS(true);
@@ -1219,9 +1338,18 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     setProgreso({ paso: 'leyendo' });
     try {
       const { leerDocumento, presupuestar } = await import('../lib/bases-analisis.js');
-      const { bloques: bs } = await leerDocumento(file, { onProgreso: setProgreso });
+      const { huellaDe, leerCache } = await import('../lib/cache-lectura.js');
+      const { bloques: bs, unidad: u } = await leerDocumento(file, { onProgreso: setProgreso });
       setBloques(bs);
+      setUnidad(u || 'pagina');
       setPresupuesto(presupuestar(bs));
+      // ¿Este archivo ya se leyó antes? Entonces el escaneo no se vuelve a
+      // pagar. Es lo que pidió Gabriel el 8-set: «no me gustaría perder eso».
+      try {
+        const h = await huellaDe(file);
+        setHuella(h);
+        setCacheado(await leerCache(h));
+      } catch { setHuella(null); setCacheado(null); }
       setFase('presupuesto');
     } catch (e) {
       toast('No se pudo abrir el documento: ' + (e?.message || e), 'red');
@@ -1236,7 +1364,19 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     try {
       const { analizar } = await import('../lib/bases-analisis.js');
       const { apiFetch, apiParse } = await import('../lib/api-client');
-      const r = await analizar(bloques, { apiFetch, apiParse, onProgreso: setProgreso });
+      const r = await analizar(bloques, { apiFetch, apiParse, onProgreso: setProgreso, cacheado });
+      // Guardar el texto leído ANTES de mirar si la extracción salió bien: lo
+      // que se pagó fue el escaneo, y eso ya está hecho aunque la IA falle.
+      if (huella && !r.reusado && r.paginasOcr > 0) {
+        try {
+          const { guardarCache } = await import('../lib/cache-lectura.js');
+          await guardarCache(huella, {
+            markdown: r.markdown, paginasOcr: r.paginasOcr,
+            costoOcr: r.costo?.ocr ?? 0, nombre: archivo?.name || null, unidad,
+          });
+          setCacheado({ markdown: r.markdown, paginasOcr: r.paginasOcr });
+        } catch { /* sin caché se sigue igual */ }
+      }
       setSalida(r);
       // Arrancan tildados SOLO los que pasaron la verificación de cita. Lo que
       // no se pudo comprobar se ve, pero no se guarda sin que alguien lo mire.
@@ -1278,9 +1418,14 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     }
   };
 
+  /** Reintentar la extracción SIN volver a escanear. */
+  const reintentar = () => { setSalida(null); correr(); };
+
   const filas = salida?.filas || [];
   const filasEmp = salida?.filasEmpresa || [];
   const cronograma = salida?.cronograma || [];
+  const extras = salida?.extras || { factores_evaluacion: [], garantias: [], penalidades: [], documentos_presentacion: [], condiciones: [] };
+  const totalExtras = Object.values(extras).reduce((t, l) => t + l.length, 0);
   // Solo se propone lo que la postulación TODAVÍA NO TIENE: pisar con una
   // lectura automática un dato que alguien cargó a mano es peor que no leer.
   const cabecera = uM(() => {
@@ -1337,6 +1482,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
           },
           requisitos: elegidas, requisitosEmpresa: elegidasEmp,
           cronograma: aplicarCronograma ? cronograma : [],
+          extras, alertas: salida?.alertas || [],
           costo: salida?.costo || null, bitacora: bitacora(),
         });
         return;   // el padre cierra y abre la postulación nueva
@@ -1345,6 +1491,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
         requisitos: elegidas, requisitosEmpresa: elegidasEmp,
         cabecera: aplicarCabecera ? cabecera : null,
         cronograma: aplicarCronograma && !licTieneCalendario ? cronograma : null,
+        extras, alertas: salida?.alertas || [],
         costo: salida?.costo || null, bitacora: bitacora(),
       });
       onClose();
@@ -1412,6 +1559,19 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                 Todo el documento es texto: la lectura sale prácticamente gratis (solo las pasadas de IA, que van a un modelo sin costo).
               </div>
             )}
+            {cacheado && (
+              <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 8, padding: '6px 8px',
+                borderRadius: 6, background: 'rgba(34,197,94,0.10)' }}>
+                ✅ <b>Este archivo ya se leyó antes</b>, así que el escaneo no se vuelve a pagar:
+                esta lectura cuesta <b>USD 0.000</b>. Se reusan {cacheado.paginasOcr} páginas ya leídas.
+              </div>
+            )}
+            {unidad === 'tramo' && (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 8 }}>
+                Es un documento de Word, que no tiene páginas: se parte en <b>{presupuesto.tramos} tramos</b> y
+                las citas van a decir «tramo», no «página».
+              </div>
+            )}
             {presupuesto.decorativas > 0 && (
               <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 8 }}>
                 {presupuesto.decorativas} imagen(es) son logos o sellos y no se mandan a leer.
@@ -1423,7 +1583,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               Elegir otro archivo
             </button>
             <button className="btn btn-blue btn-sm" onClick={correr}>
-              Analizar · {usd(presupuesto.costo.total)}
+              Analizar · {cacheado ? 'USD 0.000' : usd(presupuesto.costo.total)}
             </button>
           </div>
         </div>
@@ -1474,10 +1634,18 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>etapas del calendario</div>
             </div>
             <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{totalExtras}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>garantías, penalidades y condiciones</div>
+            </div>
+            <div>
+              {/* Cuenta TODO lo que trae cita, no solo los requisitos: con una
+                  convocatoria que solo trae calendario decía «0 comprobadas»
+                  aunque 7 de 8 etapas hubieran verificado (8-set-2026). */}
               <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>
-                {filas.filter(f => f.verificada).length + filasEmp.filter(f => f.verificada).length}
+                {[...filas, ...filasEmp, ...cronograma, ...Object.values(extras).flat()]
+                  .filter(x => x.verificada).length}
               </div>
-              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con su cita comprobada</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>datos con su cita comprobada</div>
             </div>
             <div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>{usd(salida.costo?.total)}</div>
@@ -1647,6 +1815,19 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
             </label>
           )}
 
+          {(salida.reusado || (huella && salida.paginasOcr > 0)) && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span>
+                {salida.reusado
+                  ? 'El texto salió de una lectura anterior de este mismo archivo: no se pagó escaneo.'
+                  : 'El escaneo quedó guardado: si algo salió mal, reintentar no vuelve a cobrarlo.'}
+              </span>
+              <button className="btn btn-ghost btn-xs" onClick={reintentar} disabled={guardando}>
+                ↻ Reintentar la extracción · USD 0.000
+              </button>
+            </div>
+          )}
+
           {filas.length === 0 && filasEmp.length === 0 && (
             <div className="empty-state" style={{ padding: '18px 14px', textAlign: 'center', fontSize: 11.5 }}>
               {creando
@@ -1722,6 +1903,37 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               </label>
             ))}
           </div>
+
+          {totalExtras > 0 && (
+            <div className="card card-p" style={{ marginTop: 12 }}>
+              <b style={{ fontSize: 12.5 }}>Lo demás que dicen estas bases ({totalExtras})</b>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 6 }}>
+                Se guarda con la postulación. Es lo que hoy alguien tiene que leer a mano antes de decidir.
+              </div>
+              <div style={{ display: 'grid', gap: 4, fontSize: 11 }}>
+                {extras.factores_evaluacion.map((f, i) => (
+                  <div key={`f${i}`}><span className="badge b-purple" style={{ fontSize: 8.5 }}>puntaje</span>{' '}
+                    {f.factor}{f.puntaje_maximo ? <b> · {f.puntaje_maximo} pts</b> : ''}</div>
+                ))}
+                {extras.garantias.map((g, i) => (
+                  <div key={`g${i}`}><span className="badge b-blue" style={{ fontSize: 8.5 }}>garantía</span>{' '}
+                    {TIPO_GARANTIA_LBL[g.tipo] || g.tipo}{g.porcentaje ? <b> · {g.porcentaje}%</b> : ''}{g.detalle ? ` — ${g.detalle.slice(0, 110)}` : ''}</div>
+                ))}
+                {extras.penalidades.map((p, i) => (
+                  <div key={`p${i}`}><span className="badge b-red" style={{ fontSize: 8.5 }}>penalidad</span>{' '}
+                    {p.tipo === 'mora' ? 'Mora' : 'Otra'}{p.formula ? ` · ${p.formula}` : ''}{p.tope ? ` · tope ${p.tope}` : ''}</div>
+                ))}
+                {extras.condiciones.map((c, i) => (
+                  <div key={`c${i}`}><span className="badge b-amber" style={{ fontSize: 8.5 }}>{TIPO_CONDICION_LBL[c.tipo] || c.tipo}</span>{' '}
+                    {c.titulo || (c.detalle || '').slice(0, 120)}</div>
+                ))}
+                {extras.documentos_presentacion.length > 0 && (
+                  <div><span className="badge b-gray" style={{ fontSize: 8.5 }}>expediente</span>{' '}
+                    {extras.documentos_presentacion.length} documento(s) de presentación obligatoria</div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14, alignItems: 'center' }}>
             <span style={{ fontSize: 11, color: 'var(--tm)', marginRight: 'auto' }}>

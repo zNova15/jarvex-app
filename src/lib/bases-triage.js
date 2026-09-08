@@ -51,6 +51,23 @@ export const MIN_ALFA_NATIVA = 80;
  *  Medido: El Peruano 0,71. */
 export const MIN_RATIO_ALFA = 0.35;
 
+/**
+ * Caracteres por TRAMO en un `.docx`.
+ *
+ * 🔴 EL BUG QUE ESTO CIERRA (medido el 8-set-2026 con el Anexo 12 real): un
+ * Word no tiene páginas, así que el markdown salía SIN una sola ancla; el
+ * cortador de rangos no tenía por dónde cortar y `textoDeRango` devolvía el
+ * documento ENTERO — 236.669 caracteres contra un tope de 120.000. Las tres
+ * familias morían con «El rango es demasiado grande» y la lectura daba cero.
+ *
+ * La salida no es inventar páginas (una cita que dice «página 47» de un Word
+ * es mentira: ese número no existe en el documento). Es numerar TRAMOS de un
+ * tamaño parecido al de una página de bases —2.500 a 3.500 caracteres— para
+ * que el resto del mecanismo funcione igual: el índice ubica, la IA elige, el
+ * cortador corta y la cita se comprueba. La pantalla los llama «tramo».
+ */
+export const CHARS_POR_TRAMO = 3000;
+
 /** EMU (English Metric Units) por centímetro — la unidad de OOXML. */
 const EMU_POR_CM = 360000;
 /** OOXML guarda los ángulos en 60.000-avos de grado. */
@@ -129,15 +146,19 @@ export function clasificarImagenDocx(img = {}) {
  * @param bloques salida de bloquesDeDocx() o equivalente
  */
 export function resumenTriage(bloques) {
-  let charsNativos = 0, paginasOcr = 0, decorativas = 0, rotadas = 0;
+  let charsNativos = 0, paginasOcr = 0, decorativas = 0, rotadas = 0, ultima = 0;
+  let unidad = 'pagina';
   for (const b of (bloques || [])) {
+    if (b.unidad === 'tramo') unidad = 'tramo';
+    if (b.pagina != null && b.pagina > ultima) ultima = b.pagina;
     if (b.tipo === 'texto') charsNativos += (b.texto || '').length;
     else if (b.tipo === 'imagen') {
       if (b.necesitaOcr) { paginasOcr++; if (b.rotacionCorreccion) rotadas++; }
       else decorativas++;
     }
   }
-  return { charsNativos, paginasOcr, decorativas, rotadas, bloques: (bloques || []).length };
+  return { charsNativos, paginasOcr, decorativas, rotadas, unidad, tramos: ultima,
+    bloques: (bloques || []).length };
 }
 
 // ── Lectura de un .docx ────────────────────────────────────────────
@@ -162,7 +183,7 @@ const desescapar = (s) => String(s)
  * @returns [{ tipo:'texto', texto } | { tipo:'imagen', rid, media, rotGrados,
  *            anchoCm, altoCm, necesitaOcr, rotacionCorreccion, motivo }]
  */
-export async function bloquesDeDocx(zip) {
+export async function bloquesDeDocx(zip, { charsPorTramo = CHARS_POR_TRAMO } = {}) {
   const xml = await zip.file('word/document.xml').async('string');
 
   // rId → ruta real del archivo dentro del zip
@@ -173,6 +194,11 @@ export async function bloquesDeDocx(zip) {
   }
 
   const bloques = [];
+  // El tramo corre con el texto acumulado. Una página escaneada cuenta como
+  // un tramo entero: es lo que ocupa en el documento y lo que va a devolver
+  // el OCR, así que el rango que la incluya no se pasa de tamaño.
+  let tramo = 1, acumulado = 0;
+  const marcarTramo = (b) => { b.pagina = tramo; b.unidad = 'tramo'; return b; };
   // Se recorre párrafo por párrafo: es la unidad que conserva el orden.
   for (const pm of xml.matchAll(/<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g)) {
     const p = pm[1];
@@ -193,12 +219,16 @@ export async function bloquesDeDocx(zip) {
       // el `tipo: 'imagen'` del bloque — todo el resto del módulo filtra por
       // ese campo, así que las 16 páginas del TDR quedaban invisibles.
       const c = clasificarImagenDocx(info);
-      bloques.push({
+      // Una página escaneada abre su propio tramo: su texto llega después, del
+      // OCR, y no se puede contar por adelantado.
+      if (c.necesitaOcr && acumulado > 0) { tramo++; acumulado = 0; }
+      bloques.push(marcarTramo({
         tipo: 'imagen', clase: c.tipo, rid,
         media: rid && rels.has(rid) ? `word/${rels.get(rid)}` : null,
         rotGrados: info.rotGrados, anchoCm: info.anchoCm, altoCm: info.altoCm,
         necesitaOcr: c.necesitaOcr, rotacionCorreccion: c.rotacionCorreccion, motivo: c.motivo,
-      });
+      }));
+      if (c.necesitaOcr) { tramo++; acumulado = 0; }
     }
 
     // El texto del párrafo, sin los dibujos que ya se emitieron.
@@ -209,7 +239,11 @@ export async function bloquesDeDocx(zip) {
     // `<w:t` venga el fin del tag o un espacio de atributos.
     const corridas = [...soloTexto.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(m => desescapar(m[1]));
     const texto = corridas.join('').trim();
-    if (texto) bloques.push({ tipo: 'texto', texto });
+    if (texto) {
+      bloques.push(marcarTramo({ tipo: 'texto', texto }));
+      acumulado += texto.length;
+      if (acumulado >= charsPorTramo) { tramo++; acumulado = 0; }
+    }
   }
   return bloques;
 }

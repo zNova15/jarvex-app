@@ -17,6 +17,15 @@
 //    sustentado por separado para que nadie presente un número que no puede
 //    respaldar con un papel.
 //
+// 3. Y DESDE LA MIG 200, TRES NIVELES EN VEZ DE DOS: declarado, con archivo
+//    adjunto, y VERIFICADO por una persona que miró el documento. El CV de un
+//    profesional trae sus constancias adentro, así que «tiene archivo» dejó de
+//    significar «está probado»: el archivo es el CV entero. Una experiencia
+//    marcada 'sin_sustento' —se buscó el papel y no está— NO cuenta como
+//    sustentada aunque tenga archivo. Las 'pendiente' se cuentan como antes,
+//    para no cambiarle el número a nadie de un día para el otro, pero el
+//    evaluador avisa cuántas son.
+//
 // CONVENCIÓN DE CONTEO: se cuentan DÍAS exactos (inclusive ambos extremos) y
 // se expresan en meses a razón de 30 días = 1 mes. Está centralizado en
 // DIAS_POR_MES: si las bases que postulan usan otro criterio, se cambia acá y
@@ -87,15 +96,24 @@ export function totalizarExperiencia(experiencias, opts = {}) {
   const vivas = (experiencias || []).filter(e => e && !e.deleted_at && filtro(e));
 
   const conPeriodo = vivas.map(e => ({ exp: e, per: periodoDe(e, hoy) })).filter(x => x.per);
-  const sustentadas = conPeriodo.filter(x => !!x.exp.evidencia_id);
+  // 'sin_sustento' = alguien buscó el papel y NO está. Tener el archivo del CV
+  // adjunto no lo convierte en probado (mig 200).
+  const sustentadas = conPeriodo.filter(x => !!x.exp.evidencia_id && x.exp.verificacion !== 'sin_sustento');
+  const verificadas = conPeriodo.filter(x => x.exp.verificacion === 'verificado');
 
   const dias = diasDe(fusionarPeriodos(conPeriodo.map(x => x.per)));
   const diasSust = diasDe(fusionarPeriodos(sustentadas.map(x => x.per)));
+  const diasVerif = diasDe(fusionarPeriodos(verificadas.map(x => x.per)));
   return {
     dias, meses: diasAMeses(dias),
     diasSustentados: diasSust, mesesSustentados: diasAMeses(diasSust),
+    diasVerificados: diasVerif, mesesVerificados: diasAMeses(diasVerif),
     conSustento: sustentadas.length,
     sinSustento: conPeriodo.length - sustentadas.length,
+    conVerificacion: verificadas.length,
+    // Las que están esperando que alguien mire su constancia.
+    porVerificar: conPeriodo.filter(x => (x.exp.verificacion || 'pendiente') === 'pendiente').length,
+    observadas: conPeriodo.filter(x => x.exp.verificacion === 'observado').length,
   };
 }
 
@@ -240,7 +258,7 @@ export function contarParticipaciones(experiencias, opts = {}) {
     if (!per) continue;                            // quedó fuera de la ventana
     if (diasAMeses(per.fin - per.ini + 1) < minMeses) { porCorta++; continue; }
     n++;
-    if (e.evidencia_id) nSust++;
+    if (e.evidencia_id && e.verificacion !== 'sin_sustento') nSust++;
   }
   return { n, nSustentadas: nSust, descartadasPorCorta: porCorta, descartadasPorCargo: porCargo };
 }
@@ -348,6 +366,11 @@ export function evaluarRequisito(candidato, requisito = {}, opts = {}) {
   }
 
   if (t.sinSustento > 0) avisos.push(`${t.sinSustento} experiencia(s) sin constancia adjunta`);
+  // Lo que el CV declara y nadie comprobó todavía. No bloquea —descartar por
+  // trabajo pendiente sería el error caro— pero tiene que verse antes de
+  // escribir el nombre en un expediente.
+  if (t.porVerificar > 0) avisos.push(`${t.porVerificar} experiencia(s) declaradas en el CV que nadie verificó contra su constancia`);
+  if (t.observadas > 0) avisos.push(`${t.observadas} experiencia(s) con observaciones al revisar su constancia`);
   if (!ficha?.cv_evidencia_id) avisos.push('Sin CV adjunto');
 
   return {
@@ -355,6 +378,8 @@ export function evaluarRequisito(candidato, requisito = {}, opts = {}) {
     cumple: bloqueos.length === 0,
     meses: t.meses,
     mesesSustentados: t.mesesSustentados,
+    mesesVerificados: t.mesesVerificados,
+    porVerificar: t.porVerificar,
     mesesFaltantes: faltantes,
     mesesGenerales,
     participaciones: partQueCuentan,

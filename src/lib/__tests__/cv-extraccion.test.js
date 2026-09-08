@@ -332,3 +332,71 @@ CONSTANCIA: laboró como Facilitador Social del 01/05/2025 al 29/07/2025`;
     expect(r.experiencias[0].observaciones).toMatch(/constancia/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 5 — el CV declara; una persona verifica
+// ═══════════════════════════════════════════════════════════════════
+import { sustentoEsperadoDe, sustentoEsperadoCurso, CAMPOS_VERIFICABLES } from '../cv-extraccion.js';
+
+describe('sustentoEsperado — qué papel hay que buscar', () => {
+  it('nombra la entidad, el cargo y el periodo, para poder hojear el CV', () => {
+    const t = sustentoEsperadoDe({ entidad: 'PROREGIÓN', cargo: 'Facilitador Social', fecha_inicio: '2025-05-01', fecha_fin: '2025-07-29' });
+    expect(t).toMatch(/Constancia o certificado de trabajo/);
+    expect(t).toMatch(/PROREGIÓN/);
+    expect(t).toMatch(/Facilitador Social/);
+    expect(t).toMatch(/2025-05-01 a 2025-07-29/);
+  });
+  it('sin fecha de fin dice «a la fecha»', () => {
+    expect(sustentoEsperadoDe({ entidad: 'X', fecha_inicio: '2025-01-01' })).toMatch(/a la fecha/);
+  });
+  it('un curso se prueba con su certificado, con institución y horas', () => {
+    const t = sustentoEsperadoCurso({ nombre: 'SIAF', institucion: 'ICADE', horas: 120 });
+    expect(t).toMatch(/Certificado o diploma/);
+    expect(t).toMatch(/SIAF/);
+    expect(t).toMatch(/ICADE/);
+    expect(t).toMatch(/120 horas/);
+  });
+});
+
+describe('todo lo leído nace SIN verificar', () => {
+  it('la experiencia entra en «pendiente» y con su sustento esperado', () => {
+    const f = aFilaExperiencia({ entidad: 'NISSI CONYSER S.R.L.', cargo: 'Gestor Social', fecha_inicio: '2022-04-08', fecha_fin: '2023-10-24' });
+    expect(f.verificacion).toBe('pendiente');
+    expect(f.sustento_esperado).toMatch(/NISSI CONYSER/);
+  });
+  it('aunque la constancia ya se haya cruzado por OCR sigue pendiente: que un modelo la lea no es haberla visto', () => {
+    const f = aFilaExperiencia({ entidad: 'X', fecha_inicio: '2020-01-01', sustento_pagina: 14, sustento_tipo: 'constancia_trabajo' });
+    expect(f.sustento_pagina).toBe(14);
+    expect(f.verificacion).toBe('pendiente');
+  });
+  it('la ficha nace con verificaciones vacías', () => {
+    expect(aFicha({ ficha: { profesion: 'Ingeniero Civil' } }).verificaciones).toEqual({});
+  });
+  it('cada capacitación lleva su estado y qué la probaría', () => {
+    const f = aFicha({ ficha: { capacitaciones: [{ nombre: 'Power BI', institucion: 'ICADE', horas: 130 }] } });
+    expect(f.capacitaciones[0].verificacion).toBe('pendiente');
+    expect(f.capacitaciones[0].sustento_esperado).toMatch(/Power BI/);
+  });
+  it('el RNP se guarda si el CV trae su constancia', () => {
+    const f = aFicha({ ficha: { rnp_numero: '10405849793', rnp_vigente_desde: '11/07/2024' } });
+    expect(f.rnp_numero).toBe('10405849793');
+    expect(f.rnp_vigente_desde).toBe('2024-07-11');
+  });
+  it('los seis campos verificables dicen con qué documento se prueban', () => {
+    expect(CAMPOS_VERIFICABLES).toHaveLength(6);
+    expect(CAMPOS_VERIFICABLES.every(c => c.campo && c.label && c.con)).toBe(true);
+    expect(CAMPOS_VERIFICABLES.find(c => c.campo === 'colegiatura').con).toMatch(/colegio profesional/i);
+  });
+});
+
+describe('armarFicha — avisa que nada está verificado todavía', () => {
+  it('dice cuántas experiencias entraron como declaradas', () => {
+    const r = armarFicha({
+      ficha: { persona: { nombres: 'A', apellidos: 'B', dni: '12345678' }, ficha: { profesion: 'Ingeniero Civil' },
+        experiencias: [{ entidad: 'X', fecha_inicio: '2020-01-01' }, { entidad: 'Y', fecha_inicio: '2021-01-01' }] },
+      documentos: [], markdown: '', rubros: [],
+    });
+    expect(r.alertas.join(' ')).toMatch(/Las 2 experiencias salen de lo que el CV declara/);
+    expect(r.porVerificar).toHaveLength(6);
+  });
+});

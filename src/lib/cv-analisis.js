@@ -5,14 +5,32 @@
 // con otras dos pasadas:
 //
 //   0   triage       qué páginas son texto y cuáles escaneadas     gratis
-//   1   OCR          solo las escaneadas (las constancias)          USD 0,002 c/u
-//   2   ficha        la IA lee las páginas de currículum            ~USD 0
-//   3   constancias  la IA dice qué certifica cada página escaneada ~USD 0
-//   4   cruce        código: qué constancia sustenta qué periodo    gratis
-//   5   verificar    ¿la cita existe en el documento?               gratis
+//   1   ficha        la IA lee las páginas de currículum            ~USD 0
+//   2   verificar    ¿la cita existe en el documento?               gratis
+//   —   constancias  OPCIONAL, apagado: OCR de las escaneadas       USD 0,002 c/u
 //
-// Medido sobre el CV real (39 páginas, 8-set-2026): 31 páginas a OCR =
-// USD 0,062. Las pasadas van a un gratuito con ZDR (lib/openrouter.js).
+// 🔴 EL OCR ESTÁ APAGADO POR DEFECTO, y es la corrección grande de la entrega
+// 5. Gabriel lo vio abriendo el CV: «hay cosas que no necesitan ser
+// escaneadas por OCR […] todo está en la parte inicial, pienso que sería
+// analizar todo el texto que está digitalizado, no las imágenes».
+//
+// Medido sobre el CV real (39 páginas, 8-set-2026):
+//   páginas 1 a 4   currículum nativo: datos, 11 periodos, 10 cursos, referencias
+//   páginas 7 a 10  RNP, ficha RUC y suspensión de 4ta — TAMBIÉN nativas
+//                   (son impresiones de web a PDF, con su texto intacto)
+//   páginas 5, 6 y 11 a 39   solo la cabecera: son las imágenes escaneadas
+//
+// O sea que las 8 páginas nativas traen TODO lo declarativo, y leerlas cuesta
+// USD 0. Las 31 escaneadas son los papeles que RESPALDAN, y respaldar no es
+// leer: es que una persona MIRE el documento y lo dé por bueno. Pagar USD
+// 0,062 para que un modelo diga que la constancia existe no da esa certeza;
+// mirarla sí, y cuesta USD 0. Por eso el OCR queda como opción explícita.
+//
+// Con `conOcr: true` vuelve la cadena entera: OCR de las escaneadas, una
+// pasada que dice qué certifica cada una y el cruce automático con los
+// periodos declarados. Sirve para un CV de 200 páginas donde hojear a mano no
+// es realista, y sigue sin reemplazar la verificación humana: lo cruzado
+// queda en 'pendiente' igual (mig 200).
 //
 // EL TRIAGE DEL CV TIENE OTRO PISO. El CV trae un encabezado nativo impreso
 // sobre cada constancia escaneada («Nombre · INGENIERO · celular · e-mail»,
@@ -29,7 +47,9 @@ import { fragmentosPorPagina, costoDelAnalisis } from './bases-extraccion.js';
 import { leerDocumento, ocrDeBloques, crearPedidor, PAGINAS_POR_TANDA } from './bases-analisis.js';
 import { armarFicha } from './cv-extraccion.js';
 
-/** Piso de letras nativas para dar una página de CV por texto. */
+/** Piso de letras nativas para dar una página de CV por texto.
+ *  Medido: la cabecera impresa sobre cada constancia son 69 letras; una
+ *  página de currículum de verdad tiene entre 325 y 1.570. */
 export const MIN_ALFA_CV = 250;
 
 /** Páginas escaneadas por pasada de constancias: ~8 constancias son ~25.000
@@ -41,15 +61,24 @@ export async function leerCv(file, { onProgreso = null } = {}) {
   return leerDocumento(file, { onProgreso, minAlfa: MIN_ALFA_CV });
 }
 
-/** El presupuesto antes de gastar, igual que en las bases. */
+/**
+ * El presupuesto antes de gastar.
+ *
+ * `costo` es lo que cuesta la lectura NORMAL, que es cero: solo se leen las
+ * páginas de texto. `costoConConstancias` es lo que costaría además pasar las
+ * escaneadas por OCR, y se muestra al lado de la casilla que lo activa, para
+ * que la decisión se tome con el número a la vista.
+ */
 export function presupuestarCv(bloques) {
   const r = resumenTriage(bloques);
   const nativas = (bloques || []).filter(b => b.tipo === 'texto').length;
   return {
     ...r,
     paginasNativas: nativas,
+    paginasEscaneadas: r.paginasOcr,
     tandas: Math.ceil(r.paginasOcr / PAGINAS_POR_TANDA),
-    costo: costoDelAnalisis({ paginasOcr: r.paginasOcr }),
+    costo: costoDelAnalisis({ paginasOcr: 0 }),
+    costoConConstancias: costoDelAnalisis({ paginasOcr: r.paginasOcr }),
   };
 }
 
@@ -69,20 +98,28 @@ function textoDePaginas(markdown, paginas) {
  * @param rubros   filas de rubros_obra (para PROPONER el rubro de cada obra)
  * @returns { persona, ficha, experiencias, documentos, alertas, costo, modelos, paginasOcr, markdown }
  */
-export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onProgreso = null } = {}) {
+export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onProgreso = null, conOcr = false } = {}) {
   const avisar = (p) => { if (onProgreso) onProgreso(p); };
   const pedir = crearPedidor(apiFetch, apiParse);
   const alertas = [];
   const modelos = new Set();
   let usdPasadas = 0;
 
-  // ── 1. OCR de las constancias ────────────────────────────────────
-  const { ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos });
+  // ── 1. Las constancias, solo si se pidió expresamente ────────────
+  let ocrPorMedia = {}, leidas = 0;
+  if (conOcr) {
+    ({ ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos }));
+  }
   const markdown = bloquesAMarkdown(bloques, ocrPorMedia);
 
   const paginasNativas = bloques.filter(b => b.tipo === 'texto' && b.pagina != null).map(b => b.pagina);
   const paginasOcr = bloques
     .filter(b => b.tipo === 'imagen' && b.necesitaOcr && b.pagina != null && ocrPorMedia[b.media])
+    .map(b => b.pagina);
+  // Las escaneadas que NO se leyeron. Se cuentan igual: el administrador tiene
+  // que saber cuántos papeles hay para mirar, aunque nadie los haya leído.
+  const paginasSinLeer = bloques
+    .filter(b => b.tipo === 'imagen' && b.necesitaOcr && b.pagina != null && !ocrPorMedia[b.media])
     .map(b => b.pagina);
 
   // ── 2. La ficha declarada ────────────────────────────────────────
@@ -135,6 +172,10 @@ export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onP
   avisar({ paso: 'verificar' });
   const armado = armarFicha({ ficha: resFicha, documentos, markdown, rubros });
 
+  if (paginasSinLeer.length) {
+    alertas.push(`El CV trae ${paginasSinLeer.length} página(s) escaneadas que no se leyeron: son las constancias y los diplomas. Ábrelas en el CV para verificar cada dato.`);
+  }
+
   return {
     ...armado,
     alertas: [...alertas, ...armado.alertas],
@@ -142,6 +183,9 @@ export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onP
     costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
     modelos: [...modelos],
     paginasOcr: leidas,
+    paginasSinLeer,
+    paginasNativas,
+    conOcr,
     paginasTotal: bloques.filter(b => b.pagina != null).length,
   };
 }

@@ -215,17 +215,20 @@ describe('analizar — una convocatoria de UNA página nativa crea la postulaci�
   });
 
   it('los requisitos de empresa salen aparte y numerados después del plantel', async () => {
+    // El prompt del proceso devuelve el plantel Y los requisitos de empresa en
+    // la MISMA pasada cuando ambos caen en el mismo texto (desde la entrega 5
+    // eso es una sola llamada, no dos: ver el dedup más abajo).
     const { apiFetch, apiParse } = apiFalso({
       ocr: ocrQueDevuelve(`REQUISITOS DE CALIFICACION\nPersonal clave\n${CITA}.\nEXPERIENCIA DEL POSTOR: monto facturado acumulado equivalente a una vez el valor referencial`),
       localizar: { rangos: {
         personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
         empresa: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
       } },
-      extraer: (body) => body.seccion === 'empresa' ? {
+      extraer: (body) => body.seccion === 'personal' ? {
+        resultado: { requisitos: [{ cargo: 'Residente de Obra', meses_minimos: 36, fuente_pagina: 1, fuente_cita: CITA }] },
+      } : {
         resultado: { requisitos_empresa: [{ tipo: 'experiencia_postor', descripcion: 'Experiencia del postor', multiplo_valor_referencial: 1,
           fuente_pagina: 1, fuente_cita: 'monto facturado acumulado equivalente a una vez el valor referencial' }] },
-      } : {
-        resultado: { requisitos: [{ cargo: 'Residente de Obra', meses_minimos: 36, fuente_pagina: 1, fuente_cita: CITA }] },
       },
     });
     const r = await analizar(bloquesEscaneados(1), { apiFetch, apiParse });
@@ -274,5 +277,77 @@ describe('ocrDeBloques — compartido con el lector de CV', () => {
     expect(llamadas).toHaveLength(2);
     expect(r.leidas).toBe(5);        // 5 de la primera tanda + 0 de la segunda (una sola página, y falló)
     expect(alertas).toHaveLength(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 5 — no pedir dos veces lo mismo, y no pagar dos veces el escaneo
+// ═══════════════════════════════════════════════════════════════════
+import { alertasUnicas } from '../bases-analisis.js';
+
+describe('analizar — el mismo texto no se manda dos veces', () => {
+  // El caso REAL del 8-set: una convocatoria de UNA página. Las familias
+  // `proceso` y `empresa` caen en el mismo rango y comparten prompt, así que
+  // se pedía dos veces lo mismo y las alertas salían duplicadas.
+  it('proceso y empresa comparten rango y prompt: una sola llamada', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      localizar: { rangos: {
+        proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        empresa: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+      } },
+      extraer: { resultado: { proceso: { cui: '2611946' }, requisitos_empresa: [], alertas: ['la fecha viene truncada'] } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: PERUANO_NATIVO }], { apiFetch, apiParse });
+    const extraidas = llamadas.filter(l => l.accion === 'extraer');
+    expect(extraidas).toHaveLength(1);
+    // Y la alerta sale UNA vez, no dos.
+    expect(r.alertas.filter(a => /truncada/.test(a))).toHaveLength(1);
+  });
+
+  it('personal sí es una llamada aparte: usa otro prompt', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      localizar: { rangos: {
+        proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+      } },
+      extraer: { resultado: { requisitos: [] } },
+    });
+    await analizar([{ tipo: 'texto', pagina: 1, texto: `${PERUANO_NATIVO}\nPERSONAL CLAVE` }], { apiFetch, apiParse });
+    expect(llamadas.filter(l => l.accion === 'extraer')).toHaveLength(2);
+  });
+
+  it('con el texto ya leído NO se vuelve a pagar el escaneo', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: { proceso: { cui: '2611946' } } },
+    });
+    const cacheado = { markdown: `<!-- página 1 -->\n${PERUANO_NATIVO}`, paginasOcr: 15 };
+    const r = await analizar(bloquesEscaneados(15), { apiFetch, apiParse, cacheado });
+    expect(llamadas.some(l => l.accion === 'ocr')).toBe(false);
+    expect(r.reusado).toBe(true);
+    expect(r.costo.total).toBe(0);
+    expect(r.cabecera.cui).toBe('2611946');
+  });
+
+  it('devuelve las cinco listas de la mig 200 ya mapeadas', async () => {
+    const cita = 'La garantia de fiel cumplimiento equivale al diez por ciento del monto';
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: {
+        garantias: [{ tipo: 'fiel_cumplimiento', porcentaje: 10, fuente_pagina: 1, fuente_cita: cita }],
+        condiciones: [{ tipo: 'adelanto', titulo: 'Adelanto del 10%' }],
+        penalidades: [], factores_evaluacion: [], documentos_presentacion: [],
+      } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: `VALOR REFERENCIAL\n${cita}` }], { apiFetch, apiParse });
+    expect(r.extras.garantias[0]).toMatchObject({ tipo: 'fiel_cumplimiento', porcentaje: 10, verificada: true });
+    expect(r.extras.condiciones[0].tipo).toBe('adelanto');
+  });
+});
+
+describe('alertasUnicas', () => {
+  it('junta las repetidas sin perder las distintas', () => {
+    expect(alertasUnicas(['La fecha viene truncada', 'la  FECHA viene truncada', 'Otra cosa', '', null]))
+      .toEqual(['La fecha viene truncada', 'Otra cosa']);
   });
 });

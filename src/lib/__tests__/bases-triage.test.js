@@ -286,3 +286,53 @@ describe('BASES INTEGRADAS 009 — el PDF casi todo escaneado', () => {
     expect(bloques.filter(b => b.tipo === 'texto')).toHaveLength(2);
   }, 120000);
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 5 — los TRAMOS del .docx (el bug del 8-set-2026)
+// ═══════════════════════════════════════════════════════════════════
+import { CHARS_POR_TRAMO } from '../bases-triage.js';
+
+/** Un .docx de mentira: N párrafos de `chars` caracteres. */
+function zipFalso(parrafos) {
+  const xml = '<w:document><w:body>'
+    + parrafos.map(t => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`).join('')
+    + '</w:body></w:document>';
+  return {
+    file: (nombre) => ({
+      async: async () => (nombre === 'word/document.xml' ? xml : '<Relationships></Relationships>'),
+    }),
+  };
+}
+
+describe('bloquesDeDocx — un Word no tiene páginas, así que se numeran TRAMOS', () => {
+  it('numera tramos y el markdown SÍ trae anclas (antes no traía ninguna)', async () => {
+    const parrafos = Array.from({ length: 10 }, (_, i) => `${'a'.repeat(1000)} parrafo ${i}`);
+    const bloques = await bloquesDeDocx(zipFalso(parrafos));
+    expect(bloques.every(b => b.pagina != null)).toBe(true);
+    expect(bloques.every(b => b.unidad === 'tramo')).toBe(true);
+    const md = bloquesAMarkdown(bloques);
+    expect(md).toMatch(/<!-- página 1 -->/);
+    expect(md).toMatch(/<!-- página 2 -->/);
+  });
+
+  it('un tramo agrupa unos 3.000 caracteres, como una página de bases', async () => {
+    const parrafos = Array.from({ length: 9 }, () => 'x'.repeat(1000));
+    const bloques = await bloquesDeDocx(zipFalso(parrafos));
+    const ultimo = Math.max(...bloques.map(b => b.pagina));
+    expect(CHARS_POR_TRAMO).toBe(3000);
+    expect(ultimo).toBeGreaterThanOrEqual(3);
+    expect(ultimo).toBeLessThanOrEqual(4);
+  });
+
+  it('el troceo de verdad: un documento largo se puede cortar por rangos', async () => {
+    const parrafos = Array.from({ length: 80 }, (_, i) => `${'z'.repeat(1000)} bloque ${i}`);
+    const bloques = await bloquesDeDocx(zipFalso(parrafos));
+    const r = resumenTriage(bloques);
+    expect(r.unidad).toBe('tramo');
+    expect(r.tramos).toBeGreaterThan(20);
+  });
+
+  it('resumenTriage dice «pagina» cuando el documento sí las tiene', () => {
+    expect(resumenTriage([{ tipo: 'texto', pagina: 1, texto: 'a' }]).unidad).toBe('pagina');
+  });
+});

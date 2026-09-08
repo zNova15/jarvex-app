@@ -153,7 +153,17 @@ CONSORCIO: si el documento dice que puede participar «Empresa Privada o Consorc
 
 REQUISITOS DE LA EMPRESA (lo que descalifica al POSTOR, no a su personal): experiencia del postor en obras similares o en la especialidad (monto acumulado, a veces «X veces el valor referencial», con ventana de años), facturación, capacidad libre de contratación, RNP vigente, patrimonio neto, no tener impedimento, habilitación. Cada uno con "tipo", "descripcion" (la exigencia en una línea), "monto_minimo" (número o null), "multiplo_valor_referencial" (el X de «X veces el valor referencial», o null), "ventana_anios" (o null) y su cita. Un FACTOR DE EVALUACIÓN (da puntaje) NO es un requisito: no lo pongas acá.
 
-NO INVENTES: si un dato no está en el texto que te di, va en null. Si un monto es ilegible por el OCR, dilo en "alertas". Si el texto es una publicación con varias convocatorias, quédate con la que corresponde al proceso principal del texto y avísalo.
+FACTORES DE EVALUACIÓN: los que dan PUNTAJE («Experiencia del postor: 40 puntos», «Mejoras a las condiciones: 20 puntos»). Cada uno con su puntaje máximo y el criterio con que se asigna.
+
+GARANTÍAS: fiel cumplimiento, adelanto directo, adelanto de materiales, seriedad de oferta. Con su porcentaje (10 = 10%) o su monto, y el detalle («carta fianza solidaria, incondicional, irrevocable y de realización automática»). "tipo": fiel_cumplimiento · adelanto_directo · adelanto_materiales · seriedad_oferta · otra.
+
+PENALIDADES: la de MORA (con su fórmula, por ejemplo «0.10 × monto / (F × plazo)») y las OTRAS penalidades que la entidad liste, con su tope («hasta el 10% del monto del contrato»).
+
+DOCUMENTOS DE PRESENTACIÓN: qué hay que meter en cada sobre. Un renglón por documento, con el sobre al que va («Sobre N° 1», «Sobre N° 2») y si es obligatorio. Copia el nombre del documento como lo escriben («Anexo N° 1 - Declaración jurada de datos del postor»).
+
+CONDICIONES A CONSIDERAR: lo que cambia la decisión de presentarse y no es un requisito ni un factor. "tipo": adelanto (¿la entidad da adelantos y de cuánto?) · forma_pago (valorizaciones, plazos de pago) · visita_obra (si hay visita y si es obligatoria, con fecha) · plazo_firma (cuántos días para firmar el contrato o convenio) · subcontratacion (si se permite y hasta qué porcentaje) · seguros (SCTR, CAR, responsabilidad civil) · personal_obligatorio (personal que debe estar permanentemente en obra) · otra. Cada una con "titulo" corto y "detalle".
+
+NO INVENTES: si un dato no está en el texto que te di, va en null y la lista va vacía. No pongas una penalidad «típica» ni una garantía «estándar» del 10% si el texto no la dice. Si un monto es ilegible por el OCR, dilo en "alertas". Si el texto es una publicación con varias convocatorias, quédate con la que corresponde al proceso principal del texto y avísalo.
 
 Responde SOLO con este JSON, sin markdown:
 {
@@ -168,6 +178,11 @@ Responde SOLO con este JSON, sin markdown:
   "cronograma": [ { "etapa": "Presentación de Propuestas", "desde": "2026-09-23", "hasta": "2026-09-24", "fuente_pagina": 1, "fuente_cita": "..." } ],
   "consorcio": { "permitido": true, "max_integrantes": null, "porcentaje_minimo": null, "reglas": "...", "fuente_pagina": 1, "fuente_cita": "..." },
   "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": 1, "ventana_anios": 8, "fuente_pagina": 48, "fuente_cita": "..." } ],
+  "factores_evaluacion": [ { "factor": "Experiencia del postor", "puntaje_maximo": 40, "criterio": "...", "fuente_pagina": 51, "fuente_cita": "..." } ],
+  "garantias": [ { "tipo": "fiel_cumplimiento", "porcentaje": 10, "monto": null, "detalle": "...", "fuente_pagina": 60, "fuente_cita": "..." } ],
+  "penalidades": [ { "tipo": "mora", "formula": "0.10 x monto / (0.40 x plazo en dias)", "tope": "10% del monto", "detalle": "...", "fuente_pagina": 62, "fuente_cita": "..." } ],
+  "documentos_presentacion": [ { "sobre": "Sobre N° 1", "documento": "Anexo N° 1 - Declaracion jurada de datos del postor", "obligatorio": true, "fuente_pagina": 30, "fuente_cita": "..." } ],
+  "condiciones": [ { "tipo": "adelanto", "titulo": "Adelanto directo del 10%", "detalle": "...", "fuente_pagina": 58, "fuente_cita": "..." } ],
   "alertas": ["lo que una persona tiene que revisar"]
 }`;
 
@@ -190,6 +205,8 @@ PERSONA: nombres y apellidos por separado (en Perú van dos apellidos; «Jaime N
 
 FICHA: "profesion" tal como se presenta («Ingeniero de Sistemas», «Ingeniero Civil», «Arquitecto»); "titulo" (título profesional, si lo dice), "universidad", "anio_egreso"; "colegio": "CIP" (ingenieros), "CAP" (arquitectos), "OTRO" o null; "colegiatura_numero" (el número CIP/CAP); "colegiatura_fecha" (fecha de incorporación al colegio, si aparece; si no, null) y "colegiatura_habil_hasta" (vigencia de la habilidad, si aparece). "especialidades": lista corta de áreas que domina. "capacitaciones": diplomados, cursos y especializaciones, cada uno con nombre, institución, horas (número o null), desde y hasta.
 
+RNP: si el CV adjunta la constancia del Registro Nacional de Proveedores (suele venir como una impresión de la web del RNP, con el RUC arriba), toma "rnp_numero" (normalmente el mismo RUC) y "rnp_vigente_desde" (la fecha de «Vigencia: Desde …»). Si no está, van en null.
+
 EXPERIENCIAS: una por periodo. "entidad" es quién contrató (institución o empresa) con su "entidad_ruc" si figura; "obra_nombre" el proyecto u obra si se nombra (si no, null); "cargo" tal como está escrito; "monto" y "moneda" si el CV lo dice (casi nunca). Periodos repetidos con la misma entidad y cargo son experiencias DISTINTAS: no las fusiones, el programa sabe sumarlas.
 
 NO INVENTES: lo que no esté en el texto va en null. No completes un apellido, un DNI ni una fecha «probable».
@@ -197,7 +214,7 @@ NO INVENTES: lo que no esté en el texto va en null. No completes un apellido, u
 Responde SOLO con este JSON, sin markdown:
 {
   "persona": { "nombres": null, "apellidos": null, "dni": null, "ruc": null, "celular": null, "email": null, "direccion": null, "fecha_nacimiento": null },
-  "ficha": { "profesion": null, "titulo": null, "universidad": null, "anio_egreso": null, "colegio": null, "colegiatura_numero": null, "colegiatura_fecha": null, "colegiatura_habil_hasta": null, "resumen": null, "especialidades": [], "capacitaciones": [ { "nombre": "...", "institucion": "...", "horas": 384, "desde": "2024-01-20", "hasta": "2024-03-27" } ] },
+  "ficha": { "profesion": null, "titulo": null, "universidad": null, "anio_egreso": null, "colegio": null, "colegiatura_numero": null, "colegiatura_fecha": null, "colegiatura_habil_hasta": null, "rnp_numero": null, "rnp_vigente_desde": null, "resumen": null, "especialidades": [], "capacitaciones": [ { "nombre": "...", "institucion": "...", "horas": 384, "desde": "2024-01-20", "hasta": "2024-03-27" } ] },
   "experiencias": [ { "entidad": "...", "entidad_ruc": null, "obra_nombre": null, "cargo": "...", "fecha_inicio": "2026-04-09", "fecha_fin": "2026-07-09", "monto": null, "moneda": "PEN", "fuente_pagina": 2, "fuente_cita": "Periodo: 09/04/2026 hasta el 09/07/2026" } ],
   "alertas": []
 }`;
@@ -358,8 +375,23 @@ export default async function handler(req, res) {
       const r = await pasadaDeTexto({
         system: SYSTEM_LOCALIZAR,
         user: `ÍNDICE DE COINCIDENCIAS (página → renglón encontrado):\n${comoTexto}\n\nDevuelve el JSON de rangos.`,
-        deadline, maxTokens: 1200,
+        // 🔴 ESTE TECHO ERA 1.200 Y POR ESO EL PASO 1 FALLABA SIEMPRE.
+        // Medido el 8-set-2026: falló en las dos pruebas reales de Gabriel,
+        // con el mensaje «el modelo no devolvió un JSON de rangos legible».
+        // La causa no era el modelo: los gratuitos con ZDR son modelos de
+        // RAZONAMIENTO y piensan en voz alta ANTES del JSON, y ese
+        // pensamiento cuenta contra el techo. lib/openrouter.js ya lo tenía
+        // medido para Captura Mágica —1.571 tokens de salida donde Haiku
+        // usaba 493— y este paso pedía menos que eso. Nunca llegaba a
+        // escribir la primera llave.
+        deadline, maxTokens: 6000,
       });
+      if (r.cortado) {
+        return res.status(502).json({
+          error: 'El modelo se quedó sin espacio antes de terminar el JSON de rangos',
+          code: 'respuesta_cortada',
+        });
+      }
       if (!r.json) return res.status(502).json({ error: 'El modelo no devolvió un JSON de rangos legible', code: 'respuesta_ilegible' });
       return res.status(200).json({ rangos: r.json, model: r.model, usage: r.usage, costo: r.costo });
     }
@@ -381,7 +413,11 @@ export default async function handler(req, res) {
         user: `TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
         // Los gratuitos razonan en voz alta antes del JSON y eso también
         // cuenta contra el techo (ver presupuestoSalida en lib/openrouter.js).
-        deadline, maxTokens: esProceso ? 6000 : 4000,
+        // El prompt del proceso ahora devuelve además factores, garantías,
+        // penalidades, documentos y condiciones (mig 200): son cinco listas
+        // más, y cada una con su cita literal. Cortar por 2.000 tokens cuesta
+        // la lectura entera; pedirlos de más cuesta USD 0.
+        deadline, maxTokens: esProceso ? 12000 : 5000,
       });
       if (r.cortado) {
         return res.status(422).json({

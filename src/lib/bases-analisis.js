@@ -25,7 +25,7 @@ import {
 import {
   indiceDeSecciones, resumenIndice, textoDeRango,
   verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
-  aCabeceraLicitacion, aCronograma, sugerenciasDe, normalizar,
+  aCabeceraLicitacion, aCronograma, sugerenciasDe, aExtrasProceso, normalizar,
 } from './bases-extraccion.js';
 
 /** Páginas por request de OCR. Debe coincidir con MAX_PAGINAS_TANDA del endpoint. */
@@ -88,7 +88,7 @@ export async function leerDocumento(file, { onProgreso = null, minAlfa = undefin
       onProgreso: onProgreso ? (p) => onProgreso({ paso: 'leyendo', ...p }) : null,
       ...(minAlfa != null ? { minAlfa } : {}),
     });
-    return { bloques, tipo: 'pdf', paginas: pdf.numPages };
+    return { bloques, tipo: 'pdf', paginas: pdf.numPages, unidad: 'pagina' };
   }
   if (esDocx(file)) {
     const JSZip = (await import('jszip')).default;
@@ -108,7 +108,11 @@ export async function leerDocumento(file, { onProgreso = null, minAlfa = undefin
         ? await rotarImagen(`data:${mime};base64,${base64}`, b.rotacionCorreccion)
         : `data:${mime};base64,${base64}`;
     }
-    return { bloques, tipo: 'docx', paginas: null };
+    // `unidad: 'tramo'` — un Word no tiene páginas, así que bases-triage.js
+    // numera TRAMOS de ~3.000 caracteres para que los rangos puedan cortar.
+    // La pantalla lo dice con esa palabra: citar «página 21» de un Word sería
+    // mentira, ese número no existe en el documento.
+    return { bloques, tipo: 'docx', paginas: null, unidad: 'tramo' };
   }
   throw new Error('Solo se pueden analizar bases en PDF o Word (.docx)');
 }
@@ -150,6 +154,23 @@ export function presupuestar(bloques) {
     tandas: Math.ceil(r.paginasOcr / PAGINAS_POR_TANDA),
     costo: costoDelAnalisis({ paginasOcr: r.paginasOcr }),
   };
+}
+
+/** Une alertas repetidas. Sin esto, dos familias que caen en el mismo rango
+ *  devuelven la misma observación dos veces y la lista se vuelve ruido —
+ *  pasó en la prueba real del 8-set con la convocatoria de una página. */
+export function alertasUnicas(alertas) {
+  const vistas = new Set();
+  const out = [];
+  for (const a of (alertas || [])) {
+    const t = String(a || '').trim();
+    if (!t) continue;
+    const k = normalizar(t).slice(0, 120);
+    if (vistas.has(k)) continue;
+    vistas.add(k);
+    out.push(t);
+  }
+  return out;
 }
 
 /**
@@ -217,7 +238,13 @@ export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas 
   return { ocrPorMedia, leidas };
 }
 
-export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null } = {}) {
+/**
+ * @param bloques   lo que devolvió leerDocumento()
+ * @param cacheado  { markdown, paginasOcr } de una lectura anterior del MISMO
+ *                  archivo. Si viene, el OCR NO se vuelve a pagar. Ver
+ *                  lib/cache-lectura.js.
+ */
+export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null } = {}) {
   const avisar = (p) => { if (onProgreso) onProgreso(p); };
   const pedir = crearPedidor(apiFetch, apiParse);
 
@@ -226,10 +253,19 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
   let usdPasadas = 0;
 
   // ── 1. OCR de las páginas que lo necesitan, de a seis ────────────
-  const { ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos });
+  // Salvo que ya se haya pagado por este mismo archivo: entonces se reusa el
+  // texto y esta vuelta cuesta USD 0.
+  let ocrPorMedia = {}, leidas = 0, reusado = false;
+  if (cacheado?.markdown) {
+    reusado = true;
+    leidas = 0;                       // no se leyó nada AHORA: no se cobra
+    avisar({ paso: 'cache', detalle: `${cacheado.paginasOcr || 0} páginas ya leídas antes` });
+  } else {
+    ({ ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos }));
+  }
 
   // ── 2. El documento híbrido y su índice, sin IA ──────────────────
-  const markdown = bloquesAMarkdown(bloques, ocrPorMedia);
+  const markdown = reusado ? cacheado.markdown : bloquesAMarkdown(bloques, ocrPorMedia);
   const indice = indiceDeSecciones(markdown);
   const resumen = resumenIndice(indice);
   avisar({ paso: 'indice', detalle: resumen });
@@ -238,7 +274,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
   if (!hayAlgo) {
     alertas.push('No se reconoció ninguna sección típica de unas bases. Puede que el documento no sea unas bases, o que el OCR haya salido ilegible.');
     return { markdown, indice, rangos: null, resultado: { requisitos: [], alertas }, alertas,
-      filas: [], filasEmpresa: [], cabecera: null, cronograma: [], sugerencias: { tipo_trabajo: null },
+      filas: [], filasEmpresa: [], cabecera: null, cronograma: [], extras: aExtrasProceso({}),
+      sugerencias: { tipo_trabajo: null }, reusado,
       paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos] };
   }
 
@@ -259,7 +296,13 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
   // ── 4. Pase 2: extraer, solo sobre los rangos elegidos ───────────
   const requisitos = [];
   const requisitosEmpresa = [];
-  const extras = { factores_evaluacion: [], cronograma: [], proceso: null, consorcio: null };
+  const extras = {
+    cronograma: [], proceso: null, consorcio: null,
+    // Lo de la mig 200: se acumula igual que el cronograma, en el orden en que
+    // aparece, y se deduplica al final por su cita.
+    factores_evaluacion: [], garantias: [], penalidades: [],
+    documentos_presentacion: [], condiciones: [],
+  };
   // UN MISMO REQUISITO NO SE PROPONE DOS VECES. Los rangos de dos familias se
   // pisan seguido —«...en obras similares» dentro del párrafo del Residente
   // cae en el índice de `personal` Y en el de `empresa`— y sin esto la persona
@@ -278,6 +321,13 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
       if (v != null && v !== '' && (extras.proceso[k] == null || extras.proceso[k] === '')) extras.proceso[k] = v;
     }
   };
+  // EL MISMO TEXTO NO SE MANDA DOS VECES CON EL MISMO PROMPT. En un documento
+  // corto —una convocatoria de una página— las familias `proceso` y `empresa`
+  // caen en el mismo rango y comparten prompt, así que se pedía dos veces lo
+  // mismo: el doble de espera y las alertas repetidas que Gabriel vio en la
+  // prueba del 8-set. La llave es el prompt que se va a usar más el texto.
+  const pedidos = new Map();
+  const promptDe = (familia) => (familia === 'personal' ? 'personal' : 'proceso');
   for (const familia of FAMILIAS_EXTRAIBLES) {
     const trozos = familia === 'proceso'
       // El calendario vive con los datos del proceso: sus rangos se suman.
@@ -286,7 +336,13 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
     for (const { desde, hasta } of trozos) {
       const texto = textoDeRango(markdown, desde, hasta);
       if (!texto.trim()) continue;
-      avisar({ paso: 'extraer', detalle: `${familia} · páginas ${desde}–${hasta}` });
+      // La llave es el TEXTO, no el rango: dos familias pueden pedir rangos
+      // distintos —{1,1} y {1,2}— que en un documento de una página resuelven
+      // al mismo contenido. Con el rango como llave el dedup no agarraba nada.
+      const llave = `${promptDe(familia)}|${texto.length}|${texto.slice(0, 300)}|${texto.slice(-300)}`;
+      if (pedidos.has(llave)) continue;
+      pedidos.set(llave, familia);
+      avisar({ paso: 'extraer', detalle: `${familia} · ${desde === hasta ? desde : `${desde}–${hasta}`}` });
       try {
         const data = await pedir({ accion: 'extraer', texto, seccion: familia });
         const r = data.resultado || {};
@@ -307,7 +363,9 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
           requisitosEmpresa.push(req);
         }
         for (const a of (Array.isArray(r.alertas) ? r.alertas : [])) alertas.push(a);
-        if (Array.isArray(r.factores_evaluacion)) extras.factores_evaluacion.push(...r.factores_evaluacion);
+        for (const clave of ['factores_evaluacion', 'garantias', 'penalidades', 'documentos_presentacion', 'condiciones']) {
+          if (Array.isArray(r[clave])) extras[clave].push(...r[clave]);
+        }
         if (Array.isArray(r.cronograma)) extras.cronograma.push(...r.cronograma);
         fundirProceso(r.proceso);
         if (r.consorcio && typeof r.consorcio === 'object' && (extras.consorcio == null || (extras.consorcio.permitido == null && r.consorcio.permitido != null))) {
@@ -321,7 +379,10 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
 
   // ── 5. Verificar cada cita contra el documento ───────────────────
   avisar({ paso: 'verificar' });
-  const verificado = verificarResultado({ ...extras, requisitos, requisitos_empresa: requisitosEmpresa, alertas }, markdown);
+  const verificado = verificarResultado(
+    { ...extras, requisitos, requisitos_empresa: requisitosEmpresa, alertas: alertasUnicas(alertas) },
+    markdown,
+  );
   const filas = aFilasRequisitos(verificado);
 
   return {
@@ -334,11 +395,15 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null 
     filasEmpresa: aFilasEmpresa(verificado, { desde: filas.length }),
     cabecera: aCabeceraLicitacion(verificado),
     cronograma: aCronograma(verificado),
+    // Factores, garantías, penalidades, documentos y condiciones (mig 200).
+    extras: aExtrasProceso(verificado),
     sugerencias: sugerenciasDe(verificado),
-    alertas: verificado.alertas,
+    alertas: alertasUnicas(verificado.alertas),
     costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
     modelos: [...modelos],
     paginasOcr: leidas,
+    // Si el OCR salió de la caché, esta lectura no cobró el escaneo.
+    reusado,
   };
 }
 
@@ -388,5 +453,5 @@ export function rangosDeFamilia(rangos, resumen, familia) {
 
 export default {
   leerDocumento, presupuestar, analizar, rangosDeFamilia, fusionarRangos,
-  rasterizarPagina, rotarImagen, ocrDeBloques, crearPedidor,
+  rasterizarPagina, rotarImagen, ocrDeBloques, crearPedidor, alertasUnicas,
 };

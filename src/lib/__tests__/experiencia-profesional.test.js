@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   periodoDe, fusionarPeriodos, totalizarExperiencia, experienciaPorRubro,
   estadoColegiatura, profesionCoincide, evaluarRequisito, buscarPlantel,
-  formatearMeses, diasAMeses,
+  formatearMeses, diasAMeses, contarParticipaciones,
 } from '../experiencia-profesional.js';
 
 const HOY = '2026-09-01';
@@ -211,5 +211,55 @@ describe('formatearMeses', () => {
     expect(formatearMeses(1)).toBe('1 mes');
     expect(formatearMeses(12)).toBe('1 año');
     expect(formatearMeses(38)).toBe('3 años 2 meses');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 5 — declarado, con archivo, y VERIFICADO (mig 200)
+// ═══════════════════════════════════════════════════════════════════
+describe('los tres niveles de sustento', () => {
+  const hoy = '2026-09-08';
+  const base = { fecha_inicio: '2025-01-01', fecha_fin: '2025-06-30' };
+
+  it('cuenta aparte lo verificado por una persona', () => {
+    const t = totalizarExperiencia([
+      { ...base, evidencia_id: 'ev1', verificacion: 'verificado' },
+      { fecha_inicio: '2024-01-01', fecha_fin: '2024-06-30', evidencia_id: 'ev1', verificacion: 'pendiente' },
+    ], { hoy });
+    expect(t.conVerificacion).toBe(1);
+    expect(t.porVerificar).toBe(1);
+    expect(t.mesesVerificados).toBeGreaterThan(0);
+    expect(t.mesesVerificados).toBeLessThan(t.mesesSustentados);
+  });
+
+  it('«sin sustento» deja de contar como sustentada aunque el archivo esté adjunto', () => {
+    const t = totalizarExperiencia([{ ...base, evidencia_id: 'ev1', verificacion: 'sin_sustento' }], { hoy });
+    expect(t.mesesSustentados).toBe(0);
+    expect(t.conSustento).toBe(0);
+    expect(t.meses).toBeGreaterThan(0);        // declarada sigue siendo
+  });
+
+  it('una fila vieja sin el campo se cuenta como antes', () => {
+    const t = totalizarExperiencia([{ ...base, evidencia_id: 'ev1' }], { hoy });
+    expect(t.conSustento).toBe(1);
+    expect(t.porVerificar).toBe(1);
+  });
+
+  it('una participación «sin sustento» no cuenta como sustentada', () => {
+    const p = contarParticipaciones([{ ...base, evidencia_id: 'ev1', verificacion: 'sin_sustento' }], { hoy });
+    expect(p.n).toBe(1);
+    expect(p.nSustentadas).toBe(0);
+  });
+
+  it('el evaluador AVISA lo que nadie verificó, pero no bloquea por eso', () => {
+    const cand = {
+      persona: { id: 'p1' },
+      ficha: { profesion: 'Ingeniero Civil', colegiatura_numero: '1', colegiatura_habil_hasta: '2027-01-01', cv_evidencia_id: 'cv' },
+      experiencias: [{ fecha_inicio: '2020-01-01', fecha_fin: '2025-12-31', evidencia_id: 'ev1' }],
+    };
+    const r = evaluarRequisito(cand, { profesion: 'Ingeniero Civil', mesesMinimos: 12 }, { hoy });
+    expect(r.cumple).toBe(true);
+    expect(r.avisos.join(' ')).toMatch(/nadie verificó/);
+    expect(r.porVerificar).toBe(1);
   });
 });

@@ -205,17 +205,36 @@ export function resumenIndice(indice) {
 }
 
 /**
- * El texto de un rango de páginas, para el Pase 2.
- * `desde`/`hasta` son inclusivos. Sin páginas (un .docx) devuelve todo.
+ * Tope duro de lo que sale de `textoDeRango`, en caracteres.
+ *
+ * 🔴 ESTO ES UNA RED, NO EL MECANISMO. El troceo de verdad son las páginas (o
+ * los tramos, en un Word: ver CHARS_POR_TRAMO). Pero el 8-set-2026 un
+ * documento sin anclas devolvió 236.669 caracteres contra un tope de 120.000
+ * del servidor, y las tres familias fallaron con «El rango es demasiado
+ * grande». Un rango que se pasa se RECORTA y se avisa: media lectura sirve,
+ * un error no sirve para nada. Queda por debajo del tope del endpoint a
+ * propósito, para que el margen absorba el prompt.
  */
-export function textoDeRango(markdown, desde, hasta) {
+export const MAX_CHARS_RANGO = 90_000;
+
+/**
+ * El texto de un rango de páginas (o de tramos), para el Pase 2.
+ * `desde`/`hasta` son inclusivos. Nunca devuelve más de MAX_CHARS_RANGO.
+ */
+export function textoDeRango(markdown, desde, hasta, { maxChars = MAX_CHARS_RANGO } = {}) {
   const fragmentos = fragmentosPorPagina(markdown);
   const sinPagina = fragmentos.every(f => f.pagina == null);
-  if (sinPagina) return fragmentos.map(f => f.texto).join('\n\n');
-  return fragmentos
-    .filter(f => f.pagina != null && f.pagina >= desde && f.pagina <= hasta)
-    .map(f => `<!-- página ${f.pagina} -->\n${f.texto}`)
-    .join('\n\n');
+  const texto = sinPagina
+    ? fragmentos.map(f => f.texto).join('\n\n')
+    : fragmentos
+      .filter(f => f.pagina != null && f.pagina >= desde && f.pagina <= hasta)
+      .map(f => `<!-- página ${f.pagina} -->\n${f.texto}`)
+      .join('\n\n');
+  if (texto.length <= maxChars) return texto;
+  // Se corta en un salto de línea para no partir una frase por la mitad: una
+  // cita cortada no se puede verificar y el dato se perdería igual.
+  const corte = texto.lastIndexOf('\n', maxChars);
+  return texto.slice(0, corte > maxChars * 0.6 ? corte : maxChars);
 }
 
 // ── PASE 3 — la verificación, sin IA ───────────────────────────────
@@ -282,10 +301,21 @@ export function verificarResultado(resultado, markdown) {
     .map(req => marcar(req, req.descripcion || req.tipo || 'requisito de empresa'));
   const cronograma = (Array.isArray(r.cronograma) ? r.cronograma : [])
     .map(et => marcar(et, et.etapa || 'etapa del calendario'));
+  // Lo de la mig 200 pasa por la misma aduana: una garantía del 10% que las
+  // bases no piden cambia la oferta económica entera.
+  const listas = {};
+  for (const [clave, rotulo] of [
+    ['factores_evaluacion', 'factor de evaluación'], ['garantias', 'garantía'],
+    ['penalidades', 'penalidad'], ['documentos_presentacion', 'documento a presentar'],
+    ['condiciones', 'condición'],
+  ]) {
+    listas[clave] = (Array.isArray(r[clave]) ? r[clave] : [])
+      .map(x => marcar(x, x.factor || x.titulo || x.documento || x.detalle || rotulo));
+  }
   const consorcio = r.consorcio && typeof r.consorcio === 'object' && r.consorcio.fuente_cita
     ? marcar(r.consorcio, 'reglas de consorcio')
     : (r.consorcio || null);
-  return { ...r, requisitos, requisitos_empresa, cronograma, consorcio, alertas };
+  return { ...r, ...listas, requisitos, requisitos_empresa, cronograma, consorcio, alertas };
 }
 
 // ── Del resultado a las filas que la app ya sabe evaluar ───────────
@@ -487,6 +517,120 @@ export function sugerenciasDe(resultado = {}) {
   };
 }
 
+// ── Lo demás que dicen unas bases (mig 200) ────────────────────────
+//
+// Gabriel, 8-set-2026: «hay mucha data por extraer de allí y organizarla».
+// Estas cinco listas son esa data. Todas pasan por la MISMA aduana de citas
+// que los requisitos: un adelanto inventado o una penalidad que no existe
+// cuestan tanto como un puesto inventado.
+
+const textoCorto = (v, max = 400) => (v ? String(v).trim().slice(0, max) : null);
+const fuenteDe = (x = {}) => ({
+  fuente_pagina: x.fuente_pagina != null ? Math.round(num(x.fuente_pagina)) || null : null,
+  fuente_cita: textoCorto(x.fuente_cita, 1200),
+  verificada: x.verificada !== false,
+});
+const montoDe = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+
+/** Los factores que dan PUNTAJE. No descalifican: por eso van aparte. */
+export function aFactoresEvaluacion(resultado = {}) {
+  return (Array.isArray(resultado.factores_evaluacion) ? resultado.factores_evaluacion : [])
+    .map(f => ({
+      factor: textoCorto(f?.factor, 200),
+      puntaje_maximo: montoDe(f?.puntaje_maximo),
+      criterio: textoCorto(f?.criterio, 600),
+      ...fuenteDe(f),
+    }))
+    .filter(f => f.factor);
+}
+
+export const TIPO_GARANTIA_LBL = {
+  fiel_cumplimiento: 'Fiel cumplimiento',
+  adelanto_directo: 'Adelanto directo',
+  adelanto_materiales: 'Adelanto de materiales',
+  seriedad_oferta: 'Seriedad de oferta',
+  otra: 'Otra garantía',
+};
+
+export function aGarantias(resultado = {}) {
+  return (Array.isArray(resultado.garantias) ? resultado.garantias : [])
+    .map(g => ({
+      tipo: TIPO_GARANTIA_LBL[g?.tipo] ? g.tipo : 'otra',
+      porcentaje: montoDe(g?.porcentaje),
+      monto: montoDe(g?.monto),
+      detalle: textoCorto(g?.detalle, 600),
+      ...fuenteDe(g),
+    }))
+    .filter(g => g.detalle || g.porcentaje || g.monto);
+}
+
+export function aPenalidades(resultado = {}) {
+  return (Array.isArray(resultado.penalidades) ? resultado.penalidades : [])
+    .map(p => ({
+      tipo: p?.tipo === 'mora' ? 'mora' : 'otra',
+      formula: textoCorto(p?.formula, 300),
+      tope: textoCorto(p?.tope, 200),
+      detalle: textoCorto(p?.detalle, 600),
+      ...fuenteDe(p),
+    }))
+    .filter(p => p.detalle || p.formula);
+}
+
+/** El índice del expediente: qué va en cada sobre y qué es obligatorio. */
+export function aDocumentosPresentacion(resultado = {}) {
+  const vistos = new Set();
+  const out = [];
+  for (const d of (Array.isArray(resultado.documentos_presentacion) ? resultado.documentos_presentacion : [])) {
+    const documento = textoCorto(d?.documento, 300);
+    if (!documento) continue;
+    const k = normalizar(documento).slice(0, 80);
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+    out.push({
+      sobre: textoCorto(d?.sobre, 60),
+      documento,
+      obligatorio: d?.obligatorio !== false,
+      ...fuenteDe(d),
+    });
+  }
+  return out;
+}
+
+export const TIPO_CONDICION_LBL = {
+  adelanto: 'Adelantos',
+  forma_pago: 'Forma de pago',
+  visita_obra: 'Visita de obra',
+  plazo_firma: 'Plazo para firmar',
+  subcontratacion: 'Subcontratación',
+  seguros: 'Seguros',
+  personal_obligatorio: 'Personal obligatorio en obra',
+  otra: 'Otra condición',
+};
+
+/** «Las cosas a considerar»: lo que cambia la decisión y hoy alguien tiene
+ *  que leer a mano en 96 páginas. */
+export function aCondiciones(resultado = {}) {
+  return (Array.isArray(resultado.condiciones) ? resultado.condiciones : [])
+    .map(c => ({
+      tipo: TIPO_CONDICION_LBL[c?.tipo] ? c.tipo : 'otra',
+      titulo: textoCorto(c?.titulo, 200),
+      detalle: textoCorto(c?.detalle, 800),
+      ...fuenteDe(c),
+    }))
+    .filter(c => c.titulo || c.detalle);
+}
+
+/** Todo lo de la mig 200 junto, para guardarlo en la postulación. */
+export function aExtrasProceso(resultado = {}) {
+  return {
+    factores_evaluacion: aFactoresEvaluacion(resultado),
+    garantias: aGarantias(resultado),
+    penalidades: aPenalidades(resultado),
+    documentos_presentacion: aDocumentosPresentacion(resultado),
+    condiciones: aCondiciones(resultado),
+  };
+}
+
 // ── El costo, medido y no estimado ─────────────────────────────────
 
 /** USD por página de OCR — el snapshot fijo `mistral-ocr-2512` (lib/mistral-ocr.js). */
@@ -513,5 +657,7 @@ export default {
   textoDeRango, verificarCita, verificarResultado,
   aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
-  TIPO_REQ_EMPRESA_LBL, costoDelAnalisis, USD_POR_PAGINA_OCR,
+  aFactoresEvaluacion, aGarantias, aPenalidades, aDocumentosPresentacion,
+  aCondiciones, aExtrasProceso, TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL,
+  TIPO_REQ_EMPRESA_LBL, MAX_CHARS_RANGO, costoDelAnalisis, USD_POR_PAGINA_OCR,
 };

@@ -34,6 +34,25 @@
 //    confirma; sin palabra clave queda vacío. Mismo criterio que rubro_id en
 //    los requisitos de las bases: eso no lo decide un modelo.
 //
+// 5. EL CV ES UNA DECLARACIÓN, NO UNA PRUEBA (entrega 5, 8-set-2026).
+//    Gabriel: «me gustaría que veas cómo podemos corroborar cada dato de lo
+//    que él menciona […] y nosotros ya manualmente vamos corroborando que lo
+//    que ha colocado está verificado».
+//
+//    Que el CV diga «trabajé 3 meses en PROREGIÓN» no prueba nada: la prueba
+//    es la constancia, y a esa la mira una persona. Por eso cada dato leído
+//    nace en `verificacion: 'pendiente'` y lleva `sustento_esperado`, que es
+//    la frase que le dice al administrador QUÉ documento buscar entre las
+//    páginas escaneadas del propio CV. Lo verificado es lo único presentable.
+//
+// 6. LAS CONSTANCIAS NO SE ESCANEAN CON IA POR DEFECTO. Medido sobre el CV
+//    real: las 8 páginas nativas traen TODO lo declarativo, incluidas la
+//    constancia del RNP y la ficha RUC de SUNAT (son impresiones de web a
+//    PDF, con su texto intacto). Las 31 escaneadas son los papeles que
+//    respaldan, y para respaldar hay que MIRARLOS, no leerlos con un modelo.
+//    Leerlas cuesta USD 0,062 y sigue sin dar certeza; mirarlas cuesta USD 0
+//    y da certeza. El OCR queda como opción explícita, apagada.
+//
 // Puro: sin React, sin Dexie, sin red. Todo se prueba en node.
 // ═══════════════════════════════════════════════════════════════════
 
@@ -166,14 +185,17 @@ export function aCapacitaciones(lista) {
     if (vistas.has(k)) continue;
     vistas.add(k);
     const horas = Number(c?.horas ?? c?.curso_horas);
-    out.push({
+    const fila = {
       nombre,
       institucion: limpio(c?.institucion || c?.curso_institucion, 200),
       horas: Number.isFinite(horas) && horas > 0 ? Math.round(horas) : null,
       desde: normalizarFechaCv(c?.desde || c?.fecha_inicio)?.iso || null,
       hasta: normalizarFechaCv(c?.hasta || c?.fecha_fin)?.iso || null,
       ...(c?.sustento_pagina != null ? { sustento_pagina: c.sustento_pagina } : {}),
-    });
+      verificacion: c?.verificacion || 'pendiente',
+    };
+    fila.sustento_esperado = sustentoEsperadoCurso(fila);
+    out.push(fila);
   }
   return out;
 }
@@ -199,8 +221,13 @@ export function aFicha(resultado = {}) {
     especialidades: (Array.isArray(f.especialidades) ? f.especialidades : [])
       .map(e => limpio(e, 120)).filter(Boolean).slice(0, 12),
     capacitaciones: aCapacitaciones(f.capacitaciones),
+    rnp_numero: limpio(f.rnp_numero, 40),
+    rnp_vigente_desde: normalizarFechaCv(f.rnp_vigente_desde)?.iso || null,
     resumen: limpio(f.resumen, 1200),
     fuente: 'cv_ia',
+    // Todo lo leído nace sin verificar. El administrador marca campo por
+    // campo mirando el diploma, la ficha RUC o la constancia del RNP.
+    verificaciones: {},
   };
 }
 
@@ -240,6 +267,44 @@ export function proponerRubro(texto, rubros) {
     }
   }
   return mejor;
+}
+
+// ── Qué documento probaría cada cosa ───────────────────────────────
+
+/**
+ * La frase que el administrador va a buscar entre las páginas escaneadas.
+ *
+ * Se arma con lo que el propio CV declara, no con una plantilla genérica:
+ * «Constancia de trabajo de PROREGIÓN por el periodo 01/05/2025 – 29/07/2025»
+ * se encuentra hojeando; «adjuntar sustento» no le sirve a nadie.
+ */
+export function sustentoEsperadoDe(exp = {}) {
+  const quien = limpio(exp.entidad, 120);
+  const periodo = [exp.fecha_inicio, exp.fecha_fin || 'a la fecha'].filter(Boolean).join(' a ');
+  const partes = ['Constancia o certificado de trabajo'];
+  if (quien) partes.push(`de ${quien}`);
+  if (exp.cargo) partes.push(`como ${String(exp.cargo).trim().slice(0, 80)}`);
+  if (periodo) partes.push(`por el periodo ${periodo}`);
+  return partes.join(' ').slice(0, 400);
+}
+
+/** Los campos de la ficha que se verifican, y con qué documento cada uno. */
+export const CAMPOS_VERIFICABLES = [
+  { campo: 'titulo', label: 'Título profesional', con: 'Diploma de bachiller o de título de la universidad' },
+  { campo: 'colegiatura', label: 'Colegiatura', con: 'Diploma de incorporación al colegio profesional (CIP/CAP), donde figura el número y la fecha' },
+  { campo: 'habilidad', label: 'Habilidad vigente', con: 'Certificado de habilidad del colegio, vigente a la fecha de presentación' },
+  { campo: 'dni', label: 'DNI', con: 'Copia del documento de identidad' },
+  { campo: 'ruc', label: 'RUC', con: 'Ficha RUC de SUNAT (constancia de información registrada)' },
+  { campo: 'rnp', label: 'RNP', con: 'Constancia de inscripción en el Registro Nacional de Proveedores' },
+];
+
+/** Qué documento probaría una capacitación declarada. */
+export function sustentoEsperadoCurso(c = {}) {
+  const partes = ['Certificado o diploma'];
+  if (c.nombre) partes.push(`de «${String(c.nombre).slice(0, 90)}»`);
+  if (c.institucion) partes.push(`emitido por ${String(c.institucion).slice(0, 70)}`);
+  if (c.horas) partes.push(`(${c.horas} horas)`);
+  return partes.join(' ').slice(0, 300);
 }
 
 // ── Experiencias y constancias ─────────────────────────────────────
@@ -430,6 +495,12 @@ export function aFilaExperiencia(e = {}, { rubros = [] } = {}) {
     fuente_pagina: e.fuente_pagina != null ? Number(e.fuente_pagina) || null : null,
     fuente_cita: limpio(e.fuente_cita, 1200),
     sustento_pagina: e.sustento_pagina != null ? Number(e.sustento_pagina) || null : null,
+    sustento_tipo: e.sustento_tipo || null,
+    // Nace declarada. Solo una persona que ve el papel la pasa a verificada
+    // (mig 200). Si la constancia ya se cruzó por OCR, igual queda pendiente:
+    // que un modelo diga que el papel existe no es lo mismo que haberlo visto.
+    verificacion: 'pendiente',
+    sustento_esperado: sustentoEsperadoDe(e),
     // Solo pantalla (no viajan a la tabla): la pantalla los quita al guardar.
     _rubroPropuesto: rubro ? rubro.nombre : null,
     _alertas: alertas,
@@ -486,13 +557,22 @@ export function armarFicha({ ficha: resFicha, documentos = [], markdown = '', ru
   const alertas = [...v.alertas];
   if (!persona.dni) alertas.push('No se encontró el DNI: sin DNI la persona no se puede crear en el padrón.');
   if (!ficha.profesion) alertas.push('No se encontró la profesión.');
-  if (cruce.sinSustento) alertas.push(`${cruce.sinSustento} experiencia(s) declaradas sin constancia en el archivo: se guardan, pero no cuentan como sustentadas.`);
   if (cruce.nuevasDesdeConstancias) alertas.push(`${cruce.nuevasDesdeConstancias} constancia(s) certifican periodos que el currículum no declaraba: se agregan como experiencias.`);
-  return { persona, ficha, experiencias: filas, documentos: v.documentos, alertas, cruce };
+  // Todo lo leído es DECLARADO. Decirlo una vez, con el número, evita que
+  // alguien presente en un proceso lo que nadie comprobó.
+  if (filas.length) {
+    alertas.push(`Las ${filas.length} experiencias salen de lo que el CV declara. Ninguna cuenta como sustentada hasta que abras el CV y marques cuál está respaldada por su constancia.`);
+  }
+  return {
+    persona, ficha, experiencias: filas, documentos: v.documentos, alertas, cruce,
+    // Los campos de la ficha que hay que corroborar, con qué documento cada uno.
+    porVerificar: CAMPOS_VERIFICABLES.map(c => ({ ...c, estado: 'pendiente' })),
+  };
 }
 
 export default {
   normalizarFechaCv, separarNombre, aPersona, aFicha, aCapacitaciones, colegioDeProfesion,
   PALABRAS_RUBRO, proponerRubro, TIPOS_SUSTENTO_TRABAJO, mismaEntidad, emparejarConstancias,
-  completarFichaConDocumentos, aFilaExperiencia, aFilasExperiencia, filaLimpia, verificarCv, armarFicha,
+  completarFichaConDocumentos, aFilaExperiencia, aFilasExperiencia, filaLimpia, verificarCv,
+  armarFicha, sustentoEsperadoDe, sustentoEsperadoCurso, CAMPOS_VERIFICABLES,
 };
