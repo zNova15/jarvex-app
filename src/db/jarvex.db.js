@@ -109,6 +109,18 @@ export const db = new Dexie('JarvexDB');
 // constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
 // salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
 // columnas, re-declarativo en índices.
+// Versión 62: SUNAT CONTRA JARVEX Y EL ESCÁNER (mig 196, tanda 14 entregas
+// 5 y 6). `sunat_cortes` guarda cómo quedó un mes cotejado —una fila por
+// empresa+periodo+libro— y `cotejo_decisiones` lo que una persona ya contestó
+// («ya la miré» / «no aplica»). Las FILAS del cotejo no se guardan: se
+// recalculan del CSV en un instante, y lo que no se puede recalcular es el
+// juicio de alguien. Se indexa `[ambito+llave]` porque toda lectura pregunta
+// exactamente eso. Aditivo.
+db.version(62).stores({
+  sunat_cortes:      'id, company_id, periodo, libro, [company_id+periodo], deleted_at, sync_status',
+  cotejo_decisiones: 'id, ambito, llave, [ambito+llave], company_id, periodo, deleted_at, sync_status',
+});
+
 // Versión 61: LA BANDEJA QUE APRENDE (mig 195, tanda 14 entrega 4). Qué insumo
 // del CATÁLOGO CANÓNICO es cada descripción de factura — o que no es un insumo.
 // NO es la misma pregunta que `insumo_mapeo` (mig 183), que apunta a los 434

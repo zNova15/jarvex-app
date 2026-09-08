@@ -1,0 +1,388 @@
+// ═══════════════════════════════════════════════════════════════════
+// JARVEX — LEER LOS CSV QUE BAJA GABRIEL DEL PORTAL DE SUNAT (tanda 14,
+// entrega 5). Lib PURA: sin React, sin Dexie, sin File. Recibe texto, devuelve
+// filas normalizadas. Testeada en __tests__/sunat-csv.test.js con los archivos
+// REALES de JARVEX de julio-2026.
+//
+// ── LOS DOS ARCHIVOS ──────────────────────────────────────────────
+// VENTAS  — export del RVIE. Nombre `LE20615646505202607...EXP2.csv`, 40
+//           columnas. Una fila por comprobante emitido.
+// COMPRAS — propuesta del RCE (SIRE). Nombre `20615646505-<fecha>-propuesta.csv`,
+//           80 columnas (las últimas 39 son CLU1..CLU39, casi siempre vacías).
+//           Es lo que SUNAT YA SABE que le facturaron a la empresa.
+//
+// Los dos traen el RUC del titular en la primera columna y el periodo en la
+// tercera, así que el archivo dice solo de quién es y de qué mes: la pantalla
+// no tiene que preguntarlo, lo verifica.
+//
+// ── 🔴 POR QUÉ ESTO NO ES `split(',')` ────────────────────────────
+// LOS CSV DE SUNAT NO SON CSV VÁLIDOS. La razón social del titular va SIN
+// comillas y a veces lleva coma, así que la fila trae un campo de más y TODAS
+// las columnas de la derecha se corren una posición: el importe se lee como
+// moneda, la fecha como serie, y el cruce sale entero pero mal, sin un solo
+// error en consola. Es la peor clase de bug: silencioso y con plata adentro.
+//
+// Y no se puede «reparar contando columnas», porque SUNAT copia esa razón
+// social TAL COMO LA ESCRIBIÓ CADA EMISOR. En la MISMA descarga de julio
+// conviven:
+//     JARVEX INGENIERIA, TECNOLOGIA Y PROYECTOS E.I.R.L.   → 81 campos
+//     jarvex ingenieria tecnologia y proyectos e.i.r.l.    → 80 (minúsculas)
+//     JARVEX INGENIERIA TECNOLOGIA Y PROYECTOS E.I.R.L.-   → 80 (con guion)
+//     JARVEX INGENIERIA  TECNOLOGIA Y PROYECTOS E.I.R.L.   → 80 (doble espacio)
+// Cinco de las 35 filas tenían el largo «bueno» y 30 el «malo». Un parser que
+// asuma un largo fijo se rompe con el archivo del mes que viene.
+//
+// ── CÓMO SE REPARA: POR FORMA, NO POR LARGO ───────────────────────
+// Se ancla en dos campos que tienen forma inconfundible y encierran a los dos
+// campos de texto libre:
+//   1. El PERIODO es el primer campo de exactamente 6 dígitos después del RUC.
+//      Todo lo que quedó en el medio es la razón social del titular, por más
+//      comas que tenga → se vuelve a pegar con comas y la fila se realinea.
+//   2. La RAZÓN SOCIAL DE LA CONTRAPARTE va desde el «Nro Doc Identidad» hasta
+//      el primer campo numérico (el primer importe). Mismo truco, misma razón.
+// Después de esos dos pasos la fila está alineada con el encabezado y se lee
+// por NOMBRE de columna, nunca por número.
+//
+// Si algún ancla no aparece, la fila NO se descarta en silencio: sale en
+// `avisos` con su número de línea, para que la pantalla pueda decir «la línea
+// 12 del archivo no se pudo leer» en vez de mostrar un total que falta.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Tipos de comprobante de la tabla 10 de SUNAT, los que aparecen en el grupo. */
+export const TIPO_CP = {
+  '01': 'factura',
+  '03': 'boleta',
+  '07': 'nota_credito',
+  '08': 'nota_debito',
+  '12': 'ticket',
+  '14': 'recibo_servicios',
+  '00': 'otros',
+};
+
+/** El `document_type` que usa `accounting_movements` para cada tipo de SUNAT. */
+export const TIPO_CP_A_DOCUMENTO = {
+  '01': 'factura',
+  '03': 'boleta',
+  '07': 'nota_credito',
+  '08': 'nota_debito',
+};
+
+export const nombreTipoCp = (t) => TIPO_CP[String(t || '').padStart(2, '0')] || 'otros';
+
+// ── Partir una línea ──────────────────────────────────────────────
+// Se respetan las comillas por si SUNAT algún día las escribe bien; hoy no las
+// usa, y de ahí todo el trabajo de reparación de más abajo.
+export function dividirLineaCsv(linea) {
+  const out = [];
+  let campo = '', dentro = false;
+  const s = String(linea ?? '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (dentro) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { campo += '"'; i++; }  // "" escapado
+        else dentro = false;
+      } else campo += c;
+    } else if (c === '"') {
+      dentro = true;
+    } else if (c === ',') {
+      out.push(campo); campo = '';
+    } else campo += c;
+  }
+  out.push(campo);
+  return out;
+}
+
+const ES_NUMERO = /^-?\d+(\.\d+)?$/;
+const ES_PERIODO = /^\d{6}$/;
+
+const limpio = (x) => String(x ?? '').trim();
+
+/** Un importe de SUNAT ('1,970.85' nunca aparece: usa punto y sin miles). */
+export function aNumero(x) {
+  const s = limpio(x).replace(/\s/g, '');
+  if (!s) return 0;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * '06/07/2026' → '2026-07-06'.
+ * Por STRING, nunca con `new Date()`: 'YYYY-MM-DD' se parsea como medianoche
+ * UTC y en Perú una factura del 01/07 se declaraba en JUNIO (la misma lección
+ * que dejó `src/lib/fecha.js`). Devuelve '' si no tiene esa forma.
+ */
+export function aFechaIso(x) {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(limpio(x));
+  if (!m) return '';
+  const [, d, mes, a] = m;
+  return `${a}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/** '202607' → { anio: 2026, mes: 7 }. */
+export function partirPeriodo(p) {
+  const s = limpio(p);
+  if (!ES_PERIODO.test(s)) return null;
+  return { anio: Number(s.slice(0, 4)), mes: Number(s.slice(4, 6)) };
+}
+
+// ── Los dos layouts ───────────────────────────────────────────────
+// Se declaran por NOMBRE de columna. `col()` los busca en el encabezado real
+// del archivo tolerando mayúsculas, tildes y espacios de más (el encabezado de
+// compras trae «Apellidos Nombres/ Razón  Social», con dos espacios).
+const clave = (s) => limpio(s)
+  .toLowerCase()
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+
+/** Índice de una columna por nombre, o -1. */
+function col(headers, nombre) {
+  const k = clave(nombre);
+  if (!k) return -1;                       // columna que este libro no tiene
+  return headers.findIndex(h => clave(h) === k);
+}
+
+/**
+ * ¿Este archivo es el de ventas o el de compras?
+ * Se decide por una columna que solo existe en uno: compras desglosa la base
+ * en tres destinos («BI Gravado DG» = destinado a operaciones gravadas) y
+ * ventas no; ventas trae «Valor Facturado Exportación» y compras no.
+ */
+export function detectarLibro(headers = []) {
+  if (col(headers, 'BI Gravado DG') >= 0) return 'compras';
+  if (col(headers, 'BI Gravada') >= 0 || col(headers, 'Valor Facturado Exportación') >= 0) return 'ventas';
+  return null;
+}
+
+/**
+ * Realinea una fila desalineada por las comas sin comillas.
+ *
+ * @param campos  la fila cruda ya partida por comas
+ * @param iNombre índice (en el ENCABEZADO) de la razón social de la contraparte
+ * @returns { campos, titular, contraparte } o null si no se pudo anclar.
+ */
+export function repararFila(campos, iNombre) {
+  if (!Array.isArray(campos) || campos.length < 3) return null;
+
+  // ── Ancla 1: el periodo, primer campo de 6 dígitos después del RUC.
+  let kPeriodo = -1;
+  for (let i = 1; i < campos.length; i++) {
+    if (ES_PERIODO.test(limpio(campos[i]))) { kPeriodo = i; break; }
+  }
+  if (kPeriodo < 2) return null;               // sin razón social en el medio no hay archivo válido
+  const titular = campos.slice(1, kPeriodo).join(',').trim();
+  // El titular ocupa 1 sola columna en el encabezado, esté partido en las que esté.
+  let fila = [campos[0], titular, ...campos.slice(kPeriodo)];
+
+  // ── Ancla 2: la razón social de la contraparte, hasta el primer importe.
+  if (iNombre >= 0 && iNombre < fila.length) {
+    let j = iNombre;
+    while (j < fila.length && !ES_NUMERO.test(limpio(fila[j]))) j++;
+    // `j` quedó en el primer numérico. Si el nombre ocupó más de una columna,
+    // se vuelve a pegar. Si el nombre venía vacío, j === iNombre y no se toca.
+    const contraparte = fila.slice(iNombre, j).join(',').trim();
+    if (j > iNombre) fila = [...fila.slice(0, iNombre), contraparte, ...fila.slice(j)];
+    return { campos: fila, titular, contraparte };
+  }
+  return { campos: fila, titular, contraparte: '' };
+}
+
+/**
+ * Lee el CSV entero.
+ *
+ * @returns {{
+ *   libro: 'ventas'|'compras'|null, ruc, razonSocial, periodo, anio, mes,
+ *   filas: Array, avisos: Array<{linea:number, motivo:string, texto:string}>
+ * }}
+ * `avisos` nunca se traga nada: una línea que no se pudo leer sale ahí con su
+ * número, porque un total al que le falta una factura miente peor que un error.
+ */
+export function parseCsvSunat(texto) {
+  const vacio = { libro: null, ruc: '', razonSocial: '', periodo: '', anio: null, mes: null, filas: [], avisos: [] };
+  const bruto = String(texto ?? '').replace(/^﻿/, '');   // BOM de SUNAT
+  const lineas = bruto.split(/\r?\n/).filter(l => l.trim() !== '');
+  if (lineas.length < 1) return vacio;
+
+  const headers = dividirLineaCsv(lineas[0]).map(limpio);
+  const libro = detectarLibro(headers);
+  if (!libro) return { ...vacio, avisos: [{ linea: 1, motivo: 'encabezado_desconocido', texto: lineas[0].slice(0, 200) }] };
+
+  const L = libro === 'compras' ? LAYOUT_COMPRAS : LAYOUT_VENTAS;
+  const idx = {};
+  for (const [campo, nombre] of Object.entries(L.columnas)) idx[campo] = col(headers, nombre);
+  const iNombre = idx.contraparteNombre;
+
+  const filas = [], avisos = [];
+  let ruc = '', razonSocial = '', periodo = '';
+
+  for (let n = 1; n < lineas.length; n++) {
+    const crudos = dividirLineaCsv(lineas[n]);
+    const rep = repararFila(crudos, iNombre);
+    if (!rep) {
+      avisos.push({ linea: n + 1, motivo: 'no_se_pudo_alinear', texto: lineas[n].slice(0, 200) });
+      continue;
+    }
+    const c = rep.campos;
+    const v = (campo) => (idx[campo] >= 0 && idx[campo] < c.length ? limpio(c[idx[campo]]) : '');
+
+    const serie = v('serie').toUpperCase();
+    const numero = v('numero');
+    if (!serie && !numero) {
+      avisos.push({ linea: n + 1, motivo: 'sin_serie_ni_numero', texto: lineas[n].slice(0, 200) });
+      continue;
+    }
+
+    if (!ruc) ruc = v('ruc');
+    if (!razonSocial) razonSocial = rep.titular;
+    if (!periodo) periodo = v('periodo');
+
+    const tipoCp = v('tipoCp').padStart(2, '0');
+    const base = L.base(v);
+    const igv = L.igv(v);
+    const noGravado = L.noGravado(v);
+
+    filas.push({
+      libro,
+      linea: n + 1,                       // para poder señalar el archivo
+      periodo: v('periodo'),
+      carSunat: v('carSunat'),
+      fecha: aFechaIso(v('fecha')),
+      fechaVcto: aFechaIso(v('fechaVcto')),
+      tipoCp,
+      tipoNombre: nombreTipoCp(tipoCp),
+      serie,
+      numero: Number(numero) || 0,
+      numeroTexto: numero,
+      // La forma en que la app escribe un comprobante: 'F001-170359'.
+      documento: serie && numero ? `${serie}-${Number(numero) || numero}` : '',
+      contraparteTipoDoc: v('contraparteTipoDoc'),
+      contraparteRuc: v('contraparteRuc'),
+      contraparteNombre: rep.contraparte,
+      base, igv, noGravado,
+      otros: aNumero(v('otrosTributos')) + aNumero(v('isc')) + aNumero(v('icbper')),
+      total: aNumero(v('total')),
+      moneda: v('moneda') || 'PEN',
+      tipoCambio: aNumero(v('tipoCambio')) || 1,
+      // De qué comprobante es nota esta fila (solo en notas de crédito/débito).
+      modificaTipo: v('modificaTipo'),
+      modificaSerie: v('modificaSerie').toUpperCase(),
+      modificaNumero: v('modificaNumero'),
+      modificaFecha: aFechaIso(v('modificaFecha')),
+      tipoNota: v('tipoNota'),
+      // Estado del comprobante en la propuesta de SUNAT. '1' = incluido.
+      estado: v('estado'),
+      detraccion: aNumero(v('detraccion')),
+    });
+  }
+
+  const p = partirPeriodo(periodo);
+  return {
+    libro, ruc, razonSocial, periodo,
+    anio: p?.anio ?? null, mes: p?.mes ?? null,
+    filas, avisos,
+  };
+}
+
+// ── Los layouts, uno por archivo ──────────────────────────────────
+// Los nombres son TEXTUALES de los encabezados de SUNAT de setiembre-2026.
+// Si SUNAT los cambia, `detectarLibro` devuelve null o `col()` da -1 y la
+// pantalla lo dice; nunca se lee una columna equivocada por número.
+
+const LAYOUT_VENTAS = {
+  columnas: {
+    ruc: 'Ruc',
+    periodo: 'Periodo',
+    carSunat: 'CAR SUNAT',
+    fecha: 'Fecha de emisión',
+    fechaVcto: 'Fecha Vcto/Pago',
+    tipoCp: 'Tipo CP/Doc.',
+    serie: 'Serie del CDP',
+    numero: 'Nro CP o Doc. Nro Inicial (Rango)',
+    contraparteTipoDoc: 'Tipo Doc Identidad',
+    contraparteRuc: 'Nro Doc Identidad',
+    contraparteNombre: 'Apellidos Nombres/ Razón Social',
+    biGravada: 'BI Gravada',
+    dsctoBi: 'Dscto BI',
+    igvIpm: 'IGV / IPM',
+    dsctoIgv: 'Dscto IGV / IPM',
+    exonerado: 'Mto Exonerado',
+    inafecto: 'Mto Inafecto',
+    isc: 'ISC',
+    icbper: 'ICBPER',
+    otrosTributos: 'Otros Tributos',
+    total: 'Total CP',
+    moneda: 'Moneda',
+    tipoCambio: 'Tipo Cambio',
+    modificaFecha: 'Fecha Emisión Doc Modificado',
+    modificaTipo: 'Tipo CP Modificado',
+    modificaSerie: 'Serie CP Modificado',
+    modificaNumero: 'Nro CP Modificado',
+    tipoNota: 'Tipo de Nota',
+    estado: 'Est. Comp',
+    detraccion: '',
+  },
+  // En ventas el descuento va en su propia columna y RESTA de la base.
+  base: (v) => aNumero(v('biGravada')) - aNumero(v('dsctoBi')),
+  igv: (v) => aNumero(v('igvIpm')) - aNumero(v('dsctoIgv')),
+  noGravado: (v) => aNumero(v('exonerado')) + aNumero(v('inafecto')),
+};
+
+const LAYOUT_COMPRAS = {
+  columnas: {
+    ruc: 'RUC',
+    periodo: 'Periodo',
+    carSunat: 'CAR SUNAT',
+    fecha: 'Fecha de emisión',
+    fechaVcto: 'Fecha Vcto/Pago',
+    tipoCp: 'Tipo CP/Doc.',
+    serie: 'Serie del CDP',
+    numero: 'Nro CP o Doc. Nro Inicial (Rango)',
+    contraparteTipoDoc: 'Tipo Doc Identidad',
+    contraparteRuc: 'Nro Doc Identidad',
+    contraparteNombre: 'Apellidos Nombres/ Razón  Social',
+    biDg: 'BI Gravado DG',
+    igvDg: 'IGV / IPM DG',
+    biDgng: 'BI Gravado DGNG',
+    igvDgng: 'IGV / IPM DGNG',
+    biDng: 'BI Gravado DNG',
+    igvDng: 'IGV / IPM DNG',
+    valorNg: 'Valor Adq. NG',
+    isc: 'ISC',
+    icbper: 'ICBPER',
+    otrosTributos: 'Otros Trib/ Cargos',
+    total: 'Total CP',
+    moneda: 'Moneda',
+    tipoCambio: 'Tipo de Cambio',
+    modificaFecha: 'Fecha Emisión Doc Modificado',
+    modificaTipo: 'Tipo CP Modificado',
+    modificaSerie: 'Serie CP Modificado',
+    modificaNumero: 'Nro CP Modificado',
+    tipoNota: 'Tipo de Nota',
+    estado: 'Est. Comp.',
+    detraccion: 'Detracción',
+  },
+  // 🔴 La base de una compra viene partida en TRES según a qué se destina
+  // (gravadas / gravadas y no gravadas / no gravadas). Leer solo «DG» perdería
+  // las compras de destino mixto y el total no cerraría contra la propia fila.
+  base: (v) => aNumero(v('biDg')) + aNumero(v('biDgng')) + aNumero(v('biDng')),
+  igv: (v) => aNumero(v('igvDg')) + aNumero(v('igvDgng')) + aNumero(v('igvDng')),
+  // Lo no gravado —las comisiones del banco de julio salen justo por acá—.
+  noGravado: (v) => aNumero(v('valorNg')),
+};
+
+/**
+ * Lee un `File` del navegador y devuelve el texto, resolviendo el encoding.
+ *
+ * SUNAT manda UTF-8 con BOM, pero según por dónde se baje puede venir en
+ * Windows-1252 (y ahí «BANCO INTERNACIONAL DEL PERÚ» llega roto). Se decodifica
+ * como UTF-8 y, si aparece el carácter de reemplazo, se reintenta en 1252.
+ * No es pura (toca File), por eso va aparte de todo lo de arriba.
+ */
+export async function leerArchivoSunat(file) {
+  const buf = await file.arrayBuffer();
+  const utf8 = new TextDecoder('utf-8').decode(buf);
+  if (!utf8.includes('�')) return utf8;
+  try { return new TextDecoder('windows-1252').decode(buf); }
+  catch { return utf8; }
+}

@@ -156,6 +156,12 @@ const TRANSACTIONAL_TABLES = [
   // criterio que el catálogo: todos la LEEN (es lo que hace que la propuesta
   // aparezca en Almacén y en las órdenes), y el gate de escritura lo pone RLS.
   'insumo_categoria',
+  // El cotejo contra SUNAT y el escáner (mig 196, tanda 14 entregas 5 y 6).
+  // A diferencia del catálogo, acá SÍ hay plata: el gate de escritura lo pone
+  // la RLS (admin/gerente/contador/ayudante_contador) y por eso quedan FUERA
+  // de TABLA_TO_MODULO, como las demás tablas de gate duro.
+  'sunat_cortes',
+  'cotejo_decisiones',
   // Config global clave→valor (mig 159). FK-less; NO va en TABLA_TO_MODULO
   // (solo el admin escribe — RLS lo garantiza en el server) y todos la PULLean
   // (el rol campo incluido: necesita el timeout de sesión como cualquier device).
@@ -217,6 +223,8 @@ const MASTER_TABLES = [
   { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'insumo_categoria',             query: () => supabase.from('insumo_categoria').select('*').is('deleted_at', null) },
+  { tabla: 'sunat_cortes',                 query: () => supabase.from('sunat_cortes').select('*').is('deleted_at', null) },
+  { tabla: 'cotejo_decisiones',            query: () => supabase.from('cotejo_decisiones').select('*').is('deleted_at', null) },
   { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
@@ -1134,6 +1142,8 @@ const FK_DEPS = {
   catalogo_disgregacion:     [{ campo: 'company_id', tabla: 'companies' }],
   catalogo_familia_mapeo:    [{ campo: 'company_id', tabla: 'companies' }],
   insumo_categoria:          [{ campo: 'company_id', tabla: 'companies' }],
+  sunat_cortes:              [{ campo: 'company_id', tabla: 'companies' }],
+  cotejo_decisiones:         [{ campo: 'company_id', tabla: 'companies' }],
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
   reportes_dia:              [{ campo: 'frente_id', tabla: 'frentes_obra' }],
   pagos:                     [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'subcontrato_id', tabla: 'subcontratos' }, { campo: 'company_id', tabla: 'companies' }],

@@ -462,6 +462,24 @@ export function useInsumoCategorias() {
   , []);
 }
 
+// El cotejo contra SUNAT: cómo quedó cada mes (mig 196, tanda 14 entrega 5).
+// Una fila por empresa+periodo+libro; chica y global, se trae entera.
+export function useSunatCortes() {
+  return useOfflineData('sunat_cortes', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
+// Lo que una persona ya contestó sobre una diferencia o una incoherencia
+// (mig 196). Sirve a la comparativa y al escáner; se resuelve al leer con
+// `aplicarDecisiones()` / `aplicarDecisionesEscaner()`, porque las dos PCs de
+// Gabriel pueden haber decidido la misma.
+export function useCotejoDecisiones() {
+  return useOfflineData('cotejo_decisiones', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // El mapeo de categorías entre entidades (mig 193): la familia local de una
 // empresa contra la familia canónica del grupo. Chico y global; se resuelve al
 // leer con `resolverEquivalencias()`.

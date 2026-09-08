@@ -11,6 +11,7 @@ import { generarAsientosBatch } from '../lib/asientos.js';
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { ComparativaSunat, EscanerIncoherencias } from './jx-cotejo-sunat.jsx';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -35,6 +36,12 @@ function LibrosElectronicosPage({ showToast }) {
   const empresaFija = useEmpresaBloqueada();
   const companyId = empresaFija || companyIdRaw;
   const [busy, setBusy] = uS(false);
+  // Las tres caras de esta pantalla: generar los PLE (lo de siempre), cotejar
+  // contra SUNAT (entrega 5) y el escáner (entrega 6). Van acá y no en el menú
+  // porque comparten el ámbito exacto —empresa + año + mes— y es donde la
+  // contadora ya entra a hacer justamente esto.
+  const [tab, setTab] = uS('ple');
+  const userId = (() => { try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; } })();
 
   const { data: companies = [] } = window.__hooks.useCompanies();
   const { data: movs       = [] } = window.__hooks.useAccountingMovements();
@@ -271,6 +278,47 @@ function LibrosElectronicosPage({ showToast }) {
         </div>
       </div>
 
+      {/* Las tres caras de esta pantalla */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          ['ple', '📄 Generar libros'],
+          ['sunat', '🔍 SUNAT vs JARVEX'],
+          ['escaner', '🩺 Escáner de incoherencias'],
+        ].map(([k, label]) => (
+          <button
+            key={k}
+            className={tab === k ? 'btn btn-amber' : 'btn'}
+            onClick={() => setTab(k)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'sunat' && (
+        <ComparativaSunat
+          company={company}
+          companies={companies}
+          movs={movs}
+          anio={anio}
+          mes={mes}
+          showToast={showToast}
+          userId={userId}
+        />
+      )}
+
+      {tab === 'escaner' && (
+        <EscanerIncoherencias
+          company={company}
+          companies={companies}
+          movs={movs}
+          showToast={showToast}
+          userId={userId}
+          empresaFija={empresaFija}
+        />
+      )}
+
+      {tab !== 'ple' ? null : <>
       {/* Card resumen */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 16 }}>
         <div className="card card-p" style={{ padding: 12, textAlign: 'center' }}>
@@ -388,6 +436,7 @@ function LibrosElectronicosPage({ showToast }) {
         Los archivos se generan en formato pipe-delimited UTF-8 con terminación CRLF, según especificación PLE 5.x.
         Si tu validador detecta errores, revisa el RUC, la consistencia de fechas y el cuadre Debe/Haber.
       </div>
+      </>}
     </div>
   );
 }
