@@ -205,6 +205,60 @@ function LicitacionesPage({ showToast }) {
     } finally { setBusy(false); enCursoRef.current = false; }
   };
 
+  /**
+   * Lo que aprobó el análisis de bases, guardado de una sola vez.
+   *
+   * NO se reusa `guardarRequisito` en un bucle: tiene un guard síncrono
+   * (`enCursoRef`) que corta la segunda llamada mientras la primera está en
+   * vuelo, así que un for-loop guardaría el primer puesto y descartaría los
+   * otros ocho EN SILENCIO. Un lote es una escritura, con un guard, y avisa
+   * una vez al final.
+   */
+  const aplicarAnalisis = async (licitacionId, { requisitos = [], cabecera = null, costo = null }) => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    setBusy(true);
+    try {
+      const ahora = new Date().toISOString();
+      // Desde qué número siguen los puestos nuevos: los que ya estaban cargados
+      // no se tocan ni se renumeran.
+      const base = (await window.__db.licitacion_requisitos
+        .where('licitacion_id').equals(licitacionId).toArray())
+        .filter(r => !r.deleted_at).length;
+      const filas = requisitos.map((campos, i) => {
+        const nid = window.__newId();
+        // `verificada` y su motivo son de la pantalla, no columnas de la tabla:
+        // si viajan al insert, Dexie los guarda y el push a Supabase falla.
+        const { verificada, verificacion_motivo, ...fila } = campos;
+        void verificada; void verificacion_motivo;
+        return {
+          id: nid, licitacion_id: licitacionId,
+          ...fila,
+          orden: (base + i + 1) * 10,
+          created_by: userId, updated_by: userId, created_at: ahora, updated_at: ahora,
+          version: 1, idempotency_key: `licreq_${nid}`,
+          ...marcaModo,
+        };
+      });
+      if (filas.length) await window.__db.licitacion_requisitos.bulkAdd(filas);
+      if (cabecera && Object.keys(cabecera).length) {
+        const prev = vivas.find(l => l.id === licitacionId);
+        await window.__db.licitaciones.update(licitacionId, {
+          ...cabecera, updated_at: ahora, updated_by: userId,
+          version: (prev?.version ?? 0) + 1,
+          sync_status: prev?.demo === true ? 'synced'
+            : (prev?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+        });
+        avisar('licitaciones');
+      }
+      avisar('licitacion_requisitos');
+      const plata = costo?.total ? ` · costó USD ${Number(costo.total).toFixed(3)}` : '';
+      toast(`✓ ${filas.length} puesto(s) cargados desde las bases${plata}`, 'green');
+    } catch (e) {
+      toast('No se pudieron guardar los requisitos: ' + (e?.message || e), 'red');
+    } finally { setBusy(false); enCursoRef.current = false; }
+  };
+
   const borrarRequisito = async (row) => {
     if (!window.confirm(`¿Quitar el puesto "${row.cargo || 'sin cargo'}"?`)) return;
     try {
@@ -343,6 +397,7 @@ function LicitacionesPage({ showToast }) {
           onGuardarLic={(campos) => guardarLicitacion(campos, licAbierta.id)}
           onGuardarReq={(campos, id) => guardarRequisito(licAbierta.id, campos, id)}
           onBorrarReq={borrarRequisito}
+          onAplicarAnalisis={(payload) => aplicarAnalisis(licAbierta.id, payload)}
           onBorrarLic={() => borrarLicitacion(licAbierta)}
           toast={toast}
         />
@@ -466,11 +521,12 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // ═══════════════════════════════════════════════════════════════════
 function DetalleModal({
   lic, requisitos, veredicto, candidatos, rubros, companies, hoy, canWrite, busy,
-  onClose, onGuardarLic, onGuardarReq, onBorrarReq, onBorrarLic, toast,
+  onClose, onGuardarLic, onGuardarReq, onBorrarReq, onBorrarLic, onAplicarAnalisis, toast,
 }) {
   const Modal = window.Modal;
   const [editando, setEditando] = uS(false);
   const [nuevo, setNuevo] = uS(null);          // borrador del puesto nuevo
+  const [analizando, setAnalizando] = uS(false);   // el lector de bases
   if (!Modal) return null;
 
   const v = veredicto;
@@ -497,12 +553,12 @@ function DetalleModal({
             </div>
             <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
               {!v?.total
-                ? 'Cargá los puestos que piden las bases para saber si calificamos.'
+                ? 'Carga los puestos que piden las bases para saber si calificamos.'
                 : (v.califica
                   ? (v.limpio
                     ? 'Hay a quién presentar en todos los puestos, y los elegidos cumplen.'
                     : 'Hay a quién presentar, pero algún nombre ya elegido no cumple — eso es una observación segura.')
-                  : 'Falta gente para al menos un puesto. Mirá abajo a quién le falta poco.')}
+                  : 'Falta gente para al menos un puesto. Mira abajo a quién le falta poco.')}
             </div>
           </div>
           <div style={{ flex: '0 1 auto', textAlign: 'right' }}>
@@ -545,6 +601,14 @@ function DetalleModal({
         )}
       </div>
 
+      {analizando && (
+        <AnalisisBasesModal
+          lic={lic} toast={toast}
+          onClose={() => setAnalizando(false)}
+          onAplicar={onAplicarAnalisis}
+        />
+      )}
+
       {/* ── Requisitos de personal ── */}
       <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
         <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
@@ -556,21 +620,31 @@ function DetalleModal({
             </div>
           </div>
           {canWrite && (
-            <button className="btn btn-ghost btn-xs" disabled={busy}
-              onClick={() => setNuevo({
-                cargo: '', profesion: '', rubro_id: '', exige_sustento: true,
-                meses_generales_minimos: 36, meses_minimos: 0,
-                participaciones_minimas: 2, meses_por_participacion: 2,
-                ventana_anios: 10, cargos_equivalentes: '',
-              })}>
-              + Agregar puesto
-            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {/* La puerta de entrada de la entrega 3. Va acá, pegado a los
+                  puestos, porque tipear los puestos a mano es exactamente el
+                  trabajo que viene a reemplazar. */}
+              <button className="btn btn-blue btn-xs" disabled={busy}
+                onClick={() => setAnalizando(true)}
+                title="Sube las bases en PDF o Word: se leen y se proponen los puestos, cada uno con la frase de donde salió">
+                🔎 Leer las bases
+              </button>
+              <button className="btn btn-ghost btn-xs" disabled={busy}
+                onClick={() => setNuevo({
+                  cargo: '', profesion: '', rubro_id: '', exige_sustento: true,
+                  meses_generales_minimos: 36, meses_minimos: 0,
+                  participaciones_minimas: 2, meses_por_participacion: 2,
+                  ventana_anios: 10, cargos_equivalentes: '',
+                })}>
+                + Agregar puesto
+              </button>
+            </div>
           )}
         </div>
 
         {filas.length === 0 && !nuevo && (
           <div className="empty-state" style={{ padding: '26px 14px', textAlign: 'center', fontSize: 11.5 }}>
-            Todavía no hay puestos cargados. Copiá los del plantel clave de las bases.
+            Todavía no hay puestos cargados. Léelas con «Leer las bases», o cópialos a mano.
           </div>
         )}
 
@@ -669,6 +743,344 @@ function DetalleModal({
           canWrite={canWrite} busy={busy}
           onClose={() => setEditando(false)}
           onGuardar={async (campos) => { await onGuardarLic(campos); setEditando(false); }} />
+      )}
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ANALIZAR LAS BASES (tanda 15, entrega 3)
+//
+// La puerta de entrada de toda la cadena de extracción. Lo que la pantalla
+// tiene que lograr, y por eso está armada así:
+//
+// 1. DECIR EL PRECIO ANTES DE COBRARLO. El triage corre en el navegador y es
+//    gratis, así que se puede contar exactamente cuántas páginas van a OCR y
+//    mostrar el costo ANTES de gastar un centavo. «94 páginas · USD 0,19,
+//    ¿sigo?» es una decisión; una barra de progreso que ya empezó, no.
+// 2. NO GUARDAR NADA SOLO. Lo extraído se PROPONE. Cada requisito viene con la
+//    frase de las bases de donde salió y la página, y se guarda lo que la
+//    persona tilda. Un requisito inventado que entra solo descalifica gente
+//    que sí calificaba.
+// 3. MOSTRAR LO QUE NO SE PUDO VERIFICAR. Lo que no pasó la comprobación de
+//    cita no se esconde ni se borra: sale con ⚠ y arranca destildado.
+// ═══════════════════════════════════════════════════════════════════
+
+const PASO_LBL = {
+  leyendo: 'Abriendo el documento',
+  ocr: 'Leyendo las páginas escaneadas',
+  indice: 'Buscando las secciones',
+  localizar: 'Ubicando dónde está cada cosa',
+  extraer: 'Extrayendo los requisitos',
+  verificar: 'Verificando cada cita contra el documento',
+};
+
+const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
+
+const CAMPO_CABECERA_LBL = {
+  nomenclatura: 'Nomenclatura', objeto: 'Objeto', entidad_convocante: 'Entidad',
+  entidad_ruc: 'RUC de la entidad', valor_referencial: 'Valor referencial',
+  moneda: 'Moneda', fecha_presentacion: 'Presentación de ofertas',
+  definicion_obras_similares: 'Definición de obra similar',
+};
+
+
+function AnalisisBasesModal({ lic, onClose, onAplicar, toast }) {
+  const Modal = window.Modal;
+  const [archivo, setArchivo] = uS(null);
+  const [fase, setFase] = uS('elegir');        // elegir · presupuesto · corriendo · revisar
+  const [progreso, setProgreso] = uS(null);
+  const [presupuesto, setPresupuesto] = uS(null);
+  const [bloques, setBloques] = uS(null);
+  const [salida, setSalida] = uS(null);
+  const [marcados, setMarcados] = uS(() => new Set());
+  const [aplicarCabecera, setAplicarCabecera] = uS(true);
+  const [guardando, setGuardando] = uS(false);
+  // Guard SÍNCRONO: el doble clic en «Guardar» duplicaría todos los puestos.
+  const guardandoRef = uR(false);
+
+  if (!Modal) return null;
+
+  // ── Paso 0: leer y presupuestar, sin gastar ──────────────────────
+  const elegirArchivo = async (file) => {
+    if (!file) return;
+    setArchivo(file);
+    setFase('corriendo');
+    setProgreso({ paso: 'leyendo' });
+    try {
+      const { leerDocumento, presupuestar } = await import('../lib/bases-analisis.js');
+      const { bloques: bs } = await leerDocumento(file, { onProgreso: setProgreso });
+      setBloques(bs);
+      setPresupuesto(presupuestar(bs));
+      setFase('presupuesto');
+    } catch (e) {
+      toast('No se pudo abrir el documento: ' + (e?.message || e), 'red');
+      setFase('elegir');
+      setArchivo(null);
+    }
+  };
+
+  // ── Pasos 1 a 4: acá sí se gasta ─────────────────────────────────
+  const correr = async () => {
+    setFase('corriendo');
+    try {
+      const { analizar } = await import('../lib/bases-analisis.js');
+      const { apiFetch, apiParse } = await import('../lib/api-client');
+      const r = await analizar(bloques, { apiFetch, apiParse, onProgreso: setProgreso });
+      setSalida(r);
+      // Arrancan tildados SOLO los que pasaron la verificación de cita. Lo que
+      // no se pudo comprobar se ve, pero no se guarda sin que alguien lo mire.
+      setMarcados(new Set((r.filas || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
+      setFase('revisar');
+    } catch (e) {
+      toast('El análisis falló: ' + (e?.message || e), 'red');
+      setFase('presupuesto');
+    }
+  };
+
+  const filas = salida?.filas || [];
+  // Solo se propone lo que la postulación TODAVÍA NO TIENE: pisar con una
+  // lectura automática un dato que alguien cargó a mano es peor que no leer.
+  const cabecera = uM(() => {
+    const prop = salida?.cabecera;
+    if (!prop) return null;
+    const falta = {};
+    for (const [k, v] of Object.entries(prop)) {
+      if (v == null || v === '') continue;
+      const actual = lic[k];
+      if (actual == null || actual === '') falta[k] = v;
+    }
+    return Object.keys(falta).length ? falta : null;
+  }, [salida, lic]);
+
+  const guardar = async () => {
+    if (guardandoRef.current) return;
+    guardandoRef.current = true;
+    setGuardando(true);
+    try {
+      const elegidas = filas.filter((_, i) => marcados.has(i));
+      await onAplicar({
+        requisitos: elegidas,
+        cabecera: aplicarCabecera ? cabecera : null,
+        costo: salida?.costo || null,
+      });
+      onClose();
+    } finally {
+      guardandoRef.current = false;
+      setGuardando(false);
+    }
+  };
+
+  const alternar = (i) => setMarcados(prev => {
+    const s = new Set(prev);
+    if (s.has(i)) s.delete(i); else s.add(i);
+    return s;
+  });
+
+  return (
+    <Modal title={`Analizar las bases · ${lic.objeto || 'postulación'}`} onClose={onClose} size="xl">
+
+      {/* ── Elegir el archivo ── */}
+      {fase === 'elegir' && (
+        <div style={{ padding: '18px 4px' }}>
+          <div style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.5 }}>
+            Sube las bases en <b>PDF</b> o <b>Word (.docx)</b>. Primero se revisa el documento
+            en tu propia computadora —eso no cuesta nada— y recién después te digo cuánto sale
+            leer las páginas escaneadas, antes de leerlas.
+          </div>
+          <input type="file" className="fi" accept=".pdf,.docx,application/pdf"
+            onChange={e => elegirArchivo(e.target.files?.[0])} />
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 10, lineHeight: 1.5 }}>
+            Las páginas que ya son texto se leen gratis. Solo se paga el OCR de las escaneadas,
+            que en unas bases suelen ser los Términos de Referencia.
+          </div>
+        </div>
+      )}
+
+      {/* ── El presupuesto, antes de gastar ── */}
+      {fase === 'presupuesto' && presupuesto && (
+        <div style={{ padding: '10px 4px' }}>
+          <div className="card card-p" style={{ marginBottom: 12 }}>
+            <b style={{ fontSize: 12.5 }}>Esto es lo que hay en {archivo?.name}</b>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, marginTop: 10, fontSize: 12 }}>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--green)' }}>
+                  {presupuesto.charsNativos.toLocaleString('es-PE')}
+                </div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>caracteres que ya son texto · gratis</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--amber)' }}>{presupuesto.paginasOcr}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>páginas escaneadas · hay que leerlas</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700 }}>{usd(presupuesto.costo.total)}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  lo que cuesta este análisis ({presupuesto.tandas} tanda{presupuesto.tandas === 1 ? '' : 's'})
+                </div>
+              </div>
+            </div>
+            {presupuesto.decorativas > 0 && (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 8 }}>
+                {presupuesto.decorativas} imagen(es) son logos o sellos y no se mandan a leer.
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setFase('elegir'); setArchivo(null); }}>
+              Elegir otro archivo
+            </button>
+            <button className="btn btn-blue btn-sm" onClick={correr}>
+              Analizar · {usd(presupuesto.costo.total)}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Corriendo ── */}
+      {fase === 'corriendo' && (
+        <div style={{ padding: '28px 10px', textAlign: 'center' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+            {PASO_LBL[progreso?.paso] || 'Trabajando'}…
+          </div>
+          {progreso?.paso === 'ocr' && progreso.total > 0 && (
+            <>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+                {progreso.hecho} de {progreso.total} páginas
+              </div>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-c2)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round((progreso.hecho / progreso.total) * 100)}%`, background: 'var(--blue)' }} />
+              </div>
+            </>
+          )}
+          {progreso?.paso === 'leyendo' && progreso.total > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>página {progreso.pagina} de {progreso.total}</div>
+          )}
+          {progreso?.detalle && typeof progreso.detalle === 'string' && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>{progreso.detalle}</div>
+          )}
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 14 }}>
+            No cierres esta ventana: el documento se está leyendo en tu computadora.
+          </div>
+        </div>
+      )}
+
+      {/* ── Revisar lo que se encontró ── */}
+      {fase === 'revisar' && salida && (
+        <div>
+          <div className="card card-p" style={{ marginBottom: 10, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{filas.length}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>requisitos encontrados</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>
+                {filas.filter(f => f.verificada).length}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>con su cita comprobada en el documento</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{usd(salida.costo?.total)}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                costó de verdad · {salida.paginasOcr} páginas leídas
+              </div>
+            </div>
+            {salida.modelos?.length > 0 && (
+              <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}>
+                leído por<br />{salida.modelos.join(' · ')}
+              </div>
+            )}
+          </div>
+
+          {salida.alertas?.length > 0 && (
+            <div style={{ padding: '9px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11,
+              background: 'rgba(245,158,11,0.09)', border: '1px solid rgba(245,158,11,0.35)' }}>
+              <b style={{ color: 'var(--amber)' }}>⚠ Para revisar a mano ({salida.alertas.length})</b>
+              <ul style={{ margin: '6px 0 0 16px', padding: 0, lineHeight: 1.5 }}>
+                {salida.alertas.slice(0, 8).map((a, i) => <li key={i}>{a}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {cabecera && (
+            <label className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+              marginBottom: 10, cursor: 'pointer' }}>
+              <input type="checkbox" checked={aplicarCabecera} style={{ marginTop: 3 }}
+                onChange={() => setAplicarCabecera(v => !v)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <b style={{ fontSize: 12.5 }}>Datos del proceso que faltaban</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 5 }}>
+                  Solo se proponen los campos vacíos. Lo que ya cargaste queda como está.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 6, fontSize: 11 }}>
+                  {Object.entries(cabecera).map(([k, v]) => (
+                    <div key={k}>
+                      <span style={{ color: 'var(--tm)' }}>{CAMPO_CABECERA_LBL[k] || k}:</span>{' '}
+                      <b>{String(v).slice(0, 90)}</b>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </label>
+          )}
+
+          {filas.length === 0 && (
+            <div className="empty-state" style={{ padding: '24px 14px', textAlign: 'center', fontSize: 11.5 }}>
+              No se encontró ningún requisito de plantel. Puede que estén en una parte del
+              documento que el OCR no pudo leer, o que estas bases no los detallen.
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            {filas.map((f, i) => (
+              <label key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+                cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
+                <input type="checkbox" checked={marcados.has(i)} onChange={() => alternar(i)} style={{ marginTop: 3 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12.5 }}>
+                    {f.cargo || '(sin cargo)'}
+                    {f.profesion && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.profesion}</span>}
+                    {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
+                    {f.meses_generales_minimos > 0 && `Experiencia general ${f.meses_generales_minimos} meses · `}
+                    {f.meses_minimos > 0 && `específica ${f.meses_minimos} meses · `}
+                    {f.participaciones_minimas > 0 && `${f.participaciones_minimas} participaciones`}
+                    {f.meses_por_participacion > 0 && ` de ${f.meses_por_participacion} meses c/u`}
+                    {f.ventana_anios && ` · últimos ${f.ventana_anios} años`}
+                  </div>
+                  {f.cargos_equivalentes?.length > 0 && (
+                    <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>
+                      Vale también como: {f.cargos_equivalentes.join(' · ')}
+                    </div>
+                  )}
+                  {f.fuente_cita && (
+                    <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
+                      background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
+                      «{f.fuente_cita}»
+                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — página {f.fuente_pagina}</b>}
+                    </div>
+                  )}
+                  {!f.verificada && f.verificacion_motivo && (
+                    <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 4 }}>
+                      {f.verificacion_motivo}. Compruébalo en las bases antes de guardarlo.
+                    </div>
+                  )}
+                </div>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--tm)', marginRight: 'auto' }}>
+              Se guardan {marcados.size} de {filas.length}. Los puestos que ya tenías cargados no se tocan.
+            </span>
+            <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={guardando}>Cancelar</button>
+            <button className="btn btn-blue btn-sm" onClick={guardar} disabled={guardando || marcados.size === 0}>
+              {guardando ? 'Guardando…' : `Guardar ${marcados.size} puesto${marcados.size === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </div>
       )}
     </Modal>
   );

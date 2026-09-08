@@ -216,7 +216,16 @@ export async function bloquesDeDocx(zip) {
  */
 export function bloquesAMarkdown(bloques, ocrPorMedia = {}) {
   const out = [];
+  let paginaEmitida = null;
   for (const b of (bloques || [])) {
+    // EL ANCLA DE PÁGINA es lo que después permite citar «página 47» y que esa
+    // cita se pueda comprobar. Solo se emite cuando el bloque sabe su página
+    // —un PDF la sabe; un .docx no tiene páginas y no se inventa ninguna— y
+    // solo al cambiar, para no llenar el markdown de marcadores repetidos.
+    if (b.pagina != null && b.pagina !== paginaEmitida) {
+      out.push(`\n<!-- página ${b.pagina} -->`);
+      paginaEmitida = b.pagina;
+    }
     if (b.tipo === 'texto') { out.push(b.texto); continue; }
     if (!b.necesitaOcr) continue;                     // logos y sellos no aportan
     const leido = ocrPorMedia[b.media];
@@ -225,4 +234,82 @@ export function bloquesAMarkdown(bloques, ocrPorMedia = {}) {
       : `\n[[PÁGINA ESCANEADA PENDIENTE DE OCR: ${b.media || b.rid}]]\n`);
   }
   return out.join('\n');
+}
+
+// ── Lectura de un PDF ──────────────────────────────────────────────
+//
+// El otro camino, y el que trajeron las BASES INTEGRADAS del proceso 009:
+// 96 páginas de las que 94 son escaneadas y 2 nativas — el espejo exacto de
+// Chilete, donde 326.000 caracteres eran nativos y solo 32 páginas escaneadas.
+// El mismo triage sirve para los dos porque nunca decidió a nivel de documento.
+//
+// A DIFERENCIA DEL .docx, ACÁ NO HAY QUE CORREGIR ROTACIÓN. El `.docx` guarda
+// la imagen derecha y declara aparte cuánto girarla (`<a:xfrm rot>`), así que
+// hay que aplicarlo a mano. En un PDF, `page.getViewport()` ya devuelve la
+// página con su `/Rotate` aplicado: lo que se rasteriza sale derecho solo.
+// Medido en las bases 009: las 96 páginas declaran rotación 0.
+//
+// El documento de pdf.js entra como PARÁMETRO, igual que el zip de JSZip: este
+// archivo no importa pdfjs-dist ni toca un canvas, así que los tests corren en
+// node sin navegador. Quien llama inyecta `rasterizar`.
+
+/**
+ * Reconstruye los renglones de una página a partir de los ítems de pdf.js,
+ * agrupando por coordenada Y. Sin esto el texto sale como una sopa de
+ * fragmentos sueltos y el índice de secciones no reconoce ningún rótulo.
+ *
+ * Misma técnica que `pdfBudgetParser.extractTextFromPDF`, que ya lleva dos
+ * tandas leyendo presupuestos S10/Delphin en producción.
+ */
+export function renglonesDeItems(items) {
+  const porY = new Map();
+  for (const it of (items || [])) {
+    const y = Math.round(it?.transform?.[5] ?? 0);
+    if (!porY.has(y)) porY.set(y, []);
+    porY.get(y).push({ x: it?.transform?.[4] ?? 0, s: it?.str || '' });
+  }
+  return [...porY.keys()]
+    .sort((a, b) => b - a)                       // de arriba hacia abajo
+    .map(y => porY.get(y).sort((a, b) => a.x - b.x).map(o => o.s).join('').trim())
+    .filter(Boolean);
+}
+
+/**
+ * Bloques EN ORDEN de un PDF, con la misma forma que los del .docx para que
+ * `bloquesAMarkdown` y `resumenTriage` no tengan que saber de dónde vinieron.
+ *
+ * @param pdf documento ya abierto de pdf.js
+ * @param rasterizar (page, nroPagina) => dataURL — solo se llama en las páginas
+ *        que necesitan OCR. Sin él, los bloques salen sin imagen (sirve para
+ *        contar y presupuestar antes de gastar).
+ * @param onProgreso ({ pagina, total }) — la barra de la pantalla.
+ * @returns [{ tipo:'texto'|'imagen', pagina, ... }]
+ */
+export async function bloquesDePdf(pdf, { rasterizar = null, onProgreso = null } = {}) {
+  const bloques = [];
+  const total = pdf?.numPages || 0;
+  for (let n = 1; n <= total; n++) {
+    const page = await pdf.getPage(n);
+    const contenido = await page.getTextContent();
+    const texto = renglonesDeItems(contenido?.items).join('\n');
+    const c = clasificarPaginaPdf(texto);
+    if (c.nativa) {
+      bloques.push({ tipo: 'texto', pagina: n, texto });
+    } else {
+      bloques.push({
+        tipo: 'imagen', clase: 'pagina', pagina: n,
+        // La llave del OCR. `pdf:pN` es estable y legible en los logs.
+        media: `pdf:p${n}`,
+        necesitaOcr: true, rotacionCorreccion: 0, motivo: c.motivo,
+        imagen: rasterizar ? await rasterizar(page, n) : null,
+        // La página de pdf.js queda a mano para rasterizarla DESPUÉS, de a
+        // tandas. Guardar 94 JPEG en memoria son ~40 MB y una laptop de obra
+        // no tiene por qué aguantarlos; guardar 94 referencias no cuesta nada.
+        // Empieza con `_` porque no es dato del documento y nunca viaja.
+        _page: page,
+      });
+    }
+    if (onProgreso) onProgreso({ pagina: n, total });
+  }
+  return bloques;
 }

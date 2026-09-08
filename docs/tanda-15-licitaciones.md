@@ -42,8 +42,8 @@ al cerrar la pestaña. Servía para una consulta suelta, no para trabajar.
 |---|---|---|
 | 1 | **La postulación existe como dato** — tablas, pantalla, requisitos guardados por proceso, veredicto y paso a Trabajos | ✅ hecha |
 | 2 | **El requisito como lo piden las bases** + **motor de triage** (mig 198) | ✅ hecha |
-| 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | siguiente |
-| 4 | **CV → ficha con IA** — llenar el padrón, que hoy está vacío | pendiente |
+| 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | ✅ hecha |
+| 4 | **CV → ficha con IA** — llenar el padrón, que hoy está vacío | siguiente |
 | 5 | **Requisitos de empresa** — obras similares, facturación, CDC/RNP | pendiente |
 | 6 | Calendario del proceso + kanban con documentos por etapa | pendiente |
 | 7 | Oferta económica | módulo propio, no un vínculo |
@@ -248,6 +248,112 @@ Ninguno de los dos aparece con datos inventados. Los dos tienen test de regresi�
 
 ---
 
+## Entrega 3 — La herramienta de análisis de bases
+
+### Lo que trajeron los archivos nuevos (medido el 8-set-2026)
+
+| Documento | Páginas | Nativas | A OCR |
+|---|---|---|---|
+| Chilete Anexo 12 (.docx) | — | 200.962 chars | 15 imágenes |
+| Chilete Anexo 13 (.docx) | — | 125.064 chars | 17 imágenes |
+| **BASES INTEGRADAS 009 (.pdf)** | **96** | **2** | **94** |
+| CV Jaime Ayay (.pdf) | 39 | 8 | 31 |
+
+Las bases 009 son **el espejo exacto de Chilete**: allá 326.000 caracteres
+nativos con 32 imágenes pegadas; acá un PDF escaneado casi entero. El mismo
+triage sirve para los dos justamente porque nunca decidió a nivel de documento.
+Hay un test que lo verifica contra el PDF real.
+
+### Los cinco pasos, y cuál cuesta
+
+    0    triage      qué es texto y qué es imagen        USD 0
+    0.5  índice      dónde aparece cada familia          USD 0
+    1    OCR         solo las páginas que hacen falta    USD 0,002 c/u
+    2    localizar   la IA ELIGE entre lo que ya hay     ~USD 0
+    3    extraer     la IA lee solo los rangos elegidos  ~USD 0
+    4    verificar   ¿la cita existe en el documento?    USD 0
+
+**El paso 0.5 es la pieza que abarata todo.** Un documento leído entero son
+70–90 mil tokens; el problema no es el precio, es que ningún modelo gratuito
+con ZDR tiene esa ventana, y uno que recibe 90.000 tokens para sacar 8 datos se
+distrae. El índice se arma con `grep` sobre los rótulos reales de unas bases
+peruanas y baja el Pase 1 a ~4.000 tokens. **La IA no busca: elige entre
+candidatos que ya encontró el código.**
+
+### Las dos pasadas son un embudo, no una repetición
+
+Confirmado el diseño del documento original, con una corrección: las dos
+pasadas **no aumentan la confiabilidad por redundancia**. El Pase 1 devuelve
+rangos de páginas, nunca datos; el Pase 2 lee 8 páginas en vez de 96.
+
+Contra la alucinación **no hay una tercera pasada de IA**, y es a propósito:
+repetir la extracción y comparar cuesta el doble y sigue sin responder si el
+dato existe, porque dos alucinaciones coherentes se confirman entre sí. En su
+lugar hay una **verificación determinista**: cada dato trae su cita literal y
+el código comprueba que aparezca en el documento, normalizando tildes,
+mayúsculas y espacios —así devuelve el OCR—. Cuesta USD 0 y responde justo esa
+pregunta. Lo que no verifica **no se descarta: se marca**, y en la pantalla
+arranca destildado.
+
+### El precio se dice ANTES de cobrarlo
+
+El triage corre en el navegador y es gratis, así que se puede contar
+exactamente cuántas páginas van a OCR **antes de gastar un centavo**. La
+pantalla muestra «94 páginas escaneadas · USD 0,19 · ¿analizo?» y recién ahí se
+paga. Al terminar muestra lo que costó de verdad, sumando lo que informó
+OpenRouter por las pasadas.
+
+### Por qué el OCR está duplicado y no importado
+
+`mistralOcr()` vive dentro de `api/captura-magica.js` como función privada.
+Sacarla a `/lib` sería lo prolijo, pero obliga a editar el archivo del que
+depende **todo el ingreso de comprobantes del grupo**. Duplicar 40 líneas
+estables cuesta una tarde; romper Captura Mágica cuesta que nadie facture. Lo
+que sí se comparte es `lib/mistral-ocr.js`: la regla del snapshot fijo es una
+sola para toda la app.
+
+### Dos cosas que encontraron los tests
+
+1. **El mismo requisito se proponía dos veces.** El párrafo del Residente dice
+   «…en obras similares», así que cae en el índice de `personal` **y** en el de
+   `empresa`; los dos rangos se leen y el puesto volvía duplicado. Se
+   deduplica por el texto de origen, que es lo único que no cambia entre una
+   pasada y la otra.
+2. **El guardado en lote no podía reusar `guardarRequisito`.** Esa función
+   tiene un guard síncrono anti-duplicado (`enCursoRef`) que corta la segunda
+   llamada mientras la primera está en vuelo: un `for` habría guardado el
+   primer puesto y descartado los otros ocho **en silencio**.
+
+### Archivos
+
+- `src/lib/bases-triage.js` — se le agregó el camino PDF (`bloquesDePdf`,
+  `renglonesDeItems`) y el ancla `<!-- página N -->`, que es lo que después
+  permite citar una página y comprobarla. Un `.docx` no tiene páginas y no se
+  le inventan.
+- `src/lib/bases-extraccion.js` — índice sin IA, verificación de citas y la
+  traducción a la fila de `licitacion_requisitos`. 36 tests.
+- `src/lib/bases-analisis.js` — la cadena completa, en el cliente. 11 tests con
+  un API de mentira.
+- `api/bases-analizar.js` — endpoint propio: `ocr` (de a 6 páginas), `localizar`
+  y `extraer`.
+- `src/components/jx-licitaciones.jsx` — el botón **«🔎 Leer las bases»** y el
+  modal de revisión.
+- `docs/prompt-extraccion-bases.md` — el prompt y sus reglas, que es lo que se
+  revisa cuando una extracción sale mal.
+
+### Lo que NO hace, y por qué
+
+- **No guarda nada solo.** Propone; la persona tilda. Un requisito inventado
+  que entra solo descalifica gente que sí calificaba.
+- **No pisa lo que ya cargaste**: de los datos del proceso solo propone los
+  campos vacíos.
+- **No propone `rubro_id`, `tipo_trabajo` ni con qué empresa postulamos.** Eso
+  no se lee de las bases y errarlo desarma la postulación.
+- **No corre desde el servidor.** Un PDF de 96 páginas no entra en una
+  serverless, ni por tamaño ni por tiempo.
+
+---
+
 ## Anexo — contexto original de Gabriel (8-set-2026)
 
 Se conserva tal como se recibió, salvo los puntos ya corregidos arriba.
@@ -304,8 +410,9 @@ general» parecía nativo.
   empresa, cronograma, estructura de presentación, factores de evaluación y un
   array de **alertas** para todo lo que necesita revisión humana.
 
-> ⚠️ El `prompt-extraccion-bases-jarvex.md` que el contexto original referencia
-> **no está en el repo**. Hace falta para la entrega 4.
+> El `prompt-extraccion-bases-jarvex.md` que el contexto original referencia
+> nunca existió en el repo. Lo reemplaza `docs/prompt-extraccion-bases.md`,
+> escrito en la entrega 3 contra los documentos reales.
 
 ### Estructura de presentación: dinámica, no plantilla fija
 
@@ -322,4 +429,9 @@ partir de sus propias bases.
   Impuestos, Ley 29230) — ejemplo de estructura de convocatoria y calendario,
   no de OCR mixto.
 - Anexos 12 y 13 — Modelo de Bases EP/EPS Chilete (.docx).
-- Pendiente: bases reales con partes escaneadas para validar el triage.
+- **BASES INTEGRADAS del proceso 009** (.pdf, 8-set-2026) — las bases reales con
+  partes escaneadas que faltaban: 96 páginas, 94 de ellas escaneadas. Validaron
+  el triage en la dirección contraria a Chilete.
+- **CV de un profesional** (.pdf, 39 páginas) — 8 de currículum nativo y 31 de
+  constancias escaneadas. Reordena la entrega 4: extraer «el CV» es, en
+  realidad, leer las constancias.

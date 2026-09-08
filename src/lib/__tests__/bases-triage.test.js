@@ -13,7 +13,7 @@ import JSZip from 'jszip';
 import {
   ratioAlfabetico, contarAlfabeticos, clasificarPaginaPdf, normalizarRotacion,
   clasificarImagenDocx, resumenTriage, bloquesDeDocx, bloquesAMarkdown,
-  UMBRAL_PAGINA_CM,
+  UMBRAL_PAGINA_CM, renglonesDeItems, bloquesDePdf,
 } from '../bases-triage.js';
 
 describe('ratioAlfabetico / contarAlfabeticos', () => {
@@ -200,4 +200,89 @@ describe('bases reales del proceso de Chilete', () => {
     expect(paginas.filter(p => p.rotacionCorreccion === 90).length).toBe(12);
     expect(paginas.filter(p => p.rotacionCorreccion === 270).length).toBe(3);
   });
+});
+
+// ── El otro camino: PDF (tanda 15, entrega 3) ──────────────────────
+//
+// Las BASES INTEGRADAS del proceso 009 son el espejo exacto de Chilete:
+// 96 páginas de las que 94 están escaneadas y solo 2 son nativas. El mismo
+// triage sirve para las dos porque nunca decidió a nivel de documento.
+
+/** Un documento de pdf.js de mentira: alcanza para probar la decisión. */
+const pdfFalso = (paginas) => ({
+  numPages: paginas.length,
+  getPage: async (n) => ({
+    getTextContent: async () => ({
+      items: (paginas[n - 1] || []).map((s, i) => ({ str: s, transform: [1, 0, 0, 1, 0, 1000 - i * 12] })),
+    }),
+  }),
+});
+
+describe('renglonesDeItems', () => {
+  it('reconstruye los renglones de arriba hacia abajo y de izquierda a derecha', () => {
+    const items = [
+      { str: 'CIVIL', transform: [1, 0, 0, 1, 80, 500] },
+      { str: 'INGENIERO ', transform: [1, 0, 0, 1, 10, 500] },
+      { str: 'TÍTULO', transform: [1, 0, 0, 1, 10, 600] },
+    ];
+    expect(renglonesDeItems(items)).toEqual(['TÍTULO', 'INGENIERO CIVIL']);
+  });
+  it('sin ítems no explota', () => {
+    expect(renglonesDeItems(null)).toEqual([]);
+  });
+});
+
+describe('bloquesDePdf', () => {
+  it('separa la página nativa de la escaneada y le pone su número a cada una', async () => {
+    // Un párrafo de verdad: con 71 letras esto NO califica como nativo (el
+    // piso son 80) y el triage lo mandaría a OCR — el umbral haciendo su trabajo.
+    const nativa = 'REQUISITOS DE CALIFICACION DEL PERSONAL CLAVE PROPUESTO PARA LA '
+      + 'EJECUCION DE LA OBRA, conforme a lo señalado en los Terminos de Referencia.';
+    const bloques = await bloquesDePdf(pdfFalso([[nativa], [''], [nativa]]));
+    expect(bloques.map(b => b.tipo)).toEqual(['texto', 'imagen', 'texto']);
+    expect(bloques.map(b => b.pagina)).toEqual([1, 2, 3]);
+    expect(bloques[1].media).toBe('pdf:p2');
+    expect(bloques[1].necesitaOcr).toBe(true);
+  });
+
+  it('NO corrige rotación: en un PDF el viewport ya la aplicó (a diferencia del .docx)', async () => {
+    const bloques = await bloquesDePdf(pdfFalso([['']]));
+    expect(bloques[0].rotacionCorreccion).toBe(0);
+  });
+
+  it('solo rasteriza lo que va a OCR — rasterizar una página nativa es pagar de gusto', async () => {
+    const pedidas = [];
+    await bloquesDePdf(pdfFalso([['x'.repeat(300)], ['']]), {
+      rasterizar: async (_page, n) => { pedidas.push(n); return 'data:image/jpeg;base64,AAA'; },
+    });
+    expect(pedidas).toEqual([2]);
+  });
+
+  it('el markdown lleva el ancla de página, que es lo que permite citar', async () => {
+    const bloques = await bloquesDePdf(pdfFalso([['A'.repeat(200)], ['B'.repeat(200)]]));
+    const md = bloquesAMarkdown(bloques);
+    expect(md).toContain('<!-- página 1 -->');
+    expect(md).toContain('<!-- página 2 -->');
+  });
+
+  it('un .docx sigue sin anclas: no tiene páginas y no se le inventan', () => {
+    const md = bloquesAMarkdown([{ tipo: 'texto', texto: 'sin páginas' }]);
+    expect(md).not.toContain('<!-- página');
+  });
+});
+
+// Contra el PDF de verdad. 96 páginas, medido a mano el 8-set-2026.
+const PDF_REAL = 'BASES_INTEGRADAS_PROCESO_SELECCION_009 (2).pdf';
+const tPdf = hay(PDF_REAL) ? it : it.skip;
+describe('BASES INTEGRADAS 009 — el PDF casi todo escaneado', () => {
+  tPdf('96 páginas: 2 nativas y 94 a OCR, como se midió', async () => {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const data = new Uint8Array(fs.readFileSync(path.join(DIR, PDF_REAL)));
+    const pdf = await pdfjs.getDocument({ data, useSystemFonts: true }).promise;
+    const bloques = await bloquesDePdf(pdf);
+    const r = resumenTriage(bloques);
+    expect(bloques).toHaveLength(96);
+    expect(r.paginasOcr).toBe(94);
+    expect(bloques.filter(b => b.tipo === 'texto')).toHaveLength(2);
+  }, 120000);
 });
