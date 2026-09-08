@@ -138,6 +138,22 @@ export function estadoColegiatura(ficha, hoy = hoyISO()) {
   return { estado: 'vigente', diasRestantes: diff };
 }
 
+/**
+ * Antigüedad como colegiado, en meses. Es con lo que las bases acreditan la
+ * EXPERIENCIA GENERAL: «experiencia no menor de 03 años, sustentada con copia
+ * de diploma de incorporación al Colegio respectivo».
+ *
+ * `colegiatura_habil_hasta` NO sirve para esto: dice si puede presentarse hoy,
+ * no cuántos años lleva. Por eso la mig 198 agregó `colegiatura_fecha`.
+ * @returns meses, o null si no hay fecha de colegiatura cargada
+ */
+export function mesesDesdeColegiatura(ficha, hoy = hoyISO()) {
+  const desde = aDia(ficha?.colegiatura_fecha);
+  const h = aDia(hoy);
+  if (desde == null || h == null || h < desde) return null;
+  return diasAMeses(h - desde + 1);
+}
+
 // ── Evaluación contra los requisitos de las bases ──────────────────
 
 const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
@@ -158,6 +174,78 @@ export function profesionCoincide(profesionCandidato, profesionRequerida) {
 }
 
 /**
+ * ¿El cargo de esta experiencia está entre los que las bases aceptan?
+ *
+ * Las bases no piden "Residente": piden «Residente de obra y/o Supervisor de
+ * obra y/o Inspector de obra y/o Gerente de obra y/o …» — diez sinónimos por
+ * puesto, distintos en cada puesto. Con la lista vacía no se filtra nada (las
+ * bases no acotaron el cargo, o el requisito se cargó a mano sin la lista).
+ *
+ * Coincide si algún equivalente aparece dentro del cargo de la constancia o al
+ * revés: la constancia dice "Ingeniero Residente de Obra" y las bases piden
+ * "Residente de obra". Se compara sin tildes ni mayúsculas.
+ */
+export function cargoCoincide(cargoExperiencia, cargosEquivalentes) {
+  const lista = (cargosEquivalentes || []).map(norm).filter(Boolean);
+  if (!lista.length) return true;
+  const c = norm(cargoExperiencia);
+  if (!c) return false;
+  return lista.some(eq => c.includes(eq) || eq.includes(c));
+}
+
+/**
+ * Recorta un periodo a la ventana «en los últimos N años».
+ * La experiencia que quedó afuera no cuenta, y la que entra a medias cuenta
+ * solo por su parte de adentro.
+ * @returns {ini, fin} recortado, o null si quedó entera afuera
+ */
+export function recortarAVentana(periodo, ventanaAnios, hoy = hoyISO()) {
+  if (!periodo) return null;
+  const n = Number(ventanaAnios) || 0;
+  if (n <= 0) return periodo;                     // las bases no acotan
+  const h = aDia(hoy);
+  if (h == null) return periodo;
+  const desde = h - Math.round(n * 365.25);
+  const ini = Math.max(periodo.ini, desde);
+  const fin = Math.min(periodo.fin, h);
+  return fin < ini ? null : { ini, fin };
+}
+
+/**
+ * Cuenta PARTICIPACIONES, que es otra pregunta que los meses.
+ *
+ * «Sustentar como mínimo 02 participaciones … por un plazo no menor a 02 meses
+ * cada participación, en los últimos 10 años».
+ *
+ * LAS PARTICIPACIONES NO SE FUSIONAN. Es lo contrario de totalizarExperiencia():
+ * dos obras simultáneas son UN año pero son DOS participaciones. Fusionarlas
+ * acá contaría una sola y descalificaría a alguien que sí cumple; no fusionar
+ * en los meses inflaría el total y es observable. Son dos reglas opuestas
+ * sobre los mismos datos, y cada una está donde corresponde.
+ *
+ * @param opts { hoy, filtro, cargosEquivalentes, mesesPorParticipacion,
+ *               ventanaAnios, exigeSustento }
+ * @returns { n, nSustentadas, descartadasPorCorta, descartadasPorCargo }
+ */
+export function contarParticipaciones(experiencias, opts = {}) {
+  const hoy = opts.hoy || hoyISO();
+  const filtro = opts.filtro || (() => true);
+  const minMeses = Number(opts.mesesPorParticipacion) || 0;
+  let n = 0, nSust = 0, porCorta = 0, porCargo = 0;
+
+  for (const e of (experiencias || [])) {
+    if (!e || e.deleted_at || !filtro(e)) continue;
+    if (!cargoCoincide(e.cargo, opts.cargosEquivalentes)) { porCargo++; continue; }
+    const per = recortarAVentana(periodoDe(e, hoy), opts.ventanaAnios, hoy);
+    if (!per) continue;                            // quedó fuera de la ventana
+    if (diasAMeses(per.fin - per.ini + 1) < minMeses) { porCorta++; continue; }
+    n++;
+    if (e.evidencia_id) nSust++;
+  }
+  return { n, nSustentadas: nSust, descartadasPorCorta: porCorta, descartadasPorCargo: porCargo };
+}
+
+/**
  * Evalúa UN candidato contra UN requisito del proceso.
  *
  * @param candidato { persona, ficha, experiencias }
@@ -168,6 +256,14 @@ export function profesionCoincide(profesionCandidato, profesionRequerida) {
  *   rubroId?         null = cualquier rubro (experiencia general)
  *   exigeColegiatura?  default true
  *   exigeSustento?   default true → mide con los meses SUSTENTADOS
+ *
+ *   — criterios de la mig 198, todos APAGADOS por default: un requisito
+ *     viejo se evalúa exactamente igual que antes —
+ *   mesesGeneralesMinimos?  experiencia general, contra la colegiatura
+ *   participacionesMinimas? «como mínimo 02 participaciones»
+ *   mesesPorParticipacion?  «no menor a 02 meses cada participación»
+ *   ventanaAnios?           «en los últimos 10 años»
+ *   cargosEquivalentes?     los sinónimos de cargo que aceptan las bases
  * }
  * @returns {
  *   cumple, meses, mesesSustentados, mesesFaltantes,
@@ -202,8 +298,26 @@ export function evaluarRequisito(candidato, requisito = {}, opts = {}) {
     if (!ficha?.colegiatura_numero) avisos.push('Falta el número de colegiatura');
   }
 
-  // Experiencia: del rubro pedido, o toda si el requisito no lo acota.
-  const filtro = requisito.rubroId ? (e) => e.rubro_id === requisito.rubroId : () => true;
+  // EXPERIENCIA GENERAL: la que las bases acreditan con el diploma de
+  // incorporación al colegio, no con constancias de obra. Es otro número que
+  // los meses específicos de abajo.
+  const minGeneral = Number(requisito.mesesGeneralesMinimos) || 0;
+  const mesesGenerales = mesesDesdeColegiatura(ficha, hoy);
+  if (minGeneral > 0) {
+    if (mesesGenerales == null) {
+      // No se puede afirmar que cumple ni que no: falta el dato. Se avisa y NO
+      // se bloquea — bloquear por un campo vacío descartaría gente que sí
+      // califica, que es el error caro de este módulo.
+      avisos.push(`Falta la fecha de colegiatura para acreditar los ${formatearMeses(minGeneral)} de experiencia general`);
+    } else if (mesesGenerales < minGeneral) {
+      bloqueos.push(`Colegiado hace ${formatearMeses(mesesGenerales)} y se piden ${formatearMeses(minGeneral)} de experiencia general`);
+    }
+  }
+
+  // Experiencia ESPECÍFICA: del rubro pedido, o toda si el requisito no lo
+  // acota, y solo en los cargos que las bases aceptan.
+  const porRubro = requisito.rubroId ? (e) => e.rubro_id === requisito.rubroId : () => true;
+  const filtro = (e) => porRubro(e) && cargoCoincide(e.cargo, requisito.cargosEquivalentes);
   const t = totalizarExperiencia(experiencias, { hoy, filtro });
   const mesesQueCuentan = exigeSustento ? t.mesesSustentados : t.meses;
   const faltantes = Math.max(0, Math.round((minimo - mesesQueCuentan) * 10) / 10);
@@ -213,6 +327,26 @@ export function evaluarRequisito(candidato, requisito = {}, opts = {}) {
       ? `Tiene ${t.meses} meses pero solo ${t.mesesSustentados} con constancia (faltan ${faltantes})`
       : `Tiene ${mesesQueCuentan} de los ${minimo} meses exigidos`);
   }
+
+  // PARTICIPACIONES: la pregunta que el modelo viejo no hacía, y por la que
+  // alguien con cinco años en UNA sola obra pasaba como calificado.
+  const minPart = Number(requisito.participacionesMinimas) || 0;
+  const part = contarParticipaciones(experiencias, {
+    hoy, filtro: porRubro,
+    cargosEquivalentes: requisito.cargosEquivalentes,
+    mesesPorParticipacion: requisito.mesesPorParticipacion,
+    ventanaAnios: requisito.ventanaAnios,
+  });
+  const partQueCuentan = exigeSustento ? part.nSustentadas : part.n;
+  if (minPart > 0 && partQueCuentan < minPart) {
+    const detalle = [];
+    if (part.descartadasPorCorta) detalle.push(`${part.descartadasPorCorta} más corta(s) que ${formatearMeses(Number(requisito.mesesPorParticipacion) || 0)}`);
+    if (part.descartadasPorCargo) detalle.push(`${part.descartadasPorCargo} en un cargo que las bases no aceptan`);
+    if (exigeSustento && part.n > partQueCuentan) detalle.push(`${part.n - partQueCuentan} sin constancia`);
+    bloqueos.push(`Tiene ${partQueCuentan} de las ${minPart} participaciones exigidas`
+      + (detalle.length ? ` (${detalle.join('; ')})` : ''));
+  }
+
   if (t.sinSustento > 0) avisos.push(`${t.sinSustento} experiencia(s) sin constancia adjunta`);
   if (!ficha?.cv_evidencia_id) avisos.push('Sin CV adjunto');
 
@@ -222,6 +356,10 @@ export function evaluarRequisito(candidato, requisito = {}, opts = {}) {
     meses: t.meses,
     mesesSustentados: t.mesesSustentados,
     mesesFaltantes: faltantes,
+    mesesGenerales,
+    participaciones: partQueCuentan,
+    participacionesFaltantes: Math.max(0, minPart - partQueCuentan),
+    detalleParticipaciones: part,
     colegiatura: col,
     bloqueos, avisos,
   };

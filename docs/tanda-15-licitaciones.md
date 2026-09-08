@@ -41,11 +41,17 @@ al cerrar la pestaña. Servía para una consulta suelta, no para trabajar.
 | # | Entrega | Estado |
 |---|---|---|
 | 1 | **La postulación existe como dato** — tablas, pantalla, requisitos guardados por proceso, veredicto y paso a Trabajos | ✅ hecha |
-| 2 | **CV → ficha con IA** — llenar el padrón, que hoy está vacío | pendiente |
-| 3 | **Requisitos de empresa** — obras similares, facturación, CDC/RNP | pendiente |
-| 4 | **Escáner de bases** — triage por página en el cliente + Pase 1/Pase 2 → llena los requisitos de la entrega 1 | pendiente (esperando bases reales) |
-| 5 | Calendario del proceso + kanban con documentos por etapa | pendiente |
-| 6 | Oferta económica | módulo propio, no un vínculo |
+| 2 | **El requisito como lo piden las bases** + **motor de triage** (mig 198) | ✅ hecha |
+| 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | siguiente |
+| 4 | **CV → ficha con IA** — llenar el padrón, que hoy está vacío | pendiente |
+| 5 | **Requisitos de empresa** — obras similares, facturación, CDC/RNP | pendiente |
+| 6 | Calendario del proceso + kanban con documentos por etapa | pendiente |
+| 7 | Oferta económica | módulo propio, no un vínculo |
+
+> La herramienta de análisis es **separada de Captura Mágica**, por decisión de
+> Gabriel (8-set-2026) y porque son problemas distintos: Captura Mágica lee un
+> comprobante por vez; ésta lee 300 páginas y hace dos o tres pasadas.
+> Comparten el motor de OCR y nada más.
 
 ---
 
@@ -132,6 +138,113 @@ podría crear la misma obra dos veces.
 
 `ejecutora_tipo` **no** viaja en el borrador: empresa o consorcio no se deduce
 de con qué RUC se postuló, y errarlo desarma la contabilidad de la obra entera.
+
+---
+
+## Entrega 2 — El requisito real, y el triage medido
+
+### Lo que se midió en las bases de Chilete (8-set-2026)
+
+Cuatro archivos reales: los Anexos 12 (ejecución) y 13 (supervisión) del
+proceso del Gobierno Regional de Cajamarca, más dos publicaciones de El Peruano.
+
+| | Texto nativo | Imágenes | Páginas a OCR |
+|---|---|---|---|
+| Anexo 12 — bases EP (ejecución) | 194.052 chars | 16 | **15** |
+| Anexo 13 — bases EPS (supervisión) | 120.515 chars | 18 | **17** |
+| El Peruano 021-2026 | 8.620 chars alfabéticos | — | **0** |
+| El Peruano 022-2026 | 9.549 chars alfabéticos | — | **0** |
+
+Las 32 imágenes son **páginas completas escaneadas: los Términos de Referencia**,
+pegadas como bloque dentro de un Word que por lo demás es texto nativo. Decidir
+el OCR a nivel de documento manda a OCR 314.000 caracteres perfectos (y les mete
+errores) o deja sin leer los TDR, que es donde están los requisitos.
+
+Costo: 32 páginas por proceso ≈ **USD 0,06**. Mandar los documentos enteros a un
+modelo de visión cuesta 20–50× más y lee peor.
+
+**El calendario con fechas reales es NATIVO** (Anexo N° 2, las 10 etapas del
+17/08/2026 al 15/10/2026): se extrae sin OCR y sin IA.
+
+**Los PDFs de El Peruano no necesitan OCR en absoluto.** Pero la convocatoria es
+una nota entre resoluciones de COFOPRI, notificaciones de SUNAT y disoluciones
+de empresas: ahí el problema no es leer, es **encontrar**. Es otro trabajo.
+
+### El hallazgo que evita una heurística
+
+Las páginas escaneadas están **rotadas 90°**, y el Word **declara la rotación**
+en su propio XML (`<a:xfrm rot="...">`): `rot=270°` en 15 de 16 imágenes del
+Anexo 12 y 17 de 18 del Anexo 13.
+
+Y en el Anexo 12 **no todas van para el mismo lado**: 12 a 270° y 3 a 90°.
+Rotar todo 90° "a ojo" corrompe esas 3. El atributo del documento es la única
+fuente confiable, y por eso `bases-triage.js` lo lee en vez de estimarlo.
+
+El tamaño de la caja separa la página del adorno: las del TDR miden 22–27 cm; el
+logo de la carátula, 7,7 cm.
+
+### La asimetría entre los dos documentos del mismo proceso
+
+En las bases de **supervisión** los requisitos de personal están en texto
+nativo (66 líneas con "experiencia", 15 con "personal clave"). En las de
+**ejecución** no — están en el TDR escaneado. Mismo proceso, dos documentos, dos
+caminos. Eso hace que el triage no sea una optimización sino la condición para
+que el extractor funcione en los dos casos.
+
+### El falso ✅ que cerró la mig 198
+
+El requisito real, literal del Anexo 13:
+
+> **Jefe de Supervisión del Proyecto** — Experiencia no menor de **03 años**,
+> sustentada con copia de diploma de incorporación al Colegio respectivo.
+> Sustentar como mínimo **02 participaciones** como Residente de obra y/o
+> Supervisor de obra y/o Inspector de obra y/o [7 cargos más] en obras iguales o
+> similares al objeto de la convocatoria, por un plazo **no menor a 02 meses
+> cada participación**, en los **últimos 10 años**.
+
+Son **cinco criterios** y la mig 197 guardaba uno (`meses_minimos` + `rubro`).
+Consecuencia concreta: **alguien con cinco años seguidos en UNA sola obra pasaba
+el filtro y el verificador lo daba por calificado.** No califica — le falta la
+segunda participación. Un verificador que dice "sí" cuando la respuesta es "no"
+es peor que no tener verificador.
+
+La mig 198 agrega, todo con defaults que APAGAN los criterios (una fila vieja se
+evalúa igual que antes):
+
+- `participaciones_minimas` · `meses_por_participacion` · `ventana_anios`
+- `cargos_equivalentes` (jsonb) — los diez sinónimos por puesto
+- `meses_generales_minimos` — la experiencia general, otro número
+- `licitaciones.definicion_obras_similares` — se define una vez por proceso, y
+  **no** es un rubro del catálogo: es el texto que escribió esa entidad
+- `personal_profesional.colegiatura_fecha` — sin ella los "03 años" no se pueden
+  medir; `colegiatura_habil_hasta` dice si puede presentarse hoy, no la antigüedad
+
+**Las participaciones no se fusionan**, y es lo contrario de los meses: dos obras
+simultáneas son UN año pero son DOS participaciones. Son dos reglas opuestas
+sobre los mismos datos y cada una está donde corresponde
+(`totalizarExperiencia` fusiona, `contarParticipaciones` no).
+
+Cuando falta la fecha de colegiatura se **avisa y no se bloquea**: descartar a
+alguien por un campo vacío es el error caro de este módulo.
+
+### Archivos
+
+- `src/lib/bases-triage.js` — decisión pura + lector de `.docx`. Sin IA.
+- `src/lib/__tests__/bases-triage.test.js` — 21 tests; los que abren los .docx
+  reales se **saltan** si `Modelos/` no está (gitignoreado: el repo es público).
+- `src/lib/__tests__/requisitos-reales-bases.test.js` — 26 tests que transcriben
+  el requisito del Jefe de Supervisión palabra por palabra.
+
+### Dos bugs que los archivos reales destaparon
+
+1. En `bloquesDeDocx`, esparcir `clasificarImagenDocx()` sobre el bloque pisaba
+   `tipo: 'imagen'` con su propio `tipo: 'pagina'` — y todo el módulo filtra por
+   ese campo, así que las 15 páginas del TDR quedaban **invisibles**.
+2. `<w:t[^>]*>` también matchea `<w:tbl>`, `<w:tc>` y `<w:tr>`; como no cierran
+   con `</w:t>`, la captura se comía párrafos enteros de tabla e inflaba el texto
+   de 194k a 327k caracteres.
+
+Ninguno de los dos aparece con datos inventados. Los dos tienen test de regresión.
 
 ---
 

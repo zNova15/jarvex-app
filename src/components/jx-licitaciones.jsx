@@ -557,7 +557,12 @@ function DetalleModal({
           </div>
           {canWrite && (
             <button className="btn btn-ghost btn-xs" disabled={busy}
-              onClick={() => setNuevo({ cargo: '', profesion: '', meses_minimos: 60, rubro_id: '', exige_sustento: true })}>
+              onClick={() => setNuevo({
+                cargo: '', profesion: '', rubro_id: '', exige_sustento: true,
+                meses_generales_minimos: 36, meses_minimos: 0,
+                participaciones_minimas: 2, meses_por_participacion: 2,
+                ventana_anios: 10, cargos_equivalentes: '',
+              })}>
               + Agregar puesto
             </button>
           )}
@@ -590,10 +595,12 @@ function DetalleModal({
               <input className="fi" value={nuevo.profesion} placeholder="Ingeniero Civil"
                 onChange={e => setNuevo(n => ({ ...n, profesion: e.target.value }))} />
             </div>
-            <div style={{ width: 110 }}>
-              <label className="flabel">Meses mín.</label>
-              <input className="fi" type="number" min="0" value={nuevo.meses_minimos}
-                onChange={e => setNuevo(n => ({ ...n, meses_minimos: Number(e.target.value) || 0 }))} />
+            <div style={{ width: 130 }}>
+              <label className="flabel" title="La que se acredita con el diploma de incorporación al colegio">
+                Exp. general (meses)
+              </label>
+              <input className="fi" type="number" min="0" value={nuevo.meses_generales_minimos}
+                onChange={e => setNuevo(n => ({ ...n, meses_generales_minimos: Number(e.target.value) || 0 }))} />
             </div>
             <div style={{ flex: '1 1 180px' }}>
               <label className="flabel">Rubro</label>
@@ -603,10 +610,43 @@ function DetalleModal({
                 {rubros.filter(x => x.activo !== false).map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
               </select>
             </div>
+            {/* Los tres criterios que las bases piden juntos y que un modelo de
+                "solo meses" no distingue. Ver mig 198. */}
+            <div style={{ width: 110 }}>
+              <label className="flabel" title="«Sustentar como mínimo 02 participaciones»">Participac. mín.</label>
+              <input className="fi" type="number" min="0" value={nuevo.participaciones_minimas}
+                onChange={e => setNuevo(n => ({ ...n, participaciones_minimas: Number(e.target.value) || 0 }))} />
+            </div>
+            <div style={{ width: 120 }}>
+              <label className="flabel" title="«por un plazo no menor a 02 meses cada participación»">Meses c/u</label>
+              <input className="fi" type="number" min="0" value={nuevo.meses_por_participacion}
+                onChange={e => setNuevo(n => ({ ...n, meses_por_participacion: Number(e.target.value) || 0 }))} />
+            </div>
+            <div style={{ width: 120 }}>
+              <label className="flabel" title="«en los últimos 10 años». Vacío = las bases no acotan">Últimos (años)</label>
+              <input className="fi" type="number" min="0" value={nuevo.ventana_anios ?? ''}
+                onChange={e => setNuevo(n => ({ ...n, ventana_anios: e.target.value === '' ? null : Number(e.target.value) }))} />
+            </div>
+            <div style={{ flex: '1 1 100%' }}>
+              <label className="flabel">Cargos que las bases aceptan (separados por «/»)</label>
+              <input className="fi" value={nuevo.cargos_equivalentes}
+                placeholder="Residente de obra / Supervisor de obra / Inspector de obra / Gerente de obra"
+                onChange={e => setNuevo(n => ({ ...n, cargos_equivalentes: e.target.value }))} />
+              <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                Vacío = no se filtra por cargo. Si las bases listan sinónimos, copiálos todos: una constancia
+                con un cargo fuera de la lista no cuenta como participación.
+              </div>
+            </div>
             <button className="btn btn-ghost btn-sm" onClick={() => setNuevo(null)}>Cancelar</button>
             <button className="btn btn-amber btn-sm" disabled={busy || !nuevo.cargo.trim()}
               onClick={async () => {
-                await onGuardarReq({ ...nuevo, rubro_id: nuevo.rubro_id || null });
+                const { cargos_equivalentes, ...resto } = nuevo;
+                await onGuardarReq({
+                  ...resto,
+                  rubro_id: nuevo.rubro_id || null,
+                  cargos_equivalentes: String(cargos_equivalentes || '')
+                    .split(/[/;\n]|\sy\/o\s/i).map(x => x.trim()).filter(Boolean),
+                });
                 setNuevo(null);
               }}>Agregar</button>
           </div>
@@ -655,10 +695,22 @@ function PuestoFila({ fila, puesto, rubros, candidatos, canWrite, busy, onGuarda
         <div style={{ flex: '2 1 220px', minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 12.5 }}>{fila.cargo || '(sin cargo)'}</div>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-            {fila.profesion || 'cualquier profesión'} · {fila.meses_minimos || 0} meses
-            {rubro ? ` en ${rubro.nombre}` : ' (experiencia general)'}
+            {fila.profesion || 'cualquier profesión'}
+            {fila.meses_generales_minimos > 0 && ` · ${formatearMeses(fila.meses_generales_minimos)} de exp. general`}
+            {fila.participaciones_minimas > 0 && ` · ${fila.participaciones_minimas} participaciones`}
+            {fila.meses_por_participacion > 0 && ` de ${formatearMeses(fila.meses_por_participacion)} c/u`}
+            {fila.ventana_anios ? ` · últimos ${fila.ventana_anios} años` : ''}
+            {fila.meses_minimos > 0 && ` · ${formatearMeses(fila.meses_minimos)} acumulados`}
+            {rubro ? ` · ${rubro.nombre}` : ''}
             {fila.exige_sustento === false ? ' · sin exigir constancia' : ''}
           </div>
+          {Array.isArray(fila.cargos_equivalentes) && fila.cargos_equivalentes.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--tm)' }}
+              title={fila.cargos_equivalentes.join(' · ')}>
+              Cargos aceptados: {fila.cargos_equivalentes.slice(0, 3).join(', ')}
+              {fila.cargos_equivalentes.length > 3 ? ` y ${fila.cargos_equivalentes.length - 3} más` : ''}
+            </div>
+          )}
           {fila.fuente === 'extraccion' && (
             <div style={{ fontSize: 10, color: 'var(--blue)' }}>
               Extraído de las bases{fila.fuente_pagina ? ` · pág. ${fila.fuente_pagina}` : ''}
@@ -672,7 +724,11 @@ function PuestoFila({ fila, puesto, rubros, candidatos, canWrite, busy, onGuarda
           </div>
           {p && !p.cubierto && p.masCerca && (
             <div style={{ fontSize: 10, color: 'var(--amber)' }}>
-              Más cerca: {nombreDe(p.masCerca.persona)} (le faltan {formatearMeses(p.masCerca.mesesFaltantes)})
+              Más cerca: {nombreDe(p.masCerca.persona)} — {
+                p.masCerca.participacionesFaltantes > 0
+                  ? `le falta${p.masCerca.participacionesFaltantes > 1 ? 'n' : ''} ${p.masCerca.participacionesFaltantes} participación(es)`
+                  : `le faltan ${formatearMeses(p.masCerca.mesesFaltantes)}`
+              }
             </div>
           )}
         </div>

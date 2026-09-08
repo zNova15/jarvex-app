@@ -86,6 +86,14 @@ export function requisitoDeFila(fila) {
     rubroId: f.rubro_id || null,
     exigeColegiatura: f.exige_colegiatura !== false,
     exigeSustento: f.exige_sustento !== false,
+    // Los cuatro criterios de la mig 198. Sin ellos, «02 participaciones de 02
+    // meses cada una en los últimos 10 años» se evaluaba como si dijera solo
+    // «X meses», y alguien con cinco años en UNA obra pasaba como calificado.
+    mesesGeneralesMinimos: Number(f.meses_generales_minimos) || 0,
+    participacionesMinimas: Number(f.participaciones_minimas) || 0,
+    mesesPorParticipacion: Number(f.meses_por_participacion) || 0,
+    ventanaAnios: f.ventana_anios ?? null,
+    cargosEquivalentes: Array.isArray(f.cargos_equivalentes) ? f.cargos_equivalentes : [],
     candidatoPersonalId: f.candidato_personal_id || null,
     fuente: f.fuente || 'manual',
     fuentePagina: f.fuente_pagina ?? null,
