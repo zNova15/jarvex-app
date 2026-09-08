@@ -115,3 +115,59 @@ describe('movimientosADesmarcar — el dato tiene que respetar la definición', 
     expect(t).toMatch(/No se borra ni se modifica ningún importe/);
   });
 });
+
+// ── ENTRAR AL GRUPO: LAS VENTAS QUE QUEDAN SIN ESPEJO ──────────────
+// El mismo agujero de la E001-2 (JARVEX → EL INCA), pero abierto de a muchos
+// por un solo clic del selector: al entrar la entidad, sus facturas pasan a
+// eliminarse contra un espejo interno… que puede no existir.
+describe('impactoDeReclasificar — entrar al grupo avisa cuántas ventas quedan sin espejo', () => {
+  const jarvex = { id: 'c-jarvex', name: 'JARVEX', ruc: '20601234567', tipo_entidad: 'propia' };
+  const elInca = { id: 'c-inca', name: 'CONSORCIO EL INCA', ruc: '20612345678', tipo_entidad: 'tercero' };
+  const companies = [jarvex, elInca];
+  const venta = (o = {}) => ({
+    id: o.id, company_id: 'c-jarvex', related_company_id: 'c-inca',
+    is_intercompany: true, type: 'income', clase: 'venta',
+    document_type: 'factura', currency: 'PEN', amount: 19028.68,
+    document_number: 'E001-2', ...o,
+  });
+
+  it('cuenta la venta interna que no tiene su compra del otro lado', () => {
+    const r = impactoDeReclasificar({ company: elInca, tipoNuevo: 'consorcio', movs: [venta({ id: 'v1' })], companies });
+    expect(r.entranAlConsolidado).toBe(1);
+    expect(r.sinEspejo).toBe(1);
+    expect(r.sinEspejoSoles).toBeCloseTo(19028.68, 2);
+    expect(r.sinEspejoDocs).toEqual(['factura E001-2']);
+  });
+
+  it('no cuenta la que sí tiene su espejo cargado', () => {
+    const movs = [
+      venta({ id: 'v1' }),
+      { id: 'e1', company_id: 'c-inca', related_company_id: 'c-jarvex', related_movement_id: 'v1',
+        type: 'cost', clase: 'compra', is_intercompany: true, amount: 19028.68, document_number: 'E001-2' },
+    ];
+    expect(impactoDeReclasificar({ company: elInca, tipoNuevo: 'consorcio', movs, companies }).sinEspejo).toBe(0);
+  });
+
+  it('sin el catálogo el aviso sigue funcionando, nomás no dice esa parte', () => {
+    const r = impactoDeReclasificar({ company: elInca, tipoNuevo: 'consorcio', movs: [venta({ id: 'v1' })] });
+    expect(r.entranAlConsolidado).toBe(1);
+    expect(r.sinEspejo).toBe(0);
+  });
+
+  it('salir del grupo no calcula espejos faltantes (no aplica)', () => {
+    const dentro = { ...elInca, tipo_entidad: 'consorcio' };
+    const r = impactoDeReclasificar({ company: dentro, tipoNuevo: 'tercero', movs: [venta({ id: 'v1' })], companies: [jarvex, dentro] });
+    expect(r.salenDelConsolidado).toBe(1);
+    expect(r.sinEspejo).toBe(0);
+  });
+
+  it('el aviso de entrada nombra los comprobantes sin espejo', () => {
+    const t = avisoDeReclasificacion(
+      impactoDeReclasificar({ company: elInca, tipoNuevo: 'consorcio', movs: [venta({ id: 'v1' })], companies }),
+      'CONSORCIO EL INCA');
+    expect(t).toMatch(/entra al GRUPO/);
+    expect(t).toMatch(/NO tienen su COMPRA espejo/);
+    expect(t).toMatch(/E001-2/);
+    expect(t).toMatch(/Sin respaldo/);
+  });
+});

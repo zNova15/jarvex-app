@@ -2315,7 +2315,15 @@ function CapturaMagicaPage({ showToast }) {
               reason:'Captura mágica · contraparte intercompany automática' }); } catch {}
             showToast(`🔁 También registré la COMPRA espejo en ${compradora?.name || 'la otra empresa'} (automática — se puede reemplazar subiendo el comprobante real).`, 'blue');
           }
-        } catch (e) { console.warn('[captura · auto-espejo intercompany]', e?.message); }
+        } catch (e) {
+          // NO puede morir en un console.warn. La venta SÍ quedó guardada; lo
+          // que falló es su contraparte, y sin ella la venta interna queda sin
+          // su costo espejo (infla el resultado del grupo) y en «Sin respaldo»
+          // no hay nada que respaldar — exactamente el agujero de la E001-2.
+          // Que la contadora lo vea en el momento, con el camino para repararlo.
+          console.warn('[captura · auto-espejo intercompany]', e?.message);
+          showToast(`⚠ La venta ${r.serie_correlativo} se guardó, pero NO se pudo crear su COMPRA espejo en la otra empresa. Cárgala desde Órdenes → «Sin respaldo» (botón «Cargar las compras espejo que faltan»).`, 'red');
+        }
       }
 
       // 3.5) VINCULAR A OC: actualizar cantidad_recibida en oc_items + recalcular estado

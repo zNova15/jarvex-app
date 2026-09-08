@@ -35,6 +35,8 @@
 // Puro: sin React, sin Dexie.
 // ═══════════════════════════════════════════════════════════════════
 
+import { ventasSinEspejo } from './interco-espejo.js';
+
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 const esPEN = (m) => (m.currency || 'PEN') === 'PEN';
 
@@ -51,13 +53,17 @@ function apuntaA(mov, companyId, ruc) {
  * @returns {{
  *   cambia: boolean, desde: string, hacia: string,
  *   salenDelConsolidado: number, entranAlConsolidado: number,
- *   soles: number, dolares: number, docs: string[]
+ *   soles: number, dolares: number, docs: string[],
+ *   sinEspejo: number, sinEspejoSoles: number, sinEspejoDocs: string[]
  * }}
+ *
+ * `companies` (el catálogo completo) es opcional y solo sirve para el conteo de
+ * ventas sin espejo: sin él el aviso sigue funcionando, nomás no dice esa parte.
  */
-export function impactoDeReclasificar({ company, tipoNuevo, movs = [] } = {}) {
+export function impactoDeReclasificar({ company, tipoNuevo, movs = [], companies = [] } = {}) {
   const desde = company?.tipo_entidad || 'propia';
   const hacia = tipoNuevo || 'propia';
-  const base = { cambia: desde !== hacia, desde, hacia, salenDelConsolidado: 0, entranAlConsolidado: 0, soles: 0, dolares: 0, docs: [] };
+  const base = { cambia: desde !== hacia, desde, hacia, salenDelConsolidado: 0, entranAlConsolidado: 0, soles: 0, dolares: 0, docs: [], sinEspejo: 0, sinEspejoSoles: 0, sinEspejoDocs: [] };
   if (!company || desde === hacia) return base;
 
   // Solo importan los movimientos MARCADOS como internos contra esta entidad:
@@ -75,6 +81,25 @@ export function impactoDeReclasificar({ company, tipoNuevo, movs = [] } = {}) {
   }
   if (saleDelGrupo) base.salenDelConsolidado = afectados.length;
   else base.entranAlConsolidado = afectados.length;
+
+  // ── LAS VENTAS QUE VAN A QUEDAR SIN SU COMPRA ESPEJO ─────────────
+  // Al ENTRAR al grupo, esas facturas dejan de ser venta externa y pasan a
+  // eliminarse contra su espejo interno… si el espejo existe. El que no lo
+  // tiene deja la venta contada sin su costo del otro lado: el mismo agujero
+  // de la E001-2, pero abierto de a muchos y por un solo clic del selector.
+  // Se avisa ANTES de guardar, igual que ya se avisa al revés.
+  if (entraAlGrupo) {
+    // El catálogo DESPUÉS del cambio: es contra ese perímetro que hay que
+    // mirar, porque hoy la entidad todavía es tercero y no habría ninguna.
+    const simulado = (Array.isArray(companies) ? companies : [])
+      .map(c => (c?.id === company.id ? { ...c, tipo_entidad: hacia } : c));
+    if (!simulado.some(c => c?.id === company.id)) simulado.push({ ...company, tipo_entidad: hacia });
+    const huecos = ventasSinEspejo(movs, { companies: simulado })
+      .filter(e => e.compradorId === company.id || e.vendedorId === company.id);
+    base.sinEspejo = huecos.length;
+    base.sinEspejoSoles = huecos.reduce((t, e) => t + (e.moneda === 'USD' ? 0 : Number(e.monto || 0)), 0);
+    base.sinEspejoDocs = huecos.map(e => e.documento);
+  }
   return base;
 }
 
@@ -106,9 +131,18 @@ export function avisoDeReclasificacion(impacto, nombre = 'esta entidad') {
       + `Pasan a contar como operación con alguien de afuera: salen de "Operaciones entre empresas" y empiezan a sumar en el Dashboard Ejecutivo. `
       + `No se borra ni se modifica ningún importe.`;
   }
-  return `${nombre} entra al GRUPO.\n\n`
+  let txt = `${nombre} entra al GRUPO.\n\n`
     + `${n} comprobante(s) por ${plata} que hoy cuentan como operación externa van a pasar a ELIMINARSE contra su espejo interno.\n\n`
     + `El Consolidado del grupo va a cambiar.`;
+  if (impacto.sinEspejo) {
+    const s = impacto.sinEspejoSoles
+      ? ` por S/ ${impacto.sinEspejoSoles.toLocaleString('es-PE', { minimumFractionDigits: 2 })}` : '';
+    txt += `\n\n⚠ ${impacto.sinEspejo} de esas ventas${s} NO tienen su COMPRA espejo cargada en el libro del comprador`
+      + ` (${impacto.sinEspejoDocs.slice(0, 4).join(', ')}${impacto.sinEspejoDocs.length > 4 ? `, y ${impacto.sinEspejoDocs.length - 4} más` : ''}).`
+      + ` Hasta que se carguen, la venta va a quedar contada sin su costo del otro lado.`
+      + ` Se cargan de un clic en Órdenes → «Sin respaldo», o desde Movimientos de la empresa vendedora.`;
+  }
+  return txt;
 }
 
 export default { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion };

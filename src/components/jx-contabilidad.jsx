@@ -39,6 +39,7 @@ import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
 import { empresasPorCategoria, CATEGORIAS_EMPRESA } from "../lib/desglose-empresa.js";
 import { reflejosPorEmpresa, reflejosDe } from "../lib/documento-dos-lados.js";
 import { notasPorFactura } from "../lib/notas-credito.js";
+import { ventasSinEspejo, datosDelEspejo } from "../lib/interco-espejo.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
@@ -309,7 +310,9 @@ function EmpresasPage({ showToast }) {
         let aDesmarcar = [];
         if (orig && (orig.tipo_entidad || 'propia') !== (form.tipo_entidad || 'propia')) {
           const aviso = avisoDeReclasificacion(
-            impactoDeReclasificar({ company: orig, tipoNuevo: form.tipo_entidad || 'propia', movs }),
+            // `companies` va para que el aviso pueda contar además las ventas
+            // que van a quedar sin su compra espejo al entrar la entidad al grupo.
+            impactoDeReclasificar({ company: orig, tipoNuevo: form.tipo_entidad || 'propia', movs, companies }),
             orig.name || 'Esta entidad');
           if (aviso && !confirm(`${aviso}\n\n¿Guardar el cambio?`)) return;
           // Intercompany = operación DENTRO del grupo. Si la entidad sale del
@@ -1847,6 +1850,91 @@ function MovimientosContablesPage({ showToast }) {
   const esReflejo = (m) => filtroEmpresaSel !== 'todas'
     && m?.company_id !== filtroEmpresaSel && reflejoActual.ids.has(m?.id);
 
+  // ── LAS VENTAS DE ESTA EMPRESA QUE NO TIENEN SU COMPRA ESPEJO ────
+  //
+  // Gabriel, 8-set-2026: el aviso tiene que estar TAMBIÉN acá, «que es donde
+  // la contadora carga la venta». En Órdenes → «Sin respaldo» el hueco se ve
+  // desde el lado del COMPRADOR; quien lo abre es la vendedora, y si nadie se
+  // lo dice en su propio libro, la venta interna se queda contada sin su costo
+  // del otro lado (infla el resultado del grupo) hasta que alguien la busque.
+  //
+  // Solo con una empresa elegida: sin ámbito, «tus ventas» no quiere decir nada.
+  const ventasSinEspejoAqui = uMC(() => {
+    if (filtroEmpresaSel === 'todas') return [];
+    return ventasSinEspejo(movs || [], {
+      companies: companies || [],
+      obraId: filtroObraSel !== 'todas' ? filtroObraSel : null,
+    }).filter(e => e.vendedorId === filtroEmpresaSel);
+  }, [movs, companies, filtroEmpresaSel, filtroObraSel]);
+  const montoSinEspejoAqui = uMC(
+    () => ventasSinEspejoAqui.reduce((t, e) => t + (e.moneda === 'USD' ? 0 : Number(e.monto || 0)), 0),
+    [ventasSinEspejoAqui]);
+
+  // Crear las compras espejo que faltan. Mismo contrato que el botón de
+  // Órdenes (datosDelEspejo es la única fuente de esos campos): un clic
+  // EXPLÍCITO con confirmación —crear un costo en el libro de otra empresa es
+  // plata— y guard SÍNCRONO por ref, porque el doble clic duplicaría facturas.
+  const [espejandoMov, setEspejandoMov] = uSC(false);
+  const espejandoMovRef = uRC(false);
+  const crearEspejosDeMisVentas = async () => {
+    if (espejandoMovRef.current) return;
+    if (!ventasSinEspejoAqui.length) return;
+    if (!canCreate) { showToast('No tienes permiso para cargar comprobantes', 'red'); return; }
+    const detalle = ventasSinEspejoAqui
+      .map(e => `· ${e.documento} — ${nombreCompanyDe(e.compradorId) || 'la otra empresa'} · ${e.moneda === 'USD' ? 'US$' : 'S/'} ${Number(e.monto || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`)
+      .join('\n');
+    if (!confirm(
+      `¿Cargar ${ventasSinEspejoAqui.length} compra(s) espejo en el libro del comprador?\n\n${detalle}\n\n`
+      + 'Es el mismo comprobante visto del otro lado. No se toca ninguna de tus ventas.'
+    )) return;
+    espejandoMovRef.current = true;
+    setEspejandoMov(true);
+    let ok = 0; const errores = [];
+    try {
+      const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+      const marcaModo = esPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' };
+      for (const e of ventasSinEspejoAqui) {
+        try {
+          const espId = window.__newId();
+          const now = new Date().toISOString();
+          await window.__db.accounting_movements.add({
+            id: espId,
+            ...datosDelEspejo(e.venta, {
+              vendedora: lookupCompany(e.vendedorId),
+              compradora: lookupCompany(e.compradorId),
+            }),
+            created_by: userId, updated_by: userId,
+            created_at: now, updated_at: now,
+            version: 1, last_synced_at: null, ...marcaModo,
+            idempotency_key: `${userId}_acc_${espId}`,
+          });
+          // NO se enlaza la venta → espejo desde este lado: el par con
+          // `related_movement_id` mutuo y las dos patas sin subir se traba
+          // eternamente en el gate de FK del push (mismo motivo que en Captura
+          // Mágica y en Órdenes). El vínculo queda derivable desde el espejo.
+          try {
+            await window.__logAudit?.({
+              action: 'insert', table: 'accounting_movements', recordId: espId,
+              newData: { espejo_de: e.venta.id, doc: e.documento, comprador: e.compradorId },
+              reason: 'Movimientos · compra espejo de una venta interna que no la tenía',
+            });
+          } catch {}
+          ok++;
+        } catch (err) { errores.push(`${e.documento}: ${err?.message || err}`); }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      if (errores.length) {
+        console.warn('[movimientos · espejos]', errores);
+        showToast(`${ok} espejo(s) cargados · ${errores.length} con error (ver consola)`, 'amber');
+      } else {
+        showToast(`✓ ${ok} compra(s) espejo cargadas en el libro del comprador`, 'green');
+      }
+    } finally {
+      espejandoMovRef.current = false;
+      setEspejandoMov(false);
+    }
+  };
+
   const filtered = uMC(() => {
     if (!movs) return [];
     let f = [...movs];
@@ -3076,6 +3164,33 @@ function MovimientosContablesPage({ showToast }) {
             <input type="checkbox" checked={verOtroLado} onChange={e => setVerOtroLado(e.target.checked)} />
             <span>Ver los del otro lado</span>
           </label>
+        </div>
+      )}
+
+      {/* LA VENTA INTERNA A LA QUE LE FALTA SU COMPRA ESPEJO.
+          El hueco se ve en Órdenes → «Sin respaldo», pero desde el lado del
+          comprador; acá lo ve quien EMITE la factura, que es quien la carga.
+          Sin espejo, la venta queda contada sin su costo del otro lado y el
+          resultado del grupo sale inflado. Crearlo es un clic explícito. */}
+      {ventasSinEspejoAqui.length > 0 && (
+        <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', padding:'10px 14px', marginBottom:12, borderRadius:8, background:'rgba(245,158,11,0.09)', border:'1px solid rgba(245,158,11,0.35)' }}>
+          <span style={{ fontSize:15 }}>⚠</span>
+          <span style={{ fontSize:13, fontWeight:600, color:'var(--amber)' }}>
+            {ventasSinEspejoAqui.length} venta{ventasSinEspejoAqui.length > 1 ? 's' : ''} interna{ventasSinEspejoAqui.length > 1 ? 's' : ''} sin su compra espejo
+            {montoSinEspejoAqui ? ` · S/ ${montoSinEspejoAqui.toLocaleString('es-PE', { minimumFractionDigits: 2 })}` : ''}
+          </span>
+          <span style={{ fontSize:11, color:'var(--tm)', flex:'1 1 260px', lineHeight:1.45 }}>
+            {ventasSinEspejoAqui.slice(0, 3).map(e => `${e.documento} → ${nombreCompanyDe(e.compradorId)}`).join(' · ')}
+            {ventasSinEspejoAqui.length > 3 ? ` · y ${ventasSinEspejoAqui.length - 3} más` : ''}
+            {' — '}el comprador no tiene esa compra cargada: hasta que exista, la venta cuenta sin su costo del otro lado y no hay nada que respaldar en «Sin respaldo».
+          </span>
+          {canCreate && (
+            <button className="btn btn-amber btn-xs" style={{ marginLeft:'auto' }}
+              disabled={espejandoMov} onClick={crearEspejosDeMisVentas}
+              title="Carga el mismo comprobante como compra en el libro del comprador. No toca ninguna de tus ventas.">
+              {espejandoMov ? 'Cargando…' : 'Cargar las compras espejo que faltan'}
+            </button>
+          )}
         </div>
       )}
 
