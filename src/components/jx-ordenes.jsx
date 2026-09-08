@@ -43,6 +43,13 @@ import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { itemsDeFactura } from "../lib/cruce-recepcion.js";
+// El desglose que se lee del otro lado (tanda 15): un espejo intercompany no
+// guarda los ítems —para que el almacén del comprador no los cuente dos veces—
+// pero sí el puntero a la venta que los tiene.
+import { indexarMovs, conDesgloseHeredado, itemsConHerencia, origenDelDesglose } from "../lib/desglose-heredado.js";
+import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
+import { ventasSinEspejo, datosDelEspejo } from "../lib/interco-espejo.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
 import {
   abastecimientoDeObra, buscarEnPresupuesto, buscarComprasDelGrupo, mapeoImplicito,
   ofertaPorEmpresa, catalogoDelGrupo, lineasDeFamilia, insumosPorMonto, insumoParaFamilia,
@@ -148,6 +155,9 @@ function OrdenesPage({ showToast }) {
   const [detalle, setDetalle] = uS(null);
   const [detalleItems, setDetalleItems] = uS([]);
   const emitiendoRef = uR(false);
+  // La carga de las compras espejo que faltan (tanda 15).
+  const [espejando, setEspejando] = uS(false);
+  const espejandoRef = uR(false);
   // ── LA ORDEN QUE NACE ANTES DEL COMPROBANTE (tanda 7, entrega 6c) ──
   //
   // Gabriel, 6-set-2026, después de probar la primera versión: «¿qué pasa si
@@ -189,6 +199,9 @@ function OrdenesPage({ showToast }) {
   // El ayudante de la obra: 'necesita' (presupuesto) | 'grupo' (stock) | null
   const [ayuda, setAyuda] = uS(null);
   const [verMov, setVerMov] = uS(null);   // id del comprobante a mirar desde «Sin respaldo»
+  // El archivo del comprobante (el PDF de verdad), buscado al abrir el 👁.
+  const [evidenciaMov, setEvidenciaMov] = uS(null);
+  const [abriendoPdf, setAbriendoPdf] = uS(false);
   // ── LA VISTA DE «SIN RESPALDO» (tanda 14) ───────────────────────
   // Gabriel, 7-set-2026: «en esa pestaña no se puede filtrar bien por empresa
   // que le facturó al consorcio» y «en el caso de consorcio EL INCA incluso
@@ -379,6 +392,30 @@ function OrdenesPage({ showToast }) {
     [pendientes, companies]
   );
 
+  // ── EL DESGLOSE HEREDADO ────────────────────────────────────────
+  // Los espejos intercompany nacen SIN `items_factura` a propósito (si los
+  // llevaran, el almacén del comprador contaría dos veces los mismos
+  // materiales) y dejan el puntero a la venta que sí los tiene. Nadie lo leía:
+  // por eso el 👁 decía «no tiene el detalle cargado» y la orden salía con una
+  // sola línea que dice «Insumos y materiales». Se hidrata SOLO EN MEMORIA.
+  const movsPorId = uM(() => indexarMovs(movs || []), [movs]);
+
+  // ── LA VENTA INTERNA A LA QUE LE FALTA SU COMPRA ────────────────
+  // Si el espejo no existe, en «Sin respaldo» no hay NADA que respaldar y la
+  // factura desaparece de la pestaña sin decir por qué. Es lo que pasaba con la
+  // E001-2 de JARVEX a EL INCA. Acá se detecta y se muestra; crearla es un
+  // clic explícito, nunca algo que pase solo al abrir la pantalla.
+  const espejosFaltantes = uM(() => {
+    if (!hayPestanaRespaldo) return [];
+    const compradorIds = companyIdRespaldo ? [companyIdRespaldo] : [...idsConsorcios];
+    if (!compradorIds.length) return [];
+    return ventasSinEspejo(movs || [], { companies: companies || [], compradorIds, obraId: obraScopeId });
+  }, [movs, companies, companyIdRespaldo, idsConsorcios, obraScopeId, hayPestanaRespaldo]);
+  const montoEspejosFaltantes = uM(
+    () => espejosFaltantes.reduce((t, e) => t + Number(e.monto || 0), 0),
+    [espejosFaltantes]
+  );
+
   // ══ PESTAÑA 3: EL BUZÓN — LAS QUE NOS EMITIERON A NOSOTROS ══════
   //
   // Gabriel: «tenemos que tener una sección donde diga ORDEN RECIBIDA, y
@@ -434,16 +471,26 @@ function OrdenesPage({ showToast }) {
   const sincronizarBorradores = () => {
     setBorradores(prev => {
       const porMov = new Map((prev || []).map(b => [b.movimiento_id, b]));
-      return pendientes.slice(0, 400).map(m => porMov.get(m.id) || {
-        ...borradorDesdeMovimiento(m, {
-          company: lookupCompany(m.company_id),
-          proveedor: lookupProv(m.proveedor_id),
-          obra: lookupObra(m.obra_id),
-        }),
-        // De dónde salió la fila: para rotularla y para no emitir una orden en
-        // soles por un comprobante que estaba en dólares.
-        moneda: m.currency || 'PEN',
-        fuera: motivoNoExigido(m, { umbral }),
+      return pendientes.slice(0, 400).map(m => {
+        if (porMov.get(m.id)) return porMov.get(m.id);
+        // Con el desglose heredado puesto: si el comprobante es un espejo
+        // intercompany, las líneas salen de la factura de verdad (la de la
+        // vendedora) en vez del rótulo «Insumos y materiales».
+        const conDetalle = conDesgloseHeredado(m, movsPorId);
+        return {
+          ...borradorDesdeMovimiento(conDetalle, {
+            company: lookupCompany(m.company_id),
+            proveedor: lookupProv(m.proveedor_id),
+            obra: lookupObra(m.obra_id),
+          }),
+          // De dónde salió la fila: para rotularla y para no emitir una orden en
+          // soles por un comprobante que estaba en dólares.
+          moneda: m.currency || 'PEN',
+          fuera: motivoNoExigido(m, { umbral }),
+          // Para decirlo en la grilla: este detalle no está cargado en el
+          // comprobante, se leyó de la factura que emitió la otra empresa.
+          heredadoDe: conDetalle.__desglose_heredado_de || null,
+        };
       });
     });
   };
@@ -452,6 +499,55 @@ function OrdenesPage({ showToast }) {
     if (tab === 'respaldo' && pendientes.length > 0) sincronizarBorradores();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pendientes.length, verBajoUmbral]);
+
+  // ── EL PDF DE VERDAD, DETRÁS DEL 👁 ─────────────────────────────
+  // «El ojo para ver la factura no te muestra la factura real». El archivo
+  // está cargado como evidencia del comprobante — y si el comprobante es un
+  // espejo intercompany, del que lo tiene: la factura de la vendedora. Solo se
+  // buscan los METADATOS al abrir; la URL se firma recién al hacer clic (misma
+  // regla que Movimientos: firmar 1.302 evidencias de entrada no lo paga nadie).
+  uE(() => {
+    if (!verMov) { setEvidenciaMov(null); return; }
+    let cancel = false;
+    (async () => {
+      try {
+        const mv = (movs || []).find(m => m.id === verMov);
+        const origen = mv ? origenDelDesglose(mv, movsPorId) : null;
+        const ids = new Set([verMov, origen?.id].filter(Boolean));
+        const evs = await window.__db.evidencias
+          .filter(e => !e.deleted_at && e.modulo_relacionado === 'accounting_movements'
+            && ids.has(e.registro_relacionado_id)
+            && e.tipo_evidencia !== 'bancarizacion' && e.tipo_evidencia !== 'constancia_detraccion')
+          .toArray();
+        // Gana la del propio comprobante sobre la del origen, y la ya subida
+        // sobre la pendiente.
+        const rank = (e) => (e.registro_relacionado_id === verMov ? 0 : 1) * 2
+          + ((e.url_archivo && (e.sync_status === 'uploaded' || e.sync_status === 'synced')) ? 0 : 1);
+        evs.sort((a, b) => rank(a) - rank(b) || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+        const ev = evs[0] || null;
+        if (!cancel) {
+          setEvidenciaMov(ev ? {
+            ev,
+            nombre: ev.nombre_archivo || 'comprobante',
+            delOrigen: ev.registro_relacionado_id !== verMov,
+          } : null);
+        }
+      } catch { if (!cancel) setEvidenciaMov(null); }
+    })();
+    return () => { cancel = true; };
+  }, [verMov, movs, movsPorId]);
+
+  const abrirComprobante = async () => {
+    if (!evidenciaMov?.ev || abriendoPdf) return;
+    setAbriendoPdf(true);
+    try {
+      const src = await getEvidenciaSrc(evidenciaMov.ev);
+      if (!src?.url) { toast('No se pudo abrir el archivo del comprobante', 'red'); return; }
+      await abrirUrlEvidencia(src.url);
+    } catch (e) {
+      toast('No se pudo abrir el comprobante: ' + (e?.message || e), 'red');
+    } finally { setAbriendoPdf(false); }
+  };
 
   // Si el ámbito es una empresa del grupo, esta pestaña no existe para ella:
   // volver a «Emitidas» en vez de dejar una pantalla vacía sin explicación.
@@ -1037,6 +1133,78 @@ function OrdenesPage({ showToast }) {
     const visibles = new Set(borradoresVisibles.map(v => v.b.movimiento_id));
     return seleccionados.filter(b => !visibles.has(b.movimiento_id)).length;
   }, [hayFiltroResp, borradoresVisibles, seleccionados]);
+
+  // ── CREAR LA COMPRA ESPEJO QUE FALTA ────────────────────────────
+  //
+  // Gabriel / la jefa de contabilidad, 8-set-2026: «falta la E001-2 — problema
+  // ahí con la intercompany automática». El auto-espejo solo corre al confirmar
+  // una Captura Mágica; si la venta se cargó por otro camino (o antes de que
+  // ese automático existiera), la compra del comprador nunca nace y en «Sin
+  // respaldo» no hay nada que respaldar.
+  //
+  // Es un clic EXPLÍCITO y con confirmación: crear un costo en el libro de otra
+  // empresa es plata: no puede pasar solo por abrir una pantalla. Guard
+  // SÍNCRONO por ref (regla crítica #2): el doble clic duplicaría comprobantes.
+  const crearEspejosFaltantes = async () => {
+    if (espejandoRef.current) return;
+    if (!espejosFaltantes.length) return;
+    if (!canEmitir) { toast('No tienes permiso para cargar comprobantes', 'red'); return; }
+    const detalle = espejosFaltantes
+      .map(e => `· ${e.documento} — ${lookupCompany(e.vendedorId)?.name || '—'} → ${lookupCompany(e.compradorId)?.name || '—'} · ${fmtMon(e.monto, e.moneda)}`)
+      .join('\n');
+    if (!window.confirm(
+      `Cargar ${espejosFaltantes.length} compra(s) espejo por ${fmtS(montoEspejosFaltantes)}?\n\n${detalle}\n\n` +
+      'Es el mismo comprobante visto desde el libro del comprador. Después aparece en «Sin respaldo» para emitirle su orden.'
+    )) return;
+
+    espejandoRef.current = true;
+    setEspejando(true);
+    let ok = 0; const errores = [];
+    try {
+      const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+      const marcaModo = esPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' };
+      for (const e of espejosFaltantes) {
+        try {
+          const espId = window.__newId();
+          const now = new Date().toISOString();
+          await window.__db.accounting_movements.add({
+            id: espId,
+            ...datosDelEspejo(e.venta, {
+              vendedora: lookupCompany(e.vendedorId),
+              compradora: lookupCompany(e.compradorId),
+            }),
+            created_by: userId, updated_by: userId,
+            created_at: now, updated_at: now,
+            version: 1, last_synced_at: null, ...marcaModo,
+            idempotency_key: `${userId}_acc_${espId}`,
+          });
+          // OJO: NO se enlaza la venta → espejo desde este lado. El par con
+          // `related_movement_id` mutuo y las dos patas sin subir se traba
+          // eternamente en el gate de FK del push (mismo motivo por el que
+          // Captura Mágica tampoco lo hace). El vínculo queda derivable desde
+          // el espejo, que es lo que leen Contabilidad y el Consolidado.
+          try {
+            await window.__logAudit?.({
+              action: 'insert', table: 'accounting_movements', recordId: espId,
+              newData: { espejo_de: e.venta.id, doc: e.documento, comprador: e.compradorId },
+              reason: 'Órdenes · compra espejo de una venta interna que no la tenía',
+            });
+          } catch {}
+          ok++;
+        } catch (err) { errores.push(`${e.documento}: ${err.message || err}`); }
+      }
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      if (errores.length) {
+        console.warn('[órdenes · espejos]', errores);
+        toast(`${ok} espejo(s) cargados · ${errores.length} con error (ver consola)`, 'amber');
+      } else {
+        toast(`✓ ${ok} compra(s) espejo cargadas — ya aparecen abajo para emitirles su orden`, 'green');
+      }
+    } finally {
+      espejandoRef.current = false;
+      setEspejando(false);
+    }
+  };
 
   // ── LA EMISIÓN EN LOTE ──────────────────────────────────────────
   //
@@ -2715,6 +2883,47 @@ function OrdenesPage({ showToast }) {
             </div>
           </div>
 
+          {/* ── LA VENTA INTERNA SIN SU COMPRA ────────────────────────
+              Va ANTES de la lista y también cuando la lista está vacía: si una
+              factura no aparece porque su espejo no existe, el aviso tiene que
+              estar donde se la fue a buscar. */}
+          {espejosFaltantes.length > 0 && (
+            <div className="card card-p" style={{ marginBottom: 12, background: 'rgba(242,183,5,0.08)', borderLeft: '3px solid var(--amber)' }}>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 260, fontSize: 12, lineHeight: 1.55 }}>
+                  <strong>
+                    {espejosFaltantes.length === 1
+                      ? 'Hay 1 venta entre empresas del grupo sin su compra cargada'
+                      : `Hay ${espejosFaltantes.length} ventas entre empresas del grupo sin su compra cargada`}
+                    {' '}({fmtS(montoEspejosFaltantes)})
+                  </strong>
+                  <div style={{ color: 'var(--ts)', marginTop: 3 }}>
+                    Acá se respaldan las COMPRAS del consorcio. Mientras la compra espejo no exista,
+                    la factura no aparece abajo y no se le puede emitir la orden. Las anuladas por
+                    nota de crédito no cuentan: esas no llevan espejo.
+                  </div>
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18, color: 'var(--ts)', fontSize: 11.5 }}>
+                    {espejosFaltantes.slice(0, 6).map(e => (
+                      <li key={e.venta.id}>
+                        <span style={{ fontFamily: 'monospace' }}>{e.documento}</span>
+                        {' · '}{lookupCompany(e.vendedorId)?.name || '—'}
+                        {' → '}{lookupCompany(e.compradorId)?.name || '—'}
+                        {' · '}<strong>{fmtMon(e.monto, e.moneda)}</strong>
+                        {e.fecha ? ` · ${e.fecha}` : ''}
+                      </li>
+                    ))}
+                    {espejosFaltantes.length > 6 && <li>… y {espejosFaltantes.length - 6} más</li>}
+                  </ul>
+                </div>
+                {canEmitir && (
+                  <button className="btn btn-amber btn-sm" disabled={espejando} onClick={crearEspejosFaltantes}>
+                    {espejando ? 'Cargando…' : `Cargar ${espejosFaltantes.length === 1 ? 'la compra que falta' : 'las compras que faltan'}`}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {borradoresVisibles.length === 0 ? (
             <div className="card card-p empty-state">
               <JxIcon name="checkCircle" size={40} color="var(--green)" />
@@ -2835,6 +3044,12 @@ function OrdenesPage({ showToast }) {
                             onClick={() => setRespAbierta(abierta ? null : b.movimiento_id)}>
                             {abierta ? '▾ Cerrar detalle' : `▸ Ver detalle (${b.lineas?.length || 0})`}
                           </button>
+                          {b.heredadoDe && (
+                            <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 6 }}
+                              title="Es el espejo de una operación interna: el detalle se leyó de la misma factura en el libro de la empresa que vendió.">
+                              detalle de la factura del grupo
+                            </span>
+                          )}
                           {desc && !abierta && (
                             <span style={{ fontSize: 9.5, color: 'var(--amber)', marginLeft: 6 }} title="Al emitir se ajusta para cuadrar contra el comprobante.">
                               ⚠ el detalle no suma el total
@@ -2952,7 +3167,9 @@ function OrdenesPage({ showToast }) {
       {verMov && (() => {
         const mv = (movs || []).find(m => m.id === verMov);
         if (!mv) return null;
-        const items = itemsDeFactura(mv);
+        // El detalle real: propio, o el de la factura que emitió la otra
+        // empresa cuando este comprobante es el espejo de una venta interna.
+        const { items, origen } = itemsConHerencia(mv, movsPorId);
         return (
           <Modal title={`${mv.category || 'Comprobante'} ${mv.document_number || ''}`.trim()} icon="file" size="lg" onClose={() => setVerMov(null)}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 12 }}>
@@ -2968,6 +3185,34 @@ function OrdenesPage({ showToast }) {
                 Vinculado a <b>{lookupObra(mv.obra_id)?.nombre_obra?.slice(0, 70) || 'una obra'}</b>.
               </p>
             )}
+            {/* El archivo de verdad. Si el comprobante es un espejo, el PDF
+                está colgado de la factura de la vendedora — y sirve igual: es
+                el MISMO papel. */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '0 0 10px' }}>
+              {evidenciaMov ? (
+                <>
+                  <button className="btn btn-amber btn-sm" disabled={abriendoPdf} onClick={abrirComprobante}>
+                    <JxIcon name="eye" size={13} />
+                    {abriendoPdf ? 'Abriendo…' : 'Abrir el comprobante escaneado'}
+                  </button>
+                  <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                    {evidenciaMov.nombre}
+                    {evidenciaMov.delOrigen && ' · cargado en la factura de la empresa que vendió'}
+                  </span>
+                </>
+              ) : (
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                  Este comprobante no tiene el archivo escaneado cargado.
+                </span>
+              )}
+            </div>
+            {origen && (
+              <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 10px', lineHeight: 1.5 }}>
+                🔁 Es el <b>espejo</b> de una operación interna: el detalle sale de la misma factura
+                cargada en el libro de <b>{lookupCompany(origen.company_id)?.name || 'la otra empresa'}</b>.
+                No está copiado acá a propósito — así el almacén no cuenta dos veces los mismos materiales.
+              </p>
+            )}
             <div className="card" style={{ overflow: 'hidden' }}>
               <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontWeight: 700, fontSize: 12 }}>
                 Lo que dice la factura
@@ -2978,7 +3223,8 @@ function OrdenesPage({ showToast }) {
                   <tbody>
                     {items.length === 0 ? (
                       <tr><td colSpan={4} style={{ textAlign: 'center', padding: 14, color: 'var(--tm)' }}>
-                        Este comprobante no tiene el detalle cargado.
+                        Este comprobante no tiene el detalle cargado, y no hay de dónde heredarlo.
+                        La orden va a salir con una sola línea: conviene escribirla a mano en «Ver detalle».
                       </td></tr>
                     ) : items.map((it, i) => (
                       <tr key={i}>
