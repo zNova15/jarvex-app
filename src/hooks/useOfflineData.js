@@ -450,6 +450,18 @@ export function useCatalogoDisgregacion() {
   , []);
 }
 
+// Qué insumo del catálogo canónico es cada descripción de factura (mig 195,
+// tanda 14 entrega 4). Una fila por descripción DECIDIDA, no por línea: son las
+// respuestas, no las preguntas. Global al grupo y chica —crece con lo que se
+// decide, no con las facturas—, así que se trae entera y se resuelve al leer
+// con `resolverCategorias()`: puede haber más de una fila por `norm` si se
+// decidió en las dos PCs.
+export function useInsumoCategorias() {
+  return useOfflineData('insumo_categoria', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // El mapeo de categorías entre entidades (mig 193): la familia local de una
 // empresa contra la familia canónica del grupo. Chico y global; se resuelve al
 // leer con `resolverEquivalencias()`.

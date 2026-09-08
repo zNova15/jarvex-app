@@ -109,6 +109,18 @@ export const db = new Dexie('JarvexDB');
 // constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
 // salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
 // columnas, re-declarativo en índices.
+// Versión 61: LA BANDEJA QUE APRENDE (mig 195, tanda 14 entrega 4). Qué insumo
+// del CATÁLOGO CANÓNICO es cada descripción de factura — o que no es un insumo.
+// NO es la misma pregunta que `insumo_mapeo` (mig 183), que apunta a los 434
+// códigos del PRESUPUESTO de la obra y alimenta Abastecimiento: si compartieran
+// tabla, esa pestaña leería un id de catálogo como si fuera un código del
+// presupuesto. Se indexa `[company_id+norm]` porque toda lectura pregunta
+// exactamente eso —«lo de esta entidad más lo general, por descripción»— y
+// `decision` porque el avance se cuenta por ahí. Aditivo.
+db.version(61).stores({
+  insumo_categoria: 'id, norm, decision, catalogo_insumo_id, company_id, [company_id+norm], deleted_at, sync_status',
+});
+
 // Versión 60: SUBFAMILIA — EL SEGUNDO NIVEL DEL CATÁLOGO (mig 194). Diez
 // familias son muy generales: «implementos de seguridad» son 64 cosas en una
 // bolsa. Se indexa porque la pantalla filtra por ahí. `revisado` es prop sin

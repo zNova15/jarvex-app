@@ -189,7 +189,15 @@ export const FAMILIAS = [
   ['accesorio_pvc', /\b(codo|tee|yee|tapon|reduccion|union|niple|adaptador|abrazadera|racor|cachimba|anillo|sombrero|trampa|registro)\b/],
   ['valvula', /\b(valvula|compuerta|check|grifo|llave de paso)\b/],
   ['electrico', /\b(cable|alambre thw|interruptor|tomacorriente|termomagnetic|octogonal|luminaria|foco|soquete|tablero|conductor|nh 80|thw)\b/],
-  ['epp', /\b(casco|guante|lente|botin|bota|chaleco|arnes|mameluco|respirador|mascarilla|tapon auditivo|barbiquejo|zapato de seguridad)\b/],
+  // 🔴 LOS PLURALES NO SON COSMÉTICA (medido el 7-set-2026). El catálogo
+  // canónico escribe en plural —«GUANTES ANTICORTE», «CASCOS DE SEGURIDAD»,
+  // «ZAPATOS PUNTA DE ACERO»— y las facturas en singular. Sin la `s?`, las 64
+  // filas de la familia «implementos de seguridad» daban familia `otro`, la
+  // línea daba `epp`, y la compuerta las castigaba con el 0,7 de «uno de los
+  // dos no se pudo clasificar»: el EPP del catálogo era invisible para el
+  // motor. `zapato de seguridad` además tenía la frase entera, así que
+  // «ZAPATOS PUNTA DE ACERO» no pegaba con nada.
+  ['epp', /\b(cascos?|guantes?|lentes?|botines?|botas?|chalecos?|arnes|arneses|mamelucos?|overol(es)?|respiradores?|mascarillas?|tapon(es)? auditivos?|barbiquejos?|zapatos?)\b/],
   ['sanitario', /\b(inodoro|lavatorio|ducha|urinario|medidor|caja termoplastica|sumidero|tanque)\b/],
   ['madera', /\b(madera|triplay|listones?|tornillo de madera|tabla|tablon|encofrado)\b/],
   ['ferreteria', /\b(clavo|alambre|tornillo|perno|tuerca|arandela|disco de|broca|remache|silicona|cinta|soldadura|electrodo)\b/],
@@ -295,8 +303,24 @@ export function puntuar(linea, cat, idf) {
     // llegaba a competir con «TUBO DE FIERRO GALVANIZADO».
     castigo = 0.7;
   }
-  // Un servicio nunca es un material (ni al revés).
-  if ((linea.familia === 'servicio') !== (cat.familia === 'servicio')) return { score: 0, motivos: [] };
+  // Un servicio nunca es un material (ni al revés). El catálogo canónico dice
+  // `tipo: 'servicio'` de forma explícita y esa respuesta manda sobre la regex:
+  // «MONITOREO DE CALIDAD DE AGUA» es un servicio del archivo aunque ninguna
+  // palabra suya esté en la lista de FAMILIAS. (En el catálogo del presupuesto
+  // los tipos son `material`/`equipo`/`mano_obra`, nunca 'servicio', así que
+  // este `||` no cambia nada de aquel lado.)
+  const catEsServicio = cat.familia === 'servicio' || cat.tipo === 'servicio';
+  // Que la línea quede en `otro` NO es prueba de que no sea un servicio: es que
+  // la regex no supo. Cuando el CATÁLOGO afirma `tipo: 'servicio'` —cosa que
+  // solo hace el canónico; en el presupuesto los tipos son material/equipo/
+  // mano_obra— esa duda no debe bloquear: «EXAMENES MEDICOS OCUPACIONALES DEL
+  // PERSONAL» daba familia `otro` y no podía pegar con la fila idéntica del
+  // archivo. Fuera de ese caso la regla queda igual que siempre, así que el
+  // mapeo contra el presupuesto no cambia en nada.
+  const dudaResueltaPorElCatalogo = linea.familia === 'otro' && cat.tipo === 'servicio';
+  if (linea.familia === 'servicio'
+    ? !catEsServicio
+    : (catEsServicio && !dudaResueltaPorElCatalogo)) return { score: 0, motivos: [] };
 
   // Contradicción de diámetro: si los DOS declaran diámetro y ninguno coincide,
   // son insumos distintos (3/8" no es 1/2"). Descarta, no descuenta.
@@ -481,8 +505,15 @@ export function prepararLinea(l) {
  */
 export function sugerirMapeo(lineaCruda, prep, opts = {}) {
   const limite = opts.limite || 3;
+  // `servicios: true` lo usa SOLO la bandeja de categorización (entrega 4),
+  // que propone contra el catálogo canónico. Ahí los 34 servicios del archivo
+  // son filas legítimas contra las que decidir, y son plata gruesa: medido, el
+  // 21,2% del gasto de las 184 descripciones más caras cae en líneas de
+  // servicio (transportes, alquileres, seguros, topografía). Contra el
+  // PRESUPUESTO sigue apagado por defecto, y ahí nada cambia.
+  const conServicios = !!opts.servicios;
   const linea = lineaCruda.toks ? lineaCruda : prepararLinea(lineaCruda);
-  if (linea.familia === 'servicio') {
+  if (linea.familia === 'servicio' && !conServicios) {
     return { linea, familia: linea.familia, candidatos: [], estado: 'servicio' };
   }
   const cands = [];
@@ -491,7 +522,7 @@ export function sugerirMapeo(lineaCruda, prep, opts = {}) {
     // (horas-máquina) y los 5 de `mano_obra` en hh: comprar un vibrador NO
     // abastece horas de vibrador. Proponerlo hacía que «VIBRADOR DE CONCRETO
     // MANUAL MAKITA» (S/ 14.110) se ofreciera como si cubriera el alquiler.
-    if (cat.tipo !== 'material') continue;
+    if (cat.tipo !== 'material' && !(conServicios && cat.tipo === 'servicio')) continue;
     const { score, motivos } = puntuar(linea, cat, prep.idf);
     if (score >= UMBRAL_BAJO) cands.push({ cat, score, motivos, factor: proponerFactor(linea, cat) });
   }

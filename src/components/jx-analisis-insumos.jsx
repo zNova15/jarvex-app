@@ -17,6 +17,12 @@
 //    familias comerciales, 34 servicios y la disgregación del acero—, se ve qué
 //    quedó cargado y se corrige a mano lo que el archivo dejó mal. Es la lista
 //    contra la que la app propone nombres, unidades y familias.
+//  · 📥 Categorizar: la BANDEJA QUE APRENDE (tanda 14, entrega 4). Dice qué
+//    insumo del catálogo canónico es cada descripción de factura —o que no es
+//    un insumo—, ordenada por plata, de a lotes y con teclado. Lo que falta en
+//    el catálogo se agrega desde ahí mismo. Es otra pregunta que la de «Mapeo
+//    al presupuesto»: acá se decide QUÉ ES, allá contra qué código de la obra
+//    va. Escribe en `insumo_categoria` (mig 195), no en `insumo_mapeo`.
 //  · 🤝 Correlaciones: el sistema PROPONE pares de nombres que parecen el
 //    mismo insumo; acá se confirma ("mismo") o se rechaza ("distintos") y la
 //    decisión queda grabada en insumo_correlaciones (sincronizada) para NO
@@ -37,6 +43,7 @@ import {
 } from "../lib/analisis-insumos.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
+import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -215,6 +222,9 @@ function AnalisisInsumosPage({ showToast }) {
         <button className={`btn btn-sm ${tab === 'catalogo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('catalogo')}>
           📚 Catálogo
         </button>
+        <button className={`btn btn-sm ${tab === 'bandeja' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('bandeja')}>
+          📥 Categorizar
+        </button>
       </div>
 
       {tab === 'comparador' && (
@@ -315,6 +325,10 @@ function AnalisisInsumosPage({ showToast }) {
 
       {tab === 'mapeo' && (
         <MapeoInsumosTab compras={compras} grupoDe={grupoDe} showToast={showToast} />
+      )}
+
+      {tab === 'bandeja' && (
+        <BandejaCategorizacionTab compras={compras} showToast={showToast} />
       )}
 
       {tab === 'catalogo' && (
