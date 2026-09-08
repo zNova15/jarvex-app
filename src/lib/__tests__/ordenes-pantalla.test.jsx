@@ -23,7 +23,10 @@ const GASOMI = 'c-gasomi';
 const JARVEX = 'c-jarvex';
 
 const COMPANIES = [
-  { id: EL_INCA, name: 'CONSORCIO EL INCA', ruc: '20615346081' },
+  // Consorcio ejecutor: es el único tipo de entidad al que le toca llevar
+  // órdenes de respaldo (y, desde la tanda 15, el que ve el aviso de las
+  // ventas internas sin su compra espejo).
+  { id: EL_INCA, name: 'CONSORCIO EL INCA', ruc: '20615346081', tipo_entidad: 'consorcio' },
   { id: GASOMI, name: 'GASOMI INGENIEROS', ruc: '20601234567' },
   { id: JARVEX, name: 'JARVEX INGENIERIA', ruc: '20615646505' },
 ];
@@ -70,7 +73,7 @@ function montarBrowserFalso() {
   g.__getObraActivaId = () => globalThis.__OBRA_ACTIVA ?? null;
   g.__hooks = {
     useCompanies: () => ({ data: COMPANIES, loading: false }),
-    useAccountingMovements: () => ({ data: MOVS, loading: false }),
+    useAccountingMovements: () => ({ data: globalThis.__MOVS_ORD || MOVS, loading: false }),
     useObras: () => ({ data: [{ id: OBRA, nombre_obra: 'MEJORAMIENTO PLAN MIRAFLORES' }], loading: false }),
     useAppConfig: () => ({ data: [], loading: false }),
     useConsorcios: () => ({ data: [{ id: 'k1', obra_id: OBRA, company_id: EL_INCA }], loading: false }),
@@ -120,5 +123,22 @@ describe('la pantalla de Órdenes', () => {
     globalThis.__plano = 'general';
     globalThis.__OBRA_ACTIVA = null;
     expect(render()).not.toContain('Recibidas');
+  });
+
+  // Tanda 15: la detección de ventas internas sin su compra espejo corre en un
+  // useMemo del cuerpo del componente, o sea en CADA render — un error ahí no
+  // rompe una pestaña, rompe la pantalla entera para la contadora.
+  it('con una venta interna sin espejo la pantalla sigue montando', () => {
+    globalThis.__plano = 'obra';
+    globalThis.__OBRA_ACTIVA = OBRA;
+    globalThis.__MOVS_ORD = [
+      ...MOVS,
+      { id: 'v2', company_id: JARVEX, clase: 'venta', type: 'income', amount: 19028.68,
+        date: '2026-07-06', obra_id: OBRA, document_type: 'factura', document_number: 'E001-2',
+        is_intercompany: true, related_company_id: EL_INCA, notas: '{}' },
+    ];
+    try {
+      expect(render()).toContain('CONSORCIO EL INCA');
+    } finally { globalThis.__MOVS_ORD = null; }
   });
 });
