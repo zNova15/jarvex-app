@@ -281,6 +281,10 @@ const NAV = [
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 
   { section: 'LICITACIONES', area: 'licitaciones' },
+  // La puerta del bloque: los procesos a los que nos presentamos. Va ARRIBA
+  // del padrón porque es la pregunta con la que se entra («¿calificamos
+  // para esto?»); el padrón es el insumo con el que se contesta.
+  { id: 'licitaciones', label: 'Postulaciones', icon: 'chart' },
   { id: 'profesionales', label: 'Registro Profesional', icon: 'users' },
 
   { section: 'ADMINISTRACIÓN', area: 'admin' },

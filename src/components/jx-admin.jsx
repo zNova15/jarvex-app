@@ -791,7 +791,7 @@ const MODULE_GROUPS = [
   { group: 'Maquinaria', modules: ['Activos Pesados','Mantenimiento','Horas Máquina'] },
   { group: 'SSOMA', modules: ['Charlas Seguridad','IPERC','EPP','Inspecciones SSOMA','Capacitaciones','Insumos de Emergencia','Reporte Especialidad','Gestión Ambiental','Gestión Calidad','Gestión Social'] },
   { group: 'RRHH', modules: ['Contratos Laborales','Planillas','CTS','Gratificaciones','Registro Profesional'] },
-  { group: 'Comercial', modules: ['Bienes y Servicios'] },
+  { group: 'Comercial', modules: ['Bienes y Servicios','Licitaciones'] },
   { group: 'Contabilidad', modules: ['Empresas','Movs. Contables','Intercompany','Trazabilidad','Consolidado','Plan de Cuentas','Libro Diario','Balance General','Estado Resultados'] },
   { group: 'Tesorería', modules: ['Cuentas Bancarias','Flujo de Caja','Flujo Proyectado','Comparativo Periodos'] },
   { group: 'SUNAT', modules: ['Comprobantes Electrónicos','Libros Electrónicos','PLAME / T-Registro','Config SUNAT'] },
@@ -825,6 +825,11 @@ const PERM_MATRIX = {
       'Dashboard Ejecutivo','KPIs por Obra','Cumplimiento Cronograma','Centro Alertas',
       'Reportes','Auditoría','Solicitudes Cambio',
       'Bienes y Servicios',
+      // A qué procesos se postula el grupo es una decisión comercial de la
+      // conducción. La RLS de la mig 197 le da escritura al gerente: dejarlo
+      // en 'r' acá hacía que la app le escondiera botones que el servidor sí
+      // le habría aceptado.
+      'Licitaciones',
     ];
     return wList.includes(m) ? 'w' : 'r';
   }),
@@ -1007,7 +1012,7 @@ const PERM_MATRIX = {
   // quién tiene y qué obras ejecutó la empresa) y nada de contabilidad,
   // almacén ni operación de obra.
   licitaciones: PERM_MATRIX_MODULES.map(m => {
-    if (m === 'Registro Profesional' || m === 'Bienes y Servicios') return 'w';
+    if (m === 'Registro Profesional' || m === 'Bienes y Servicios' || m === 'Licitaciones') return 'w';
     if (['Personal','Obras','Empresas','Reportes'].includes(m)) return 'r';
     return 'x';
   }),
@@ -1134,6 +1139,7 @@ window.__moduleIdMap = {
   'obras': 'Obras',
   'personal': 'Personal',
   'profesionales': 'Registro Profesional',
+  'licitaciones': 'Licitaciones',
   'frentes': 'Personal',                         // frentes de trabajo: hereda permiso de Personal
   'asistencia': 'Asistencia',
   'materiales': 'Materiales',
@@ -1402,6 +1408,13 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // deja leer — con la matriz de Planillas, rrhh/solo_lectura entraban a una
   // página que el server les devuelve vacía.
   if (itemId === 'pagos') return ['admin', 'contador', 'gerente', 'tesorero', 'ayudante_contador'].includes(rol);
+  // POSTULACIONES: EXACTAMENTE los roles que el RLS de la mig 197 deja leer.
+  // Sin este gate, cualquier rol con 'r' por defecto en la matriz vería el
+  // ítem en el menú y entraría a una pantalla que el server le devuelve
+  // vacía — el mismo error que ya se pagó con 'pagos'. RR.HH. queda afuera a
+  // propósito: ve la ficha profesional (es dato de personal) pero a qué
+  // procesos se postula el grupo es información comercial.
+  if (itemId === 'licitaciones') return ['admin', 'gerente', 'licitaciones'].includes(rol);
   // Análisis de Insumos: costos por proveedor — solo admin/gerente (el gate
   // duro del componente lo repite; esto evita el ítem muerto en otros menús).
   if (itemId === 'analisis-insumos') return ['admin', 'gerente'].includes(rol);

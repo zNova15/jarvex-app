@@ -116,6 +116,18 @@ export const db = new Dexie('JarvexDB');
 // recalculan del CSV en un instante, y lo que no se puede recalcular es el
 // juicio de alguien. Se indexa `[ambito+llave]` porque toda lectura pregunta
 // exactamente eso. Aditivo.
+// Versión 63: POSTULACIONES (mig 197, tanda 15 entrega 1). El proceso al que
+// nos presentamos y los requisitos que piden sus bases. NO es una obra: la
+// mayoría se pierden, y una fila que no puede recibir un solo movimiento no
+// tiene por qué ensuciar todos los selectores de obra de la app. Se indexa
+// `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
+// y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
+// Aditivo.
+db.version(63).stores({
+  licitaciones:          'id, etapa, fecha_presentacion, obra_id, deleted_at, sync_status',
+  licitacion_requisitos: 'id, licitacion_id, clase, candidato_personal_id, deleted_at, sync_status',
+});
+
 db.version(62).stores({
   sunat_cortes:      'id, company_id, periodo, libro, [company_id+periodo], deleted_at, sync_status',
   cotejo_decisiones: 'id, ambito, llave, [ambito+llave], company_id, periodo, deleted_at, sync_status',

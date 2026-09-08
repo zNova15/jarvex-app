@@ -726,6 +726,23 @@ export function usePersonalExperiencia(personal_id) {
   , [personal_id]);
 }
 
+// ── Postulaciones (mig 197, tanda 15 entrega 1) ───────────────────
+export function useLicitaciones() {
+  return useOfflineData('licitaciones', q =>
+    q.filter(l => !l.deleted_at).toArray()
+  , []);
+}
+
+/** Sin licitacion_id devuelve TODOS los requisitos: la lista necesita el
+ *  veredicto de cada postulación sin abrir ninguna. */
+export function useLicitacionRequisitos(licitacion_id) {
+  return useOfflineData('licitacion_requisitos', q =>
+    licitacion_id
+      ? q.where('licitacion_id').equals(licitacion_id).filter(r => !r.deleted_at).toArray()
+      : q.filter(r => !r.deleted_at).toArray()
+  , [licitacion_id]);
+}
+
 export function useConflicts() {
   const [conflicts, setConflicts] = useState([]);
 

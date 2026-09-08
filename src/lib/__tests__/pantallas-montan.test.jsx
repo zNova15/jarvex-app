@@ -118,6 +118,7 @@ const CHUNKS = [
   '../../components/jx-insumos-persona.jsx',
   '../../components/jx-kpis-obra.jsx',
   '../../components/jx-libros-electronicos.jsx',
+  '../../components/jx-licitaciones.jsx',
   '../../components/jx-mantenimiento.jsx',
   '../../components/jx-mi-frente.jsx',
   '../../components/jx-migracion-import.jsx',

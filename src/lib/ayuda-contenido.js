@@ -456,6 +456,21 @@ const AYUDA = {
     'La línea de GASTOS se alimenta de los comprobantes vinculados a "Gastos Generales de la Empresa"; la de COSTOS, de los vinculados a una obra. Si algo está en la línea equivocada, se corrige cambiando la VINCULACIÓN del movimiento (Movimientos Contables), no un campo de tipo.',
   ] },
   'comprobantes': { titulo: 'Comprobantes Electrónicos SUNAT', que: 'Los comprobantes electrónicos emitidos/recibidos consultados contra SUNAT.', como: ['Validá el estado del comprobante (aceptado/anulado) antes de contabilizarlo.'] },
+  'licitaciones': { titulo: 'Postulaciones', que: 'Los procesos de selección a los que nos presentamos, y si calificamos — antes de invertir una semana en el expediente.', como: [
+    'PARA QUÉ SIRVE: el costo real no es preparar mal una propuesta, es gastar días en un proceso que nunca calificaba. Esta página contesta "¿calificamos?" en minutos, cruzando lo que piden las bases contra el padrón de profesionales.',
+    'CADA POSTULACIÓN es un proceso: objeto, nomenclatura, entidad convocante, tipo (obra, expediente, supervisión, bienes y servicios), valor referencial y fecha de presentación de ofertas.',
+    'PLANTEL CLAVE: dentro de cada postulación cargá un puesto por cada profesional que piden las bases (cargo, profesión, meses mínimos y en qué rubro). Se mide contra la experiencia CON CONSTANCIA, que es la única presentable.',
+    'EL SEMÁFORO de la lista: ✅ califica y los elegidos cumplen · ⚠️ hay a quién presentar pero algún nombre elegido está en falta · ⛔ falta gente para al menos un puesto · ❓ todavía no cargaste requisitos. Sin requisitos NO dice que califica: no saber no es lo mismo que estar bien.',
+    'PRESENTAMOS A: elegí en cada puesto a quién vas a presentar. Un elegido que NO cumple es peor que un puesto sin elegir — es el nombre que ya está en el expediente y es una observación segura en la evaluación. La app lo marca en rojo.',
+    'A QUIÉN LE FALTA POCO: cuando un puesto queda descubierto, la fila dice quién está más cerca y cuántos meses le faltan. Muchas veces conviene conseguirle la constancia antes que descartar el proceso.',
+    'DESISTIDO: si no calificamos, mové la etapa a "Desistido". Deja registrado por qué no nos presentamos, que es la decisión que esta pantalla existe para poder tomar.',
+    'SI GANAMOS: con la etapa en "Buena pro" aparece el botón que abre el formulario de obra con los datos ya cargados. NO crea la obra solo — la revisás y confirmás. Falta decidir a mano si ejecuta una empresa o un consorcio: eso no se deduce de con qué RUC se postuló.',
+    'QUIÉN ENTRA: admin, gerencia y el rol Licitaciones. RR.HH. ve la ficha profesional (es dato de personal) pero no a qué procesos nos presentamos.',
+  ], tips: [
+    'El padrón se llena en "Registro Profesional". Si está vacío, todos los puestos van a salir en ⛔ — no es que no califiquemos, es que la app todavía no sabe a quién tenemos.',
+    'Si un puesto pide experiencia general y no de un rubro, dejá el rubro en "Cualquier rubro": acotarlo de más descarta gente que sí calificaba.',
+  ] },
+
   'profesionales': { titulo: 'Registro Profesional', que: 'Qué profesionales tenemos, con cuánta experiencia por rubro y con qué sustento — para armar el plantel de una propuesta.', como: [
     'PARA QUÉ SIRVE: las bases de un proceso piden un plantel clave (ej. "Residente: Ingeniero Civil con 60 meses en saneamiento"). Esta página contesta en segundos quién califica, en vez de revisar carpetas de CVs a mano.',
     'FICHA: cada persona del padrón puede tener su ficha profesional — profesión, título, universidad, colegio (CIP/CAP), número de colegiatura y hasta cuándo está HABILITADO. Si la habilidad venció, la persona no se puede presentar y la app lo marca en rojo.',

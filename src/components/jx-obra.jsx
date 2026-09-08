@@ -288,11 +288,19 @@ function ObrasPage({ showToast }) {
     setModal('editar');
   };
 
-  const openNuevaObra = () => {
+  /**
+   * @param prefill borrador con el que abrir el form ya lleno. Hoy lo manda
+   *   Postulaciones al ganar un proceso (src/lib/licitaciones.js →
+   *   prefillObraDesde). NUNCA trae `ejecutora_tipo`: empresa o consorcio es
+   *   una decisión que no se deduce de con qué RUC se postuló, y errarla
+   *   desarma la contabilidad de la obra.
+   */
+  const openNuevaObra = (prefill = null) => {
     if (companiesActivas.length === 0) {
       showToast('Necesitás registrar al menos 1 empresa activa antes de crear una obra (la ejecutora es obligatoria)', 'red');
       return;
     }
+    const desde = (prefill && typeof prefill === 'object') ? prefill : {};
     setForm({
       tipo_trabajo: TIPO_TRABAJO_DEFAULT,
       origen: ORIGEN_DEFAULT,
@@ -308,10 +316,24 @@ function ObrasPage({ showToast }) {
       gastos_generales_pct: 15,
       igv_pct: 18,
       otros_gastos: [],
+      // El borrador pisa los defaults, nunca al revés.
+      ...desde,
     });
     setEditingId(null);
     setModal('nueva');
   };
+
+  // Postulaciones (jx-licitaciones.jsx) deja el borrador acá y navega. Se
+  // CONSUME —se borra al leerlo— para que volver a Obras mañana no reabra el
+  // formulario solo. No hay early return antes de este punto: el hook está a
+  // salvo de la regla 3 (React #310).
+  uEO(() => {
+    const borrador = window.__prefillObraDesdeLicitacion;
+    if (!borrador) return;
+    try { delete window.__prefillObraDesdeLicitacion; } catch { window.__prefillObraDesdeLicitacion = null; }
+    openNuevaObra(borrador);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Escribe el consorcio de la obra y reconcilia sus socios.
@@ -558,6 +580,24 @@ function ObrasPage({ showToast }) {
             const mod = await import('../lib/seed-ubicaciones.js');
             await mod.seedUbicacionesPorDefecto(created.id, userId);
           } catch (e) { console.warn('[obras] seed ubicaciones falló:', e?.message); }
+        }
+        // Si la obra nació de una postulación ganada, se ancla ahí: sin esto
+        // el botón «pasar a Trabajos» quedaría disponible para siempre y se
+        // podría crear la misma obra dos veces.
+        if (created?.id && form.__licitacion_id) {
+          try {
+            const lic = await window.__db.licitaciones.get(form.__licitacion_id);
+            if (lic && !lic.obra_id) {
+              const ahora = new Date().toISOString();
+              await window.__db.licitaciones.update(lic.id, {
+                obra_id: created.id, updated_at: ahora, updated_by: userId,
+                version: (lic.version ?? 0) + 1,
+                sync_status: lic.demo === true ? 'synced'
+                  : (lic.sync_status === 'pending_create' ? 'pending_create' : 'pending_update'),
+              });
+              window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'licitaciones' } }));
+            }
+          } catch (e) { console.warn('[obras] no se pudo anclar la postulación:', e?.message); }
         }
         showToast(`Obra "${form.nombre_obra}" creada`, 'green');
       }

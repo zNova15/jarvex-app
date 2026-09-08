@@ -44,6 +44,7 @@ import './components/jx-empresa-banner.jsx';
 import {
   useObras, usePersonal, useMateriales, useHerramientas,
   useRubrosObra, usePersonalProfesional, usePersonalExperiencia,
+  useLicitaciones, useLicitacionRequisitos,
   useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useAvanceMetas, useSolicitudesReporte, useSolicitudesFrente, useIncidencias,
@@ -112,6 +113,7 @@ window.__setObraActivaId = setObraActivaId;
 window.__hooks = {
   useObras, usePersonal, useMateriales, useHerramientas,
   useRubrosObra, usePersonalProfesional, usePersonalExperiencia,
+  useLicitaciones, useLicitacionRequisitos,
   useUbicacionesObra, useFrentesObra, useFrentePartidas,
   useMovimientosMateriales, useMovimientosHerramientas, useMovimientosMaquinaria,
   useAsistencia, usePartidas, useAvanceObra, useAvanceMetas, useSolicitudesReporte, useSolicitudesFrente, useIncidencias,
@@ -229,6 +231,7 @@ const PAGE_CHUNKS = {
   'jx-pagos':                 () => import('./components/jx-pagos.jsx'),
   'jx-guias':                 () => import('./components/jx-guias.jsx'),
   'jx-profesionales':         () => import('./components/jx-profesionales.jsx'),
+  'jx-licitaciones':          () => import('./components/jx-licitaciones.jsx'),
   'jx-compras':               () => import('./components/jx-compras.jsx'),
   'jx-ordenes':               () => import('./components/jx-ordenes.jsx'),
   'jx-abastecimiento':        () => import('./components/jx-abastecimiento.jsx'),

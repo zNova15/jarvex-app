@@ -129,6 +129,11 @@ const TRANSACTIONAL_TABLES = [
   'rubros_obra',
   'personal_profesional',
   'personal_experiencia',
+  // Postulaciones (mig 197): la licitación primero, sus requisitos después
+  // (FK licitacion_id). Los requisitos apuntan además a rubros_obra y a
+  // personal, que ya subieron arriba.
+  'licitaciones',
+  'licitacion_requisitos',
   // Hilo de consulta almacén↔contabilidad (mig 148). FK-less (soft refs a
   // factura/ingreso) → sin orden ni FK_DEPS. NO va en TABLA_TO_MODULO: así el
   // push no se gatea por permiso de módulo y ambos roles pueden conversar.
@@ -216,6 +221,8 @@ const MASTER_TABLES = [
   { tabla: 'rubros_obra',                  query: () => supabase.from('rubros_obra').select('*').is('deleted_at', null) },
   { tabla: 'personal_profesional',         query: () => supabase.from('personal_profesional').select('*').is('deleted_at', null) },
   { tabla: 'personal_experiencia',         query: () => supabase.from('personal_experiencia').select('*').is('deleted_at', null) },
+  { tabla: 'licitaciones',                 query: () => supabase.from('licitaciones').select('*').is('deleted_at', null) },
+  { tabla: 'licitacion_requisitos',        query: () => supabase.from('licitacion_requisitos').select('*').is('deleted_at', null) },
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'insumo_mapeo',                 query: () => supabase.from('insumo_mapeo').select('*').is('deleted_at', null) },
@@ -1053,6 +1060,12 @@ const TABLA_TO_MODULO = {
   // módulo a cualquiera que solo lo lee.
   personal_profesional: 'Registro Profesional',
   personal_experiencia: 'Registro Profesional',
+  // Postulaciones (mig 197). Módulo propio y no 'Registro Profesional': el
+  // padrón de profesionales lo escribe también RR.HH., y a qué procesos se
+  // postula el grupo es información comercial que RR.HH. no tiene por qué
+  // tocar. La RLS de la mig 197 dice lo mismo del lado del servidor.
+  licitaciones: 'Licitaciones',
+  licitacion_requisitos: 'Licitaciones',
   intercompany_transactions: 'Intercompany',
   trazabilidad_cadenas: 'Trazabilidad',
 };
@@ -1157,6 +1170,8 @@ const FK_DEPS = {
   trabajo_cotizaciones:      [{ campo: 'trabajo_id', tabla: 'trabajos' }],
   personal_profesional:      [{ campo: 'personal_id', tabla: 'personal' }],
   personal_experiencia:      [{ campo: 'personal_id', tabla: 'personal' }, { campo: 'rubro_id', tabla: 'rubros_obra' }, { campo: 'obra_id', tabla: 'obras' }],
+  licitaciones:              [{ campo: 'rubro_id', tabla: 'rubros_obra' }, { campo: 'postulante_company_id', tabla: 'companies' }, { campo: 'obra_id', tabla: 'obras' }],
+  licitacion_requisitos:     [{ campo: 'licitacion_id', tabla: 'licitaciones' }, { campo: 'rubro_id', tabla: 'rubros_obra' }, { campo: 'candidato_personal_id', tabla: 'personal' }],
   movimientos_insumos_emergencia: [{ campo: 'insumo_emergencia_id', tabla: 'insumos_emergencia' }, { campo: 'responsable_id', tabla: 'personal' }, { campo: 'subcontratista_id', tabla: 'subcontratistas' }, { campo: 'proveedor_id', tabla: 'proveedores' }],
   asistencia:                [{ campo: 'personal_id', tabla: 'personal' }],
   // Un trabajador puede pertenecer a la cuadrilla de un subcontratista; si ese

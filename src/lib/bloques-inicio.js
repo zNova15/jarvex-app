@@ -45,7 +45,7 @@ export const BLOQUES_INICIO = [
   {
     id: 'licitaciones', titulo: 'Licitaciones', icon: 'chart', color: 'var(--blue)',
     desc: 'Plantel profesional para postular y los trabajos a los que nos presentamos.',
-    entradas: ['profesionales'],
+    entradas: ['licitaciones', 'profesionales'],
   },
   {
     id: 'config', titulo: 'Configuración', icon: 'settings', color: 'var(--tm)',

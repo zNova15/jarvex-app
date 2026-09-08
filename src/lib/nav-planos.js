@@ -53,6 +53,9 @@ export const GENERAL_ITEMS = new Set([
   // línea planoDe() lo daba por 'obra' y el sidebar lo filtraba en el plano
   // general — el ítem existía en el menú y NO se veía nunca.
   'profesionales',
+  // Una postulación no es de ninguna obra —todavía no hay obra— y la
+  // mayoría nunca la va a haber. Plano general, como el padrón.
+  'licitaciones',
   // Dirección / Ejecutivo (vistas cross-obra)
   'dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda',
   // Administración
@@ -91,7 +94,7 @@ const AREA = {
   trabajos: new Set(['trabajos', 'obras', 'bienes-servicios']),
   // Licitaciones: el bloque de primer nivel de la tanda 2. Hoy solo el
   // Registro Profesional; el buscador de procesos a postular todavía no existe.
-  licitaciones: new Set(['profesionales']),
+  licitaciones: new Set(['licitaciones', 'profesionales']),
   direccion: new Set(['dashboard-ejecutivo', 'kpis-obra', 'cumplimiento-cronograma', 'alertas', 'busqueda']),
   admin: new Set(['usuarios', 'roles', 'solicitudes', 'configuracion', 'conflictos', 'audit-log']),
 };
