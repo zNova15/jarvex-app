@@ -24,6 +24,11 @@ import { registrarSoloHistorial } from "../lib/precio-historial.js";
 import { coincideTokens } from "../lib/buscar-tokens.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { indexarCatalogo, buscarCatalogo, etiquetaFamilia } from "../lib/catalogo-canonico.js";
+import { sugerirSubfamilia, etiquetaSubfamilia } from "../lib/catalogo-subfamilias.js";
+
+// La subfamilia de una entrada: la confirmada si la hay, si no la propuesta.
+const subfamiliaDe = (c) => c?.subfamilia || sugerirSubfamilia(c?.nombre, c?.familia)?.subfamilia || null;
 const { useState: uS, useMemo: uM, useEffect: uE, useCallback: uCB, useRef: uR } = React;
 
 // ─── DATA ───────────────────────────────────────────────
@@ -386,6 +391,16 @@ function MaterialesPage({ showToast }) {
   const [expandedGroups, setExpandedGroups] = uS(() => new Set());
   const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const sugerencias = uM(() => detectarSugerencias(materiales, 'nombre_material'), [materiales]);
+  // ── EL CATÁLOGO CANÓNICO AL DAR DE ALTA (tanda 14, entrega 3) ────
+  // Un catálogo que nadie ve no agiliza nada: acá es donde se nota. Al escribir
+  // el nombre de un material se propone el del catálogo del grupo CON SU UNIDAD
+  // y su subfamilia ya puestas. Nada bloquea — la obra compra cosas que ningún
+  // archivo previó, y escribir un nombre que no está sigue siendo válido.
+  const catInsumosHook = window.__hooks.useCatalogoInsumos();
+  const indiceCatalogo = uM(
+    () => indexarCatalogo(catInsumosHook.data || [], { companyId: null }),
+    [catInsumosHook.data],
+  );
   const dups = uM(() => detectarDuplicados(materiales, 'nombre_material'), [materiales]);
   const [descartadas, setDescartadas] = uS(() => new Set());
   const [sugerenciasOpen, setSugerenciasOpen] = uS(false);   // desplegable: no invadir la pantalla con banners
@@ -3188,6 +3203,10 @@ function MaterialesPage({ showToast }) {
         const sugerencias = (form.nombre_material || '').length >= 2
           ? matsBase.filter(m => m.nombre.toLowerCase().includes(form.nombre_material.toLowerCase())).slice(0, 8)
           : [];
+        // Del catálogo del grupo: trae la unidad correcta y la subfamilia.
+        const delCatalogo = (form.nombre_material || '').length >= 2
+          ? buscarCatalogo(indiceCatalogo, form.nombre_material, { limite: 6, tipo: 'insumo' })
+          : [];
         return (
         <Modal title={editingId ? 'Editar Material' : 'Nuevo Material'} icon="package" onClose={closeModalMaterial}>
         {/* Banner detector EPP — aparece cuando el nombre matchea palabras clave
@@ -3246,6 +3265,25 @@ function MaterialesPage({ showToast }) {
             <datalist id="material-sugerencias-jx">
               {matsBase.map((m, i) => <option key={i} value={m.nombre}/>)}
             </datalist>
+            {delCatalogo.length > 0 && !editingId && (
+              <div style={{ marginTop:6, padding:8, background:'var(--amber-l)', border:'1px solid rgba(242,183,5,0.3)', borderRadius:6 }}>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:4 }}>
+                  Del catálogo del grupo — trae la unidad ya puesta:
+                </div>
+                {delCatalogo.map(c => (
+                  <button key={c.id} type="button" className="btn btn-ghost btn-xs"
+                    style={{ width:'100%', textAlign:'left', justifyContent:'flex-start', marginBottom:2 }}
+                    onClick={()=>setForm({ ...form, nombre_material: c.nombre, unidad: c.unidad || form.unidad,
+                      categoria: form.categoria || etiquetaFamilia(c.familia) })}>
+                    {c.nombre}
+                    {c.unidad && <span className="badge b-gray" style={{ fontSize:9, marginLeft:6 }}>{c.unidad}</span>}
+                    <span style={{ color:'var(--tm)', marginLeft:6, fontSize:10.5 }}>
+                      {etiquetaSubfamilia(subfamiliaDe(c)) || etiquetaFamilia(c.familia)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
             {sugerencias.length > 0 && !editingId && (
               <div style={{ marginTop:6, padding:8, background:'rgba(52,152,219,0.06)', border:'1px solid rgba(52,152,219,0.25)', borderRadius:6, maxHeight:140, overflow:'auto' }}>
                 <div style={{ fontSize:10.5, color:'var(--tm)', marginBottom:4 }}>Click para autocompletar:</div>

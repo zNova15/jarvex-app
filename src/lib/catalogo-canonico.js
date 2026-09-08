@@ -628,3 +628,33 @@ export function matrizCategorias(catalogoRows, mapeoRows) {
     sinMapear: [...new Map(sinMapear.map(x => [`${x.company_id}|${x.familia_local}`, x])).values()],
   };
 }
+
+// ── 8. LA DISGREGACIÓN, PUESTA A TRABAJAR (entrega 3) ──────────────
+//
+// Gabriel puso el caso como ejemplo de toda la tanda: el presupuesto pide
+// «ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60» en KILOS y el mercado lo vende en
+// VARILLAS de 9 m. Al armar la orden hay que poder escribir varillas sin perder
+// de vista cuántos kilos son, que es contra lo que cuadra el presupuesto.
+
+/** Las presentaciones en que se compra un insumo que el presupuesto pide a
+ *  granel. Se cruza por la descripción normalizada del padre. */
+export function presentacionesDe(nombrePadre, disgregacion) {
+  const k = normMapeo(nombrePadre);
+  if (!k) return [];
+  return (disgregacion || [])
+    .filter(d => d && !d.deleted_at && d.activo !== false && d.padre_norm === k)
+    .sort((a, b) => String(a.hijo_nombre).localeCompare(String(b.hijo_nombre), 'es'));
+}
+
+/**
+ * Cuántas unidades del PADRE son N del hijo, y al revés.
+ * `factor` = cuántas del padre trae UNA del hijo (una varilla = 8,946 kg).
+ * Devuelve `null` cuando el factor no se sabe: NO se convierte con un número
+ * inventado — se muestra que falta definirlo y listo.
+ */
+export function convertirPresentacion(cantidad, factor, { hacia = 'padre' } = {}) {
+  const c = Number(cantidad), f = Number(factor);
+  if (!Number.isFinite(c) || !Number.isFinite(f) || f <= 0) return null;
+  const v = hacia === 'padre' ? c * f : c / f;
+  return Math.round((v + Number.EPSILON) * 1000) / 1000;
+}

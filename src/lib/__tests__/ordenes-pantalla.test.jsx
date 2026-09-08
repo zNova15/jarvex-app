@@ -76,6 +76,8 @@ function montarBrowserFalso() {
     useConsorcios: () => ({ data: [{ id: 'k1', obra_id: OBRA, company_id: EL_INCA }], loading: false }),
     useInsumosPartida: () => ({ data: [], loading: false }),
     useInsumoMapeos: () => ({ data: [], loading: false }),
+    useCatalogoInsumos: () => ({ data: globalThis.__CATALOGO_ORD || [], loading: false, refresh: async () => {} }),
+    useCatalogoDisgregacion: () => ({ data: globalThis.__DISG_ORD || [], loading: false, refresh: async () => {} }),
     resolverConfig: (_cfg, _k, def) => def,
   };
 }

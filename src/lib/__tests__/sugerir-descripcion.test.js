@@ -173,3 +173,54 @@ describe('el vocabulario de la empresa a la que se le compra', () => {
     expect(cc[0].proveedores).toEqual(['c-gasomi']);
   });
 });
+
+// ── El catálogo canónico como fuente (tanda 14, entrega 3) ─────────
+describe('el catálogo entra al autocompletado', () => {
+  const CAT = [
+    { id: 'c1', nombre: 'ALQUILER DE CAMIONETA 4X4', unidad: 'mes', familia: 'servicios', subfamilia: 'servicio_alquiler', activo: true },
+    { id: 'c2', nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)', unidad: 'bolsa', familia: 'agregados', subfamilia: 'cemento', activo: true },
+    { id: 'c3', nombre: 'ALGO DESACTIVADO', unidad: 'und', familia: 'otros', activo: false },
+  ];
+
+  it('propone servicios, que es lo único que no está en ninguna otra fuente', () => {
+    const corpus = corpusDeDescripciones({ catalogo: CAT });
+    const r = buscarDescripcion(corpus, 'alquiler');
+    expect(r[0].descripcion).toBe('ALQUILER DE CAMIONETA 4X4');
+    expect(r[0].unidad).toBe('mes');
+    expect(origenPrincipal(r[0])).toBe('catalogo');
+  });
+
+  it('trae la familia y la subfamilia, que ninguna otra fuente sabe', () => {
+    const corpus = corpusDeDescripciones({ catalogo: CAT });
+    const c = corpus.find(x => x.descripcion.startsWith('CEMENTO'));
+    expect(c.familia).toBe('agregados');
+    expect(c.subfamilia).toBe('cemento');
+  });
+
+  it('lo desactivado del catálogo no se propone', () => {
+    const corpus = corpusDeDescripciones({ catalogo: CAT });
+    expect(corpus.find(x => x.descripcion === 'ALGO DESACTIVADO')).toBeUndefined();
+  });
+
+  it('una orden ya firmada le gana al catálogo: manda el texto que alguien usó', () => {
+    // Mismo insumo escrito igual: se unifican en una entrada y decide el peso.
+    const corpus = corpusDeDescripciones({
+      catalogo: [{ id: 'c', nombre: 'Cemento Portland Tipo I', unidad: 'bolsa', familia: 'agregados', activo: true }],
+      ocItems: [{ id: 'o', nombre: 'CEMENTO PORTLAND TIPO I', unidad: 'bol', cantidad: 1, precio_unitario: 28 }],
+    });
+    const c = corpus.find(x => x.descripcion.toUpperCase().includes('CEMENTO'));
+    expect(c.descripcion).toBe('CEMENTO PORTLAND TIPO I');
+    expect(origenPrincipal(c)).toBe('orden');
+    // Y la familia del catálogo NO se pierde al unificarse.
+    expect(c.familia).toBe('agregados');
+  });
+
+  it('pero le gana al presupuesto y a la factura', () => {
+    const corpus = corpusDeDescripciones({
+      catalogo: [{ id: 'c', nombre: 'TUBERIA PVC UF S25 DE 8" ISO 4435', unidad: 'm', familia: 'tuberia_accesorios', activo: true }],
+      insumosPartida: [{ id: 'p', nombre_insumo: 'TUBERIA PVC UF S25 DE 8 ISO 4435', unidad: 'm', insumo_codigo: '660020050' }],
+    });
+    const c = corpus.find(x => x.descripcion.includes('TUBERIA'));
+    expect(origenPrincipal(c)).toBe('catalogo');
+  });
+});

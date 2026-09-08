@@ -49,6 +49,8 @@ import {
   esUnidadPorcentual,
 } from "../lib/abastecimiento.js";
 import { resolverMapeos } from "../lib/mapeo-insumos.js";
+import { resolverCatalogo, presentacionesDe, convertirPresentacion } from "../lib/catalogo-canonico.js";
+import { etiquetaSubfamilia } from "../lib/catalogo-subfamilias.js";
 import {
   directorioDeCompra, buscarDestinatario, destinatarioDeCandidato,
   etiquetaTipo, pareceRuc, porRucExacto, soloDigitos, esBusquedaPorRuc,
@@ -240,6 +242,14 @@ function OrdenesPage({ showToast }) {
   const [atCruce, setAtCruce] = uS([]);
   const [atGuardando, setAtGuardando] = uS(false);
   const facturandoRef = uR(false);
+
+  // ── EL CATÁLOGO CANÓNICO (tanda 14, entrega 3) ──────────────────
+  // Lo que hace que haya algo que proponer al escribir una línea aunque la
+  // empresa no haya comprado nunca eso, y lo ÚNICO que propone los 34
+  // servicios: no están en el presupuesto ni en una factura con ítems.
+  // Se lee en el ámbito de la emisora: lo suyo primero, el general de base.
+  const catInsumosHook = window.__hooks.useCatalogoInsumos();
+  const catDisgHook = window.__hooks.useCatalogoDisgregacion();
 
   const umbral = uM(() => {
     const v = Number(resolverConfig?.(cfg, 'orden_umbral_monto', UMBRAL_POR_DEFECTO));
@@ -690,10 +700,14 @@ function OrdenesPage({ showToast }) {
   // Todo lo que la app vio escrito alguna vez, con lo que compró ESTA empresa
   // pesando más. No se acota por tipo de orden: ver el porqué en el encabezado
   // de lib/sugerir-descripcion.js.
+  const catalogoEntidad = uM(
+    () => resolverCatalogo(catInsumosHook.data || [], { companyId: emisoraId || null }),
+    [catInsumosHook.data, emisoraId],
+  );
   const corpus = uM(() => corpusDeDescripciones({
     ocItems, movs: movs || [], insumosPartida: insumosPartida || [],
-    companyId: emisoraId,
-  }), [ocItems, movs, insumosPartida, emisoraId]);
+    catalogo: catalogoEntidad, companyId: emisoraId,
+  }), [ocItems, movs, insumosPartida, catalogoEntidad, emisoraId]);
 
   const lineaVacia = () => ({
     // La unidad por defecto la decide el TIPO: «SERV» en una orden de servicio.
@@ -720,6 +734,36 @@ function OrdenesPage({ showToast }) {
       proveedorId: nueva.provModo === 'grupo' ? (nueva.provCompanyId || null) : null,
     });
   }, [sugFoco, lineas, corpus, nueva.provModo, nueva.provCompanyId]);
+
+  // ── EL FIERRO EN VARILLAS (tanda 14, entrega 3) ─────────────────
+  // El presupuesto pide el acero en KILOS y el mercado lo vende en VARILLAS de
+  // 9 m. Cuando la línea sale de un insumo que tiene disgregación cargada, se
+  // ofrecen las dos unidades y se convierte la cantidad con el factor de la
+  // norma — el mismo que muestra su procedencia en el catálogo. Si el factor no
+  // se sabe, no se ofrece nada: convertir con un número inventado sería peor.
+  const presentacionesDeLinea = React.useCallback((l) => {
+    const nombre = l?.insumo_nombre || l?.descripcion || '';
+    if (!nombre) return [];
+    return presentacionesDe(nombre, catDisgHook.data || []).filter(d => d.factor != null);
+  }, [catDisgHook.data]);
+
+  const usarPresentacion = (key, d) => {
+    setLineas(ls => ls.map(l => {
+      if (l.key !== key) return l;
+      const cant = convertirPresentacion(l.cantidad, d.factor, { hacia: 'hijo' });
+      return {
+        ...l,
+        descripcion: d.hijo_nombre,
+        unidad: d.hijo_unidad || l.unidad,
+        cantidad: cant == null ? l.cantidad : String(cant),
+        // Las dos mitades del mapeo implícito quedan grabadas: de qué insumo a
+        // granel salió esta línea y con qué factor se convirtió.
+        insumo_nombre: l.insumo_nombre || d.padre_nombre,
+        insumo_unidad: l.insumo_unidad || d.padre_unidad,
+        origen_descripcion: d.hijo_nombre, origen_unidad: d.hijo_unidad || null,
+      };
+    }));
+  };
 
   /**
    * Aceptar una recomendación.
@@ -2362,6 +2406,34 @@ function OrdenesPage({ showToast }) {
                         o metido dentro de un scroll propio. La fila no se
                         puede cortar, y además empuja el detalle hacia abajo en
                         vez de tapar la línea siguiente. */}
+                    {/* ══ LAS PRESENTACIONES (el fierro en varillas) ══════
+                        El presupuesto pide el acero en kilos y el mercado lo
+                        vende en varillas de 9 m. Se ofrecen las dos y se
+                        convierte con el factor de la norma. */}
+                    {(() => {
+                      const pres = presentacionesDeLinea(l);
+                      if (!pres.length) return null;
+                      const yaEs = pres.some(d => (l.unidad || '').toLowerCase() === (d.hijo_unidad || '').toLowerCase());
+                      return (
+                        <tr>
+                          <td colSpan={6} style={{ padding: '4px 8px 6px', fontSize: 10.5, color: 'var(--tm)' }}>
+                            {yaEs
+                              ? <>Se está pidiendo en la presentación de compra. En el presupuesto esto se mide en <strong>{pres[0].padre_unidad}</strong>.</>
+                              : <>
+                                  Esto el presupuesto lo pide en <strong>{pres[0].padre_unidad}</strong> y se compra en:{' '}
+                                  {pres.map(d => (
+                                    <button key={d.id} type="button" className="btn btn-xs btn-ghost"
+                                      style={{ marginRight: 4 }}
+                                      title={`1 ${d.hijo_unidad || 'und'} = ${d.factor} ${d.padre_unidad}${d.nota ? ` · ${d.nota}` : ''}`}
+                                      onClick={() => usarPresentacion(l.key, d)}>
+                                      {d.hijo_nombre} <span style={{ opacity: 0.7 }}>({d.factor} {d.padre_unidad})</span>
+                                    </button>
+                                  ))}
+                                </>}
+                          </td>
+                        </tr>
+                      );
+                    })()}
                     {sugFoco === l.key && sugActuales.length > 0 && (
                       <tr>
                         <td colSpan={6} style={{ padding: 0, background: 'var(--bg-c2)' }}>
@@ -2382,6 +2454,12 @@ function OrdenesPage({ showToast }) {
                                     <span style={{ fontSize: 10.5, color: 'var(--tm)', whiteSpace: 'nowrap' }}
                                       title={sg.precioFecha ? `Último precio conocido, del ${sg.precioFecha}` : 'Último precio conocido'}>
                                       {fmtS(sg.precio)}{sg.precioFecha ? ` · ${sg.precioFecha}` : ''}
+                                    </span>
+                                  )}
+                                  {sg.subfamilia && (
+                                    <span className="badge b-blue" style={{ fontSize: 9, whiteSpace: 'nowrap' }}
+                                      title="Subfamilia del catálogo">
+                                      {etiquetaSubfamilia(sg.subfamilia)}
                                     </span>
                                   )}
                                   <span className="badge b-gray" style={{ fontSize: 9, whiteSpace: 'nowrap' }}>

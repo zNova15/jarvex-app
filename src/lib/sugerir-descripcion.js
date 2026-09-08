@@ -78,7 +78,11 @@ const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at)
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 
-const PESO_ORIGEN = { orden: 300, presupuesto: 200, factura: 100 };
+// `catalogo` (tanda 14, entrega 3) va ARRIBA del presupuesto y de la factura,
+// pero DEBAJO de una orden ya emitida: el catálogo es el nombre que el grupo
+// decidió usar, y una orden firmada es el nombre que alguien ya usó de verdad
+// en un documento. Cuando los dos existen para lo mismo, manda el documento.
+const PESO_ORIGEN = { orden: 300, catalogo: 250, presupuesto: 200, factura: 100 };
 
 /**
  * El corpus de descripciones que la app ya vio escritas.
@@ -89,15 +93,21 @@ const PESO_ORIGEN = { orden: 300, presupuesto: 200, factura: 100 };
  * @param opts.ocItems        filas de oc_items
  * @param opts.movs           accounting_movements
  * @param opts.insumosPartida insumos del presupuesto (solo dentro de una obra)
+ * @param opts.catalogo       el catálogo canónico ya resuelto para esa entidad
+ *                            (src/lib/catalogo-canonico.js). Es lo que hace que
+ *                            haya algo que proponer cuando una empresa recién
+ *                            arranca — y lo único que propone los 34 SERVICIOS,
+ *                            que no están ni en el presupuesto ni en una
+ *                            factura con ítems.
  * @param opts.companyId      la empresa que emite: lo suyo pesa más
  * @param opts.tipo           'compra' | 'servicio' — acota qué corpus mirar
  */
 export function corpusDeDescripciones({
-  ocItems = [], movs = [], insumosPartida = [], companyId = null,
+  ocItems = [], movs = [], insumosPartida = [], catalogo = [], companyId = null,
 } = {}) {
   const porNorm = new Map();
 
-  const poner = (texto, { unidad, precio, fecha, origen, insumoCodigo, vendedorId, propio }) => {
+  const poner = (texto, { unidad, precio, fecha, origen, insumoCodigo, vendedorId, propio, familia, subfamilia }) => {
     const desc = String(texto || '').trim();
     if (desc.length < 3) return;
     const k = normNombre(desc);
@@ -110,6 +120,7 @@ export function corpusDeDescripciones({
         // `proveedores` = quién VENDIÓ eso alguna vez. Es el vocabulario de esa
         // empresa, y lo que permite ordenar distinto según a quién le compras.
         origenes: new Set(), proveedores: new Set(), propio: false,
+        familia: null, subfamilia: null,
       };
       porNorm.set(k, e);
     }
@@ -126,6 +137,10 @@ export function corpusDeDescripciones({
     }
     if (!e.unidad && unidad) e.unidad = unidad;
     if (!e.insumoCodigo && insumoCodigo) e.insumoCodigo = insumoCodigo;
+    // La familia y la subfamilia solo las sabe el catálogo; una vez puestas no
+    // se pisan (ninguna otra fuente las trae).
+    if (familia && !e.familia) e.familia = familia;
+    if (subfamilia && !e.subfamilia) e.subfamilia = subfamilia;
     // Precio: gana el más reciente CON fecha. Una línea sin fecha nunca pisa a
     // una fechada, porque después no habría cómo explicar de dónde salió.
     const p = num(precio);
@@ -156,6 +171,17 @@ export function corpusDeDescripciones({
       unidad: ip.unidad, precio: ip.precio_unitario, fecha: '',
       origen: 'presupuesto', insumoCodigo: ip.insumo_codigo || null,
       vendedorId: null, propio: false,
+    });
+  }
+
+  // 2.5 — EL CATÁLOGO CANÓNICO (tanda 14, entrega 3). Trae la unidad correcta y
+  // la familia ya puestas, y es la única fuente que propone SERVICIOS.
+  for (const c of vivos(catalogo)) {
+    if (c.activo === false) continue;
+    poner(c.nombre, {
+      unidad: c.unidad, precio: null, fecha: '', origen: 'catalogo',
+      insumoCodigo: null, vendedorId: null, propio: false,
+      familia: c.familia, subfamilia: c.subfamilia,
     });
   }
 
@@ -190,6 +216,8 @@ export function corpusDeDescripciones({
     origenes: [...e.origenes],
     proveedores: [...e.proveedores],
     propio: e.propio,
+    familia: e.familia,
+    subfamilia: e.subfamilia,
   }));
 }
 
@@ -241,12 +269,14 @@ export function buscarDescripcion(corpus = [], texto = '', { limite = 8, minimo 
 export function origenPrincipal(sug) {
   const o = sug?.origenes || [];
   if (o.includes('orden')) return 'orden';
+  if (o.includes('catalogo')) return 'catalogo';
   if (o.includes('presupuesto')) return 'presupuesto';
   return 'factura';
 }
 
 export const ETIQUETA_ORIGEN = {
   orden: 'ya en una orden',
+  catalogo: 'del catálogo',
   presupuesto: 'del presupuesto',
   factura: 'de una factura',
 };

@@ -16,8 +16,9 @@ import {
   diffCatalogo, resumenDiff, resolverCatalogo, indexarCatalogo, buscarCatalogo,
   contarPorFamilia, factorDisgregacion, etiquetaFamilia, esFamiliaCanonica,
   familiaEfectiva, familiasPropias, equivalenciasDe, matrizCategorias,
-  entidadesConCatalogo,
+  entidadesConCatalogo, presentacionesDe, convertirPresentacion,
 } from '../catalogo-canonico.js';
+import { normMapeo as normMapeoTest } from '../mapeo-insumos.js';
 
 // ── Fixtures ───────────────────────────────────────────────────────
 const hojaInsumos = (filas) => ({
@@ -461,5 +462,42 @@ describe('el mapeo de categorías entre entidades', () => {
     expect(filas.find(f => f.slug === 'perfiles_metalicos')).toBeUndefined();
     expect(sinMapear).toHaveLength(2);
     expect(sinMapear.map(x => x.familia_local).sort()).toEqual(['FIERROS Y ACEROS', 'MATERIAL DE FIERRO']);
+  });
+});
+
+// ── 9. Las presentaciones de compra (entrega 3) ────────────────────
+describe('el fierro en varillas', () => {
+  const DISG = [
+    { id: 'd1', padre_norm: normMapeoTest('ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60'), padre_nombre: 'ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', padre_unidad: 'kg', hijo_nombre: 'ACERO CORRUGADO DE 1/2"x9m', hijo_unidad: 'var', factor: 8.946, factor_fuente: 'descripcion', activo: true },
+    { id: 'd2', padre_norm: normMapeoTest('ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60'), padre_nombre: 'ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', padre_unidad: 'kg', hijo_nombre: 'ACERO CORRUGADO DE 5/8"x9m', hijo_unidad: 'var', factor: null, factor_fuente: null, activo: true },
+    { id: 'd3', padre_norm: 'otra cosa', padre_nombre: 'OTRA COSA', padre_unidad: 'm', hijo_nombre: 'X', hijo_unidad: 'und', factor: 2, activo: true },
+  ];
+
+  it('encuentra en qué se compra un insumo que el presupuesto pide a granel', () => {
+    const p = presentacionesDe('ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', DISG);
+    expect(p.map(x => x.id)).toEqual(['d1', 'd2']);
+  });
+
+  it('no confunde un insumo con otro', () => {
+    expect(presentacionesDe('CEMENTO PORTLAND', DISG)).toEqual([]);
+    expect(presentacionesDe('', DISG)).toEqual([]);
+  });
+
+  it('convierte los kilos del presupuesto a varillas y al revés', () => {
+    // 500 kg de acero son 55,891 varillas de 1/2" × 9 m.
+    expect(convertirPresentacion(500, 8.946, { hacia: 'hijo' })).toBeCloseTo(55.891, 3);
+    // Y 56 varillas son 500,976 kg.
+    expect(convertirPresentacion(56, 8.946, { hacia: 'padre' })).toBeCloseTo(500.976, 3);
+  });
+
+  it('sin factor NO convierte: no se inventa un número', () => {
+    expect(convertirPresentacion(500, null)).toBeNull();
+    expect(convertirPresentacion(500, 0)).toBeNull();
+    expect(convertirPresentacion('abc', 8.946)).toBeNull();
+  });
+
+  it('lo desactivado y lo borrado no se ofrece', () => {
+    const off = DISG.map(d => ({ ...d, activo: false }));
+    expect(presentacionesDe('ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', off)).toEqual([]);
   });
 });
