@@ -771,37 +771,39 @@ describe('por qué un comprobante no figuraba', () => {
   });
 });
 
-describe('las dos aperturas de la vista', () => {
+describe('la apertura del umbral y las compras en otra moneda', () => {
   // Réplica del caso real: en la obra Miraflores CONSORCIO EL INCA tiene 114
   // compras y solo 20 pasan el umbral. Las otras no se veían por ningún lado.
+  // Las 16 en dólares tampoco: desde el 7-set-2026 (decisión de Gabriel) se
+  // muestran SIEMPRE, rotuladas con su moneda y sin casilla que prender.
   const chica = mov({ id: 'm-chica', amount: 120 });
   const grande = mov({ id: 'm-grande', amount: 5000 });
   const dolares = mov({ id: 'm-usd', amount: 8000, currency: 'USD' });
   const todas = [chica, grande, dolares];
 
-  it('cerrada muestra solo lo exigido, como siempre', () => {
+  it('cerrada muestra lo exigido Y las de otra moneda, nunca las chicas', () => {
     const r = comprobantesSinOrden(todas, []);
-    expect(r.map(m => m.id)).toEqual(['m-grande']);
+    expect(r.map(m => m.id)).toEqual(['m-usd', 'm-grande']);
   });
 
-  it('abrir el umbral suma las chicas sin tocar las de otra moneda', () => {
+  it('la de dólares se ve sin prender nada: no hay casilla que la esconda', () => {
+    const r = comprobantesSinOrden([dolares], []);
+    expect(r.map(m => m.id)).toEqual(['m-usd']);
+  });
+
+  it('una compra chica en dólares también se ve: el umbral es en soles', () => {
+    const usdChica = mov({ id: 'm-usd-chica', amount: 30, currency: 'USD' });
+    expect(comprobantesSinOrden([usdChica], []).map(m => m.id)).toEqual(['m-usd-chica']);
+  });
+
+  it('abrir el umbral suma las chicas de soles, siempre por monto descendente', () => {
     const r = comprobantesSinOrden(todas, [], { incluirBajoUmbral: true });
-    expect(r.map(m => m.id).sort()).toEqual(['m-chica', 'm-grande']);
-  });
-
-  it('abrir la moneda suma las de dólares sin tocar las chicas', () => {
-    const r = comprobantesSinOrden(todas, [], { incluirOtrasMonedas: true });
-    expect(r.map(m => m.id).sort()).toEqual(['m-grande', 'm-usd']);
-  });
-
-  it('las dos abiertas muestran todo, siempre por monto descendente', () => {
-    const r = comprobantesSinOrden(todas, [], { incluirBajoUmbral: true, incluirOtrasMonedas: true });
     expect(r.map(m => m.id)).toEqual(['m-usd', 'm-grande', 'm-chica']);
   });
 
-  it('una venta no entra ni con todo abierto: se respalda con la orden del cliente', () => {
+  it('una venta no entra ni con la vista abierta: se respalda con la orden del cliente', () => {
     const venta = mov({ id: 'm-venta', type: 'income', amount: 50 });
-    const r = comprobantesSinOrden([venta], [], { incluirBajoUmbral: true, incluirOtrasMonedas: true });
+    const r = comprobantesSinOrden([venta], [], { incluirBajoUmbral: true });
     expect(r).toEqual([]);
   });
 
@@ -817,10 +819,24 @@ describe('las dos aperturas de la vista', () => {
     expect(r).toEqual([]);
   });
 
-  it('el resumen NO se mueve con las aperturas: el % respaldado sigue en soles', () => {
+  it('el resumen NO se mueve con la apertura: el % respaldado sigue en soles', () => {
     const r = resumenRespaldo(todas, []);
     expect(r.sinRespaldo).toBe(1);
     expect(r.montoSinRespaldo).toBe(5000);
+  });
+
+  // La lista las MUESTRA, el resumen NO las cuenta. Si el numerador sumara
+  // dólares que el denominador (montoSobreUmbral, solo PEN) no tiene, el
+  // porcentaje podría pasarse de 100 o dar negativo.
+  it('el % respaldado no se ensucia con una compra grande en dólares', () => {
+    const soloUsd = resumenRespaldo([mov({ id: 'u', amount: 90000, currency: 'USD' })], []);
+    expect(soloUsd.sobreUmbral).toBe(0);
+    expect(soloUsd.sinRespaldo).toBe(0);
+    expect(soloUsd.pctRespaldado).toBe(0);
+
+    const conOrdenPen = mov({ id: 'p', amount: 5000, orden_compra_id: 'o1' });
+    const mezcla = resumenRespaldo([conOrdenPen, mov({ id: 'u2', amount: 90000, currency: 'USD' })], []);
+    expect(mezcla.pctRespaldado).toBe(100);
   });
 });
 

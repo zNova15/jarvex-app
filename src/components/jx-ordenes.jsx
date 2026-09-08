@@ -192,11 +192,12 @@ function OrdenesPage({ showToast }) {
   // que le facturó al consorcio» y «en el caso de consorcio EL INCA incluso
   // faltan cosas». Las dos cosas se arreglan acá: un filtro por PROVEEDOR (el
   // de arriba es el de la empresa que EMITE, que no es lo mismo) y dos
-  // aperturas para ver lo que el umbral y la moneda dejaban afuera.
+  // apertura para ver lo que el umbral dejaba afuera. Las compras en otra
+  // moneda ya no tienen casilla: se muestran siempre, rotuladas (decisión de
+  // Gabriel del 7-set-2026).
   const [respProveedor, setRespProveedor] = uS('todos');
   const [respBusca, setRespBusca] = uS('');
   const [verBajoUmbral, setVerBajoUmbral] = uS(false);
-  const [verOtrasMonedas, setVerOtrasMonedas] = uS(false);
   const [respAbierta, setRespAbierta] = uS(null);   // movimiento_id con el detalle desplegado
   // ── EL AYUDANTE DE DOS BLOQUES ──────────────────────────────────
   // A la izquierda lo que la obra NECESITA (presupuesto); a la derecha lo que
@@ -359,9 +360,9 @@ function OrdenesPage({ showToast }) {
   const pendientes = uM(
     () => comprobantesSinOrden(movsRespaldo, ordenes, {
       umbral, companyId: companyIdRespaldo, obraId: obraScopeId,
-      incluirBajoUmbral: verBajoUmbral, incluirOtrasMonedas: verOtrasMonedas,
+      incluirBajoUmbral: verBajoUmbral,
     }),
-    [movsRespaldo, ordenes, umbral, companyIdRespaldo, obraScopeId, verBajoUmbral, verOtrasMonedas]
+    [movsRespaldo, ordenes, umbral, companyIdRespaldo, obraScopeId, verBajoUmbral]
   );
   const gruposPendientes = uM(
     () => agruparPorEmpresa(pendientes, companies || []),
@@ -440,7 +441,7 @@ function OrdenesPage({ showToast }) {
   uE(() => {
     if (tab === 'respaldo' && pendientes.length > 0) sincronizarBorradores();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, pendientes.length, verBajoUmbral, verOtrasMonedas]);
+  }, [tab, pendientes.length, verBajoUmbral]);
 
   // Si el ámbito es una empresa del grupo, esta pestaña no existe para ella:
   // volver a «Emitidas» en vez de dejar una pantalla vacía sin explicación.
@@ -2633,11 +2634,6 @@ function OrdenesPage({ showToast }) {
                 <input type="checkbox" checked={verBajoUmbral} onChange={e => setVerBajoUmbral(e.target.checked)} />
                 Ver también los de menos de {fmtS(umbral)}
               </label>
-              <label style={{ display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}
-                title="El umbral está en soles, así que estas compras no se comparan contra él: se muestran enteras.">
-                <input type="checkbox" checked={verOtrasMonedas} onChange={e => setVerOtrasMonedas(e.target.checked)} />
-                Ver los que están en otra moneda
-              </label>
             </div>
           </div>
 
@@ -2738,8 +2734,9 @@ function OrdenesPage({ showToast }) {
                             </span>
                           )}
                           {b.fuera === 'moneda_extranjera' && (
-                            <span className="badge b-purple" style={{ fontSize: 8.5 }} title="El umbral está en soles: esta compra no se compara contra él.">
-                              {b.moneda}
+                            <span className="badge b-purple" style={{ fontSize: 8.5 }}
+                              title={`Comprobante en ${b.moneda}. El umbral está en soles, así que no se le compara, y su importe no se suma con los de soles en ningún total.`}>
+                              en {b.moneda}
                             </span>
                           )}
                         </td>

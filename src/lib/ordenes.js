@@ -273,11 +273,11 @@ export function motivoNoExigido(mov, { umbral = UMBRAL_POR_DEFECTO } = {}) {
  */
 export function comprobantesSinOrden(movs, ordenes, {
   umbral = UMBRAL_POR_DEFECTO, companyId = null, obraId = null,
-  // Las dos aperturas de la vista (tanda 14). NO cambian qué es exigible —
+  // La apertura del umbral (tanda 14). NO cambia qué es exigible —
   // `resumenRespaldo` sigue contando solo lo de siempre, en soles, para que el
   // «% respaldado» de arriba signifique lo mismo con la vista abierta o
-  // cerrada: solo dejan MIRAR y emitir lo que quedaba fuera de la lista.
-  incluirBajoUmbral = false, incluirOtrasMonedas = false,
+  // cerrada: solo deja MIRAR y emitir lo que quedaba fuera de la lista.
+  incluirBajoUmbral = false,
 } = {}) {
   const conOrden = new Set();
   for (const o of ordenes || []) {
@@ -291,10 +291,13 @@ export function comprobantesSinOrden(movs, ordenes, {
     if (!TIPOS_COMPRA.has(m.type)) continue;
     if (m.orden_compra_id) continue;
     const fuera = motivoNoExigido(m, { umbral });
-    if (fuera === 'moneda_extranjera' && !incluirOtrasMonedas) continue;
-    // En moneda extranjera el umbral (que está en soles) no se compara: se
-    // muestra la compra entera y quien mira decide. Convertirla con un tipo de
-    // cambio inventado sería peor que no mostrarla.
+    // Las compras en otra moneda SIEMPRE se muestran, rotuladas con su moneda.
+    // Decisión de Gabriel del 7-set-2026: «los comprobantes en dólares sí se
+    // muestran, no se los excluye». Antes estaban detrás de una casilla y eran
+    // parte de lo que él leía como «faltan cosas en EL INCA». El umbral (que
+    // está en soles) no se les compara: se muestra la compra entera y quien
+    // mira decide; convertirla con un tipo de cambio inventado sería peor.
+    // Lo que NO cambia: no se suman con los soles en ningún total.
     if (fuera === 'bajo_umbral' && !incluirBajoUmbral) continue;
     if (!fuera && !necesitaOrden(m, { umbral })) continue;
     if (num(m.amount) <= 0) continue;
@@ -374,7 +377,14 @@ export function resumenRespaldo(movs, ordenes, { umbral = UMBRAL_POR_DEFECTO, co
     sobreUmbral++;
     montoSobreUmbral = round2(montoSobreUmbral + num(m.amount));
   }
-  const pendientes = comprobantesSinOrden(movs, ordenes, { umbral, companyId, obraId });
+  // 🔴 El «% respaldado» cuenta SOLO lo exigible y SOLO en soles: es un
+  // porcentaje sobre `montoSobreUmbral`, que arriba ya descartó lo que no es
+  // PEN. Desde el 7-set-2026 la lista SÍ muestra las compras en otra moneda
+  // (decisión de Gabriel), así que hay que descartarlas acá a mano — si no,
+  // el numerador incluiría dólares que el denominador no tiene y el
+  // porcentaje mentiría.
+  const pendientes = comprobantesSinOrden(movs, ordenes, { umbral, companyId, obraId })
+    .filter(m => (m.currency || 'PEN') === 'PEN');
   const montoPendiente = round2(pendientes.reduce((s, m) => s + num(m.amount), 0));
   return {
     umbral: num(umbral),
