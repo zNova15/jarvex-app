@@ -12,6 +12,11 @@
 //    COMPRÓ — sin esto no hay Abastecimiento ni órdenes que nazcan antes del
 //    comprobante. Reusa las correlaciones de la pestaña de al lado: mapear un
 //    nombre mapea a todos sus hermanos ya confirmados.
+//  · 📚 Catálogo: el catálogo canónico de insumos y servicios (tanda 14,
+//    entrega 2). Se importa «Categorizacion Simple.xlsx» —444 insumos en 10
+//    familias comerciales, 34 servicios y la disgregación del acero—, se ve qué
+//    quedó cargado y se corrige a mano lo que el archivo dejó mal. Es la lista
+//    contra la que la app propone nombres, unidades y familias.
 //  · 🤝 Correlaciones: el sistema PROPONE pares de nombres que parecen el
 //    mismo insumo; acá se confirma ("mismo") o se rechaza ("distintos") y la
 //    decisión queda grabada en insumo_correlaciones (sincronizada) para NO
@@ -31,6 +36,7 @@ import {
   extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
+import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -206,6 +212,9 @@ function AnalisisInsumosPage({ showToast }) {
         <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
           🎯 Mapeo al presupuesto
         </button>
+        <button className={`btn btn-sm ${tab === 'catalogo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('catalogo')}>
+          📚 Catálogo
+        </button>
       </div>
 
       {tab === 'comparador' && (
@@ -306,6 +315,10 @@ function AnalisisInsumosPage({ showToast }) {
 
       {tab === 'mapeo' && (
         <MapeoInsumosTab compras={compras} grupoDe={grupoDe} showToast={showToast} />
+      )}
+
+      {tab === 'catalogo' && (
+        <CatalogoCanonicoTab showToast={showToast} />
       )}
 
       {tab === 'correlaciones' && (

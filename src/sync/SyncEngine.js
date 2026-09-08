@@ -141,6 +141,14 @@ const TRANSACTIONAL_TABLES = [
   // FK-less, global, y FUERA de TABLA_TO_MODULO — las filas solo nacen del
   // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente.
   'insumo_mapeo',
+  // Catálogo canónico de insumos y servicios (mig 192, tanda 14). Igual que
+  // los dos de arriba: FK-less, global (sin obra ni empresa) y FUERA de
+  // TABLA_TO_MODULO — solo se escribe desde la pestaña «Catálogo» de Análisis
+  // de Insumos, que ya tiene gate duro admin/gerente, y en el server la RLS
+  // repite ese mismo gate. Todos los roles lo LEEN: el catálogo tiene que
+  // proponerle nombres a la almacenera y al ingeniero igual que al contador.
+  'catalogo_insumos',
+  'catalogo_disgregacion',
   // Config global clave→valor (mig 159). FK-less; NO va en TABLA_TO_MODULO
   // (solo el admin escribe — RLS lo garantiza en el server) y todos la PULLean
   // (el rol campo incluido: necesita el timeout de sesión como cualquier device).
@@ -198,6 +206,8 @@ const MASTER_TABLES = [
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'insumo_mapeo',                 query: () => supabase.from('insumo_mapeo').select('*').is('deleted_at', null) },
+  { tabla: 'catalogo_insumos',             query: () => supabase.from('catalogo_insumos').select('*').is('deleted_at', null) },
+  { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
   { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras

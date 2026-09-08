@@ -109,6 +109,18 @@ export const db = new Dexie('JarvexDB');
 // constancia decía el método y el n° de operación pero nunca DE QUÉ CUENTA
 // salió la plata, y sin eso no hay estado de cuenta posible. Aditivo en
 // columnas, re-declarativo en índices.
+// Versión 58: EL CATÁLOGO CANÓNICO DE INSUMOS Y SERVICIOS (mig 192, tanda 14).
+// 444 insumos en 10 familias comerciales + 34 servicios + la disgregación del
+// acero, importados del xlsx de Gabriel. Es GLOBAL al grupo: no tiene obra ni
+// stock —eso es el inventario— y la clave lógica es `norm` (el nombre pasado
+// por normMapeo(), la misma normalización del motor de mapeo). Se indexa
+// `norm` porque toda propuesta pregunta exactamente por ahí, y `familia` +
+// `tipo` porque la pantalla filtra por eso. Aditivo.
+db.version(58).stores({
+  catalogo_insumos:      'id, norm, familia, tipo, origen, activo, deleted_at, sync_status',
+  catalogo_disgregacion: 'id, padre_norm, hijo_norm, deleted_at, sync_status',
+});
+
 db.version(57).stores({
   movimientos_bancarios:   'id, cuenta_id, fecha, conciliado, origen, obra_id, pago_parte_id, deposito_id, import_hash, deleted_at, sync_status',
   pagos_partes:            'id, pago_id, accounting_movement_id, deposito_id, cuenta_id, obra_id, deleted_at, sync_status',

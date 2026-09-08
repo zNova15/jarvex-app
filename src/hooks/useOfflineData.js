@@ -431,6 +431,25 @@ export function useInsumoMapeos() {
   , []);
 }
 
+// El catálogo canónico de insumos y servicios (mig 192, tanda 14): 444 insumos
+// en 10 familias + 34 servicios, importados del xlsx. Global al grupo (sin obra
+// ni empresa) y chico —menos de 500 filas—, así que se trae entero y se resuelve
+// al leer con `resolverCatalogo()` de src/lib/catalogo-canonico.js: puede haber
+// más de una fila por `norm` si el mismo archivo se importó en las dos PCs.
+export function useCatalogoInsumos() {
+  return useOfflineData('catalogo_insumos', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
+// La disgregación del catálogo (mig 192): «acero en kg» ↔ «varillas de 9 m».
+// Hoy es una sola familia; se lee entera por lo mismo que la de arriba.
+export function useCatalogoDisgregacion() {
+  return useOfflineData('catalogo_disgregacion', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Config global clave→valor (mig 159). Puede haber filas repetidas por clave
 // (dos devices offline) — resolver al leer: updated_at más reciente gana.
 export function useAppConfig() {

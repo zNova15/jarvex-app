@@ -208,7 +208,12 @@ export function familiaDe(norm) {
 const NOMINAL = {
   tuberia_pvc:  { 1.5: 48, 2: 60, 2.5: 73, 3: 88, 4: 110, 6: 160, 8: 200, 10: 250, 12: 315, 14: 355, 16: 400 },
   tuberia_hdpe: { 1: 33, 1.5: 48, 2: 63, 2.5: 75, 3: 90, 4: 110, 6: 160, 8: 200, 10: 250, 12: 315 },
-  acero_corrugado: { 0.375: 9.5, 0.5: 12.7, 0.625: 15.9, 0.75: 19.1, 1: 25.4 },
+  // 1/4" y 5/16" son las dos barras que el mercado peruano nombra en pulgadas
+  // pero fabrica en milímetros redondos (6 y 8 mm, NTP 341.031 / Aceros
+  // Arequipa). Faltaban, y sin ellas la varilla de 1/4" —la primera fila de la
+  // hoja DISGREGADOS del catálogo— no encontraba su fila de kilos: 1/4" daba
+  // 6,35 mm y la tabla de KG_POR_METRO empieza en 6.
+  acero_corrugado: { 0.25: 6, 0.3125: 8, 0.375: 9.5, 0.5: 12.7, 0.625: 15.9, 0.75: 19.1, 1: 25.4 },
   _default:     { 0.5: 15, 0.75: 20, 1: 25, 1.25: 32, 1.5: 40, 2: 50, 2.5: 65, 3: 80, 4: 100, 6: 150, 8: 200 },
 };
 const MM_POR_PULGADA = 25.4;
@@ -389,7 +394,11 @@ export const KG_POR_BOLSA_CEMENTO = 42.5;
 //    Con el 6% el 1/2" caía en la fila de 12 mm y los 29.856 kg de acero de la
 //    obra salían 12% cortos. Se elige además la fila MÁS CERCANA, no la primera.
 const TOL_CALIBRE = 0.015;
-const calibreMasCercano = (d) => {
+// Exportada desde la tanda 14: la disgregación del catálogo canónico
+// (catalogo-canonico.js) elige la fila de kilos con ESTA misma tolerancia. Si
+// se duplicara, el 1/2" volvería a caer en la fila de 12 mm y el acero saldría
+// 12% corto — que es exactamente la lección que dejó este 1,5%.
+export const calibreMasCercano = (d) => {
   let mejor = null, dist = Infinity;
   for (const k of Object.keys(KG_POR_METRO)) {
     const e = Math.abs(d - Number(k));
