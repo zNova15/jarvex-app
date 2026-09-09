@@ -351,3 +351,90 @@ describe('alertasUnicas', () => {
       .toEqual(['La fecha viene truncada', 'Otra cosa']);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// ENTREGA 6 — lo que rompió las pruebas reales del 8-set por la tarde
+// ═══════════════════════════════════════════════════════════════════
+import { MAX_PARTICIONES, MAX_VENTANAS, rangosDeFamilia } from '../bases-analisis.js';
+
+describe('cuando la respuesta se corta, el rango se parte SOLO', () => {
+  // El caso real: «No se pudo extraer personal (páginas 21–23): la respuesta se
+  // cortó por tamaño. Analiza un rango más corto.» Ese mensaje le pedía al
+  // usuario que hiciera a mano lo que el programa puede hacer.
+  const md = Array.from({ length: 12 }, (_, i) =>
+    `<!-- página ${i + 1} -->\nREQUISITOS DE CALIFICACION del PERSONAL CLAVE\n${CITA} en el tramo ${i + 1}.`).join('\n');
+
+  it('parte en dos y vuelve a intentar hasta que entra', async () => {
+    const rangos = [];
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 8 }] } } },
+      extraer: (body) => {
+        const n = (body.texto.match(/<!-- página/g) || []).length;
+        rangos.push(n);
+        // Se corta mientras el tramo tenga más de 2 páginas.
+        if (n > 2) return { __error: 422, error: 'La respuesta se cortó por tamaño.', code: 'respuesta_cortada' };
+        return { resultado: { requisitos: [{ cargo: `Residente ${n}`, meses_minimos: 36, fuente_pagina: 1, fuente_cita: CITA }] } };
+      },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: 'x' }], { apiFetch, apiParse, cacheado: { markdown: md, paginasOcr: 0 } });
+    // Empezó con 8 páginas y terminó pidiendo tandas de 2 o menos.
+    expect(Math.max(...rangos)).toBeGreaterThan(2);
+    expect(Math.min(...rangos)).toBeLessThanOrEqual(2);
+    expect(r.filas.length).toBeGreaterThan(0);
+  });
+
+  it('si ni una sola página entra, avisa en vez de perderlo en silencio', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 4 }] } } },
+      extraer: { __error: 422, error: 'La respuesta se cortó por tamaño.', code: 'respuesta_cortada' },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: 'x' }], { apiFetch, apiParse, cacheado: { markdown: md, paginasOcr: 0 } });
+    expect(r.alertas.join(' ')).toMatch(/demasiado contenido para leerlo de una/);
+    expect(MAX_PARTICIONES).toBe(3);
+  });
+});
+
+describe('rangosDeFamilia — el Pase 1 AFINA, no reemplaza al índice', () => {
+  // El caso real del Anexo 13: el índice encontró el plantel en los tramos 2,
+  // 21 a 24 y 55, pero el Pase 1 devolvía un rango y el resto no se leía. El
+  // modelo avisó: «el contenido del ANEXO C NO está incluido en el texto».
+  const resumen = { personal: { aciertos: 9, paginas: [2, 21, 22, 23, 24, 55] } };
+
+  it('lee lo que eligió el Pase 1 Y lo que encontró el índice', () => {
+    const r = rangosDeFamilia({ personal: { encontrada: true, rangos: [{ desde: 30, hasta: 32 }] } }, resumen, 'personal');
+    const cubre = (n) => r.some(x => n >= x.desde && n <= x.hasta);
+    expect(cubre(31)).toBe(true);      // lo del Pase 1
+    expect(cubre(22)).toBe(true);      // lo del índice
+    expect(cubre(55)).toBe(true);      // la zona lejana que antes se perdía
+  });
+
+  it('sin Pase 1 sigue leyendo todas las zonas del índice', () => {
+    const r = rangosDeFamilia(null, resumen, 'personal');
+    expect(r.some(x => 55 >= x.desde && 55 <= x.hasta)).toBe(true);
+  });
+
+  it('con demasiadas zonas se queda con las más grandes, que son las secciones de verdad', () => {
+    const muchas = { personal: { aciertos: 30, paginas: [1, 5, 9, 13, 17, 21, 22, 23, 24, 25, 40, 50] } };
+    const r = rangosDeFamilia(null, muchas, 'personal');
+    expect(r.length).toBeLessThanOrEqual(MAX_VENTANAS);
+    // La zona 21-25 es la más densa: no se puede perder.
+    expect(r.some(x => 23 >= x.desde && 23 <= x.hasta)).toBe(true);
+    // Y quedan ordenadas por posición en el documento.
+    expect(r.map(x => x.desde)).toEqual([...r.map(x => x.desde)].sort((a, b) => a - b));
+  });
+});
+
+describe('el dedup mira la CITA, no el tipo', () => {
+  it('el mismo requisito con distinto «tipo» entra una sola vez', async () => {
+    const cita = 'Conforme el articulo 117 del Reglamento de la Ley N 29230, la Entidad Privada Supervisora no puede tener vinculo';
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: { requisitos_empresa: [
+        { tipo: 'otro', descripcion: 'A', fuente_pagina: 1, fuente_cita: cita },
+        { tipo: 'habilitacion', descripcion: 'B', fuente_pagina: 1, fuente_cita: cita },
+      ] } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: `VALOR REFERENCIAL\n${cita}` }], { apiFetch, apiParse });
+    expect(r.filasEmpresa).toHaveLength(1);
+  });
+});

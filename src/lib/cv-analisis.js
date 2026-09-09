@@ -82,6 +82,37 @@ export function presupuestarCv(bloques) {
   };
 }
 
+/**
+ * Junta dos lecturas parciales del mismo CV.
+ *
+ * La primera mitad suele traer los datos personales y la ficha; la segunda,
+ * más experiencias y los cursos. Se prefiere el primer valor no vacío de cada
+ * campo y se concatenan las listas: perder una experiencia por fundir mal
+ * costaría lo mismo que no haber leído.
+ */
+export function fundirCv(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const preferir = (x, y) => {
+    const out = { ...(y || {}) };
+    for (const [k, v] of Object.entries(x || {})) {
+      if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
+      out[k] = v;
+    }
+    return out;
+  };
+  return {
+    persona: preferir(a.persona, b.persona),
+    ficha: {
+      ...preferir(a.ficha, b.ficha),
+      especialidades: [...(a.ficha?.especialidades || []), ...(b.ficha?.especialidades || [])],
+      capacitaciones: [...(a.ficha?.capacitaciones || []), ...(b.ficha?.capacitaciones || [])],
+    },
+    experiencias: [...(a.experiencias || []), ...(b.experiencias || [])],
+    alertas: [...(a.alertas || []), ...(b.alertas || [])],
+  };
+}
+
 /** Texto de un conjunto de páginas, con su ancla, para mandarlo a una pasada. */
 function textoDePaginas(markdown, paginas) {
   const set = new Set(paginas);
@@ -128,16 +159,36 @@ export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onP
   const paginasFicha = paginasNativas.length ? paginasNativas : paginasOcr.slice(0, 6);
   let resFicha = null;
   if (paginasFicha.length) {
-    avisar({ paso: 'ficha', detalle: `páginas ${paginasFicha[0]}–${paginasFicha[paginasFicha.length - 1]}` });
-    try {
-      const texto = textoDePaginas(markdown, paginasFicha).slice(0, 110_000);
-      const data = await pedir({ accion: 'extraer_cv', parte: 'ficha', texto });
-      resFicha = data.resultado || null;
-      if (data.model) modelos.add(data.model);
-      usdPasadas += Number(data.costo) || 0;
-    } catch (e) {
-      alertas.push(`No se pudo leer el currículum: ${e.message}`);
-    }
+    /**
+     * Si la respuesta se corta, se parte la lectura en dos mitades y se funden.
+     *
+     * 🔴 Es lo que falló el 8-set: «no se pudo leer el currículum: la respuesta
+     * se cortó por tamaño». Un CV con 11 periodos y 10 cursos devuelve un JSON
+     * largo, y el modelo además razona antes de escribirlo. Decirle al usuario
+     * «manda menos páginas» no tiene sentido: el archivo es el que es. Se parte
+     * solo, y cada intento con un gratuito cuesta USD 0.
+     */
+    const leerTanda = async (paginas, nivel = 0) => {
+      const texto = textoDePaginas(markdown, paginas).slice(0, 110_000);
+      if (!texto.trim()) return null;
+      avisar({ paso: 'ficha', detalle: `páginas ${paginas[0]}–${paginas[paginas.length - 1]}` });
+      try {
+        const data = await pedir({ accion: 'extraer_cv', parte: 'ficha', texto });
+        if (data.model) modelos.add(data.model);
+        usdPasadas += Number(data.costo) || 0;
+        return data.resultado || null;
+      } catch (e) {
+        if (e.code === 'respuesta_cortada' && nivel < 2 && paginas.length > 1) {
+          const medio = Math.ceil(paginas.length / 2);
+          const a = await leerTanda(paginas.slice(0, medio), nivel + 1);
+          const b = await leerTanda(paginas.slice(medio), nivel + 1);
+          return fundirCv(a, b);
+        }
+        alertas.push(`No se pudo leer el currículum: ${e.message}`);
+        return null;
+      }
+    };
+    resFicha = await leerTanda(paginasFicha);
   } else {
     alertas.push('El archivo no tiene páginas con texto ni páginas que se hayan podido leer por OCR.');
   }
@@ -190,4 +241,4 @@ export async function analizarCv(bloques, { apiFetch, apiParse, rubros = [], onP
   };
 }
 
-export default { leerCv, presupuestarCv, analizarCv, MIN_ALFA_CV, PAGINAS_POR_PASADA_CONSTANCIAS };
+export default { leerCv, presupuestarCv, analizarCv, fundirCv, MIN_ALFA_CV, PAGINAS_POR_PASADA_CONSTANCIAS };

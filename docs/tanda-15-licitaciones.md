@@ -45,7 +45,8 @@ al cerrar la pestaña. Servía para una consulta suelta, no para trabajar.
 | 3 | **Herramienta de análisis de documentos** — pasadas de extracción sobre el markdown híbrido | ✅ hecha |
 | 4 | **CV → ficha con IA** + **la postulación nace del documento** + el proceso entero (montos, CUI, calendario, consorcio, requisitos de empresa) | ✅ hecha |
 | 5 | **Lo que falló en producción, y el CV que se verifica a mano** (mig 200) | ✅ hecha |
-| 6 | **Evaluar a las empresas** del grupo contra los requisitos de postor que ya se extraen (falta cargar su experiencia y facturación) | pendiente |
+| 6 | **Lo que las pruebas reales rompieron**: el corte por tamaño, el medio documento que no se leía y el desglose en bloques | ✅ hecha |
+| 7 | **Evaluar a las empresas** del grupo contra los requisitos de postor que ya se extraen (falta cargar su experiencia y facturación) | pendiente |
 | 6 | Calendario del proceso + kanban con documentos por etapa | pendiente |
 | 7 | Oferta económica | módulo propio, no un vínculo |
 
@@ -617,6 +618,99 @@ presentarse.
 - `src/lib/experiencia-profesional.js` — los tres niveles de sustento.
 - `api/bases-analizar.js` — techo del Pase 1 y el prompt del proceso ampliado.
 - `src/components/jx-licitaciones.jsx`, `jx-profesionales.jsx`.
+
+---
+
+## Entrega 6 — Lo que dijeron cuatro pruebas reales
+
+> 8-set-2026, tarde. Gabriel probó las bases de ejecución (.docx), las de
+> supervisión (.docx), una postulación creada de esas bases, y el CV. Las
+> cuatro fallaron en el mismo punto y el propio modelo dejó el diagnóstico
+> escrito en sus alertas.
+
+### Lo que dijeron las alertas
+
+> «No se pudo extraer personal (páginas 21–23): **la respuesta se cortó por
+> tamaño**. Analiza un rango más corto.»
+> «No se pudo leer el currículum: **la respuesta se cortó por tamaño**.»
+> «El texto proporcionado corresponde únicamente al índice y a la sección de
+> generalidades. El contenido de los anexos con información clave (**ANEXO C:
+> REQUISITOS DE CALIFICACIÓN - pág. 31, ANEXO E: FACTORES DE EVALUACIÓN - pág.
+> 41**) NO está incluido en el texto suministrado.»
+
+Dos defectos, los dos nuestros.
+
+**1. El techo de tokens se lo comía el razonamiento.** Los modelos gratuitos
+con ZDR piensan en voz alta antes del JSON y ese pensamiento consume el mismo
+`max_tokens`. El techo de personal era 5.000 y el del CV 8.000. Se acabó el
+espacio antes de la primera llave. Tres cambios:
+
+- techos al máximo (16.000) en las tres pasadas de extracción;
+- `reasoning: { effort: 'low', exclude: true }` en el cuerpo de OpenRouter, que
+  es lo que de verdad libera el techo: extraer citando literal no necesita
+  cadena de pensamiento, la respuesta está en el texto que se le dio;
+- y sobre todo, **el rango se parte solo**. `extraerTrozo` reintenta con la
+  mitad, hasta tres veces (12 tramos → 6 → 3 → 1). Decirle al usuario «analiza
+  un rango más corto» era pedirle que hiciera a mano lo que el programa puede
+  hacer, y cada reintento con un gratuito cuesta USD 0.
+
+**2. El Pase 1 REEMPLAZABA al índice, y ahí se perdía medio documento.**
+Medido sobre el Anexo 13 (56 tramos): el índice encontraba el plantel en los
+tramos 2, 21 a 24, 26, 28 a 33 y 55 — el 98% del documento — pero como el Pase
+1 devolvía un rango, solo ese se leía. Ahora `rangosDeFamilia` devuelve **la
+unión** de lo que eligió la IA y lo que encontró el `grep`, con hasta seis
+zonas; si sobran, se quedan las más densas, que son las secciones de verdad y
+no la línea suelta del índice de contenidos.
+
+### Lo que salió mal en la extracción, y por qué
+
+- **Todo salía como «Otro requisito de la empresa»** y «Otra condición»: el
+  prompt listaba los tipos en prosa. Ahora los enumera uno por línea, dice que
+  el campo es obligatorio y avisa que elegir «otro» para el RNP o la
+  facturación es un error.
+- **Se colaban artículos del Reglamento como requisitos** (impedimentos para
+  contratar, prohibiciones generales). El prompt ahora define qué NO es un
+  requisito de calificación: algo que el postor acredita con un documento suyo.
+- **El mismo requisito entraba dos veces** con distinto `tipo`. El dedup miraba
+  `tipo + cita`; ahora mira **solo la cita**.
+- **El prompt tenía las cifras reales de Chilete como ejemplo** y el modelo las
+  comparó con el documento: «el monto de supervisión en el texto es S/
+  753,343.92 (no S/ 735,343.92 como en el ejemplo de referencia del prompt)».
+  Los ejemplos pasaron a ser neutros.
+- **Cada pasada creía tener el documento entero** y repetía «falta el Anexo C».
+  El prompt ahora dice que recibe UN TRAMO y que otras pasadas cubren el resto.
+
+### El desglose en bloques
+
+Gabriel: *«cuando se genere una licitación nueva pienso que se debería crear un
+disgregado con diferentes bloques que me interesan […] todo se ve tan
+desordenado»*.
+
+La postulación se abre como un panel con ocho tarjetas y su conteo, igual que
+el desglose de una obra: **El proceso · Calendario · Plantel · La empresa ·
+Cómo vamos · Reglas · Expediente · Lecturas**. Cada bloque en cero dice qué
+falta y cómo se llena. Las reglas y el expediente se separaron porque
+responden preguntas distintas: «¿me conviene?» y «¿qué papeles armo?».
+
+**Lecturas** es nuevo: la bitácora de cada documento leído con su costo y su
+modelo, y los avisos del lector. En la prueba real el modelo avisó que una
+fecha venía truncada y que el aviso traía resoluciones de COFOPRI ajenas al
+proceso. Eso vale y antes se perdía al cerrar la ventana.
+
+### Y una cosa que sí funcionó
+
+La caché. La segunda lectura del mismo `.docx` dijo «el texto salió de una
+lectura anterior de este mismo archivo: no se pagó escaneo» y costó **USD
+0.000** sobre 17 páginas ya escaneadas.
+
+### Archivos
+
+- `lib/openrouter.js` — `razonamiento: 'bajo'` en `construirCuerpo`.
+- `api/bases-analizar.js` — techos a 16.000, tipos exactos, ejemplos neutros.
+- `src/lib/bases-analisis.js` — `extraerTrozo` con partición, unión de rangos,
+  dedup por cita.
+- `src/lib/cv-analisis.js` — `fundirCv` y partición de la lectura del CV.
+- `src/components/jx-licitaciones.jsx` — el desglose en bloques, `LecturasYAvisos`.
 
 ---
 

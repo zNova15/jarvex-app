@@ -132,7 +132,9 @@ Responde SOLO con este JSON, sin markdown:
 // de consorcio, que son la forma real de llegar a la experiencia o al capital.
 const SYSTEM_PROCESO = `Eres un analista de licitaciones públicas peruanas (Ley de Contrataciones del Estado, Obras por Impuestos Ley 29230 y procesos privados). Te doy el TEXTO de unas páginas de una convocatoria o de unas bases (con marcadores "<!-- página N -->") y extraes los DATOS DEL PROCESO, el CALENDARIO, las REGLAS DE CONSORCIO y los REQUISITOS DE LA EMPRESA postora. NO extraes el plantel profesional: eso lo hace otra pasada.
 
-LA REGLA QUE MANDA: cada dato con número o fecha viene con "fuente_cita" —una frase COPIADA LITERAL del texto, palabra por palabra— y "fuente_pagina". Un programa la busca en el documento; si no aparece tal cual, el dato se marca para revisión. NO inventes citas.
+LA REGLA QUE MANDA: cada dato con número o fecha viene con "fuente_cita" —una frase COPIADA LITERAL del texto, palabra por palabra— y "fuente_pagina", que es el número del marcador «<!-- página N -->» donde está esa frase. Un programa la busca en el documento; si no aparece tal cual, el dato se marca para revisión. NO inventes citas.
+
+SOBRE LO QUE TE DIERON: recibes UN TRAMO del documento, no el documento entero. Si el índice de contenidos menciona un anexo cuyo contenido no está en el texto, NO lo reportes como faltante más de una vez y NO inventes su contenido: otras pasadas cubren esas partes. Extrae lo que SÍ está en el texto que tienes.
 
 QUÉ ES CADA COSA:
 - "nombre_inversion": el nombre LARGO del proyecto tal como lo escribe la entidad, entre comillas en el documento («MEJORAMIENTO Y AMPLIACION DEL SERVICIO DE…»). Cópialo completo: las cartas del expediente lo citan textual.
@@ -140,8 +142,8 @@ QUÉ ES CADA COSA:
 - "cui": Código Único de Inversión, 7 dígitos («CUI N° 2611946»).
 - "nomenclatura": el número del proceso («PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ-PRIMERA CONVOCATORIA», «LP-SM-1-2026-MDCH-1»).
 - "mecanismo": "oxi" si es Obras por Impuestos / Ley 29230 / convenio de inversión / CIPRL; "ley_contrataciones" si es licitación, concurso o adjudicación bajo la Ley de Contrataciones (OSCE/OECE, SEACE); "privado" si convoca una empresa privada; si no se sabe, null.
-- "valor_referencial": el monto TOTAL del proceso (en OxI: «monto referencial del convenio de inversión»). Número sin separadores: «S/ 15,804,472.36» = 15804472.36.
-- "monto_ejecucion" y "monto_supervision": el DESGLOSE cuando existe («contempla el financiamiento de la ejecución S/ 15,051,878.44, la supervisión S/ 735,343.92 y la liquidación S/ 17,250.00»). Si la convocatoria es de SUPERVISIÓN, el valor_referencial es el costo de la supervisión.
+- "valor_referencial": el monto TOTAL del proceso (en OxI: «monto referencial del convenio de inversión»). Número sin separadores: «S/ 1,234,567.89» = 1234567.89.
+- "monto_ejecucion" y "monto_supervision": el DESGLOSE cuando existe («contempla el financiamiento de la ejecución S/ …, la supervisión S/ … y la liquidación S/ …»). Si la convocatoria es de SUPERVISIÓN, el valor_referencial es el costo de la supervisión. Toma SIEMPRE las cifras del texto que te di; los números de este instructivo son ejemplos de formato, no datos del proceso.
 - "plazo_ejecucion_dias": en días calendario. Si dice meses, conviértelo (1 mes = 30 días) y dilo en alertas.
 - "tipo_objeto_sugerido": "obra_ejecucion" (empresa que ejecuta/financia la obra) · "supervision" (entidad privada supervisora, supervisión de obra) · "obra_expediente" (solo elaborar el expediente técnico) · "bienes_servicios" · null si no está claro. Es una SUGERENCIA: una persona la confirma.
 - "fecha_presentacion": la fecha de PRESENTACIÓN DE PROPUESTAS u OFERTAS (no la de expresión de interés ni la de consultas). Formato YYYY-MM-DD.
@@ -151,7 +153,18 @@ CALENDARIO: cada etapa con "desde" y "hasta" (YYYY-MM-DD; si es un solo día, ha
 
 CONSORCIO: si el documento dice que puede participar «Empresa Privada o Consorcio», «persona natural o jurídica o consorcio», o describe la promesa formal de consorcio, "permitido" es true. Copia en "reglas" lo que exija: porcentaje mínimo de participación, máximo de integrantes, que la experiencia se acredite por el consorciado que la aporta, que el representante común firme, etc. Si no dice nada, "permitido": null (no inventes que está prohibido).
 
-REQUISITOS DE LA EMPRESA (lo que descalifica al POSTOR, no a su personal): experiencia del postor en obras similares o en la especialidad (monto acumulado, a veces «X veces el valor referencial», con ventana de años), facturación, capacidad libre de contratación, RNP vigente, patrimonio neto, no tener impedimento, habilitación. Cada uno con "tipo", "descripcion" (la exigencia en una línea), "monto_minimo" (número o null), "multiplo_valor_referencial" (el X de «X veces el valor referencial», o null), "ventana_anios" (o null) y su cita. Un FACTOR DE EVALUACIÓN (da puntaje) NO es un requisito: no lo pongas acá.
+REQUISITOS DE LA EMPRESA (lo que descalifica al POSTOR, no a su personal). El campo "tipo" es OBLIGATORIO y solo puede ser uno de estos siete, exactamente así escrito:
+  "experiencia_postor"      — experiencia en obras/servicios similares o en la especialidad, por monto acumulado
+  "facturacion"             — facturación o ventas mínimas
+  "capacidad_contratacion"  — capacidad libre de contratación (CLC)
+  "rnp"                     — inscripción vigente en el Registro Nacional de Proveedores
+  "patrimonio"              — patrimonio neto mínimo
+  "habilitacion"            — habilitación, autorización o registro sectorial para prestar el servicio
+  "otro"                    — SOLO si de verdad no encaja en ninguno de los seis anteriores
+Elegir "otro" cuando el requisito habla del RNP, de facturación o de experiencia es un ERROR: mira la lista antes de responder.
+Cada uno con "descripcion" (la exigencia en una línea), "monto_minimo" (número o null), "multiplo_valor_referencial" (el X de «X veces el valor referencial», o null), "ventana_anios" (o null) y su cita.
+
+NO ES UN REQUISITO DE CALIFICACIÓN y NO va en esta lista: un artículo del Reglamento copiado (impedimentos para contratar, prohibiciones generales, definiciones), una regla de procedimiento, ni un FACTOR DE EVALUACIÓN (ése da puntaje y va a su propia lista). Un requisito de calificación es algo que el postor ACREDITA con un documento suyo y que, si no cumple, lo descalifica.
 
 FACTORES DE EVALUACIÓN: los que dan PUNTAJE («Experiencia del postor: 40 puntos», «Mejoras a las condiciones: 20 puntos»). Cada uno con su puntaje máximo y el criterio con que se asigna.
 
@@ -161,7 +174,7 @@ PENALIDADES: la de MORA (con su fórmula, por ejemplo «0.10 × monto / (F × pl
 
 DOCUMENTOS DE PRESENTACIÓN: qué hay que meter en cada sobre. Un renglón por documento, con el sobre al que va («Sobre N° 1», «Sobre N° 2») y si es obligatorio. Copia el nombre del documento como lo escriben («Anexo N° 1 - Declaración jurada de datos del postor»).
 
-CONDICIONES A CONSIDERAR: lo que cambia la decisión de presentarse y no es un requisito ni un factor. "tipo": adelanto (¿la entidad da adelantos y de cuánto?) · forma_pago (valorizaciones, plazos de pago) · visita_obra (si hay visita y si es obligatoria, con fecha) · plazo_firma (cuántos días para firmar el contrato o convenio) · subcontratacion (si se permite y hasta qué porcentaje) · seguros (SCTR, CAR, responsabilidad civil) · personal_obligatorio (personal que debe estar permanentemente en obra) · otra. Cada una con "titulo" corto y "detalle".
+CONDICIONES A CONSIDERAR: lo que cambia la decisión de presentarse y no es un requisito ni un factor. El campo "tipo" solo puede ser uno de estos ocho, exactamente así: "adelanto" (¿la entidad da adelantos y de cuánto?) · "forma_pago" (valorizaciones, plazos de pago, límites de la oferta económica) · "visita_obra" (si hay visita y si es obligatoria, con fecha) · "plazo_firma" (cuántos días para firmar el contrato o convenio) · "subcontratacion" (si se permite y hasta qué porcentaje) · "seguros" (SCTR, CAR, responsabilidad civil) · "personal_obligatorio" (personal que debe estar permanentemente en obra) · "otra". Usa "otra" solo si de verdad no encaja. Cada una con "titulo" corto y "detalle".
 
 NO INVENTES: si un dato no está en el texto que te di, va en null y la lista va vacía. No pongas una penalidad «típica» ni una garantía «estándar» del 10% si el texto no la dice. Si un monto es ilegible por el OCR, dilo en "alertas". Si el texto es una publicación con varias convocatorias, quédate con la que corresponde al proceso principal del texto y avísalo.
 
@@ -177,10 +190,10 @@ Responde SOLO con este JSON, sin markdown:
   },
   "cronograma": [ { "etapa": "Presentación de Propuestas", "desde": "2026-09-23", "hasta": "2026-09-24", "fuente_pagina": 1, "fuente_cita": "..." } ],
   "consorcio": { "permitido": true, "max_integrantes": null, "porcentaje_minimo": null, "reglas": "...", "fuente_pagina": 1, "fuente_cita": "..." },
-  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": 1, "ventana_anios": 8, "fuente_pagina": 48, "fuente_cita": "..." } ],
-  "factores_evaluacion": [ { "factor": "Experiencia del postor", "puntaje_maximo": 40, "criterio": "...", "fuente_pagina": 51, "fuente_cita": "..." } ],
-  "garantias": [ { "tipo": "fiel_cumplimiento", "porcentaje": 10, "monto": null, "detalle": "...", "fuente_pagina": 60, "fuente_cita": "..." } ],
-  "penalidades": [ { "tipo": "mora", "formula": "0.10 x monto / (0.40 x plazo en dias)", "tope": "10% del monto", "detalle": "...", "fuente_pagina": 62, "fuente_cita": "..." } ],
+  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": null, "ventana_anios": null, "fuente_pagina": 48, "fuente_cita": "..." } ],
+  "factores_evaluacion": [ { "factor": "...", "puntaje_maximo": null, "criterio": "...", "fuente_pagina": 51, "fuente_cita": "..." } ],
+  "garantias": [ { "tipo": "fiel_cumplimiento", "porcentaje": null, "monto": null, "detalle": "...", "fuente_pagina": 60, "fuente_cita": "..." } ],
+  "penalidades": [ { "tipo": "mora", "formula": "...", "tope": "...", "detalle": "...", "fuente_pagina": 62, "fuente_cita": "..." } ],
   "documentos_presentacion": [ { "sobre": "Sobre N° 1", "documento": "Anexo N° 1 - Declaracion jurada de datos del postor", "obligatorio": true, "fuente_pagina": 30, "fuente_cita": "..." } ],
   "condiciones": [ { "tipo": "adelanto", "titulo": "Adelanto directo del 10%", "detalle": "...", "fuente_pagina": 58, "fuente_cita": "..." } ],
   "alertas": ["lo que una persona tiene que revisar"]
@@ -280,7 +293,7 @@ function jsonDeTexto(txt) {
   return null;
 }
 
-async function pasadaDeTexto({ system, user, deadline, maxTokens }) {
+async function pasadaDeTexto({ system, user, deadline, maxTokens, razonamiento = 'bajo' }) {
   const cfg = leerConfig(process.env);
   if (!cfg.activo) {
     const err = new Error('El motor de texto no está configurado (falta OPENROUTER_API_KEY)');
@@ -289,7 +302,7 @@ async function pasadaDeTexto({ system, user, deadline, maxTokens }) {
   }
   const body = construirCuerpo({
     modelo: cfg.modelo, respaldos: cfg.respaldos, politica: cfg.politica,
-    system, user, maxTokens,
+    system, user, maxTokens, razonamiento,
   });
   const data = await openrouterChat(cfg.apiKey, body, deadline);
   const r = normalizarRespuesta(data);
@@ -384,7 +397,7 @@ export default async function handler(req, res) {
         // medido para Captura Mágica —1.571 tokens de salida donde Haiku
         // usaba 493— y este paso pedía menos que eso. Nunca llegaba a
         // escribir la primera llave.
-        deadline, maxTokens: 6000,
+        deadline, maxTokens: 8000,
       });
       if (r.cortado) {
         return res.status(502).json({
@@ -413,16 +426,21 @@ export default async function handler(req, res) {
         user: `TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
         // Los gratuitos razonan en voz alta antes del JSON y eso también
         // cuenta contra el techo (ver presupuestoSalida en lib/openrouter.js).
-        // El prompt del proceso ahora devuelve además factores, garantías,
-        // penalidades, documentos y condiciones (mig 200): son cinco listas
-        // más, y cada una con su cita literal. Cortar por 2.000 tokens cuesta
-        // la lectura entera; pedirlos de más cuesta USD 0.
-        deadline, maxTokens: esProceso ? 12000 : 5000,
+        // 🔴 EL CORTE FUE EL DEFECTO DOMINANTE del 8-set: «no se pudo extraer
+        // personal (páginas 21–23): la respuesta se cortó por tamaño» salió en
+        // las tres lecturas de bases. El techo de personal era 5.000 y el
+        // modelo lo gastaba razonando. Ahora el máximo, y con razonamiento
+        // bajo para que el espacio se use en el JSON. Con un gratuito, pedir
+        // de más cuesta USD 0; cortar cuesta la sección entera.
+        deadline, maxTokens: 16000,
       });
       if (r.cortado) {
+        // El cliente parte el rango en dos y reintenta solo: decirle al
+        // usuario «analiza un rango más corto» era pedirle que hiciera a mano
+        // lo que el programa puede hacer.
         return res.status(422).json({
-          error: 'La respuesta se cortó por tamaño: el rango de páginas tiene demasiado contenido. Analiza un rango más corto.',
-          code: 'respuesta_cortada',
+          error: 'La respuesta se cortó por tamaño.',
+          code: 'respuesta_cortada', chars: texto.length,
         });
       }
       if (!r.json) return res.status(502).json({ error: 'El modelo no devolvió un JSON legible', code: 'respuesta_ilegible' });
@@ -443,13 +461,14 @@ export default async function handler(req, res) {
           ? `PÁGINAS ESCANEADAS DEL CV (texto OCR):\n\n${texto}\n\nDi qué es cada documento. Recuerda: cada uno con su cita literal.`
           : `TEXTO DEL CURRÍCULUM:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada experiencia con su cita literal y su página; fechas YYYY-MM-DD.`,
         // Un CV con 12 periodos y 10 cursos son ~3.000 tokens de JSON, más el
-        // razonamiento del modelo. Pedir de más cuesta USD 0; cortar, la lectura.
-        deadline, maxTokens: 8000,
+        // razonamiento. Con 8.000 se cortaba (prueba real del 8-set: «no se
+        // pudo leer el currículum»). Al máximo, y razonando poco.
+        deadline, maxTokens: 16000,
       });
       if (r.cortado) {
         return res.status(422).json({
-          error: 'La respuesta se cortó por tamaño. Manda menos páginas por tanda.',
-          code: 'respuesta_cortada',
+          error: 'La respuesta se cortó por tamaño.',
+          code: 'respuesta_cortada', chars: texto.length,
         });
       }
       if (!r.json) return res.status(502).json({ error: 'El modelo no devolvió un JSON legible', code: 'respuesta_ilegible' });

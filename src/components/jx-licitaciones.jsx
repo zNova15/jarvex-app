@@ -253,9 +253,10 @@ function LicitacionesPage({ showToast }) {
   });
 
   /** La entrada de la bitácora `licitaciones.analisis` de esta lectura. */
-  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos }) => ({
+  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos, unidad }) => ({
     fecha: new Date().toISOString(),
     archivo: archivo || null,
+    unidad: unidad || 'pagina',
     costo: costo?.total ?? null,
     modelos: modelos || [],
     paginasOcr: paginasOcr ?? null,
@@ -706,6 +707,76 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // ═══════════════════════════════════════════════════════════════════
 // DETALLE — requisitos del proceso y el veredicto del plantel
 // ═══════════════════════════════════════════════════════════════════
+/** Lo que se ve cuando un bloque del desglose está vacío: qué falta y cómo se
+ *  llena. Un bloque en blanco sin explicación parece un error de la app. */
+function BloqueVacio({ que, canWrite }) {
+  return (
+    <div className="empty-state" style={{ padding: '26px 14px', textAlign: 'center', fontSize: 11.5 }}>
+      Todavía no hay {que}.
+      {canWrite && <> Súbele las bases con <b>«🔎 Leer las bases»</b> y se cargan desde ahí.</>}
+    </div>
+  );
+}
+
+/**
+ * Lo que se leyó y lo que quedó por revisar.
+ *
+ * La bitácora importa: cada lectura dice qué archivo fue, cuánto costó y qué
+ * modelo la hizo. Cuando una extracción sale mal, lo primero es saber quién la
+ * hizo y con qué documento. Y los avisos del lector son trabajo pendiente
+ * REAL: en la prueba del 8-set avisó que una fecha venía truncada y que
+ * faltaban los anexos, y eso es exactamente lo que hay que ir a buscar.
+ */
+function LecturasYAvisos({ lic }) {
+  const analisis = Array.isArray(lic.analisis) ? lic.analisis : [];
+  const alertas = Array.isArray(lic.alertas) ? lic.alertas : [];
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div className="card card-p">
+        <b style={{ fontSize: 12.5 }}>Lecturas de documentos ({analisis.length})</b>
+        {analisis.length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+            Esta postulación se cargó a mano. Súbele las bases para completarla.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 4, marginTop: 6, fontSize: 11 }}>
+            {analisis.map((a, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '5px 8px', borderRadius: 5, background: 'var(--bg-c2)' }}>
+                <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                  <b>{a.archivo || 'documento'}</b>
+                  <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                    {String(a.fecha || '').slice(0, 10)}
+                    {a.paginasOcr ? ` · ${a.paginasOcr} páginas escaneadas` : ''}
+                    {a.requisitos != null ? ` · ${a.requisitos} requisitos` : ''}
+                    {a.modelos?.length ? ` · ${a.modelos.join(' · ')}` : ''}
+                  </div>
+                </span>
+                <b>{a.costo != null ? `USD ${Number(a.costo).toFixed(3)}` : '—'}</b>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card card-p">
+        <b style={{ fontSize: 12.5, color: alertas.length ? 'var(--amber)' : 'inherit' }}>
+          {alertas.length ? `⚠ Por revisar a mano (${alertas.length})` : 'Nada pendiente de revisar'}
+        </b>
+        {alertas.length > 0 && (
+          <>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '4px 0 6px' }}>
+              Lo que el lector no pudo confirmar. Vale la pena mirarlo en el documento antes de armar la propuesta.
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, lineHeight: 1.55 }}>
+              {alertas.map((a, i) => <li key={i}>{a}</li>)}
+            </ul>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DetalleModal({
   lic, requisitos, veredicto, candidatos, rubros, companies, hoy, canWrite, busy,
   onClose, onGuardarLic, onPatchLic, onGuardarReq, onBorrarReq, onBorrarLic, onAplicarAnalisis, toast,
@@ -714,21 +785,41 @@ function DetalleModal({
   const [editando, setEditando] = uS(false);
   const [nuevo, setNuevo] = uS(null);          // borrador del puesto nuevo
   const [analizando, setAnalizando] = uS(false);   // el lector de bases
+  // EL DESGLOSE EN BLOQUES (entrega 6). Gabriel, 8-set-2026: «cuando se genere
+  // una licitación nueva pienso que se debería crear un disgregado con
+  // diferentes bloques que me interesan […] todo se ve tan desordenado». Es el
+  // mismo patrón del panel de una obra: primero las tarjetas con su conteo,
+  // después el bloque que se elige. Un modal de dos metros no se lee.
+  const [bloque, setBloque] = uS('proceso');
   if (!Modal) return null;
 
   const v = veredicto;
   const ordenadas = [...requisitos].sort((a, b) => (a.orden ?? 100) - (b.orden ?? 100));
   // El plantel se evalúa contra el padrón; los requisitos de la EMPRESA
-  // (clase 'empresa', mig 199) se muestran en «Cómo participar».
+  // (clase 'empresa', mig 199) van a su propio bloque.
   const filas = ordenadas.filter(r => (r.clase || 'personal') === 'personal');
   const filasEmpresa = ordenadas.filter(r => r.clase === 'empresa');
   const cronograma = Array.isArray(lic.cronograma) ? lic.cronograma : [];
+  const lista = (k) => (Array.isArray(lic[k]) ? lic[k] : []);
+  const reglas = lista('factores_evaluacion').length + lista('garantias').length
+    + lista('penalidades').length + lista('condiciones').length;
   const empresa = companies.find(c => c.id === lic.postulante_company_id);
   const u = urgencia(lic, hoy);
   const destino = destinoAlGanar(lic.tipo_trabajo);
 
   // Cada puesto de la tabla con su evaluación ya calculada por el veredicto.
   const puestoDe = (reqId) => (v?.puestos || []).find(p => p.requisitoId === reqId) || null;
+
+  const BLOQUES = [
+    { k: 'proceso',    icono: '📋', label: 'El proceso',    n: null,                        sub: lic.nomenclatura ? 'con nomenclatura' : 'sin nomenclatura' },
+    { k: 'calendario', icono: '📅', label: 'Calendario',    n: cronograma.length,           sub: 'etapas con fecha' },
+    { k: 'plantel',    icono: '👷', label: 'Plantel',       n: filas.length,                sub: 'puestos que piden' },
+    { k: 'empresa',    icono: '🏢', label: 'La empresa',    n: filasEmpresa.length,         sub: 'requisitos del postor' },
+    { k: 'participar', icono: '🤝', label: 'Cómo vamos',    n: lista('consorcio').length,   sub: 'socios del consorcio' },
+    { k: 'reglas',     icono: '⚖️', label: 'Reglas',        n: reglas,                      sub: 'garantías y condiciones' },
+    { k: 'expediente', icono: '📎', label: 'Expediente',    n: lista('documentos_presentacion').length, sub: 'documentos a presentar' },
+    { k: 'avisos',     icono: '🔎', label: 'Lecturas',      n: lista('alertas').length,     sub: 'avisos por revisar' },
+  ];
 
   return (
     <Modal title={lic.objeto} onClose={onClose} size="xl">
@@ -750,7 +841,7 @@ function DetalleModal({
                   ? (v.limpio
                     ? 'Hay a quién presentar en todos los puestos, y los elegidos cumplen.'
                     : 'Hay a quién presentar, pero algún nombre ya elegido no cumple — eso es una observación segura.')
-                  : 'Falta gente para al menos un puesto. Mira abajo a quién le falta poco.')}
+                  : 'Falta gente para al menos un puesto. Mira el bloque del plantel.')}
             </div>
           </div>
           <div style={{ flex: '0 1 auto', textAlign: 'right' }}>
@@ -759,53 +850,33 @@ function DetalleModal({
             </span>
             <div style={{ fontSize: 10.5, marginTop: 3, color: URG_COLOR[u.nivel] }}>{u.texto}</div>
           </div>
+          {canWrite && (
+            <button className="btn btn-blue btn-sm" disabled={busy} onClick={() => setAnalizando(true)}
+              title="Sube las bases en PDF o Word: se leen y se cargan los puestos, los requisitos de la empresa, el calendario y las reglas">
+              🔎 Leer las bases
+            </button>
+          )}
         </div>
       </div>
 
-      {/* ── Datos del proceso ── */}
-      <div className="card card-p" style={{ marginBottom: 10, fontSize: 11.5 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-          <b style={{ fontSize: 12.5 }}>Datos del proceso</b>
-          {canWrite && <button className="btn btn-ghost btn-xs" onClick={() => setEditando(true)}>Editar</button>}
-        </div>
-        {lic.nombre_inversion && (
-          <div style={{ fontSize: 11, marginBottom: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-c2)', lineHeight: 1.4 }}>
-            <span style={{ color: 'var(--tm)' }}>Inversión:</span> «{lic.nombre_inversion}»{lic.cui ? <> · <b>CUI {lic.cui}</b></> : ''}
-          </div>
-        )}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
-          <div><span style={{ color: 'var(--tm)' }}>Nomenclatura:</span> {lic.nomenclatura || '—'}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Entidad:</span> {lic.entidad_convocante || '—'}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Tipo:</span> {TIPO_PROCESO_LBL[lic.tipo_trabajo] || lic.tipo_trabajo}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Mecanismo:</span> {MECANISMO_LBL[lic.mecanismo] || '—'}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Valor referencial:</span> <b>{money(lic.valor_referencial, lic.moneda)}</b></div>
-          {(lic.monto_ejecucion || lic.monto_supervision) && (
-            <div style={{ fontSize: 10.5 }}>
-              <span style={{ color: 'var(--tm)' }}>Desglose:</span> ejecución {money(lic.monto_ejecucion, lic.moneda)}
-              {lic.monto_supervision ? ` · supervisión ${money(lic.monto_supervision, lic.moneda)}` : ''}
-            </div>
-          )}
-          <div><span style={{ color: 'var(--tm)' }}>Plazo:</span> {dias(lic.plazo_ejecucion_dias)}</div>
-          <div><span style={{ color: 'var(--tm)' }}>Presentación:</span> {lic.fecha_presentacion || '—'}</div>
-          {lic.cui && !lic.nombre_inversion && <div><span style={{ color: 'var(--tm)' }}>CUI:</span> {lic.cui}</div>}
-          {lic.lugar && <div><span style={{ color: 'var(--tm)' }}>Lugar:</span> {lic.lugar}</div>}
-          <div><span style={{ color: 'var(--tm)' }}>Postulamos con:</span> {empresa?.name || empresa?.nombre || '—'}</div>
-        </div>
-
-        {canWrite && (
-          <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 11, color: 'var(--tm)' }}>Etapa:</span>
-            <select className="fi" style={{ width: 210 }} value={lic.etapa} disabled={busy}
-              onChange={e => onGuardarLic({ etapa: e.target.value })}>
-              {ETAPAS.map(e => <option key={e.v} value={e.v}>{e.label}</option>)}
-            </select>
-            {v && v.total > 0 && !v.califica && !esCerrada(lic.etapa) && (
-              <span style={{ fontSize: 10.5, color: 'var(--amber)' }}>
-                Si no calificamos, «Desistido» deja registrado por qué no nos presentamos.
-              </span>
-            )}
-          </div>
-        )}
+      {/* ── EL DESGLOSE: las tarjetas de cada bloque, con su conteo ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(112px,1fr))', gap: 6, marginBottom: 12 }}>
+        {BLOQUES.map(b => {
+          const activo = bloque === b.k;
+          const vacio = b.n === 0;
+          return (
+            <button key={b.k} onClick={() => setBloque(b.k)}
+              className="card" title={b.sub}
+              style={{ padding: '8px 6px', textAlign: 'center', cursor: 'pointer', border: activo ? '2px solid var(--amber)' : '1px solid var(--border)',
+                background: activo ? 'var(--bg-c2)' : undefined, opacity: vacio && !activo ? 0.6 : 1 }}>
+              <div style={{ fontSize: 16, lineHeight: 1.1 }}>{b.icono}</div>
+              <div style={{ fontSize: 10.5, fontWeight: activo ? 700 : 500, marginTop: 2 }}>{b.label}</div>
+              {b.n != null && (
+                <div style={{ fontSize: 13, fontWeight: 700, color: vacio ? 'var(--tm)' : 'var(--blue)' }}>{b.n}</div>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {analizando && (
@@ -816,138 +887,204 @@ function DetalleModal({
         />
       )}
 
-      {/* ── Calendario del proceso (entrega 4) ── */}
-      {cronograma.length > 0 && <CalendarioProceso cronograma={cronograma} hoy={hoy} />}
-
-      {/* ── Cómo participar: la empresa y el consorcio (entrega 4) ── */}
-      <ComoParticipar lic={lic} filasEmpresa={filasEmpresa} companies={companies}
-        canWrite={canWrite} busy={busy} onPatch={onPatchLic} onBorrarReq={onBorrarReq} />
-
-      {/* ── Requisitos de personal ── */}
-      <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
-        <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
-          justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-          <div>
-            <b style={{ fontSize: 12.5 }}>Plantel clave que piden las bases</b>
-            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-              Se mide contra la experiencia <b>con constancia</b>: es la única presentable.
+      {/* ═══ EL BLOQUE ELEGIDO ═══ */}
+      {bloque === 'proceso' && (
+        <>
+    {/* ── Datos del proceso ── */}
+          <div className="card card-p" style={{ marginBottom: 10, fontSize: 11.5 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <b style={{ fontSize: 12.5 }}>Datos del proceso</b>
+              {canWrite && <button className="btn btn-ghost btn-xs" onClick={() => setEditando(true)}>Editar</button>}
             </div>
-          </div>
-          {canWrite && (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {/* La puerta de entrada de la entrega 3. Va acá, pegado a los
-                  puestos, porque tipear los puestos a mano es exactamente el
-                  trabajo que viene a reemplazar. */}
-              <button className="btn btn-blue btn-xs" disabled={busy}
-                onClick={() => setAnalizando(true)}
-                title="Sube las bases en PDF o Word: se leen y se proponen los puestos, cada uno con la frase de donde salió">
-                🔎 Leer las bases
-              </button>
-              <button className="btn btn-ghost btn-xs" disabled={busy}
-                onClick={() => setNuevo({
-                  cargo: '', profesion: '', rubro_id: '', exige_sustento: true,
-                  meses_generales_minimos: 36, meses_minimos: 0,
-                  participaciones_minimas: 2, meses_por_participacion: 2,
-                  ventana_anios: 10, cargos_equivalentes: '',
-                })}>
-                + Agregar puesto
-              </button>
-            </div>
-          )}
-        </div>
-
-        {filas.length === 0 && !nuevo && (
-          <div className="empty-state" style={{ padding: '26px 14px', textAlign: 'center', fontSize: 11.5 }}>
-            Todavía no hay puestos cargados. {lic.fuente === 'extraccion' && cronograma.length
-              ? 'La convocatoria trajo el calendario y los datos del proceso; el plantel está en las BASES: súbelas con «Leer las bases».'
-              : 'Léelas con «Leer las bases», o cópialos a mano.'}
-          </div>
-        )}
-
-        <div style={{ display: 'grid', gap: 0 }}>
-          {filas.map(r => (
-            <PuestoFila key={r.id} fila={r} puesto={puestoDe(r.id)} rubros={rubros}
-              candidatos={candidatos} canWrite={canWrite} busy={busy}
-              onGuardar={(campos) => onGuardarReq(campos, r.id)}
-              onBorrar={() => onBorrarReq(r)} />
-          ))}
-        </div>
-
-        {nuevo && (
-          <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div style={{ flex: '1 1 160px' }}>
-              <label className="flabel">Cargo</label>
-              <input className="fi" autoFocus value={nuevo.cargo} placeholder="Residente de Obra"
-                onChange={e => setNuevo(n => ({ ...n, cargo: e.target.value }))} />
-            </div>
-            <div style={{ flex: '1 1 160px' }}>
-              <label className="flabel">Profesión</label>
-              <input className="fi" value={nuevo.profesion} placeholder="Ingeniero Civil"
-                onChange={e => setNuevo(n => ({ ...n, profesion: e.target.value }))} />
-            </div>
-            <div style={{ width: 130 }}>
-              <label className="flabel" title="La que se acredita con el diploma de incorporación al colegio">
-                Exp. general (meses)
-              </label>
-              <input className="fi" type="number" min="0" value={nuevo.meses_generales_minimos}
-                onChange={e => setNuevo(n => ({ ...n, meses_generales_minimos: Number(e.target.value) || 0 }))} />
-            </div>
-            <div style={{ flex: '1 1 180px' }}>
-              <label className="flabel">Rubro</label>
-              <select className="fi" value={nuevo.rubro_id}
-                onChange={e => setNuevo(n => ({ ...n, rubro_id: e.target.value }))}>
-                <option value="">Cualquier rubro (general)</option>
-                {rubros.filter(x => x.activo !== false).map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
-              </select>
-            </div>
-            {/* Los tres criterios que las bases piden juntos y que un modelo de
-                "solo meses" no distingue. Ver mig 198. */}
-            <div style={{ width: 110 }}>
-              <label className="flabel" title="«Sustentar como mínimo 02 participaciones»">Participac. mín.</label>
-              <input className="fi" type="number" min="0" value={nuevo.participaciones_minimas}
-                onChange={e => setNuevo(n => ({ ...n, participaciones_minimas: Number(e.target.value) || 0 }))} />
-            </div>
-            <div style={{ width: 120 }}>
-              <label className="flabel" title="«por un plazo no menor a 02 meses cada participación»">Meses c/u</label>
-              <input className="fi" type="number" min="0" value={nuevo.meses_por_participacion}
-                onChange={e => setNuevo(n => ({ ...n, meses_por_participacion: Number(e.target.value) || 0 }))} />
-            </div>
-            <div style={{ width: 120 }}>
-              <label className="flabel" title="«en los últimos 10 años». Vacío = las bases no acotan">Últimos (años)</label>
-              <input className="fi" type="number" min="0" value={nuevo.ventana_anios ?? ''}
-                onChange={e => setNuevo(n => ({ ...n, ventana_anios: e.target.value === '' ? null : Number(e.target.value) }))} />
-            </div>
-            <div style={{ flex: '1 1 100%' }}>
-              <label className="flabel">Cargos que las bases aceptan (separados por «/»)</label>
-              <input className="fi" value={nuevo.cargos_equivalentes}
-                placeholder="Residente de obra / Supervisor de obra / Inspector de obra / Gerente de obra"
-                onChange={e => setNuevo(n => ({ ...n, cargos_equivalentes: e.target.value }))} />
-              <div style={{ fontSize: 10, color: 'var(--tm)' }}>
-                Vacío = no se filtra por cargo. Si las bases listan sinónimos, copiálos todos: una constancia
-                con un cargo fuera de la lista no cuenta como participación.
+            {lic.nombre_inversion && (
+              <div style={{ fontSize: 11, marginBottom: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-c2)', lineHeight: 1.4 }}>
+                <span style={{ color: 'var(--tm)' }}>Inversión:</span> «{lic.nombre_inversion}»{lic.cui ? <> · <b>CUI {lic.cui}</b></> : ''}
               </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
+              <div><span style={{ color: 'var(--tm)' }}>Nomenclatura:</span> {lic.nomenclatura || '—'}</div>
+              <div><span style={{ color: 'var(--tm)' }}>Entidad:</span> {lic.entidad_convocante || '—'}</div>
+              <div><span style={{ color: 'var(--tm)' }}>Tipo:</span> {TIPO_PROCESO_LBL[lic.tipo_trabajo] || lic.tipo_trabajo}</div>
+              <div><span style={{ color: 'var(--tm)' }}>Mecanismo:</span> {MECANISMO_LBL[lic.mecanismo] || '—'}</div>
+              <div><span style={{ color: 'var(--tm)' }}>Valor referencial:</span> <b>{money(lic.valor_referencial, lic.moneda)}</b></div>
+              {(lic.monto_ejecucion || lic.monto_supervision) && (
+                <div style={{ fontSize: 10.5 }}>
+                  <span style={{ color: 'var(--tm)' }}>Desglose:</span> ejecución {money(lic.monto_ejecucion, lic.moneda)}
+                  {lic.monto_supervision ? ` · supervisión ${money(lic.monto_supervision, lic.moneda)}` : ''}
+                </div>
+              )}
+              <div><span style={{ color: 'var(--tm)' }}>Plazo:</span> {dias(lic.plazo_ejecucion_dias)}</div>
+              <div><span style={{ color: 'var(--tm)' }}>Presentación:</span> {lic.fecha_presentacion || '—'}</div>
+              {lic.cui && !lic.nombre_inversion && <div><span style={{ color: 'var(--tm)' }}>CUI:</span> {lic.cui}</div>}
+              {lic.lugar && <div><span style={{ color: 'var(--tm)' }}>Lugar:</span> {lic.lugar}</div>}
+              <div><span style={{ color: 'var(--tm)' }}>Postulamos con:</span> {empresa?.name || empresa?.nombre || '—'}</div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => setNuevo(null)}>Cancelar</button>
-            <button className="btn btn-amber btn-sm" disabled={busy || !nuevo.cargo.trim()}
-              onClick={async () => {
-                const { cargos_equivalentes, ...resto } = nuevo;
-                await onGuardarReq({
-                  ...resto,
-                  rubro_id: nuevo.rubro_id || null,
-                  cargos_equivalentes: String(cargos_equivalentes || '')
-                    .split(/[/;\n]|\sy\/o\s/i).map(x => x.trim()).filter(Boolean),
-                });
-                setNuevo(null);
-              }}>Agregar</button>
+
+            {canWrite && (
+              <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--tm)' }}>Etapa:</span>
+                <select className="fi" style={{ width: 210 }} value={lic.etapa} disabled={busy}
+                  onChange={e => onGuardarLic({ etapa: e.target.value })}>
+                  {ETAPAS.map(e => <option key={e.v} value={e.v}>{e.label}</option>)}
+                </select>
+                {v && v.total > 0 && !v.califica && !esCerrada(lic.etapa) && (
+                  <span style={{ fontSize: 10.5, color: 'var(--amber)' }}>
+                    Si no calificamos, «Desistido» deja registrado por qué no nos presentamos.
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* ── Lo demás que dicen las bases (mig 200) ── */}
-      <ReglasDelProceso lic={lic} />
+          {analizando && (
+            <AnalisisBasesModal
+              lic={lic} rubros={rubros} companies={companies} toast={toast}
+              onClose={() => setAnalizando(false)}
+              onAplicar={onAplicarAnalisis}
+            />
+          )}
+          <PasarATrabajos lic={lic} veredicto={v} destino={destino} canWrite={canWrite} toast={toast} />
+        </>
+      )}
 
-      {/* ── Pasar a Trabajos ── */}
-      <PasarATrabajos lic={lic} veredicto={v} destino={destino} canWrite={canWrite} toast={toast} />
+      {bloque === 'calendario' && (
+        cronograma.length ? <CalendarioProceso cronograma={cronograma} hoy={hoy} />
+          : <BloqueVacio que="calendario cargado" canWrite={canWrite} />
+      )}
+
+      {bloque === 'plantel' && (
+        <>
+    {/* ── Requisitos de personal ── */}
+          <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
+            <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
+              justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+              <div>
+                <b style={{ fontSize: 12.5 }}>Plantel clave que piden las bases</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  Se mide contra la experiencia <b>con constancia</b>: es la única presentable.
+                </div>
+              </div>
+              {canWrite && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button className="btn btn-ghost btn-xs" disabled={busy}
+                    onClick={() => setNuevo({
+                      cargo: '', profesion: '', rubro_id: '', exige_sustento: true,
+                      meses_generales_minimos: 36, meses_minimos: 0,
+                      participaciones_minimas: 2, meses_por_participacion: 2,
+                      ventana_anios: 10, cargos_equivalentes: '',
+                    })}>
+                    + Agregar puesto
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {filas.length === 0 && !nuevo && (
+              <div className="empty-state" style={{ padding: '26px 14px', textAlign: 'center', fontSize: 11.5 }}>
+                Todavía no hay puestos cargados. {lic.fuente === 'extraccion' && cronograma.length
+                  ? 'La convocatoria trajo el calendario y los datos del proceso; el plantel está en las BASES: súbelas con «Leer las bases».'
+                  : 'Léelas con «Leer las bases», o cópialos a mano.'}
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gap: 0 }}>
+              {filas.map(r => (
+                <PuestoFila key={r.id} fila={r} puesto={puestoDe(r.id)} rubros={rubros}
+                  candidatos={candidatos} canWrite={canWrite} busy={busy}
+                  onGuardar={(campos) => onGuardarReq(campos, r.id)}
+                  onBorrar={() => onBorrarReq(r)} />
+              ))}
+            </div>
+
+            {nuevo && (
+              <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div style={{ flex: '1 1 160px' }}>
+                  <label className="flabel">Cargo</label>
+                  <input className="fi" autoFocus value={nuevo.cargo} placeholder="Residente de Obra"
+                    onChange={e => setNuevo(n => ({ ...n, cargo: e.target.value }))} />
+                </div>
+                <div style={{ flex: '1 1 160px' }}>
+                  <label className="flabel">Profesión</label>
+                  <input className="fi" value={nuevo.profesion} placeholder="Ingeniero Civil"
+                    onChange={e => setNuevo(n => ({ ...n, profesion: e.target.value }))} />
+                </div>
+                <div style={{ width: 130 }}>
+                  <label className="flabel" title="La que se acredita con el diploma de incorporación al colegio">
+                    Exp. general (meses)
+                  </label>
+                  <input className="fi" type="number" min="0" value={nuevo.meses_generales_minimos}
+                    onChange={e => setNuevo(n => ({ ...n, meses_generales_minimos: Number(e.target.value) || 0 }))} />
+                </div>
+                <div style={{ flex: '1 1 180px' }}>
+                  <label className="flabel">Rubro</label>
+                  <select className="fi" value={nuevo.rubro_id}
+                    onChange={e => setNuevo(n => ({ ...n, rubro_id: e.target.value }))}>
+                    <option value="">Cualquier rubro (general)</option>
+                    {rubros.filter(x => x.activo !== false).map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
+                  </select>
+                </div>
+                {/* Los tres criterios que las bases piden juntos y que un modelo de
+                    "solo meses" no distingue. Ver mig 198. */}
+                <div style={{ width: 110 }}>
+                  <label className="flabel" title="«Sustentar como mínimo 02 participaciones»">Participac. mín.</label>
+                  <input className="fi" type="number" min="0" value={nuevo.participaciones_minimas}
+                    onChange={e => setNuevo(n => ({ ...n, participaciones_minimas: Number(e.target.value) || 0 }))} />
+                </div>
+                <div style={{ width: 120 }}>
+                  <label className="flabel" title="«por un plazo no menor a 02 meses cada participación»">Meses c/u</label>
+                  <input className="fi" type="number" min="0" value={nuevo.meses_por_participacion}
+                    onChange={e => setNuevo(n => ({ ...n, meses_por_participacion: Number(e.target.value) || 0 }))} />
+                </div>
+                <div style={{ width: 120 }}>
+                  <label className="flabel" title="«en los últimos 10 años». Vacío = las bases no acotan">Últimos (años)</label>
+                  <input className="fi" type="number" min="0" value={nuevo.ventana_anios ?? ''}
+                    onChange={e => setNuevo(n => ({ ...n, ventana_anios: e.target.value === '' ? null : Number(e.target.value) }))} />
+                </div>
+                <div style={{ flex: '1 1 100%' }}>
+                  <label className="flabel">Cargos que las bases aceptan (separados por «/»)</label>
+                  <input className="fi" value={nuevo.cargos_equivalentes}
+                    placeholder="Residente de obra / Supervisor de obra / Inspector de obra / Gerente de obra"
+                    onChange={e => setNuevo(n => ({ ...n, cargos_equivalentes: e.target.value }))} />
+                  <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                    Vacío = no se filtra por cargo. Si las bases listan sinónimos, copiálos todos: una constancia
+                    con un cargo fuera de la lista no cuenta como participación.
+                  </div>
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={() => setNuevo(null)}>Cancelar</button>
+                <button className="btn btn-amber btn-sm" disabled={busy || !nuevo.cargo.trim()}
+                  onClick={async () => {
+                    const { cargos_equivalentes, ...resto } = nuevo;
+                    await onGuardarReq({
+                      ...resto,
+                      rubro_id: nuevo.rubro_id || null,
+                      cargos_equivalentes: String(cargos_equivalentes || '')
+                        .split(/[/;\n]|\sy\/o\s/i).map(x => x.trim()).filter(Boolean),
+                    });
+                    setNuevo(null);
+                  }}>Agregar</button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {(bloque === 'empresa' || bloque === 'participar') && (
+        <ComoParticipar lic={lic} filasEmpresa={filasEmpresa} companies={companies}
+          canWrite={canWrite} busy={busy} onPatch={onPatchLic} onBorrarReq={onBorrarReq}
+          foco={bloque} />
+      )}
+
+      {bloque === 'reglas' && (
+        reglas ? <ReglasDelProceso lic={lic} soloReglas />
+          : <BloqueVacio que="garantías, penalidades ni condiciones" canWrite={canWrite} />
+      )}
+
+      {bloque === 'expediente' && (
+        lista('documentos_presentacion').length ? <ReglasDelProceso lic={lic} soloExpediente />
+          : <BloqueVacio que="lista de documentos a presentar" canWrite={canWrite} />
+      )}
+
+      {bloque === 'avisos' && <LecturasYAvisos lic={lic} />}
 
       {canWrite && (
         <div style={{ marginTop: 10, textAlign: 'right' }}>
@@ -996,6 +1133,9 @@ const PASO_LBL = {
 };
 
 const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
+/** Cómo se llama la unidad de referencia de una cita. Un Word no tiene
+ *  páginas: se numeran tramos, y decir «página 21» sería un número inventado. */
+const unidadLbl = (u, n) => `${u === 'tramo' ? 'tramo' : 'pág.'} ${n}`;
 
 const CAMPO_CABECERA_LBL = {
   nomenclatura: 'Nomenclatura', objeto: 'Objeto', nombre_inversion: 'Nombre de la inversión', cui: 'CUI',
@@ -1019,8 +1159,9 @@ const mostrarValor = (k, v) => {
 // Es lo que hoy alguien tiene que leer a mano en 96 páginas antes de decidir
 // si conviene presentarse: cuánta garantía hay que inmovilizar, cuánto se
 // penaliza la mora, qué da puntaje y si hay adelanto.
-function ReglasDelProceso({ lic }) {
-  const [abierto, setAbierto] = uS(false);
+function ReglasDelProceso({ lic, soloReglas = false, soloExpediente = false }) {
+  const [abierto, setAbierto] = uS(true);
+  const unidad = (Array.isArray(lic.analisis) ? lic.analisis : []).slice(-1)[0]?.unidad || 'pagina';
   const listas = [
     { clave: 'factores_evaluacion', titulo: 'Factores de evaluación', badge: 'b-purple',
       linea: (f) => <>{f.factor}{f.puntaje_maximo ? <b> · {f.puntaje_maximo} puntos</b> : ''}{f.criterio ? <div style={{ color: 'var(--tm)' }}>{f.criterio}</div> : null}</> },
@@ -1033,20 +1174,29 @@ function ReglasDelProceso({ lic }) {
     { clave: 'documentos_presentacion', titulo: 'Documentos a presentar', badge: 'b-gray',
       linea: (d) => <>{d.sobre ? <b>{d.sobre} · </b> : ''}{d.documento}{d.obligatorio === false ? <span style={{ color: 'var(--tm)' }}> (opcional)</span> : ''}</> },
   ].map(l => ({ ...l, filas: Array.isArray(lic[l.clave]) ? lic[l.clave] : [] }))
-    .filter(l => l.filas.length);
+    .filter(l => l.filas.length)
+    // El desglose separa las REGLAS del EXPEDIENTE: son dos preguntas
+    // distintas («¿me conviene?» y «¿qué papeles armo?») y mezclarlas era
+    // parte del desorden que Gabriel señaló.
+    .filter(l => (soloExpediente ? l.clave === 'documentos_presentacion'
+      : (soloReglas ? l.clave !== 'documentos_presentacion' : true)));
 
-  const alertas = Array.isArray(lic.alertas) ? lic.alertas : [];
+  // Los avisos tienen su propio bloque en el desglose: acá no se repiten.
   const total = listas.reduce((t, l) => t + l.filas.length, 0);
-  if (!total && !alertas.length) return null;
+  if (!total) return null;
 
   return (
     <div className="card" style={{ marginBottom: 10, overflow: 'hidden' }}>
       <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
         justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <div>
-          <b style={{ fontSize: 12.5 }}>Las reglas de este proceso ({total})</b>
+          <b style={{ fontSize: 12.5 }}>
+            {soloExpediente ? `Los papeles del expediente (${total})` : `Las reglas de este proceso (${total})`}
+          </b>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-            Puntajes, garantías, penalidades y condiciones, tal como las escribieron las bases.
+            {soloExpediente
+              ? 'Lo que hay que armar y en qué sobre va cada cosa, como lo piden las bases.'
+              : 'Puntajes, garantías, penalidades y condiciones, tal como las escribieron las bases.'}
           </div>
         </div>
         <button className="btn btn-ghost btn-xs" onClick={() => setAbierto(a => !a)}>{abierto ? 'Ocultar' : 'Ver'}</button>
@@ -1066,7 +1216,7 @@ function ReglasDelProceso({ lic }) {
                       {l.linea(x)}
                       {x.fuente_cita && (
                         <div style={{ fontSize: 10, fontStyle: 'italic', color: 'var(--tm)', marginTop: 2 }}>
-                          «{String(x.fuente_cita).slice(0, 220)}»{x.fuente_pagina != null ? ` — pág. ${x.fuente_pagina}` : ''}
+                          «{String(x.fuente_cita).slice(0, 220)}»{x.fuente_pagina != null ? ` — ${unidadLbl(unidad, x.fuente_pagina)}` : ''}
                         </div>
                       )}
                       {x.verificada === false && (
@@ -1078,16 +1228,6 @@ function ReglasDelProceso({ lic }) {
               </div>
             </div>
           ))}
-          {alertas.length > 0 && (
-            <div>
-              <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4, color: 'var(--amber)' }}>
-                ⚠ Lo que el lector marcó para revisar ({alertas.length})
-              </div>
-              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 10.5, lineHeight: 1.5, color: 'var(--tm)' }}>
-                {alertas.slice(0, 20).map((a, i) => <li key={i}>{a}</li>)}
-              </ul>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -1141,13 +1281,18 @@ function CalendarioProceso({ cronograma, hoy }) {
 // grupo tenga cargada su experiencia): ordena la decisión.
 const APORTES = ['experiencia', 'capital', 'personal', 'RNP / capacidad', 'equipos', 'otro'];
 
-function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch, onBorrarReq }) {
+function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch, onBorrarReq, foco = null }) {
   const inicial = () => (Array.isArray(lic.consorcio) ? lic.consorcio : []).map(m => ({ ...m }));
   const [socios, setSocios] = uS(inicial);
   const [notas, setNotas] = uS(lic.participacion_notas || '');
   const [sucio, setSucio] = uS(false);
   const [abierto, setAbierto] = uS(true);
+  // Desde el desglose se entra a UN lado: los requisitos del postor o el plan
+  // de consorcio. Sin foco (uso viejo) se muestran los dos.
+  const verEmpresa = foco !== 'participar';
+  const verConsorcio = foco !== 'empresa';
 
+  const unidadCita = (Array.isArray(lic.analisis) ? lic.analisis : []).slice(-1)[0]?.unidad || 'pagina';
   const vr = Number(lic.valor_referencial) || 0;
   const total = socios.reduce((t, m) => t + (Number(m.porcentaje) || 0), 0);
   const grupo = (companies || []).filter(c => !c.deleted_at);
@@ -1200,6 +1345,7 @@ function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch,
           </div>
 
           {/* Requisitos de la empresa */}
+          {verEmpresa && (
           <div>
             <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Requisitos del postor</div>
             {filasEmpresa.length === 0 ? (
@@ -1218,7 +1364,7 @@ function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch,
                         {r.multiplo_valor_referencial ? <span style={{ color: 'var(--tm)' }}> ({r.multiplo_valor_referencial}× el valor referencial)</span> : ''}
                         {r.ventana_anios ? <span style={{ color: 'var(--tm)' }}> · últimos {r.ventana_anios} años</span> : ''}
                         {r.descripcion && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{r.descripcion}</div>}
-                        {r.fuente_cita && <div style={{ fontStyle: 'italic', fontSize: 10, marginTop: 2, color: 'var(--tm)' }}>«{r.fuente_cita.slice(0, 220)}»{r.fuente_pagina ? ` — pág. ${r.fuente_pagina}` : ''}</div>}
+                        {r.fuente_cita && <div style={{ fontStyle: 'italic', fontSize: 10, marginTop: 2, color: 'var(--tm)' }}>«{r.fuente_cita.slice(0, 220)}»{r.fuente_pagina ? ` — ${unidadLbl(unidadCita, r.fuente_pagina)}` : ''}</div>}
                       </div>
                       {canWrite && <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }} onClick={() => onBorrarReq(r)}>✕</button>}
                     </div>
@@ -1227,8 +1373,10 @@ function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch,
               </div>
             )}
           </div>
+          )}
 
           {/* El plan de consorcio nuestro */}
+          {verConsorcio && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
               <div style={{ fontSize: 11.5, fontWeight: 600 }}>
@@ -1284,6 +1432,7 @@ function ComoParticipar({ lic, filasEmpresa, companies, canWrite, busy, onPatch,
               ))}
             </div>
           </div>
+          )}
 
           <div>
             <label className="flabel" style={{ fontSize: 10 }}>Notas de la participación (por qué así, qué falta, quién consigue qué)</label>
@@ -1443,7 +1592,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   }, [salida, lic, creando]);
   const licTieneCalendario = !creando && Array.isArray(lic.cronograma) && lic.cronograma.length > 0;
 
-  const bitacora = () => ({ archivo: archivo?.name || null, modelos: salida?.modelos || [], paginasOcr: salida?.paginasOcr ?? null });
+  const bitacora = () => ({ archivo: archivo?.name || null, modelos: salida?.modelos || [], paginasOcr: salida?.paginasOcr ?? null, unidad });
 
   const guardar = async () => {
     if (guardandoRef.current) return;
@@ -1864,7 +2013,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                     <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
                       background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
                       «{f.fuente_cita}»
-                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — página {f.fuente_pagina}</b>}
+                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
                     </div>
                   )}
                   {!f.verificada && f.verificacion_motivo && (
@@ -1896,7 +2045,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                     <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
                       background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
                       «{f.fuente_cita}»
-                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — página {f.fuente_pagina}</b>}
+                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
                     </div>
                   )}
                 </div>
@@ -1991,7 +2140,7 @@ function PuestoFila({ fila, puesto, rubros, candidatos, canWrite, busy, onGuarda
           )}
           {fila.fuente === 'extraccion' && (
             <div style={{ fontSize: 10, color: 'var(--blue)' }}>
-              Extraído de las bases{fila.fuente_pagina ? ` · pág. ${fila.fuente_pagina}` : ''}
+              Extraído de las bases{fila.fuente_pagina ? ` · ref. ${fila.fuente_pagina}` : ''}
             </div>
           )}
         </div>

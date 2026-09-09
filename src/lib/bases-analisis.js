@@ -28,6 +28,11 @@ import {
   aCabeceraLicitacion, aCronograma, sugerenciasDe, aExtrasProceso, normalizar,
 } from './bases-extraccion.js';
 
+/** Cuántas veces se parte un rango que no entra en una respuesta.
+ *  Tres: de 12 tramos a 6, a 3, a 1. Más que eso es un documento con una
+ *  página imposible, y ahí sí hay que mirarla a mano. */
+export const MAX_PARTICIONES = 3;
+
 /** Páginas por request de OCR. Debe coincidir con MAX_PAGINAS_TANDA del endpoint. */
 export const PAGINAS_POR_TANDA = 6;
 
@@ -310,7 +315,10 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // La identidad es el texto de donde salió, que es lo único que no cambia
   // entre una pasada y la otra.
   const vistos = new Set();
-  const huella = (r) => `${normalizar(r.cargo || r.tipo)}|${normalizar(r.fuente_cita || r.descripcion).slice(0, 120)}`;
+  // La huella es la CITA, no el tipo: el mismo requisito volvía dos veces con
+  // el mismo texto y distinto `tipo` (uno «otro», otro «habilitacion») y el
+  // dedup no lo agarraba. Pasó en la prueba del 8-set con el artículo 117.
+  const huella = (r) => normalizar(r.fuente_cita || r.descripcion || r.cargo).slice(0, 140);
   // El proceso se arma campo a campo: la primera pasada que trae un dato lo
   // fija, las siguientes solo llenan lo que falta. Así la convocatoria de una
   // página y las bases de 96 se complementan en vez de pisarse.
@@ -328,52 +336,82 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // prueba del 8-set. La llave es el prompt que se va a usar más el texto.
   const pedidos = new Map();
   const promptDe = (familia) => (familia === 'personal' ? 'personal' : 'proceso');
+  /**
+   * Una pasada sobre un rango, y el REINTENTO PARTIENDO EN DOS si la respuesta
+   * se cortó.
+   *
+   * 🔴 EL DEFECTO QUE ESTO CIERRA (8-set-2026). Las tres lecturas de bases
+   * fallaron con «la respuesta se cortó por tamaño: analiza un rango más
+   * corto». Ese mensaje le pedía al usuario que hiciera a mano algo que el
+   * programa puede hacer solo: partir el rango. Ahora se parte hasta tres
+   * veces —de 12 tramos a 6, a 3, a 1— y solo si sigue sin entrar se avisa.
+   * Cada intento con un gratuito cuesta USD 0, así que insistir es gratis y
+   * rendirse era caro: se perdía la sección entera del plantel.
+   */
+  async function extraerTrozo(familia, desde, hasta, nivel) {
+    const texto = textoDeRango(markdown, desde, hasta);
+    if (!texto.trim()) return;
+    // La llave es el TEXTO, no el rango: dos familias pueden pedir rangos
+    // distintos —{1,1} y {1,2}— que en un documento de una página resuelven
+    // al mismo contenido. Con el rango como llave el dedup no agarraba nada.
+    const llave = `${promptDe(familia)}|${texto.length}|${texto.slice(0, 300)}|${texto.slice(-300)}`;
+    if (pedidos.has(llave)) return;
+    pedidos.set(llave, familia);
+    const etiqueta = desde === hasta ? `${desde}` : `${desde}–${hasta}`;
+    avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta}` });
+    try {
+      const data = await pedir({ accion: 'extraer', texto, seccion: familia });
+      const r = data.resultado || {};
+      if (data.model) modelos.add(data.model);
+      usdPasadas += Number(data.costo) || 0;
+      for (const req of (Array.isArray(r.requisitos) ? r.requisitos : [])) {
+        // Con el prompt del proceso, un "requisito" suelto es de la empresa.
+        if (familia !== 'personal' && !req.cargo) { requisitosEmpresa.push(req); continue; }
+        const h = huella(req);
+        if (vistos.has(h)) continue;
+        vistos.add(h);
+        requisitos.push({ ...req, clase: 'personal' });
+      }
+      for (const req of (Array.isArray(r.requisitos_empresa) ? r.requisitos_empresa : [])) {
+        const h = huella(req);
+        if (vistos.has(h)) continue;
+        vistos.add(h);
+        requisitosEmpresa.push(req);
+      }
+      for (const a of (Array.isArray(r.alertas) ? r.alertas : [])) alertas.push(a);
+      for (const clave of ['factores_evaluacion', 'garantias', 'penalidades', 'documentos_presentacion', 'condiciones']) {
+        if (Array.isArray(r[clave])) extras[clave].push(...r[clave]);
+      }
+      if (Array.isArray(r.cronograma)) extras.cronograma.push(...r.cronograma);
+      fundirProceso(r.proceso);
+      if (r.consorcio && typeof r.consorcio === 'object' && (extras.consorcio == null || (extras.consorcio.permitido == null && r.consorcio.permitido != null))) {
+        extras.consorcio = r.consorcio;
+      }
+    } catch (e) {
+      const partible = e.code === 'respuesta_cortada' && nivel < MAX_PARTICIONES && hasta > desde;
+      if (partible) {
+        const medio = Math.floor((desde + hasta) / 2);
+        avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta} era muy largo, se parte en dos` });
+        await extraerTrozo(familia, desde, medio, nivel + 1);
+        await extraerTrozo(familia, medio + 1, hasta, nivel + 1);
+        return;
+      }
+      if (e.code === 'respuesta_cortada') {
+        alertas.push(`El tramo ${etiqueta} de ${familia} tiene demasiado contenido para leerlo de una: quedó sin extraer. Revísalo a mano en el documento.`);
+        return;
+      }
+      alertas.push(`No se pudo extraer ${familia} (${etiqueta}): ${e.message}`);
+    }
+  }
+
+
   for (const familia of FAMILIAS_EXTRAIBLES) {
     const trozos = familia === 'proceso'
       // El calendario vive con los datos del proceso: sus rangos se suman.
       ? fusionarRangos([...rangosDeFamilia(rangos, resumen, 'proceso'), ...rangosDeFamilia(rangos, resumen, 'cronograma')])
       : rangosDeFamilia(rangos, resumen, familia);
-    for (const { desde, hasta } of trozos) {
-      const texto = textoDeRango(markdown, desde, hasta);
-      if (!texto.trim()) continue;
-      // La llave es el TEXTO, no el rango: dos familias pueden pedir rangos
-      // distintos —{1,1} y {1,2}— que en un documento de una página resuelven
-      // al mismo contenido. Con el rango como llave el dedup no agarraba nada.
-      const llave = `${promptDe(familia)}|${texto.length}|${texto.slice(0, 300)}|${texto.slice(-300)}`;
-      if (pedidos.has(llave)) continue;
-      pedidos.set(llave, familia);
-      avisar({ paso: 'extraer', detalle: `${familia} · ${desde === hasta ? desde : `${desde}–${hasta}`}` });
-      try {
-        const data = await pedir({ accion: 'extraer', texto, seccion: familia });
-        const r = data.resultado || {};
-        if (data.model) modelos.add(data.model);
-        usdPasadas += Number(data.costo) || 0;
-        for (const req of (Array.isArray(r.requisitos) ? r.requisitos : [])) {
-          // Con el prompt del proceso, un "requisito" suelto es de la empresa.
-          if (familia !== 'personal' && !req.cargo) { requisitosEmpresa.push(req); continue; }
-          const h = huella(req);
-          if (vistos.has(h)) continue;
-          vistos.add(h);
-          requisitos.push({ ...req, clase: 'personal' });
-        }
-        for (const req of (Array.isArray(r.requisitos_empresa) ? r.requisitos_empresa : [])) {
-          const h = huella(req);
-          if (vistos.has(h)) continue;
-          vistos.add(h);
-          requisitosEmpresa.push(req);
-        }
-        for (const a of (Array.isArray(r.alertas) ? r.alertas : [])) alertas.push(a);
-        for (const clave of ['factores_evaluacion', 'garantias', 'penalidades', 'documentos_presentacion', 'condiciones']) {
-          if (Array.isArray(r[clave])) extras[clave].push(...r[clave]);
-        }
-        if (Array.isArray(r.cronograma)) extras.cronograma.push(...r.cronograma);
-        fundirProceso(r.proceso);
-        if (r.consorcio && typeof r.consorcio === 'object' && (extras.consorcio == null || (extras.consorcio.permitido == null && r.consorcio.permitido != null))) {
-          extras.consorcio = r.consorcio;
-        }
-      } catch (e) {
-        alertas.push(`No se pudo extraer ${familia} (páginas ${desde}–${hasta}): ${e.message}`);
-      }
+    for (const trozo of trozos) {
+      await extraerTrozo(familia, trozo.desde, trozo.hasta, 0);
     }
   }
 
@@ -427,28 +465,54 @@ export function fusionarRangos(rangos) {
  * página con acierto). Sin páginas —un .docx— se devuelve el documento entero
  * como un solo rango, que es lo que `textoDeRango` sabe manejar.
  */
+/** Cuántas zonas del documento se leen por familia. */
+export const MAX_VENTANAS = 6;
+
+/**
+ * Los rangos a leer de una familia: **la unión** de lo que eligió el Pase 1 y
+ * lo que encontró el índice.
+ *
+ * 🔴 ANTES EL PASE 1 REEMPLAZABA AL ÍNDICE, y ahí se perdía medio documento.
+ * Medido el 8-set con el Anexo 13: el índice encontraba el plantel en los
+ * tramos 2, 21 a 24, 26, 28 a 33 y 55, pero el Pase 1 devolvía un solo rango
+ * y el resto no se leía nunca. El modelo lo dijo con todas las letras: «el
+ * contenido de los anexos con información clave (ANEXO C: REQUISITOS DE
+ * CALIFICACIÓN - pág. 31, ANEXO E: FACTORES DE EVALUACIÓN - pág. 41) NO está
+ * incluido en el texto suministrado».
+ *
+ * El Pase 1 AFINA, no decide: sabe distinguir un rótulo del índice de
+ * contenidos de la sección de verdad, y eso vale, pero no puede tapar lo que
+ * el `grep` sí encontró. Leer una zona de más con un modelo gratuito cuesta
+ * USD 0; perder el plantel cuesta la postulación.
+ */
 export function rangosDeFamilia(rangos, resumen, familia) {
+  const candidatos = [];
+
   const elegidos = rangos?.[familia];
-  if (elegidos?.encontrada && Array.isArray(elegidos.rangos) && elegidos.rangos.length) {
-    return elegidos.rangos
-      .map(r => ({ desde: Number(r.desde), hasta: Number(r.hasta) }))
-      .filter(r => Number.isFinite(r.desde) && Number.isFinite(r.hasta) && r.hasta >= r.desde)
-      // Un rango larguísimo es la señal de que el Pase 1 no encontró nada; se
-      // recorta en vez de mandar 40 páginas y que la respuesta se corte.
-      .map(r => ({ desde: r.desde, hasta: Math.min(r.hasta, r.desde + 11) }));
+  if (elegidos?.encontrada && Array.isArray(elegidos.rangos)) {
+    for (const r of elegidos.rangos) {
+      const desde = Number(r?.desde), hasta = Number(r?.hasta);
+      if (!Number.isFinite(desde) || !Number.isFinite(hasta) || hasta < desde) continue;
+      // Un rango larguísimo se recorta: si no entra, `extraerTrozo` lo parte.
+      candidatos.push({ desde, hasta: Math.min(hasta, desde + 11) });
+    }
   }
-  const paginas = (resumen?.[familia]?.paginas || []).filter(p => p != null);
-  if (!paginas.length) return resumen?.[familia]?.aciertos ? [{ desde: 1, hasta: 1 }] : [];
-  // Ventana de ±1 página alrededor de cada acierto, fusionando lo que se toca.
-  const ventanas = [...new Set(paginas)].sort((a, b) => a - b)
-    .map(p => ({ desde: Math.max(1, p - 1), hasta: p + 1 }));
-  const fusionadas = [];
-  for (const v of ventanas) {
-    const ultimo = fusionadas[fusionadas.length - 1];
-    if (ultimo && v.desde <= ultimo.hasta + 1) ultimo.hasta = Math.max(ultimo.hasta, v.hasta);
-    else fusionadas.push({ ...v });
-  }
-  return fusionadas.slice(0, 3);
+
+  const paginas = [...new Set((resumen?.[familia]?.paginas || []).filter(p => p != null))].sort((a, b) => a - b);
+  // Ventana de ±1 alrededor de cada acierto del índice.
+  for (const p of paginas) candidatos.push({ desde: Math.max(1, p - 1), hasta: p + 1 });
+
+  if (!candidatos.length) return resumen?.[familia]?.aciertos ? [{ desde: 1, hasta: 1 }] : [];
+
+  const fusionadas = fusionarRangos(candidatos);
+  if (fusionadas.length <= MAX_VENTANAS) return fusionadas;
+  // Si hay más zonas que el tope, se quedan las MÁS GRANDES: una zona larga es
+  // donde el rótulo se repite, que es donde está la sección de verdad, no la
+  // línea suelta del índice de contenidos.
+  return [...fusionadas]
+    .sort((a, b) => (b.hasta - b.desde) - (a.hasta - a.desde))
+    .slice(0, MAX_VENTANAS)
+    .sort((a, b) => a.desde - b.desde);
 }
 
 export default {
