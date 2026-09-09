@@ -68,7 +68,7 @@ const UNIDADES_SUGERIDAS = ['und', 'm', 'm2', 'm3', 'kg', 'bolsa', 'gal', 'par',
 
 const num = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 3 });
 
-function CatalogoCanonicoTab({ showToast }) {
+function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
@@ -76,7 +76,12 @@ function CatalogoCanonicoTab({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
 
-  const [ambito, setAmbito] = uS('');          // '' = catálogo general del grupo
+  // '' = catálogo general del grupo. Con `empresaFija` (tanda 18, entrega C:
+  // se entró por el bloque de una empresa, o se la eligió arriba) el ámbito lo
+  // manda la pantalla y el selector de acá queda clavado: un selector adentro
+  // de otro que dicen cosas distintas es la forma más rápida de mirar el
+  // catálogo equivocado.
+  const [ambito, setAmbito] = uS(() => empresaFija || '');
   const [busca, setBusca] = uS('');
   const [famSel, setFamSel] = uS('todas');
   const [tipoSel, setTipoSel] = uS('todos');
@@ -99,14 +104,17 @@ function CatalogoCanonicoTab({ showToast }) {
   const enCursoRef = uR(false);
   const inputRef = uR(null);
 
-  const companyId = ambito || null;
+  const companyId = empresaFija || ambito || null;
 
   // Entidades que pueden tener catálogo propio: las del grupo y los consorcios
   // ejecutores. Un tercero no arma catálogo — le compramos, no lo administramos.
+  // La entidad FIJADA desde arriba entra siempre, aunque no sea propia ni
+  // consorcio: un selector deshabilitado y en blanco parece un error.
   const entidades = uM(() => (compHook.data || [])
-    .filter(c => !c.deleted_at && ['propia', 'consorcio'].includes(c.tipo_entidad || 'propia'))
+    .filter(c => !c.deleted_at
+      && (['propia', 'consorcio'].includes(c.tipo_entidad || 'propia') || c.id === empresaFija))
     .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es')),
-  [compHook.data]);
+  [compHook.data, empresaFija]);
   const nombreDe = uM(() => new Map(entidades.map(c => [c.id, c.name])), [entidades]);
 
   const crudo = uM(() => catHook.data || [], [catHook.data]);
@@ -308,9 +316,11 @@ function CatalogoCanonicoTab({ showToast }) {
       <div className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div style={{ minWidth: 300 }}>
           <label className="flabel" style={{ fontSize: 10.5 }}>Catálogo de</label>
-          <select className="fi" style={{ width: '100%', fontSize: 12 }} value={ambito}
+          <select className="fi" style={{ width: '100%', fontSize: 12 }} value={companyId || ''}
+            disabled={!!empresaFija}
+            title={empresaFija ? 'El ámbito lo fija el selector de arriba de la pantalla.' : undefined}
             onChange={e => { setAmbito(e.target.value); setMarcados({}); setFamSel('todas'); setLeido(null); setDiff(null); }}>
-            <option value="">📚 General del grupo</option>
+            {!empresaFija && <option value="">📚 General del grupo</option>}
             {entidades.map(c => (
               <option key={c.id} value={c.id}>
                 {c.name}{conCatalogo.get(c.id) ? ` · ${conCatalogo.get(c.id)} propios` : ''}

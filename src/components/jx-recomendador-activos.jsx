@@ -8,13 +8,22 @@
 // acepta una persona. «Obviamente, como recomendación, y sin llegar a
 // consolidarlo, sin que se acepte por parte de una contadora.»
 //
+// ── TANDA 18, ENTREGA C: EL DESCARTE QUE SE RECUERDA ──────────────
+// El piso bajó a S/ 80 y las subfamilias entraron como señal: la lista pasó de
+// 42 a 70 líneas en producción, y va a seguir creciendo con cada factura. Una
+// lista que vuelve a proponer lo que ya se contestó se deja de abrir — la
+// lección de la mig 183 y de la 195. Ahora cada fila tiene un «no es activo»
+// que queda grabado en `cotejo_decisiones` (ámbito 'activos', mig 203), viaja
+// entre las dos PCs, y se puede deshacer.
+//
 // Archivo aparte con import estático desde jx-activos-fijos.jsx: no crea chunk.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import {
   candidatosActivo, candidatosPorEmpresa, claveLinea,
-  umbralActivoFijo, CAJON_LABEL,
+  umbralActivoFijo, CAJON_LABEL, AMBITO_ACTIVOS, descartadosDe, PISO_ACTIVO,
 } from "../lib/recomendador-activos.js";
+import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 
 const { useState, useMemo } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -35,8 +44,22 @@ function RecomendadorActivosModal({
 }) {
   const [ocupado, setOcupado] = useState(null);
   const [aceptados, setAceptados] = useState(() => new Set());
+  const [verDescartados, setVerDescartados] = useState(false);
+  // Anti doble-click (regla crítica 2): ref SÍNCRONO. Un doble tap en «no es
+  // activo» no puede escribir dos decisiones para la misma línea.
+  const decidiendoRef = React.useRef(false);
+  const userId = (() => { try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; } })();
+  const decHook = window.__hooks?.useCotejoDecisiones?.() || { data: [] };
 
   const umbral = umbralActivoFijo(Number(periodo));
+
+  // Lo que alguien ya contestó que NO es activo (mig 203).
+  const descartados = useMemo(() => descartadosDe(decHook.data || []), [decHook.data]);
+  const filasDescartadas = useMemo(() => (decHook.data || [])
+    .filter(r => r && !r.deleted_at && r.ambito === AMBITO_ACTIVOS && r.decision === 'no_aplica')
+    .filter(r => !companyId || r.company_id === companyId)
+    .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))),
+  [decHook.data, companyId]);
 
   // Ya cargados: por línea de factura (mig 182) y también por comprobante,
   // para los activos que se registraron antes de que existiera el índice.
@@ -51,10 +74,13 @@ function RecomendadorActivosModal({
   }, [activos, aceptados]);
 
   const candidatos = useMemo(
-    () => candidatosActivo(movs || [], { companyId, yaCargados }),
-    [movs, companyId, yaCargados]
+    () => candidatosActivo(movs || [], { companyId, yaCargados, descartados }),
+    [movs, companyId, yaCargados, descartados]
   );
-  const porEmpresa = useMemo(() => candidatosPorEmpresa(movs || [], { yaCargados }), [movs, yaCargados]);
+  const porEmpresa = useMemo(
+    () => candidatosPorEmpresa(movs || [], { yaCargados, descartados }),
+    [movs, yaCargados, descartados]
+  );
 
   const nombre = (id) => (companies || []).find(c => c.id === id)?.name || '—';
 
@@ -113,6 +139,40 @@ function RecomendadorActivosModal({
     } catch (e) {
       showToast?.('No se pudo agregar: ' + (e.message || e), 'red');
     } finally { setOcupado(null); }
+  };
+
+  // ── «No es activo» ───────────────────────────────────────────────
+  // Sin confirmación a propósito: es reversible de un clic y la lista de
+  // descartados queda abajo, abierta. Pedir confirmación para cada descarte
+  // sería pedirla 70 veces.
+  const descartar = async (c) => {
+    if (!puedeEditar || decidiendoRef.current) return;
+    decidiendoRef.current = true;
+    const k = claveLinea(c.movimiento_id, c.item_idx);
+    setOcupado(k);
+    try {
+      await decidirCotejo({
+        ambito: AMBITO_ACTIVOS, llave: k, decision: 'no_aplica',
+        nota: c.descripcion || '', companyId: c.company_id || companyId || null,
+        periodo: periodo == null ? null : String(periodo),
+        documento: c.documento || null,
+        monto: Number(c.precio_unitario || 0) * Number(c.cantidad || 1),
+      }, userId);
+      showToast?.('Anotado: no es activo. No vuelve a proponerse.', 'green');
+    } catch (e) {
+      showToast?.('No se pudo anotar: ' + (e.message || e), 'red');
+    } finally { setOcupado(null); decidiendoRef.current = false; }
+  };
+
+  const deshacerDescarte = async (fila) => {
+    if (!puedeEditar || decidiendoRef.current) return;
+    decidiendoRef.current = true;
+    try {
+      await decidirCotejo({ ambito: AMBITO_ACTIVOS, llave: fila.llave, decision: null }, userId);
+      showToast?.('Vuelve a la lista de candidatos.', 'green');
+    } catch (e) {
+      showToast?.('No se pudo deshacer: ' + (e.message || e), 'red');
+    } finally { decidiendoRef.current = false; }
   };
 
   return (
@@ -192,11 +252,18 @@ function RecomendadorActivosModal({
                     )}
                   </div>
                   {puedeEditar && (
-                    <button className="btn btn-amber btn-sm" disabled={ocupado === k}
-                      onClick={() => aceptar(c)} style={{ flexShrink: 0 }}
-                      title="Crear la fila en el registro de activos fijos con estos datos">
-                      {ocupado === k ? 'Agregando…' : '+ Es activo'}
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flexShrink: 0 }}>
+                      <button className="btn btn-amber btn-sm" disabled={ocupado === k}
+                        onClick={() => aceptar(c)}
+                        title="Crear la fila en el registro de activos fijos con estos datos">
+                        {ocupado === k ? 'Agregando…' : '+ Es activo'}
+                      </button>
+                      <button className="btn btn-ghost btn-xs" disabled={ocupado === k}
+                        onClick={() => descartar(c)}
+                        title="No es un activo fijo. Queda anotado y no se vuelve a proponer (se puede deshacer abajo).">
+                        ✕ No es activo
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -205,10 +272,35 @@ function RecomendadorActivosModal({
         </div>
       )}
 
+      {filasDescartadas.length > 0 && (
+        <div className="card card-p" style={{ marginTop: 12 }}>
+          <button className="btn btn-ghost btn-xs" onClick={() => setVerDescartados(v => !v)}>
+            {verDescartados ? '▾' : '▸'} {filasDescartadas.length} línea(s) marcadas como «no es activo»
+          </button>
+          {verDescartados && (
+            <div style={{ display: 'grid', gap: 4, marginTop: 8, maxHeight: '28vh', overflowY: 'auto' }}>
+              {filasDescartadas.map(f => (
+                <div key={f.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                  fontSize: 11.5, padding: '5px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>{f.nota || f.llave}</span>
+                  <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{f.documento || '—'}</span>
+                  {puedeEditar && (
+                    <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                      onClick={() => deshacerDescarte(f)}
+                      title="Devolverla a la lista de candidatos">↺ Volver a proponer</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 12 }}>
         Solo se listan los que parecen <strong>{CAJON_LABEL.activo_uso.toLowerCase()}</strong>. Lo que se consume
         (servicios, EPP, thinner), lo que no es un bien (anticipos, copias, alojamiento) y el material de obra a
-        granel quedan fuera a propósito.
+        granel quedan fuera a propósito. El piso para proponer es de <strong>{fmt(PISO_ACTIVO)}</strong> por unidad:
+        abajo de eso no se propone nada, aunque activarlo siga siendo legal.
       </div>
     </Modal>
   );

@@ -11,6 +11,7 @@ import {
 } from '../lib/pcge-default';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { calcularBalance, lineasDeBalance } from "../lib/balance-general.js";
 
 const { useState: uSP, useMemo: uMP, useEffect: uEP } = React;
 
@@ -336,6 +337,10 @@ function BalanceGeneralPage({ showToast }) {
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs }      = window.__hooks.useAccountingMovements();
   const { data: pagos }     = window.__hooks.useCronogramaPagos();
+  // El registro 7.1 completo (todas las empresas, todos los ejercicios): la lib
+  // se queda con el último de cada empresa. Sin esto el activo del balance
+  // ignoraba las máquinas de la empresa — ver el encabezado de balance-general.js.
+  const { data: activosFijos } = window.__hooks.useActivosFijos();
 
   const [companyIdRaw, setCompanyId] = uSP(() => filtroInicialEmpresa('todas'));
   // ÁMBITO, no filtro: con una empresa activa este es SU balance / SU estado
@@ -343,66 +348,68 @@ function BalanceGeneralPage({ showToast }) {
   const empresaFija = useEmpresaBloqueada();
   const companyId = empresaFija || companyIdRaw;
   const [moneda, setMoneda] = uSP('PEN');
+  // Qué línea está abierta. UNA a la vez: el desglose de «efectivo» son tres
+  // tablas y dos abiertas al mismo tiempo no entran en la pantalla.
+  const [abierta, setAbierta] = uSP(null);
 
-  const data = uMP(() => {
-    // ── Activo: ingresos cobrados - costos pagados (simplificación) ──
-    const ms = (movs || []).filter(m =>
-      m.currency === moneda &&
-      m.payment_status !== 'cancelled' &&
-      (companyId === 'todas' || m.company_id === companyId)
-    );
-
-    let ingresosCobrados = 0;
-    let costosPagados    = 0;
-    let gastosPagados    = 0;
-    let cxc              = 0; // cuentas por cobrar (income pendiente)
-    let cxp              = 0; // cuentas por pagar (cost/expense pendiente)
-
-    ms.forEach(m => {
-      const a = Number(m.amount || 0);
-      const isPaid = m.payment_status === 'paid';
-      if (m.type === 'income') {
-        if (isPaid) ingresosCobrados += a; else cxc += a;
-      } else if (m.type === 'cost') {
-        if (isPaid) costosPagados += a; else cxp += a;
-      } else if (m.type === 'expense') {
-        if (isPaid) gastosPagados += a; else cxp += a;
-      }
-    });
-
-    // efectivo se clampa en 0 si es negativo; el déficit va al pasivo
-    const efectivoBruto = ingresosCobrados - costosPagados - gastosPagados;
-    const efectivo = Math.max(0, efectivoBruto);
-    const deficitFinanciamiento = efectivoBruto < 0 ? -efectivoBruto : 0;
-
-    // ── Pasivo: cronograma de pagos pendientes ──
-    const pagosPendientes = (pagos || []).filter(p =>
-      (p.estado === 'programado' || p.estado === 'vencido') &&
-      (companyId === 'todas' || p.company_id === companyId || !p.company_id)
-    );
-    const pasivoCronograma = pagosPendientes.reduce((s, p) => s + Number(p.monto || 0), 0);
-
-    // Activo total = efectivo + cuentas por cobrar
-    const activoTotal = efectivo + cxc;
-    // Pasivo total = cuentas por pagar (movs) + cronograma pendiente + déficit
-    const pasivoTotal = cxp + pasivoCronograma + deficitFinanciamiento;
-    // Patrimonio = Activo - Pasivo (cuadra por construcción)
-    const patrimonio  = activoTotal - pasivoTotal;
-
-    return {
-      efectivo, cxc, cxp, deficitFinanciamiento,
-      ingresosCobrados, costosPagados, gastosPagados,
-      pasivoCronograma,
-      activoTotal, pasivoTotal, patrimonio,
-      pasivoMasPatrimonio: pasivoTotal + patrimonio,
-      cuadra: Math.abs(activoTotal - (pasivoTotal + patrimonio)) < 0.01,
-      countMovs: ms.length,
-      countPagos: pagosPendientes.length,
-    };
-  }, [movs, pagos, companyId, moneda]);
+  const data = uMP(
+    () => calcularBalance({ movs: movs || [], pagos: pagos || [], activos: activosFijos || [], companyId, moneda }),
+    [movs, pagos, activosFijos, companyId, moneda]
+  );
+  const lineas = uMP(() => lineasDeBalance(data), [data]);
 
   const empresaSel = (companies || []).find(c => c.id === companyId);
   const tituloEmpresa = companyId === 'todas' ? 'Grupo consolidado' : (empresaSel?.name || '—');
+  const nombreEmpresa = (id) => (companies || []).find(c => c.id === id)?.name || '—';
+
+  const BADGE = { activo: 'b-green', pasivo: 'b-red', patrimonio: 'b-blue' };
+  const SECCION = {
+    activo:     { label: 'ACTIVO',     color: 'var(--green)', fondo: 'rgba(46,204,113,0.06)' },
+    pasivo:     { label: 'PASIVO',     color: 'var(--red)',   fondo: 'rgba(231,76,60,0.06)' },
+    patrimonio: { label: 'PATRIMONIO', color: 'var(--blue)',  fondo: 'rgba(74,144,226,0.06)' },
+  };
+  const TOTAL_DE = {
+    activo: { label: 'Total Activo', monto: data.activoTotal, color: 'var(--green)' },
+    pasivo: { label: 'Total Pasivo', monto: data.pasivoTotal, color: 'var(--red)' },
+    patrimonio: {
+      label: 'Total Pasivo + Patrimonio', monto: data.pasivoMasPatrimonio,
+      color: data.cuadra ? 'var(--green)' : 'var(--amber)',
+    },
+  };
+
+  // Una tabla de comprobantes. Es lo que se abre debajo de cada línea.
+  const TablaDetalle = ({ filas, signo = 1, vacio }) => {
+    if (!filas || filas.length === 0) {
+      return <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic', padding: '6px 2px' }}>{vacio}</div>;
+    }
+    return (
+      <div style={{ maxHeight: 260, overflowY: 'auto', overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+        <table className="tbl" style={{ fontSize: 11.5 }}>
+          <thead><tr>
+            <th style={{ width: 92 }}>Fecha</th>
+            <th style={{ width: 130 }}>Documento</th>
+            <th>Quién</th>
+            {companyId === 'todas' && <th style={{ width: 170 }}>Empresa</th>}
+            <th style={{ width: 120, textAlign: 'right' }}>Importe</th>
+          </tr></thead>
+          <tbody>
+            {filas.map(f => (
+              <tr key={f.id}>
+                <td>{f.fecha || '—'}</td>
+                <td style={{ fontFamily: 'monospace' }}>{f.documento}</td>
+                <td>{f.tercero}</td>
+                {companyId === 'todas' && <td style={{ color: 'var(--tm)' }}>{nombreEmpresa(f.companyId)}</td>}
+                <td style={{ textAlign: 'right', fontWeight: 600, color: f.monto < 0 ? 'var(--amber)' : undefined }}
+                    className="col-num">
+                  {signo < 0 ? '− ' : ''}{fmtCurP(f.monto, moneda)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="page-wrap">
@@ -417,7 +424,7 @@ function BalanceGeneralPage({ showToast }) {
           <select
             className="fi"
             value={companyId}
-            onChange={e=>setCompanyId(e.target.value)}
+            onChange={e=>{ setCompanyId(e.target.value); setAbierta(null); }}
             disabled={!!empresaFija}
             title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: el reporte es solo suyo.' : undefined}
             style={{ minWidth:180 }}>
@@ -429,7 +436,7 @@ function BalanceGeneralPage({ showToast }) {
           <select
             className="fi"
             value={moneda}
-            onChange={e=>setMoneda(e.target.value)}
+            onChange={e=>{ setMoneda(e.target.value); setAbierta(null); }}
             style={{ minWidth:100 }}>
             <option value="PEN">S/ (PEN)</option>
             <option value="USD">USD</option>
@@ -461,7 +468,11 @@ function BalanceGeneralPage({ showToast }) {
         </div>
       </div>
 
-      {/* Tabla detalle */}
+      <div style={{ fontSize:11.5, color:'var(--ts)', marginBottom:8 }}>
+        Tocá cualquier línea para ver <strong>de qué comprobantes sale</strong>, ordenados por importe.
+      </div>
+
+      {/* Tabla detalle — cada línea se abre y muestra su desglose */}
       <div className="card" style={{ overflow:'hidden' }}>
         <div style={{ overflowX:'auto' }}>
           <table className="tbl">
@@ -471,77 +482,75 @@ function BalanceGeneralPage({ showToast }) {
               <th style={{ width:160, textAlign:'right' }}>Saldo</th>
             </tr></thead>
             <tbody>
-              {/* Activo */}
-              <tr style={{ background:'rgba(46,204,113,0.06)' }}>
-                <td colSpan={3} style={{ fontWeight:700, color:'var(--green)' }}>ACTIVO</td>
-              </tr>
-              <tr>
-                <td><span className="badge b-green">Activo</span></td>
-                <td><strong>10</strong> Efectivo y equivalentes (ingresos cobrados − pagos)</td>
-                <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.efectivo, moneda)}</td>
-              </tr>
-              <tr>
-                <td><span className="badge b-green">Activo</span></td>
-                <td><strong>12</strong> Cuentas por cobrar comerciales</td>
-                <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.cxc, moneda)}</td>
-              </tr>
-              <tr style={{ fontWeight:700 }}>
-                <td>—</td>
-                <td>Total Activo</td>
-                <td style={{ textAlign:'right', color:'var(--green)' }} className="col-num">{fmtCurP(data.activoTotal, moneda)}</td>
-              </tr>
-
-              {/* Pasivo */}
-              <tr style={{ background:'rgba(231,76,60,0.06)' }}>
-                <td colSpan={3} style={{ fontWeight:700, color:'var(--red)' }}>PASIVO</td>
-              </tr>
-              <tr>
-                <td><span className="badge b-red">Pasivo</span></td>
-                <td><strong>42</strong> Cuentas por pagar comerciales (movs pendientes)</td>
-                <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.cxp, moneda)}</td>
-              </tr>
-              <tr>
-                <td><span className="badge b-red">Pasivo</span></td>
-                <td><strong>46</strong> Cuentas por pagar diversas (cronograma)</td>
-                <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.pasivoCronograma, moneda)}</td>
-              </tr>
-              {data.deficitFinanciamiento > 0 && (
-                <tr>
-                  <td><span className="badge b-red">Pasivo</span></td>
-                  <td><strong>45</strong> Déficit de financiamiento (efectivo neg.)</td>
-                  <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.deficitFinanciamiento, moneda)}</td>
-                </tr>
-              )}
-              <tr style={{ fontWeight:700 }}>
-                <td>—</td>
-                <td>Total Pasivo</td>
-                <td style={{ textAlign:'right', color:'var(--red)' }} className="col-num">{fmtCurP(data.pasivoTotal, moneda)}</td>
-              </tr>
-
-              {/* Patrimonio */}
-              <tr style={{ background:'rgba(74,144,226,0.06)' }}>
-                <td colSpan={3} style={{ fontWeight:700, color:'var(--blue)' }}>PATRIMONIO</td>
-              </tr>
-              <tr>
-                <td><span className="badge b-blue">Patrimonio</span></td>
-                <td><strong>59</strong> Resultados acumulados (Activo − Pasivo)</td>
-                <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(data.patrimonio, moneda)}</td>
-              </tr>
-              <tr style={{ fontWeight:700 }}>
-                <td>—</td>
-                <td>Total Pasivo + Patrimonio</td>
-                <td style={{ textAlign:'right', color: data.cuadra?'var(--green)':'var(--amber)' }} className="col-num">
-                  {fmtCurP(data.pasivoMasPatrimonio, moneda)}
-                </td>
-              </tr>
+              {['activo','pasivo','patrimonio'].map(sec => {
+                const info = SECCION[sec];
+                const propias = lineas.filter(l => l.seccion === sec);
+                const total = TOTAL_DE[sec];
+                return (
+                  <React.Fragment key={sec}>
+                    <tr style={{ background: info.fondo }}>
+                      <td colSpan={3} style={{ fontWeight:700, color: info.color }}>{info.label}</td>
+                    </tr>
+                    {propias.map(l => {
+                      const abrible = !!(l.filas || l.partes);
+                      const esta = abierta === l.clave;
+                      return (
+                        <React.Fragment key={l.clave}>
+                          <tr onClick={abrible ? () => setAbierta(esta ? null : l.clave) : undefined}
+                              style={{ cursor: abrible ? 'pointer' : 'default' }}
+                              title={abrible ? 'Ver de dónde sale este número' : undefined}>
+                            <td><span className={`badge ${BADGE[sec]}`}>{info.label.charAt(0) + info.label.slice(1).toLowerCase()}</span></td>
+                            <td>
+                              {abrible && <span style={{ color:'var(--tm)', marginRight:5 }}>{esta ? '▾' : '▸'}</span>}
+                              <strong>{l.codigo}</strong> {l.label}
+                            </td>
+                            <td style={{ textAlign:'right' }} className="col-num">{fmtCurP(l.monto, moneda)}</td>
+                          </tr>
+                          {esta && (
+                            <tr>
+                              <td colSpan={3} style={{ background:'var(--tint-neutral)', padding:'10px 14px' }}>
+                                {l.nota && (
+                                  <div style={{ fontSize:11.5, color:'var(--ts)', marginBottom:8 }}>{l.nota}</div>
+                                )}
+                                {l.partes ? l.partes.map(p => (
+                                  <div key={p.titulo} style={{ marginBottom:10 }}>
+                                    <div style={{ fontSize:12, fontWeight:700, marginBottom:4 }}>
+                                      {p.signo < 0 ? '−' : '+'} {p.titulo}
+                                      <span style={{ color:'var(--tm)', fontWeight:400 }}> · {p.filas.length} comprobante(s) · {fmtCurP(p.total, moneda)}</span>
+                                    </div>
+                                    <TablaDetalle filas={p.filas} signo={p.signo}
+                                      vacio={`No hay ${p.titulo.toLowerCase()} en ${moneda}.`} />
+                                  </div>
+                                )) : (
+                                  <TablaDetalle filas={l.filas} vacio="No hay nada cargado en esta línea." />
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    <tr style={{ fontWeight:700 }}>
+                      <td>—</td>
+                      <td>{total.label}</td>
+                      <td style={{ textAlign:'right', color: total.color }} className="col-num">
+                        {fmtCurP(total.monto, moneda)}
+                      </td>
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
 
-      <div style={{ fontSize:11, color:'var(--tm)', marginTop:10 }}>
-        Simplificación: Activo = ingresos cobrados − costos/gastos pagados + cuentas por cobrar pendientes.
-        Pasivo = movimientos pendientes + cronograma de pagos no liquidados. Patrimonio se calcula como cuadre.
+      <div style={{ fontSize:11, color:'var(--tm)', marginTop:10, lineHeight:1.6 }}>
+        <strong>Lo que sigue siendo una simplificación:</strong> el efectivo no sale de las cuentas bancarias
+        sino de la diferencia entre lo cobrado y lo pagado; el patrimonio no sale del capital social sino del
+        cuadre (Activo − Pasivo), por eso el balance cuadra siempre. Lo que ya <strong>no</strong> es
+        simplificación: los bienes del registro 7.1 entran en el activo por su valor en libros — antes la
+        empresa aparecía más pobre por haber comprado una máquina.
       </div>
     </div>
   );

@@ -38,7 +38,7 @@ import {
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { RecomendadorActivosModal } from "./jx-recomendador-activos.jsx";
-import { candidatosActivo, claveLinea } from "../lib/recomendador-activos.js";
+import { candidatosActivo, claveLinea, descartadosDe } from "../lib/recomendador-activos.js";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -98,9 +98,16 @@ function ActivosFijosPage({ showToast }) {
     }
     return set;
   }, [activos]);
+  // Las líneas ya contestadas «no es activo» (mig 203) NO cuentan para el
+  // badge: si contaran, el número no bajaría nunca al descartarlas y el botón
+  // seguiría gritando que hay trabajo pendiente que ya se hizo.
+  const decisionesCotejo = window.__hooks.useCotejoDecisiones?.() || { data: [] };
+  const descartadosActivo = uM(() => descartadosDe(decisionesCotejo.data || []), [decisionesCotejo.data]);
   const nCandidatos = uM(() => filtroEmpresa
-    ? candidatosActivo(movsCompra || [], { companyId: filtroEmpresa, yaCargados: yaCargadosLinea }).length
-    : 0, [movsCompra, filtroEmpresa, yaCargadosLinea]);
+    ? candidatosActivo(movsCompra || [], {
+        companyId: filtroEmpresa, yaCargados: yaCargadosLinea, descartados: descartadosActivo,
+      }).length
+    : 0, [movsCompra, filtroEmpresa, yaCargadosLinea, descartadosActivo]);
   const [modal, setModal] = uS(null);      // 'alta' | 'importar' | 'cierre'
   const [form, setForm] = uS(() => FORM_VACIO(ANIO_ACTUAL, null));
   const [editando, setEditando] = uS(null);

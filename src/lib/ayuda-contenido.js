@@ -100,8 +100,9 @@ const AYUDA = {
   },
   'analisis-insumos': {
     titulo: 'Análisis de Insumos',
-    que: 'Panel de admin/gerencia: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto.',
+    que: 'Panel de admin/gerencia: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto. Es también la BASE DE INSUMOS de cada empresa: su catálogo, sus proveedores y sus precios.',
     como: [
+      'DE QUIÉN ES LA BASE (nuevo, 9-set): el selector de arriba de la pantalla elige entre todo el grupo y UNA entidad, y gobierna las cuatro pestañas de abajo — comparador, mapeo, catálogo y categorización. Si entraste por el Panel de una empresa (Contabilidad → Base de insumos) queda clavado en ella y ya no se puede cambiar desde acá: estás adentro de SU contabilidad.',
       'COMPARADOR: buscá el insumo (sin tildes) → ves cada proveedor con su último precio, mínimo, máximo y el gráfico de evolución, más todas las facturas donde apareció.',
       'MAPEO AL PRESUPUESTO: traduce lo que dicen las facturas a los códigos del presupuesto de UNA obra. Por eso, por defecto, solo pide decidir las compras de esa obra y de la empresa que la ejecuta: las de las otras empresas son de otros proyectos y no tienen contra qué mapearse ahí. El selector "Compras a mapear" dice cuántas quedan afuera y deja verlas todas si hace falta.',
       'CATEGORIZAR (la bandeja): dice QUÉ ES cada cosa que aparece en las facturas, contra el catálogo del grupo. Es otra pregunta que la del mapeo al presupuesto: acá se decide qué insumo es, allá contra qué código de la obra va. Viene ORDENADA POR PLATA, porque decidir las 20 más caras ya mueve un tercio del gasto y hay 1.885 descripciones distintas: de a una no se termina nunca.',
@@ -225,6 +226,9 @@ const AYUDA = {
   'activos-fijos': { titulo: 'Activos Fijos (formato 7.1)', que: 'El registro CONTABLE de los bienes de la empresa — el «Formato 7.1: Registro de Activos Fijos» de SUNAT. Es distinto de «Equipos Pesados», que es el registro operativo (horómetro, combustible, en qué obra está).', como: [
       '🔎 REVISAR COMPRAS (nuevo, 6-sep): el botón de arriba lee lo que compró la empresa seleccionada y propone qué parece un bien que dura. NADA entra al registro solo: cada fila la aceptas tú.',
       'POR QUÉ NO FILTRA POR EL MONTO: el umbral de 1/4 de UIT dice si PUEDES mandar algo a gasto, no si la cosa es un activo. Medido sobre las compras reales, de las 27 líneas que pasan el umbral once no son bienes (anticipos de cliente, copias, alojamiento, limpieza de local), y en cambio los generadores KAILI quedan por debajo. Así que se mira QUÉ ES la cosa, no cuánto costó — y el dato del umbral aparece igual en cada fila.',
+      'EL PISO BAJÓ A S/ 80 (9-set): antes no se proponía nada de menos de S/ 300 y ahí adentro estaban los martillos demoledores y las pistolas de calor que terminaste cargando a mano. Sigue habiendo un piso —una llave de 12 soles no se activa— pero es bajo: la lista pasó de 42 a 70 líneas.',
+      'AHORA MIRA LA SUBFAMILIA: además de las palabras conocidas, usa los 42 grupos del catálogo (Análisis de Insumos → Catálogo) para saber qué es cada cosa. Por eso ahora reconoce una retroexcavadora, un teodolito o un escritorio, y en cambio manda a gasto lo que es cemento, acero o papelería en vez de dejarlo "sin propuesta".',
+      '✕ NO ES ACTIVO (9-set): cada fila tiene un descarte que QUEDA GRABADO — no vuelve a proponerse, ni en esta PC ni en la otra. Es lo que hace que la lista se pueda terminar. Abajo del todo queda la lista de lo descartado, con "↺ Volver a proponer" por si te equivocaste. No pide confirmación a propósito: se deshace de un clic.',
       'LO QUE NUNCA PROPONE: servicios, EPP, consumibles en envase grande (thinner, pintura, combustible), alquileres —usar no es tener— y material de obra a granel. Y si no hay señal clara, no propone nada en vez de adivinar.',
       'AL ACEPTAR se llena la fila con lo que la factura ya sabe (descripción, costo, fecha) y con la cuenta del PCGE y la tasa que le corresponden por lo que es: una moto va a 33411 al 20%, una laptop a 33611 al 25%, un mueble a 335 al 10%. Todo se puede cambiar después.',
       '⚠ AVISO DE DOBLE CONTEO: si la compra ya está cargada como costo de una obra y además la activas, los mismos soles se cuentan dos veces —en el margen de la obra y como bien depreciable—. La fila te lo dice y hay que sacarla del costo.',
@@ -465,7 +469,13 @@ const AYUDA = {
       'COSTOS vs GASTOS: el badge de cada asiento dice Ingreso / Costo / Gasto según la VINCULACIÓN del movimiento (obra = costo, Gastos Generales de la empresa = gasto). Ya no es un campo que se teclee.',
     ],
   },
-  'balance-general': { titulo: 'Balance General', que: 'La foto de activos, pasivos y patrimonio por empresa.', como: ['Elegí empresa y periodo; los números salen de los asientos registrados.'] },
+  'balance-general': { titulo: 'Balance General', que: 'La foto de activos, pasivos y patrimonio por empresa.', como: [
+      'Elegí empresa y moneda; los números salen de los comprobantes registrados.',
+      'CADA LÍNEA SE ABRE (nuevo, 9-set): tocá cualquier fila de la tabla y aparece de qué comprobantes sale, ordenados por importe, con fecha, documento y quién. Es la forma de contestar «¿por qué el efectivo es cero?» sin salir de la pantalla.',
+      'EL EFECTIVO SE ABRE EN TRES: los ingresos cobrados que suman, y los costos y gastos pagados que restan, cada uno con su lista. Si dio negativo, la pantalla lo dice y explica que el negativo se fue al pasivo como déficit de financiamiento.',
+      'OJO CON LOS IMPORTES EN ÁMBAR: son negativos. Casi siempre es una nota de crédito registrada como ingreso negativo — está bien, y en el total a secas parecía un error del programa.',
+      'LOS BIENES YA CUENTAN (nuevo, 9-set): la línea 33 trae el valor en libros del registro de Activos Fijos (formato 7.1) del último ejercicio cargado. Antes no estaba, y la empresa aparecía más pobre por haber comprado una máquina: la plata salía del efectivo y no entraba nada a cambio. Lo retirado y lo vendido no cuentan.',
+      'LO QUE SIGUE SIENDO SIMPLIFICACIÓN: el efectivo no sale de las cuentas bancarias sino de la diferencia entre lo cobrado y lo pagado, y el patrimonio no sale del capital social sino del cuadre (Activo − Pasivo). Por eso el balance cuadra siempre.'] },
   'estado-resultados': { titulo: 'Estado de Resultados', que: 'Ingresos, costos y gastos del periodo por empresa.', como: [
     'Compará contra el periodo anterior con "Comparativo Periodos".',
     'La línea de GASTOS se alimenta de los comprobantes vinculados a "Gastos Generales de la Empresa"; la de COSTOS, de los vinculados a una obra. Si algo está en la línea equivocada, se corrige cambiando la VINCULACIÓN del movimiento (Movimientos Contables), no un campo de tipo.',

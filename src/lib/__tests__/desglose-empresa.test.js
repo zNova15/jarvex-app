@@ -138,8 +138,10 @@ describe('contabilidad de la empresa — el sub-panel', () => {
     // significa nada, así que el menú no entra en contexto.
     expect(esPaginaDeEmpresa('contabilidad')).toBe(false);   // resumen por entidad
     expect(esPaginaDeEmpresa('consolidado')).toBe(false);
-    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(false);
     expect(esPaginaDeEmpresa('trabajos')).toBe(false);
+    // El análisis de insumos SÍ entró en la tanda 18: «¿qué compra ELLA y a
+    // qué precio?» es una pregunta de empresa, y el catálogo es por entidad.
+    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(true);
   });
 });
 
@@ -263,15 +265,16 @@ describe('MENU_EMPRESA_ACTIVA — el desglose de la izquierda', () => {
     expect(src).toContain('MENU_EMPRESA_ACTIVA');
   });
 
-  it('el Consolidado y el Análisis de insumos NO son de una empresa', () => {
+  it('el Consolidado y el Resumen por entidad NO son de una empresa', () => {
     // Son del GRUPO por definición: mirarlos "desde una empresa" no significa
     // nada. Por eso quedan fuera del contexto (esPaginaDeEmpresa).
     expect(esPaginaDeEmpresa('consolidado')).toBe(false);
-    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(false);
     expect(esPaginaDeEmpresa('contabilidad')).toBe(false);
-    // Y las que SÍ lo son.
+    // Y las que SÍ lo son. El análisis de insumos entró en la tanda 18: es la
+    // base de insumos DE la empresa, con su catálogo propio (mig 193).
     expect(esPaginaDeEmpresa('movimientos-contables')).toBe(true);
     expect(esPaginaDeEmpresa('planillas')).toBe(true);
+    expect(esPaginaDeEmpresa('analisis-insumos')).toBe(true);
   });
 });
 

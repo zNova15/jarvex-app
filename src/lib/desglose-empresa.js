@@ -198,6 +198,16 @@ export const BLOQUES_CONTABILIDAD_EMPRESA = [
     id: 'intercompany', titulo: 'Operaciones entre empresas', icon: 'compare', color: 'var(--purple)',
     desc: 'Lo que le factura a otras empresas del grupo y viceversa',
   },
+  {
+    // Tanda 18, entrega C. La pantalla existía desde la mejora 1 y el catálogo
+    // es POR ENTIDAD desde la mig 193 — lo que faltaba era la PUERTA: desde el
+    // bloque de una empresa no había forma de llegar a SU base de insumos, y
+    // una pieza a la que no se entra es una pieza que no está.
+    // Entrando por acá, la pantalla queda clavada en esta empresa: su
+    // comparador de precios, su catálogo y su bandeja de categorización.
+    id: 'analisis-insumos', titulo: 'Base de insumos', icon: 'compare', color: 'var(--blue)',
+    desc: 'Qué compra y a qué precio: su catálogo, sus proveedores y la evolución de cada insumo',
+  },
 ];
 
 /**
@@ -232,8 +242,12 @@ const IDS_CONTABILIDAD_EMPRESA = new Set(BLOQUES_CONTABILIDAD_EMPRESA.map(b => b
  *
  * Decide si el menú entra en contexto de empresa. Deja AFUERA, a propósito,
  * las pantallas que son del GRUPO por definición y no significan lo mismo
- * miradas desde una sola empresa: el Resumen por entidad (compara todas), el
- * Consolidado (elimina lo interco del grupo) y el Análisis de insumos.
+ * miradas desde una sola empresa: el Resumen por entidad (compara todas) y el
+ * Consolidado (elimina lo interco del grupo).
+ *
+ * El Análisis de insumos ESTABA en esa lista y salió en la tanda 18: sí
+ * significa algo mirado desde una empresa —«¿qué compra ELLA y a qué precio?»,
+ * con su propio catálogo (mig 193)— y era justamente lo que faltaba.
  */
 export function esPaginaDeEmpresa(pageId) {
   return IDS_CONTABILIDAD_EMPRESA.has(pageId);

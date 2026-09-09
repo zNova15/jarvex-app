@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CAJON, PISO_ACTIVO, UIT_POR_ANIO, umbralActivoFijo,
   clasificarLinea, candidatosActivo, candidatosPorEmpresa, claveLinea,
-  cuentaPropuestaPorTexto,
+  cuentaPropuestaPorTexto, AMBITO_ACTIVOS, descartadosDe,
 } from '../recomendador-activos.js';
 
 // Las líneas son TEXTUALES de producción (6-sep-2026).
@@ -263,5 +263,132 @@ describe('cuenta del PCGE propuesta — para que la fila llegue accionable', () 
     for (const d of ['MOTO X', 'LENOVO', 'GALAXY', 'ESCRITORIO', 'GENERADOR', 'AMOLADORA', 'COSA RARA']) {
       expect(validas.has(c(d).cuenta), `${d} → ${c(d).cuenta}`).toBe(true);
     }
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 18, ENTREGA C — el piso barato, las subfamilias y el descarte.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('el piso bajó a S/ 80', () => {
+  it('es 80, y no es el umbral legal', () => {
+    expect(PISO_ACTIVO).toBe(80);
+    expect(PISO_ACTIVO).toBeLessThan(umbralActivoFijo(2026));
+  });
+
+  it('🔴 el martillo demoledor de S/ 508 que antes no se proponía', () => {
+    // Caso real: JARVEX terminó cargándolos A MANO al 7.1 porque costaban
+    // menos de los S/ 300 del piso viejo.
+    expect(cajonDe(L('MARTILLO DEMOLEDOR TOTAL 1700KW', 'maquinaria', 508.47))).toBe(CAJON.ACTIVO);
+    expect(cajonDe(L('COMBO TOTAL DE 2 PISTOLA DE CALOR', 'herramienta', 355.93))).toBe(CAJON.ACTIVO);
+  });
+
+  it('pero sigue habiendo piso: una llave de 12 soles no se propone', () => {
+    expect(cajonDe(L('LLAVE STILLSON 12"', 'herramienta', 12))).toBe(CAJON.SIN_PROPUESTA);
+    expect(cajonDe(L('TALADRO PERCUTOR', 'herramienta', 79.99))).toBe(CAJON.SIN_PROPUESTA);
+    expect(cajonDe(L('TALADRO PERCUTOR', 'herramienta', 80))).toBe(CAJON.ACTIVO);
+  });
+});
+
+describe('las subfamilias como señal', () => {
+  it('lo que la lista de palabras no tenía y el catálogo sí', () => {
+    // Ninguna de estas está en FAMILIAS_DURABLES; entran por su subfamilia.
+    expect(cajonDe(L('RETROEXCAVADORA CATERPILLAR 420F', 'material', 90000))).toBe(CAJON.ACTIVO);
+    expect(cajonDe(L('TEODOLITO ELECTRONICO DIGITAL', 'material', 3500))).toBe(CAJON.ACTIVO);
+    expect(cajonDe(L('ESCRITORIO DE MADERA 1.80 M X 0.80 M', 'material', 2542))).toBe(CAJON.ACTIVO);
+    expect(cajonDe(L('MULTIMETRO DIGITAL AUTOMATICO', 'material', 407))).toBe(CAJON.ACTIVO);
+  });
+
+  it('el motivo dice QUÉ es, no una frase genérica', () => {
+    const r = clasificarLinea(L('RETROEXCAVADORA CATERPILLAR 420F', 'material', 90000));
+    expect(r.subfamilia).toBe('equipo_pesado');
+    expect(r.motivo.toLowerCase()).toContain('equipo pesado');
+  });
+
+  it('y lo que el motor sabe que NO dura deja de quedar "sin propuesta"', () => {
+    expect(cajonDe(L('PAPEL BOND A4 80GR', 'material', 120))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('CASCO DE SEGURIDAD BLANCO', 'material', 95))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('DISCO DE CORTE 7"', 'material', 90))).toBe(CAJON.GASTO);
+  });
+
+  it('🔴 «MONITOREO» pegaba con «monitor»: el Plan de Monitoreo Arqueológico de S/ 907', () => {
+    // Caso real de producción. Las palabras de FAMILIAS_DURABLES tienen el
+    // límite solo al INICIO, así que «Monitoreo» hacía match con «monitor» y
+    // una autorización salía propuesta como activo fijo.
+    const r = clasificarLinea(L('Autorizacion para la ejecucion de un Plan de Monitoreo Arqueologico', 'material', 907));
+    expect(r.cajon).toBe(CAJON.GASTO);
+    expect(r.subfamilia).toBe('servicio_monitoreo');
+    // Y el MONITOR de verdad sigue siendo un activo.
+    expect(cajonDe(L('MONITOR 24" FULL HD', 'material', 381))).toBe(CAJON.ACTIVO);
+  });
+
+  it('la tinta y el tóner viven con las laptops en el catálogo, pero se acaban', () => {
+    expect(cajonDe(L('TINTA EPSON 664 NEGRA', 'material', 150))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('TONER HP 85A', 'material', 320))).toBe(CAJON.GASTO);
+  });
+
+  it('la herramienta manual sale con señal DÉBIL: la escalera sí, la brocha no', () => {
+    const r = clasificarLinea(L('CARRETILLA BUGUI', 'material', 125));
+    expect(r.cajon).toBe(CAJON.ACTIVO);
+    expect(r.confianza).toBe('media');
+    expect(cajonDe(L('BROCHA 4 PULGADAS', 'material', 15))).toBe(CAJON.SIN_PROPUESTA);
+  });
+
+  it('nada de esto pisa lo que ya andaba bien', () => {
+    expect(cajonDe(L('SERVICIO DE TOPOGRAFIA', 'servicio', 9000))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('ALQUILER DE RETROEXCAVADORA', 'material', 9000))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('THINNER ACRILICO CILINDRO 55 GAL', 'material', 2000))).toBe(CAJON.GASTO);
+    expect(cajonDe(L('CEMENTO PORTLAND TIPO I', 'material', 30, { unidad: 'bolsa', cantidad: 100 }))).toBe(CAJON.TRANSFORMA);
+  });
+});
+
+describe('el descarte que se recuerda', () => {
+  const movConDos = {
+    id: 'm1', type: 'cost', company_id: 'E1', deleted_at: null,
+    notas: JSON.stringify({ items_factura: [
+      L('GENERADOR KAILI 3800KW', 'maquinaria', 1186),
+      L('ESCRITORIO DE MADERA 1.80 M', 'material', 2542),
+    ] }),
+  };
+
+  it('una línea descartada no vuelve a proponerse', () => {
+    const todos = candidatosActivo([movConDos], {});
+    expect(todos).toHaveLength(2);
+    const fuera = candidatosActivo([movConDos], { descartados: new Set([claveLinea('m1', 0)]) });
+    expect(fuera.map(c => c.item_idx)).toEqual([1]);
+  });
+
+  it('descartadosDe lee solo lo del ámbito «activos» y solo lo vivo', () => {
+    const s = descartadosDe([
+      { ambito: AMBITO_ACTIVOS, decision: 'no_aplica', llave: 'm1::0' },
+      { ambito: AMBITO_ACTIVOS, decision: 'no_aplica', llave: 'm9::9', deleted_at: '2026-09-09' },
+      { ambito: 'comparativa', decision: 'no_aplica', llave: 'm2::0' },
+      { ambito: AMBITO_ACTIVOS, decision: 'revisada', llave: 'm3::0' },
+      null,
+    ]);
+    expect([...s]).toEqual(['m1::0']);
+  });
+
+  it('el ámbito es el tercero de la mig 203', () => {
+    expect(AMBITO_ACTIVOS).toBe('activos');
+  });
+
+  it('la misma llave decidida en las dos PCs descarta una sola vez', () => {
+    const s = descartadosDe([
+      { ambito: AMBITO_ACTIVOS, decision: 'no_aplica', llave: 'm1::0' },
+      { ambito: AMBITO_ACTIVOS, decision: 'no_aplica', llave: 'm1::0' },
+    ]);
+    expect(s.size).toBe(1);
+  });
+
+  it('sin descartes se comporta igual que antes', () => {
+    expect(candidatosActivo([movConDos], { descartados: null })).toHaveLength(2);
+    expect(candidatosActivo([movConDos], { descartados: new Set() })).toHaveLength(2);
+  });
+
+  it('el conteo por empresa también respeta el descarte', () => {
+    const m = candidatosPorEmpresa([movConDos], { descartados: new Set([claveLinea('m1', 0)]) });
+    expect(m.get('E1')).toBe(1);
   });
 });

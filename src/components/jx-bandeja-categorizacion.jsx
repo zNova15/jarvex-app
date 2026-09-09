@@ -53,7 +53,7 @@ const COLOR_ESTADO = {
   propuesto: 'b-green', revisar: 'b-amber', falta: 'b-blue', decididas: 'b-gray',
 };
 
-function BandejaCategorizacionTab({ compras, showToast }) {
+function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
@@ -67,7 +67,10 @@ function BandejaCategorizacionTab({ compras, showToast }) {
   // significa lo mismo la facture GASOMI o EL INCA, así que decidirla una vez
   // para todos es lo correcto — y es lo contrario de lo que pasaba en «Mapeo al
   // presupuesto», donde mezclar entidades era el bug que Gabriel encontró.
-  const [entidad, setEntidad] = uS('');
+  // Con `empresaFija` (tanda 18, entrega C) el ámbito lo manda la pantalla:
+  // las `compras` que llegan ya vienen filtradas por ella y este selector se
+  // clava, para que no puedan decir cosas distintas.
+  const [entidad, setEntidad] = uS(() => empresaFija || '');
   const [filtro, setFiltro] = uS('pendientes');
   const [busca, setBusca] = uS('');
   const [limite, setLimite] = uS(40);
@@ -79,7 +82,7 @@ function BandejaCategorizacionTab({ compras, showToast }) {
   const guardandoRef = uR(false);
 
   const empresas = uM(() => (compHook.data || []).filter(c => !c.deleted_at), [compHook.data]);
-  const companyId = entidad || null;
+  const companyId = empresaFija || entidad || null;
 
   // `equivalenciasDe` (familia local → familia del grupo) es la forma que
   // espera `familiaEfectiva`; `resolverEquivalencias` devuelve las filas
@@ -252,8 +255,10 @@ function BandejaCategorizacionTab({ compras, showToast }) {
         <div className="frow-sb" style={{ flexWrap: 'wrap', gap: 8 }}>
           <div style={{ minWidth: 220, flex: 1 }}>
             <label style={{ fontSize: 11, color: 'var(--tm)' }}>Compras de</label>
-            <select className="fi" value={entidad} onChange={e => { setEntidad(e.target.value); setCursor(0); }}>
-              <option value="">Todo el grupo ({(compras || []).length} líneas)</option>
+            <select className="fi" value={companyId || ''} disabled={!!empresaFija}
+              title={empresaFija ? 'El ámbito lo fija el selector de arriba de la pantalla.' : undefined}
+              onChange={e => { setEntidad(e.target.value); setCursor(0); }}>
+              {!empresaFija && <option value="">Todo el grupo ({(compras || []).length} líneas)</option>}
               {empresas.map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
             </select>
           </div>

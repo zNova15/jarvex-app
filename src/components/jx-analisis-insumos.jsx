@@ -31,9 +31,21 @@
 //
 // Visibilidad: gate duro admin/gerente (la vista muestra COSTOS por proveedor;
 // la regla de la casa es que almacén/campo no ven costos).
+//
+// ── TANDA 18, ENTREGA C: LA PUERTA DESDE LA EMPRESA ───────────────
+// Gabriel pidió «la base de datos de insumos por empresa». La pieza estaba
+// entera —el catálogo es por entidad desde la mig 193 y la bandeja también—,
+// pero desde el bloque de una empresa no había cómo llegar: esta pantalla vivía
+// solo en el menú general y `esPaginaDeEmpresa()` la dejaba afuera a propósito.
+// Ahora es un bloque más de la contabilidad de la empresa, y entrando por ahí
+// TODA la pantalla queda clavada en ella: el comparador solo mira SUS facturas
+// y las cuatro pestañas heredan el ámbito, con el selector deshabilitado. Sin
+// empresa activa se sigue viendo el grupo entero, como siempre.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { useChart } from "../lib/chart-loader.js";
 import {
   resolverPares, construirGrupos, sugerirPares, normInsumo,
@@ -106,6 +118,12 @@ function AnalisisInsumosPage({ showToast }) {
   const rol = (typeof window !== 'undefined' && window.__currentRol) || null;
   const movsHook = window.__hooks.useAccountingMovements();
   const corrHook = window.__hooks.useInsumoCorrelaciones();
+  const compHook = window.__hooks.useCompanies();
+  // ÁMBITO, no filtro: con una empresa activa ésta es SU base de insumos y el
+  // selector va clavado — el mismo corte que usan las 15 pantallas contables.
+  const empresaFija = useEmpresaBloqueada();
+  const [empresaSelRaw, setEmpresaSel] = uS(() => filtroInicialEmpresa(''));
+  const empresaVista = empresaFija || empresaSelRaw || null;
   const [tab, setTab] = uS('comparador');
   const [busca, setBusca] = uS('');
   const [sel, setSel] = uS(null);
@@ -114,7 +132,23 @@ function AnalisisInsumosPage({ showToast }) {
   const decidiendoRef = uR(false);
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
-  const compras = uM(() => extraerComprasDeFacturas(movsHook.data || [], { demo: esPrueba }), [movsHook.data, esPrueba]);
+  // El filtro por empresa se aplica ACÁ, una sola vez: de estas `compras` viven
+  // el comparador, las correlaciones, el mapeo y la bandeja. Un solo selector
+  // arriba gobierna las cuatro pestañas.
+  const comprasTodas = uM(() => extraerComprasDeFacturas(movsHook.data || [], { demo: esPrueba }), [movsHook.data, esPrueba]);
+  const compras = uM(
+    () => (empresaVista ? comprasTodas.filter(c => c.companyId === empresaVista) : comprasTodas),
+    [comprasTodas, empresaVista]
+  );
+  // Las que pueden tener base propia: del grupo y consorcios ejecutores. La
+  // que esté FIJADA entra siempre, aunque sea de otra clase: si no, entrar al
+  // panel de una entidad rara dejaba el selector en blanco.
+  const empresas = uM(() => (compHook.data || [])
+    .filter(c => !c.deleted_at
+      && (['propia', 'consorcio'].includes(c.tipo_entidad || 'propia') || c.id === empresaVista))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es')),
+  [compHook.data, empresaVista]);
+  const nombreEmpresa = uM(() => (empresas.find(c => c.id === empresaVista)?.name || null), [empresas, empresaVista]);
   // El hook ya separa demo/real por modo; resolverPares espeja ese criterio.
   const resueltos = uM(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uM(() => construirGrupos(resueltos), [resueltos]);
@@ -211,6 +245,27 @@ function AnalisisInsumosPage({ showToast }) {
     // portal de campo: sin él la página no deslizaba).
     <div className="page-wrap">
     <div style={{ display: 'grid', gap: 12 }}>
+      {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
+
+      <div className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 240, flex: 1 }}>
+          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Base de insumos de</label>
+          <select className="fi" value={empresaVista || ''} disabled={!!empresaFija}
+            title={empresaFija ? 'Estás dentro de la contabilidad de esta empresa: la base es solo suya.' : undefined}
+            onChange={e => { setEmpresaSel(e.target.value); setSel(null); }}>
+            {!empresaFija && <option value="">Todo el grupo ({comprasTodas.length} líneas de compra)</option>}
+            {empresas.filter(c => !empresaFija || c.id === empresaFija).map(c => (
+              <option key={c.id} value={c.id}>{c.name || c.id}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--tm)', flex: 2, minWidth: 260 }}>
+          {empresaVista
+            ? <>Todo lo de abajo —precios, correlaciones, catálogo y categorización— es de <strong>{nombreEmpresa || 'esta entidad'}</strong>: {compras.length} líneas de compra. Su catálogo propio manda sobre el general del grupo.</>
+            : <>Sin entidad elegida se ve el grupo entero. Eligiendo una, las cuatro pestañas quedan en <strong>su</strong> base de insumos.</>}
+        </div>
+      </div>
+
       <div style={{ display: 'flex', gap: 6 }}>
         <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
@@ -328,11 +383,11 @@ function AnalisisInsumosPage({ showToast }) {
       )}
 
       {tab === 'bandeja' && (
-        <BandejaCategorizacionTab compras={compras} showToast={showToast} />
+        <BandejaCategorizacionTab compras={compras} showToast={showToast} empresaFija={empresaVista} />
       )}
 
       {tab === 'catalogo' && (
-        <CatalogoCanonicoTab showToast={showToast} />
+        <CatalogoCanonicoTab showToast={showToast} empresaFija={empresaVista} />
       )}
 
       {tab === 'correlaciones' && (
