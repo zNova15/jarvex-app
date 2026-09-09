@@ -879,7 +879,17 @@ function MovimientosBancariosPage({ showToast }) {
   // Dentro de una obra manda la obra: el titular es su ejecutora y el selector
   // queda clavado. Es la misma regla del resto del workspace — no se elige
   // empresa a mano adentro de un trabajo.
-  const obraActiva = uM(() => (obras || []).find(o => o.id === obraId) || null, [obras, obraId]);
+  //
+  // 🔴 `obraId` viene de localStorage y sobrevive al F5 aunque ya no estés
+  // parado en ningún trabajo (mismo corte que hace `useEmpresaBloqueada`
+  // consigo misma). Sin el `window.__plano === 'obra'`, entrar al bloque de
+  // una empresa con una obra activa vieja en el storage volvía a clavar el
+  // titular en la ejecutora de esa obra — Gabriel, 9-sep-2026: entró a la
+  // contabilidad de una empresa y Movimientos Bancarios le mostraba
+  // "Consorcio el Inca" bloqueado, sin poder ver las cuentas de la empresa
+  // que había elegido.
+  const enObraTes = window.__plano === 'obra';
+  const obraActiva = uM(() => (enObraTes ? (obras || []).find(o => o.id === obraId) || null : null), [enObraTes, obras, obraId]);
   const titularForzado = obraActiva?.ejecutora_company_id || empresaFija || null;
 
   const [titularSel, setTitularSel] = uS('');

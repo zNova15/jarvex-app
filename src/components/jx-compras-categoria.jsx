@@ -177,10 +177,15 @@ function ComprasCategoriaPage({ showToast }) {
       const key = it.categoria
         ? (it.subcategoria || `(${CAT_LBL[it.categoria] || it.categoria} sin subcategoría)`)
         : '(sin clasificar)';
-      const g = m.get(key) || { subcat: key, esRegla: !!it.subcategoria, categoria: it.categoria, total: 0, nItems: 0, compradoras: new Map(), aFacturar: 0, nVinc: 0 };
+      const g = m.get(key) || { subcat: key, esRegla: !!it.subcategoria, categoria: it.categoria, total: 0, nItems: 0, compradoras: new Map(), obras: new Map(), aFacturar: 0, nVinc: 0 };
       g.total += it.monto;
       g.nItems++;
       if (it.companyId) g.compradoras.set(it.companyId, (g.compradoras.get(it.companyId) || 0) + it.monto);
+      // A qué obra se vinculó (9-sep-2026): dentro del bloque de una empresa
+      // esto reemplaza a «Compró» y «Cadena de facturación» — ya sabés qué
+      // empresa compró (es la que elegiste) y esa pantalla no es donde se
+      // decide quién factura a quién.
+      g.obras.set(it.obraId || '__sin__', (g.obras.get(it.obraId || '__sin__') || 0) + it.monto);
       // Valorización al presupuesto (solo con obra elegida): Σ cantidad
       // vinculada × precio presupuestado del insumo del expediente.
       if (presup) {
@@ -365,8 +370,16 @@ function ComprasCategoriaPage({ showToast }) {
                 <th style={{ textAlign: 'right', width: 60 }}>Ítems</th>
                 <th style={{ textAlign: 'right', width: 110 }}>Costo compra</th>
                 <th style={{ textAlign: 'right', width: 120 }} title="Cantidad vinculada × precio presupuestado del expediente (elegí UNA obra para valorizar)">A facturar (presup.)</th>
-                <th>Compró</th>
-                <th style={{ width: 250 }}>Cadena de facturación</th>
+                {/* Dentro del bloque de una empresa, «Compró» y «Cadena de
+                    facturación» sobran: la compradora ya es la empresa
+                    elegida, y esta pantalla no es donde se decide quién
+                    factura a quién. Se muestra en su lugar a qué OBRA se
+                    vinculó, que es lo único que faltaba recordar acá
+                    (Gabriel, 9-sep-2026). */}
+                {empresaFija ? <th>Obra</th> : (<>
+                  <th>Compró</th>
+                  <th style={{ width: 250 }}>Cadena de facturación</th>
+                </>)}
               </tr></thead>
               <tbody>
                 {grupos.map(g => {
@@ -384,6 +397,13 @@ function ComprasCategoriaPage({ showToast }) {
                             ? <span style={{ color: 'var(--green)', fontWeight: 700 }}>{fmtS(g.aFacturar)}<div style={{ fontSize: 9.5, fontWeight: 400, color: 'var(--tm)' }}>{g.nVinc} vínculo(s)</div></span>
                             : <span style={{ fontSize: 10, color: 'var(--amber)' }} title="Sin ítems vinculados al presupuesto — vinculá en Conciliación de Insumos">sin vincular</span>)}
                       </td>
+                      {empresaFija ? (
+                        <td style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                          {[...g.obras.entries()].map(([oid, m]) =>
+                            `${oid === '__sin__' ? 'Sin obra' : (obraNombre(oid) || 'obra')} (${fmtS(m)})`
+                          ).join(' · ') || '—'}
+                        </td>
+                      ) : (<>
                       <td style={{ fontSize: 10.5, color: 'var(--tm)' }}>
                         {[...g.compradoras.entries()].map(([cid, m]) => `${companyNombre(cid) || 'empresa'} (${fmtS(m)})`).join(' · ') || '—'}
                       </td>
@@ -431,6 +451,7 @@ function ComprasCategoriaPage({ showToast }) {
                           <span style={{ fontSize: 10.5, color: 'var(--tm)', fontStyle: 'italic' }}>{g.categoria ? 'agregá subcategoría para designar' : 'clasificá primero'}</span>
                         )}
                       </td>
+                      </>)}
                     </tr>
                   );
                 })}

@@ -16,7 +16,7 @@
 // El otro guard es sobre el saldo: sumar cuentas de distinta moneda daría un
 // número que no existe, así que el saldo corrido solo aparece con UNA cuenta.
 // ═══════════════════════════════════════════════════════════════════
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 
@@ -64,7 +64,10 @@ function montarBrowserFalso() {
     createElement: nodo, addEventListener() {}, removeEventListener() {},
     querySelector: () => null, querySelectorAll: () => [],
   };
-  g.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
+  g.localStorage = {
+    getItem: (k) => (k === 'empresa_activa_id' ? (globalThis.__EMPRESA_ACTIVA ?? null) : null),
+    setItem() {}, removeItem() {},
+  };
   g.CustomEvent = class { constructor(t, o) { this.type = t; Object.assign(this, o); } };
   g.JxIcon = () => null;
   g.Modal = () => null;
@@ -95,7 +98,7 @@ beforeAll(async () => {
   await import('../../components/jx-tesoreria.jsx');
 });
 
-afterEach(() => { globalThis.__OBRA_ACTIVA = null; globalThis.__plano = undefined; });
+afterEach(() => { globalThis.__OBRA_ACTIVA = null; globalThis.__plano = undefined; globalThis.__EMPRESA_ACTIVA = null; });
 
 describe('el chunk expone la pantalla', () => {
   it('MovimientosBancariosPage existe', () => {
@@ -104,7 +107,10 @@ describe('el chunk expone la pantalla', () => {
 });
 
 describe('dentro de un trabajo', () => {
-  beforeAll(() => { globalThis.__OBRA_ACTIVA = OBRA; globalThis.__plano = 'obra'; });
+  // `afterEach` (global, arriba) limpia __plano después de CADA test — un
+  // `beforeAll` acá solo lo pondría una vez y el segundo test del bloque ya
+  // lo encontraría en `undefined`. Por eso `beforeEach`, no `beforeAll`.
+  beforeEach(() => { globalThis.__OBRA_ACTIVA = OBRA; globalThis.__plano = 'obra'; });
 
   it('el titular es el consorcio que ejecuta, y lo dice', () => {
     globalThis.__OBRA_ACTIVA = OBRA;
@@ -143,6 +149,21 @@ describe('fuera de un trabajo', () => {
     expect(html).toContain('CONSORCIO EL INCA');
     expect(html).toContain('JARVEX INGENIERIA');
     expect(html).toContain('entidad titular');
+  });
+
+  // Gabriel, 9-sep-2026: entró al bloque de una empresa y Movimientos
+  // Bancarios le mostraba «Consorcio el Inca» bloqueado — la obra activa
+  // vieja seguía en localStorage (sobrevive al F5) aunque ya no estaba
+  // parado en ningún trabajo. El titular tiene que obedecer el PLANO, no
+  // un id de obra que quedó pegado del último trabajo que visitó.
+  it('con una empresa activa, una obra VIEJA en storage no le gana al contexto de empresa', () => {
+    globalThis.__OBRA_ACTIVA = OBRA;   // quedó de una visita anterior a un trabajo
+    globalThis.__plano = 'empresa';     // pero ahora está en el bloque de una empresa
+    globalThis.__EMPRESA_ACTIVA = JARVEX;
+    const html = render();
+    // El titular es JARVEX (la empresa activa), no EL INCA (la obra vieja).
+    expect(html).toContain('JARVEX INGENIERIA');
+    expect(html).not.toContain('CONSORCIO EL INCA');
   });
 
   it('no ofrece a los terceros como titulares: no son cuentas nuestras', () => {

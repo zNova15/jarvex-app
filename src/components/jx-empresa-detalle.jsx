@@ -461,7 +461,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       </div>
       <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 12 }}>
         Cada pantalla se abre mostrando solo lo de esta empresa. Para volver a ver el grupo entero,
-        usá «Ver todas las empresas» en el cartel de arriba de cada una.
+        volvé a este panel («Volver a la empresa» en el cartel de arriba de cada una) y usá «Volver a Empresas».
       </div>
       {bloquesConta.length === 0 ? (
         <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>

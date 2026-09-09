@@ -77,6 +77,13 @@ function GuiasRemisionPage({ showToast }) {
   // abre a pedido con "Ver todo el histórico").
   const [panelAbierto, setPanelAbierto] = uS(false);
   const [panelTodo, setPanelTodo] = uS(false);
+  // Los otros dos avisos (esperando factura / guías incompletas) son
+  // recordatorios, no la lista que uno vino a ver acá — Gabriel, 9-sep-2026:
+  // "muestran ... como bloque que molesta para lo que uno va a ver dicha
+  // sección". Mismo patrón replegable que el panel de arriba, y también
+  // colapsados por defecto.
+  const [avisoEsperandoAbierto, setAvisoEsperandoAbierto] = uS(false);
+  const [avisoParcialesAbierto, setAvisoParcialesAbierto] = uS(false);
   const [verSinDatos, setVerSinDatos] = uS(false);
   const [verNoRequiere, setVerNoRequiere] = uS(false);
   const [buscarGuiaPara, setBuscarGuiaPara] = uS(null);    // factura → elegir guía suelta
@@ -486,33 +493,39 @@ function GuiasRemisionPage({ showToast }) {
           sin tocar nada. */}
       {guiasConPendiente.length > 0 && (
         <div className="card" style={{ marginBottom: 12, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--amber) 40%, transparent)' }}>
-          <div style={{ padding: '10px 14px', background: 'color-mix(in srgb, var(--amber) 8%, transparent)', fontSize: 12.5, fontWeight: 700, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+          <button onClick={() => setAvisoEsperandoAbierto(a => !a)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '10px 14px', background: 'color-mix(in srgb, var(--amber) 8%, transparent)', border: 'none', cursor: 'pointer', color: 'var(--tp)', fontSize: 12.5, fontWeight: 700, flexWrap: 'wrap', gap: 6 }}>
             <span>⏳ Guías esperando su factura
               <span style={{ color: 'var(--amber)', marginLeft: 8 }}>{guiasConPendiente.length}</span>
               <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)', marginTop: 2 }}>
                 Referencian facturas que todavía no están cargadas. No hay nada que hacer acá: al subir esa factura por Captura Mágica, el vínculo se cierra solo.
               </div>
             </span>
-            <button className="btn btn-ghost btn-xs" onClick={() => { setFiltroVinculo(filtroVinculo === 'esperando' ? 'todos' : 'esperando'); }}>
-              {filtroVinculo === 'esperando' ? 'Ver todas las guías' : 'Filtrar la tabla ↓'}
-            </button>
-          </div>
-          <div style={{ padding: '8px 14px', display: 'grid', gap: 5 }}>
-            {guiasConPendiente.slice(0, 20).map(g => {
-              const o = ORIGEN_BADGE[origenVisible(g)] || ORIGEN_BADGE.desconocida;
-              return (
-                <div key={g.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ fontWeight: 700, fontSize: 11.5 }}>{g.serie_correlativo || '(sin serie)'}</span>
-                  <span className={`badge ${o.cls}`} style={{ fontSize: 8.5 }}>{o.label}</span>
-                  <span style={{ fontSize: 10.5, color: 'var(--tm)', flex: 1, minWidth: 120 }}>{g.emisor_razon_social || ''}</span>
-                  {pendientesDe(g).map(pp => (
-                    <span key={pp.doc} className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 9 }}>falta {pp.doc}</span>
-                  ))}
-                </div>
-              );
-            })}
-            {guiasConPendiente.length > 20 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {guiasConPendiente.length - 20} más — usá el filtro "Esperando factura".</div>}
-          </div>
+            <span style={{ color: 'var(--amber)', fontSize: 11 }}>{avisoEsperandoAbierto ? '▲ Cerrar' : '▼ Revisar'}</span>
+          </button>
+          {avisoEsperandoAbierto && (
+            <div style={{ padding: '8px 14px', display: 'grid', gap: 5 }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn btn-ghost btn-xs" onClick={() => { setFiltroVinculo(filtroVinculo === 'esperando' ? 'todos' : 'esperando'); }}>
+                  {filtroVinculo === 'esperando' ? 'Ver todas las guías' : 'Filtrar la tabla ↓'}
+                </button>
+              </div>
+              {guiasConPendiente.slice(0, 20).map(g => {
+                const o = ORIGEN_BADGE[origenVisible(g)] || ORIGEN_BADGE.desconocida;
+                return (
+                  <div key={g.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ fontWeight: 700, fontSize: 11.5 }}>{g.serie_correlativo || '(sin serie)'}</span>
+                    <span className={`badge ${o.cls}`} style={{ fontSize: 8.5 }}>{o.label}</span>
+                    <span style={{ fontSize: 10.5, color: 'var(--tm)', flex: 1, minWidth: 120 }}>{g.emisor_razon_social || ''}</span>
+                    {pendientesDe(g).map(pp => (
+                      <span key={pp.doc} className="badge" style={{ background: 'var(--amber)', color: '#000', fontSize: 9 }}>falta {pp.doc}</span>
+                    ))}
+                  </div>
+                );
+              })}
+              {guiasConPendiente.length > 20 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {guiasConPendiente.length - 20} más — usá el filtro "Esperando factura".</div>}
+            </div>
+          )}
         </div>
       )}
 
@@ -522,34 +535,39 @@ function GuiasRemisionPage({ showToast }) {
           eso, falta subir una guía más. */}
       {parciales.length > 0 && (
         <div className="card" style={{ marginBottom: 12, overflow: 'hidden', border: '1px solid color-mix(in srgb, var(--orange) 40%, transparent)' }}>
-          <div style={{ padding: '10px 14px', background: 'color-mix(in srgb, var(--orange) 8%, transparent)', fontSize: 12.5, fontWeight: 700 }}>
-            📦 Facturas con guías INCOMPLETAS
-            <span style={{ color: 'var(--orange)', marginLeft: 8 }}>{parciales.length}</span>
-            <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)', marginTop: 2 }}>
-              Ya tienen guía, pero lo trasladado no cubre lo facturado: falta que entreguen el resto y suba su guía.
-            </div>
-          </div>
-          <div style={{ padding: '8px 14px', display: 'grid', gap: 6 }}>
-            {parciales.slice(0, 25).map(({ mov, cobertura }) => (
-              <div key={mov.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
-                <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables"
-                  onClick={() => { window.__movsBuscarIntent = mov.document_number || ''; window.__navTo?.('movimientos-contables', 'general'); }}>
-                  🧾 {mov.document_number || 'factura'}
-                </button>
-                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{mov.third_party_name || ''} {mov.date ? `· ${mov.date}` : ''}</span>
-                <div style={{ fontSize: 11, flexBasis: '100%' }}>
-                  {cobertura.faltantes.slice(0, 4).map((l, i) => (
-                    <span key={i} style={{ marginRight: 10 }}>
-                      falta <b style={{ color: 'var(--orange)' }}>{Number(l.falta).toLocaleString('es-PE')} {l.unidad || ''}</b> de {String(l.descripcion || '').slice(0, 40)}
-                      <span style={{ color: 'var(--tm)' }}> ({Number(l.trasladado).toLocaleString('es-PE')} de {Number(l.facturado).toLocaleString('es-PE')})</span>
-                    </span>
-                  ))}
-                  {cobertura.faltantes.length > 4 && <span style={{ color: 'var(--tm)' }}>+{cobertura.faltantes.length - 4} más</span>}
-                </div>
+          <button onClick={() => setAvisoParcialesAbierto(a => !a)}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '10px 14px', background: 'color-mix(in srgb, var(--orange) 8%, transparent)', border: 'none', cursor: 'pointer', color: 'var(--tp)', fontSize: 12.5, fontWeight: 700 }}>
+            <span>📦 Facturas con guías INCOMPLETAS
+              <span style={{ color: 'var(--orange)', marginLeft: 8 }}>{parciales.length}</span>
+              <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)', marginTop: 2 }}>
+                Ya tienen guía, pero lo trasladado no cubre lo facturado: falta que entreguen el resto y suba su guía.
               </div>
-            ))}
-            {parciales.length > 25 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {parciales.length - 25} más.</div>}
-          </div>
+            </span>
+            <span style={{ color: 'var(--orange)', fontSize: 11 }}>{avisoParcialesAbierto ? '▲ Cerrar' : '▼ Revisar'}</span>
+          </button>
+          {avisoParcialesAbierto && (
+            <div style={{ padding: '8px 14px', display: 'grid', gap: 6 }}>
+              {parciales.slice(0, 25).map(({ mov, cobertura }) => (
+                <div key={mov.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
+                  <button className="btn btn-ghost btn-xs" title="Ir a la factura en Movimientos Contables"
+                    onClick={() => { window.__movsBuscarIntent = mov.document_number || ''; window.__navTo?.('movimientos-contables', 'general'); }}>
+                    🧾 {mov.document_number || 'factura'}
+                  </button>
+                  <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{mov.third_party_name || ''} {mov.date ? `· ${mov.date}` : ''}</span>
+                  <div style={{ fontSize: 11, flexBasis: '100%' }}>
+                    {cobertura.faltantes.slice(0, 4).map((l, i) => (
+                      <span key={i} style={{ marginRight: 10 }}>
+                        falta <b style={{ color: 'var(--orange)' }}>{Number(l.falta).toLocaleString('es-PE')} {l.unidad || ''}</b> de {String(l.descripcion || '').slice(0, 40)}
+                        <span style={{ color: 'var(--tm)' }}> ({Number(l.trasladado).toLocaleString('es-PE')} de {Number(l.facturado).toLocaleString('es-PE')})</span>
+                      </span>
+                    ))}
+                    {cobertura.faltantes.length > 4 && <span style={{ color: 'var(--tm)' }}>+{cobertura.faltantes.length - 4} más</span>}
+                  </div>
+                </div>
+              ))}
+              {parciales.length > 25 && <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>…y {parciales.length - 25} más.</div>}
+            </div>
+          )}
         </div>
       )}
 

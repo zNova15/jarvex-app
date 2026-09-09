@@ -5,14 +5,23 @@
 // cuando entrás a la contabilidad de UNA empresa y desde ahí abrís
 // Movimientos, Comprobantes o el Libro diario, esas pantallas te muestran lo
 // de ESA empresa. Sin un cartel, no habría forma de saber por qué la lista es
-// más corta que de costumbre — y peor: no habría forma de salir.
+// más corta que de costumbre.
+//
+// 🔴 SIN «VER TODAS LAS EMPRESAS» (9-sep-2026). Gabriel: «he ingresado al
+// bloque de empresa y en cada una de ellas en la mayoría de secciones me sale
+// el botón de "Ver todas las empresas", quítalo, se supone que aquí nos
+// concentraremos netamente en la contabilidad de cada empresa
+// independientemente». La salida sigue existiendo — «Volver a la empresa»
+// lleva al Panel, y desde ahí «Volver a Empresas» (jx-empresa-detalle.jsx)
+// limpia el contexto — pero ya no es un atajo de un click desde cada pantalla
+// contable, que era justo lo que invitaba a mezclar dos empresas sin querer.
 //
 // Vive en el chunk PRINCIPAL (lo importa main.jsx) y se expone como
 // window.EmpresaActivaBanner para que lo usen las páginas lazy sin
 // import cruzado. Mismo patrón que window.JxIcon y window.TemaToggle.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { getEmpresaActivaId, limpiarEmpresaActiva, EMPRESA_ACTIVA_EVENT } from "../lib/empresa-activa.js";
+import { getEmpresaActivaId, EMPRESA_ACTIVA_EVENT } from "../lib/empresa-activa.js";
 
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
@@ -31,11 +40,10 @@ export function useEmpresaActivaId() {
   return id;
 }
 
-/**
- * @param onSalir  qué hacer al salir del contexto además de limpiarlo — casi
- *                 siempre devolver el filtro de la pantalla a "todas".
- */
-function EmpresaActivaBanner({ onSalir }) {
+// `onSalir` ya no se usa acá (el botón que lo disparaba se quitó el
+// 9-sep-2026), pero se sigue aceptando sin usar: 15 pantallas lo siguen
+// pasando y tocarlas todas para borrar una prop muerta no vale el riesgo.
+function EmpresaActivaBanner({ onSalir: _onSalir }) {
   const empresaId = useEmpresaActivaId();
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   if (!empresaId) return null;
@@ -54,10 +62,6 @@ function EmpresaActivaBanner({ onSalir }) {
           Esta pantalla muestra solo lo suyo. Su contabilidad es independiente de la de las demás.
         </div>
       </div>
-      <button className="btn btn-ghost btn-sm" onClick={() => { limpiarEmpresaActiva(); onSalir?.(); }}
-        title="Dejar de mirar una sola empresa">
-        Ver todas las empresas →
-      </button>
       <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('empresas', 'general')}
         title="Volver al panel de esta empresa">
         <JxIcon name="chevL" size={12} /> Volver a la empresa
