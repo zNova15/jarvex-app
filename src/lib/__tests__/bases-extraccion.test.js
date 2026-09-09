@@ -14,7 +14,9 @@ import {
   USD_POR_PAGINA_OCR,
   clave, contarClave, clasificarRegimen, esRenglonDeIndice,
   citaEsPlantilla, camposSinLlenar, SECCIONES,
+  agruparRequisitos, aExtrasProceso, extrasNoVerificados, elegirAciertos,
 } from '../bases-extraccion.js';
+import { anexoSePresenta, separarAnexos } from '../documentos-partes.js';
 import { rangosDeFamilia } from '../bases-analisis.js';
 
 // El texto literal del Anexo 13, tal como lo leyó el triage.
@@ -664,5 +666,157 @@ CONTENIDO DE LO S SOBRES A SER PRESENTADOS POR EL POSTOR, bajo sanción de nulid
     const v = verificarCita(MD, 'el postor deberá acreditar un patrimonio neto de S/ 5,000,000');
     expect(v.verificada).toBe(false);
     expect(v.motivo).toContain('no aparece');
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE SE ROMPIÓ EN LA PRUEBA REAL DEL 9-set-2026: unas bases integradas de
+// 94 páginas escaneadas devolvieron CERO requisitos y un solo «hallazgo», que
+// era la propia pista del sistema devuelta como dato.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('el índice de contenidos ya no se come el presupuesto', () => {
+  // Reproduce la forma del documento que falló: la tabla de contenidos junta
+  // TODOS los rótulos en las tres primeras páginas, y las secciones de verdad
+  // están noventa páginas después.
+  const tabla = ['REQUISITOS DE CALIFICACION', 'PERSONAL CLAVE', 'EXPERIENCIA DEL PERSONAL',
+    'PLANTEL PROFESIONAL', 'RESIDENTE DE OBRA', 'SUPERVISOR DE OBRA', 'INGENIERO RESIDENTE',
+    'ESPECIALISTA EN', 'CALIFICACIONES DEL PLANTEL', 'JEFE DE SUPERVISION',
+    'CAPACIDAD TECNICA Y PROFESIONAL', 'PERSONAL PROPUESTO', 'CALIFICACIONES DEL PERSONAL CLAVE',
+    'EXPERIENCIA DEL PERSONAL CLAVE', 'PLANTEL PROFESIONAL CLAVE'];
+  const MD_GRANDE = [
+    ...tabla.map((t, i) => `<!-- página ${1 + (i % 3)} -->\n${t} ........... ${40 + i}`),
+    ...Array.from({ length: 88 }, (_, i) => `<!-- página ${5 + i} -->\nrelleno del escaneo ${i}`),
+    '<!-- página 93 -->\nPERSONAL CLAVE\nResidente de Obra: Ingeniero Civil con 36 meses.',
+  ].join('\n\n');
+
+  it('llega a la sección de verdad de la página 93, no solo a la tabla', () => {
+    const paginas = indiceDeSecciones(MD_GRANDE).personal.map(h => h.pagina);
+    expect(paginas).toContain(93);
+  });
+
+  it('y por eso rangosDeFamilia propone esa zona', () => {
+    const i = indiceDeSecciones(MD_GRANDE);
+    const rangos = rangosDeFamilia(null, resumenIndice(i), 'personal');
+    expect(rangos.some(r => r.desde <= 93 && r.hasta >= 93)).toBe(true);
+  });
+
+  // La garantía de verdad: cuando el cupo NO alcanza para todos, los renglones
+  // de la tabla de contenidos son los que ceden. Antes era al revés, porque el
+  // recorte se hacía en orden de documento y la tabla va al principio.
+  it('cuando el cupo aprieta, la tabla de contenidos cede y las secciones quedan', () => {
+    const delIndice = Array.from({ length: 30 }, (_, i) => (
+      { pagina: 1 + (i % 3), clave: 'PERSONAL CLAVE', linea: `PERSONAL CLAVE ..... ${i}`, deIndice: true }));
+    const reales = Array.from({ length: 6 }, (_, i) => (
+      { pagina: 40 + i * 9, clave: 'PERSONAL CLAVE', linea: 'PERSONAL CLAVE' }));
+    const elegidos = elegirAciertos([...delIndice, ...reales], 12);
+
+    // Las seis secciones de verdad entran TODAS.
+    expect(elegidos.filter(h => !h.deIndice)).toHaveLength(6);
+    // Y de la tabla entra a lo sumo un cuarto del cupo, aunque sobre lugar: el
+    // cupo NO se rellena con renglones del índice de contenidos, que es
+    // exactamente lo que lo había arruinado.
+    expect(elegidos.filter(h => h.deIndice).length).toBeLessThanOrEqual(3);
+    expect(elegidos.length).toBeLessThanOrEqual(12);
+    // Devueltos en orden de documento, que es como los lee el Pase 1.
+    const paginas = elegidos.map(h => h.pagina);
+    expect([...paginas].sort((a, b) => a - b)).toEqual(paginas);
+  });
+});
+
+describe('el régimen no se decide por una señal AUSENTE', () => {
+  // El documento real: «Contratación de la Empresa Privada para la IOARR
+  // CONSTRUCCION DE FARMACIA». El OCR degradado se comió los «SOBRE N° 3» y la
+  // regla vieja («sin sobre 3 es la supervisora») lo mandó a supervisora con
+  // confianza ALTA — y con eso se le dijo al modelo 10% y dos sobres.
+  const REAL = `Contratación de la EMPRESA PRIVADA para la IOARR CONSTRUCCION DE FARMACIA
+    LEY N° 29230 — OBRAS POR IMPUESTOS. CONVENIO DE INVERSION.
+    La EMPRESA PRIVADA presentará su propuesta ante el COMITE ESPECIAL.
+    MONTO REFERENCIAL del convenio. La EMPRESA PRIVADA seleccionada suscribirá.`;
+
+  it('unas bases de EMPRESA PRIVADA no salen como supervisora', () => {
+    expect(clasificarRegimen(REAL).regimen).toBe('oxi_empresa');
+  });
+
+  it('cuando no se sabe cuál de las dos es, la confianza es BAJA (y la pista no viaja)', () => {
+    const c = clasificarRegimen('LEY N° 29230 · CONVENIO DE INVERSION · COMITE ESPECIAL');
+    expect(c.confianza).toBe('baja');
+  });
+
+  it('la supervisora sigue reconociéndose cuando el documento lo dice', () => {
+    const c = clasificarRegimen(`LEY N° 29230 CONVENIO DE INVERSION.
+      La ENTIDAD PRIVADA SUPERVISORA presentará. La ENTIDAD PRIVADA SUPERVISORA será evaluada.
+      La ENTIDAD PRIVADA SUPERVISORA suscribe el contrato de supervisión.`);
+    expect(c.regimen).toBe('oxi_supervisora');
+    expect(c.confianza).toBe('alta');
+  });
+});
+
+describe('agruparRequisitos — por categoría y prioridad', () => {
+  const grupos = agruparRequisitos({
+    filas: [
+      { cargo: 'Especialista en Estructuras', clase: 'personal' },
+      { cargo: 'Residente de Obra', clase: 'personal' },
+      { cargo: 'Topógrafo', clase: 'personal' },
+    ],
+    filasEmpresa: [
+      { cargo: 'Experiencia del postor', tipo: 'experiencia_postor' },
+      { cargo: 'RNP vigente', tipo: 'rnp' },
+    ],
+  });
+
+  it('lo que impide presentarse va primero de todo', () => {
+    expect(grupos[0].clave).toBe('habilitantes');
+    expect(grupos[0].items[0].f.cargo).toBe('RNP vigente');
+  });
+
+  it('la gente va después de los papeles, y quien conduce antes que el apoyo', () => {
+    expect(grupos.map(g => g.clave)).toEqual(
+      ['habilitantes', 'acreditables', 'jefatura', 'especialistas', 'apoyo']);
+    expect(grupos[2].items[0].f.cargo).toBe('Residente de Obra');
+    expect(grupos[4].items[0].f.cargo).toBe('Topógrafo');
+  });
+
+  it('cada item se lleva su índice original: marcar no puede guardar otro', () => {
+    const residente = grupos[2].items[0];
+    expect(residente.i).toBe(1);            // era el segundo de `filas`
+  });
+
+  it('un grupo vacío no se muestra', () => {
+    const g = agruparRequisitos({ filas: [{ cargo: 'Residente de Obra' }], filasEmpresa: [] });
+    expect(g.map(x => x.clave)).toEqual(['jefatura']);
+  });
+});
+
+describe('anexoSePresenta — solo los que se llenan y se meten en un sobre', () => {
+  it('los formularios sí', () => {
+    expect(anexoSePresenta('ANEXO N° 1: DECLARACIÓN JURADA DE DATOS DEL POSTOR')).toBe(true);
+    expect(anexoSePresenta('FORMATO N° 6: PROMESA FORMAL DE CONSORCIO')).toBe(true);
+    expect(anexoSePresenta('ANEXO N° 4- B: MODELO DE CARTA DE EXPRESIÓN DE INTERES')).toBe(true);
+  });
+
+  it('lo que se LEE, no', () => {
+    expect(anexoSePresenta('ANEXO C: TERMINOS DE REFERENCIA')).toBe(false);
+    expect(anexoSePresenta('ANEXO D: PROYECTO DE CONVENIO DE INVERSIÓN')).toBe(false);
+    expect(anexoSePresenta('ANEXO B: CRONOGRAMA DEL PROCESO')).toBe(false);
+    expect(anexoSePresenta('CAPITULO III')).toBe(false);
+  });
+
+  it('si las bases lo nombran entre los documentos a presentar, manda eso', () => {
+    expect(anexoSePresenta('ANEXO N° 9: CARTA DE ACREDITACION', null)).toBe(true);
+    // Un título que por su forma no calificaría, pero que la lista nombra.
+    expect(anexoSePresenta('ANEXO N° 12: ESTUDIO DE MERCADO',
+      ['Anexo N° 12 - Estudio de mercado del postor'])).toBe(true);
+  });
+
+  it('separarAnexos parte la lista en dos sin perder ninguno', () => {
+    const partes = [
+      { n: 1, titulo: 'ANEXO N° 1: DECLARACIÓN JURADA' },
+      { n: 2, titulo: 'ANEXO C: TERMINOS DE REFERENCIA' },
+    ];
+    const { sePresentan, soloLectura } = separarAnexos(partes);
+    expect(sePresentan).toHaveLength(1);
+    expect(soloLectura).toHaveLength(1);
   });
 });

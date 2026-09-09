@@ -328,6 +328,13 @@ export const ROTULOS_REGIMEN = {
   obrasPorImpuestos: 'OBRAS POR IMPUESTOS',
   comiteEspecial: 'COMITE ESPECIAL',
   ciprl: 'CIPRL',
+  // 🔴 QUIÉN ES EL POSTOR: el discriminador que faltaba entre las dos bases de
+  // Obras por Impuestos, y el que hizo fallar la lectura del 9-set. Unas bases
+  // de EMPRESA PRIVADA lo dicen en el título («Contratación de la Empresa
+  // Privada para la IOARR…») y lo repiten en cada página; las de la
+  // supervisora dicen «Entidad Privada Supervisora» con la misma insistencia.
+  empresaPrivada: 'EMPRESA PRIVADA',
+  entidadSupervisora: 'ENTIDAD PRIVADA SUPERVISORA',
   obrasSimilares: 'OBRAS SIMILARES',
   plantelProfesional: 'PLANTEL PROFESIONAL',
   cuadernoObra: 'CUADERNO DE OBRA',
@@ -378,11 +385,29 @@ export function clasificarRegimen(markdown) {
     const confianza = (senales.cuantia > 0 && (senales.pladicop > 0 || senales.ley32069 > 0)) ? 'alta' : 'media';
     return { regimen: 'ley32069', confianza, senales, conflicto };
   }
-  // 3. Obras por Impuestos sin el sobre de credenciales: es la SUPERVISORA,
-  //    que lleva dos sobres y arranca por la técnica.
+  // 3. Obras por Impuestos. Cuál de las dos bases es, lo dice QUIÉN ES EL
+  //    POSTOR, no la ausencia de un sobre.
+  //
+  // 🔴 ESTO ESTABA AL REVÉS Y COSTÓ CARO (9-set-2026). La regla era «sin
+  // SOBRE N° 3 es la supervisora», y en un escaneo degradado ese rótulo
+  // sencillamente no se lee: unas bases que dicen «Contratación de la EMPRESA
+  // PRIVADA» en el título salieron clasificadas como Entidad Privada
+  // Supervisora, con confianza ALTA. La ausencia de una señal no es evidencia
+  // de lo contrario, y menos sobre un OCR malo.
   if (oxi > 0) {
-    const regimen = senales.sobre3 > 0 ? 'oxi_empresa' : 'oxi_supervisora';
-    return { regimen, confianza: oxi > 2 ? 'alta' : 'media', senales, conflicto };
+    const dice = senales.empresaPrivada - senales.entidadSupervisora;
+    let regimen, confianza;
+    if (senales.sobre3 > 0 || dice > 2) { regimen = 'oxi_empresa'; confianza = senales.sobre3 > 0 && dice > 0 ? 'alta' : 'media'; }
+    else if (senales.entidadSupervisora > 0 && dice < 0) { regimen = 'oxi_supervisora'; confianza = senales.entidadSupervisora > 2 ? 'alta' : 'media'; }
+    else {
+      // Es de Obras por Impuestos, pero no se sabe de cuál de las dos. Se dice
+      // así, en vez de elegir una: la que se elija cambia el orden de los
+      // sobres y el porcentaje de la garantía, y equivocarse es peor que no
+      // saber. Con `confianza: 'baja'` la pista NO se le manda al modelo.
+      regimen = senales.sobre2 > 0 ? 'oxi_supervisora' : 'oxi_empresa';
+      confianza = 'baja';
+    }
+    return { regimen, confianza, senales, conflicto };
   }
   // 4. Ley 30225: el vocabulario viejo, y ninguno de los de arriba.
   if (senales.valorReferencial > 0
@@ -437,10 +462,10 @@ export function fragmentosPorPagina(markdown) {
  *
  * @returns { personal: [{ pagina, clave, linea }], empresa: [...], ... }
  */
-export function indiceDeSecciones(markdown, { maxPorFamilia = 12 } = {}) {
+export function indiceDeSecciones(markdown, { maxPorFamilia = 0 } = {}) {
   const fragmentos = fragmentosPorPagina(markdown);
-  const indice = {};
-  for (const fam of Object.keys(SECCIONES)) indice[fam] = [];
+  const crudo = {};
+  for (const fam of Object.keys(SECCIONES)) crudo[fam] = [];
 
   for (const frag of fragmentos) {
     const lineas = frag.texto.split(/\n+/);
@@ -453,12 +478,11 @@ export function indiceDeSecciones(markdown, { maxPorFamilia = 12 } = {}) {
       if (!k) continue;
       const esIndice = esRenglonDeIndice(linea);
       for (const [fam, def] of Object.entries(SECCIONES)) {
-        if (indice[fam].length >= maxPorFamilia) continue;
         const rotulo = def.claves.find(c => k.includes(clave(c)));
         if (!rotulo) continue;
         // El renglón se recorta: al Pase 1 le alcanza para reconocer la
         // sección, y mandar párrafos enteros devolvería el problema de origen.
-        indice[fam].push({
+        crudo[fam].push({
           pagina: frag.pagina,
           clave: rotulo,
           linea: linea.trim().slice(0, 220),
@@ -470,7 +494,69 @@ export function indiceDeSecciones(markdown, { maxPorFamilia = 12 } = {}) {
       }
     }
   }
+
+  // 🔴 EL ÍNDICE DE CONTENIDOS SE COMÍA EL PRESUPUESTO ENTERO.
+  //
+  // Medido el 9-set-2026 sobre BASES_INTEGRADAS_PROCESO_SELECCION_009: 94
+  // páginas escaneadas, y la lectura devolvió CERO requisitos. El motivo no
+  // era el OCR: el tope era `maxPorFamilia = 12` y se aplicaba MIENTRAS se
+  // recorría, en orden de documento. Las doce primeras coincidencias de cada
+  // familia caían todas en la tabla de contenidos de las páginas 1 a 3 —donde
+  // están TODOS los rótulos juntos, uno por renglón— y el recorrido se cortaba
+  // ahí. Las secciones de verdad, en las páginas 30 a 90, no entraban nunca al
+  // índice, así que `rangosDeFamilia` nunca proponía esas páginas y el modelo
+  // leyó tres páginas de un documento de noventa y cuatro.
+  //
+  // Ahora se junta TODO y se elige después, con dos reglas:
+  //   1. los renglones que NO son del índice de contenidos van primero;
+  //   2. entre esos, se reparte a lo largo del documento en vez de tomar los
+  //      primeros — una sección puede empezar en la página 80.
+  const tope = maxPorFamilia > 0 ? maxPorFamilia : topeDelIndice(fragmentos);
+  const indice = {};
+  for (const [fam, hits] of Object.entries(crudo)) indice[fam] = elegirAciertos(hits, tope);
   return indice;
+}
+
+/** Cuántas coincidencias por familia se guardan. Escala con el documento: en
+ *  una convocatoria de una página doce sobran, y en unas bases integradas de
+ *  noventa y cuatro se quedaban cortísimas. */
+export function topeDelIndice(fragmentos) {
+  const paginas = (fragmentos || []).filter(f => f.pagina != null).length;
+  return Math.max(12, Math.min(40, Math.ceil(paginas / 3)));
+}
+
+/**
+ * Elige qué coincidencias entran al índice: primero las que NO son del índice
+ * de contenidos, y repartidas a lo largo del documento.
+ */
+export function elegirAciertos(hits, tope) {
+  if (hits.length <= tope) return hits;
+  const reales = hits.filter(h => !h.deIndice);
+  const delIndice = hits.filter(h => h.deIndice);
+  // Del índice de contenidos alcanza con unos pocos: dicen DÓNDE está la
+  // sección, y esa pista la aprovecha el Pase 1. Guardan a lo sumo un cuarto
+  // del cupo para no volver a tapar a las secciones de verdad.
+  // Este cupo es un TECHO, no una cuota a llenar: si las secciones de verdad
+  // no gastan todo el presupuesto, lo que sobra se deja vacío. Rellenar con
+  // renglones del índice de contenidos es justo lo que había arruinado la
+  // lectura del documento de 94 páginas.
+  const cupoIndice = Math.min(delIndice.length, Math.floor(tope / 4));
+  const elegidos = [
+    ...repartir(reales, tope - cupoIndice),
+    ...repartir(delIndice, cupoIndice),
+  ];
+  // De vuelta al orden del documento, que es como lo lee el Pase 1.
+  return elegidos.sort((a, b) => (a.pagina ?? 0) - (b.pagina ?? 0));
+}
+
+/** `n` elementos repartidos parejo a lo largo de la lista, no los primeros. */
+function repartir(lista, n) {
+  if (n <= 0) return [];
+  if (lista.length <= n) return [...lista];
+  const paso = lista.length / n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(lista[Math.floor(i * paso)]);
+  return out;
 }
 
 /**
@@ -1069,15 +1155,41 @@ export function sinRepetidos(lista) {
   return out;
 }
 
-/** Todo lo de la mig 200 junto, para guardarlo en la postulación. */
+/**
+ * Todo lo de la mig 200 junto, para guardarlo en la postulación.
+ *
+ * 🔴 ACÁ SÍ SE DESCARTA LO NO VERIFICADO, y es la única lista donde se hace.
+ * La regla general de este archivo es que lo que no se verifica se marca y lo
+ * mira una persona, porque perder un REQUISITO cuesta la postulación. Con los
+ * extras el balance es al revés: son datos de conveniencia, y uno inventado se
+ * lee como un hallazgo. El 9-set-2026 la lectura de unas bases de 94 páginas
+ * devolvió UN solo resultado —«Fiel cumplimiento · 10% … (contexto conocido
+ * del documento)»— que el modelo había copiado de la pista del sistema, no del
+ * documento. El verificador lo marcó y la pantalla lo mostró igual, como si
+ * fuera lo único que decían esas bases.
+ *
+ * Lo descartado no se pierde: `extrasNoVerificados()` lo devuelve para que la
+ * pantalla pueda avisar cuántos y por qué.
+ */
 export function aExtrasProceso(resultado = {}) {
+  const vale = (x) => x.verificada !== false;
   return {
-    factores_evaluacion: sinRepetidos(aFactoresEvaluacion(resultado)),
-    garantias: sinRepetidos(aGarantias(resultado)),
-    penalidades: sinRepetidos(aPenalidades(resultado)),
-    documentos_presentacion: sinRepetidos(aDocumentosPresentacion(resultado)),
-    condiciones: sinRepetidos(aCondiciones(resultado)),
+    factores_evaluacion: sinRepetidos(aFactoresEvaluacion(resultado)).filter(vale),
+    garantias: sinRepetidos(aGarantias(resultado)).filter(vale),
+    penalidades: sinRepetidos(aPenalidades(resultado)).filter(vale),
+    documentos_presentacion: sinRepetidos(aDocumentosPresentacion(resultado)).filter(vale),
+    condiciones: sinRepetidos(aCondiciones(resultado)).filter(vale),
   };
+}
+
+/** Los extras que NO pudieron comprobarse contra el documento. No se guardan,
+ *  pero se cuentan: si son muchos, la lectura salió mal y hay que mirarla. */
+export function extrasNoVerificados(resultado = {}) {
+  const todos = [
+    ...aFactoresEvaluacion(resultado), ...aGarantias(resultado), ...aPenalidades(resultado),
+    ...aDocumentosPresentacion(resultado), ...aCondiciones(resultado),
+  ];
+  return todos.filter(x => x.verificada === false);
 }
 
 /**
@@ -1123,6 +1235,73 @@ export function clasificarAlertas(alertas) {
   return { accionables, deTramo };
 }
 
+// ── EL ORDEN EN QUE HAY QUE MIRARLOS (9-set-2026) ─────────────────
+//
+// Gabriel: «sigo viendo todo muy desordenado, tal vez por ejemplo los
+// requisitos los podamos ordenar por categorías y prioridades».
+//
+// La lista salía en el orden en que el modelo los fue encontrando, que es el
+// orden del documento: mezclados, y con el RNP —que si falta impide presentarse
+// siquiera— abajo de un topógrafo. El orden acá es el de la pregunta que se
+// hace quien arma la postulación, de la más cara a la más barata:
+//
+//   1. ¿PODEMOS presentarnos?      RNP, habilitación, capacidad de contratación.
+//      Si falta uno, no hay nada más que revisar.
+//   2. ¿ACREDITAMOS lo que piden?  experiencia del postor, facturación, patrimonio.
+//      Se resuelve con papeles de la empresa, o con un consorcio.
+//   3. ¿TENEMOS a la gente?        primero quien conduce la obra, después los
+//      especialistas, después el apoyo — que es el orden en que cuesta
+//      conseguirlos y el orden en que las bases los puntúan.
+
+/** Los tipos de requisito de empresa que IMPIDEN presentarse si faltan. */
+const TIPOS_HABILITANTES = new Set(['rnp', 'habilitacion', 'capacidad_contratacion']);
+
+/** Quien conduce la obra: es el puesto que las bases miran primero y el más
+ *  difícil de reemplazar. */
+const RX_JEFATURA = /(RESIDENTE|JEFE DE (SUPERVISION|PROYECTO|OBRA)|GERENTE|DIRECTOR|SUPERVISOR DE OBRA|INSPECTOR)/;
+/** El apoyo: hace falta, pero no define si calificamos. */
+const RX_APOYO = /(ASISTENTE|MAESTRO DE OBRA|TOPOGRAFO|ALMACENERO|AUXILIAR|PRACTICANTE|DIBUJANTE|ADMINISTRADOR)/;
+
+/**
+ * Los requisitos agrupados y ordenados para mostrarlos.
+ *
+ * Cada item conserva su índice original (`i`) porque la pantalla marca y
+ * desmarca por índice: reordenar sin llevarse el índice guardaría el requisito
+ * equivocado.
+ *
+ * @returns [{ clave, titulo, nota, clase, items: [{ f, i }] }]
+ */
+export function agruparRequisitos({ filas = [], filasEmpresa = [] } = {}) {
+  const grupo = (clave, titulo, nota, clase, items) => ({ clave, titulo, nota, clase, items });
+  const emp = filasEmpresa.map((f, i) => ({ f, i }));
+  const per = filas.map((f, i) => ({ f, i }));
+
+  const habilitantes = emp.filter(x => TIPOS_HABILITANTES.has(tipoDeFilaEmpresa(x.f)));
+  const acreditables = emp.filter(x => !TIPOS_HABILITANTES.has(tipoDeFilaEmpresa(x.f)));
+  const jefatura = per.filter(x => RX_JEFATURA.test(normalizar(x.f.cargo)));
+  const apoyo = per.filter(x => !RX_JEFATURA.test(normalizar(x.f.cargo)) && RX_APOYO.test(normalizar(x.f.cargo)));
+  const especialistas = per.filter(x => !jefatura.includes(x) && !apoyo.includes(x));
+
+  return [
+    grupo('habilitantes', 'Sin esto no nos podemos presentar',
+      'Papeles de la empresa. Si falta uno, la oferta no entra: revísalo antes que nada.', 'empresa', habilitantes),
+    grupo('acreditables', 'Lo que hay que acreditar con papeles',
+      'Experiencia, facturación y patrimonio del postor. Es lo que se resuelve con un consorcio si no llegamos solos.', 'empresa', acreditables),
+    grupo('jefatura', 'Quien conduce la obra',
+      'Los puestos que las bases miran primero y los más difíciles de reemplazar.', 'personal', jefatura),
+    grupo('especialistas', 'Especialistas', null, 'personal', especialistas),
+    grupo('apoyo', 'Apoyo', 'Hacen falta, pero no son los que definen si calificamos.', 'personal', apoyo),
+  ].filter(g => g.items.length);
+}
+
+/** El `tipo` original de una fila de empresa. La fila guarda el RÓTULO (mig
+ *  199), así que se vuelve del rótulo al tipo. */
+export function tipoDeFilaEmpresa(fila = {}) {
+  if (fila.tipo && TIPO_REQ_EMPRESA_LBL[fila.tipo]) return fila.tipo;
+  const entrada = Object.entries(TIPO_REQ_EMPRESA_LBL).find(([, lbl]) => lbl === fila.cargo);
+  return entrada ? entrada[0] : 'otro';
+}
+
 // ── El costo, medido y no estimado ─────────────────────────────────
 
 /** USD por página de OCR — el snapshot fijo `mistral-ocr-2512` (lib/mistral-ocr.js). */
@@ -1153,7 +1332,8 @@ export default {
   aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
   aFactoresEvaluacion, aGarantias, aPenalidades, aDocumentosPresentacion,
-  aCondiciones, aExtrasProceso, sinRepetidos, clasificarAlertas,
+  aCondiciones, aExtrasProceso, extrasNoVerificados, sinRepetidos, clasificarAlertas,
+  topeDelIndice, elegirAciertos, agruparRequisitos, tipoDeFilaEmpresa,
   pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, CARGOS_QUE_SON_LA_EMPRESA,
   TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL,
   TIPO_REQ_EMPRESA_LBL, MAX_CHARS_RANGO, costoDelAnalisis, USD_POR_PAGINA_OCR,

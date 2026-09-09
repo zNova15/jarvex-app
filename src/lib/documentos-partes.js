@@ -22,7 +22,7 @@
 // Puro: sin DOM, sin red. El armado del .docx vive en `docx-generar.js`.
 // ═══════════════════════════════════════════════════════════════════
 
-import { fragmentosPorPagina, normalizar } from './bases-extraccion.js';
+import { fragmentosPorPagina, normalizar, clave } from './bases-extraccion.js';
 
 /**
  * Los rótulos que abren una parte. Salen de las bases reales peruanas: el
@@ -165,3 +165,81 @@ function ordenDeSobre(clave) {
 }
 
 export default { partirEnAnexos, nombreDeArchivo, agruparPorSobre, MIN_CHARS_PARTE };
+
+// ═══════════════════════════════════════════════════════════════════
+// QUÉ ANEXOS SE PRESENTAN DE VERDAD (9-set-2026)
+//
+// Gabriel: «los anexos has colocado demasiado, creo que deberías colocar los
+// que pide que se presenten en los sobres nada más».
+//
+// Tiene razón, y la lista larga era una decisión mía mal calibrada: `partirEnAnexos`
+// corta por rótulo, así que devuelve TODO lo que empiece con «ANEXO», «FORMATO»
+// o «CAPÍTULO» — y en unas bases eso incluye los términos de referencia, las
+// especificaciones técnicas, el proyecto de convenio y la memoria descriptiva.
+// Nada de eso se llena ni se presenta: se LEE.
+//
+// Lo que se presenta es otra cosa y tiene una forma reconocible: son los
+// FORMULARIOS, los modelos que el postor completa, firma y mete en un sobre.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Un anexo que el postor LLENA y PRESENTA. */
+const RX_SE_PRESENTA = new RegExp([
+  'DECLARACION JURADA', 'DECLARACION', 'CARTA DE', 'CARTA ', 'MODELO DE',
+  'PROMESA (FORMAL )?DE CONSORCIO', 'COMPROMISO', 'SOLICITUD',
+  'EXPRESION DE INTERES', 'OFERTA ECONOMICA', 'PROPUESTA ECONOMICA',
+  'PRECIO DE LA OFERTA', 'EXPERIENCIA DEL POSTOR', 'PERSONAL CLAVE PROPUESTO',
+  'RELACION DE', 'ACREDITACION', 'AUTORIZACION', 'PODER', 'CONSTANCIA',
+  'FORMULARIO', 'DATOS DEL POSTOR', 'PACTO DE INTEGRIDAD',
+].join('|'));
+
+/** Un anexo que se LEE, no se presenta: es parte de lo que la entidad informa. */
+const RX_NO_SE_PRESENTA = new RegExp([
+  'TERMINOS DE REFERENCIA', 'ESPECIFICACIONES TECNICAS', 'MEMORIA DESCRIPTIVA',
+  'REQUISITOS DE CALIFICACION', 'FACTORES DE EVALUACION', 'CRONOGRAMA',
+  'CALENDARIO', 'PROYECTO DE (CONTRATO|CONVENIO)', 'PROFORMA',
+  'PRESUPUESTO', 'PLANOS', 'DEFINICIONES', 'GLOSARIO', 'BASES ',
+  'ESTUDIO', 'FICHA TECNICA', 'EXPEDIENTE TECNICO', 'DISPOSICIONES',
+  'CONDICIONES GENERALES', 'ALCANCE',
+].join('|'));
+
+/**
+ * ¿Este anexo es de los que hay que presentar?
+ *
+ * Manda lo que digan las bases: si la lectura sacó la lista de documentos de
+ * presentación, un anexo nombrado ahí se presenta y punto. Recién si esa lista
+ * no existe se decide por la forma del título.
+ *
+ * @param titulo    el título del anexo
+ * @param nombrados los `documento` de `documentos_presentacion` (opcional)
+ */
+export function anexoSePresenta(titulo, nombrados = null) {
+  const t = normalizar(titulo);
+  if (!t) return false;
+  // Un CAPÍTULO nunca es un formulario: es una parte del cuerpo de las bases.
+  if (/^CAPITULO\b/.test(t)) return false;
+  if (Array.isArray(nombrados) && nombrados.length) {
+    const k = clave(titulo);
+    // El rótulo del anexo («ANEXO N 4-B») alcanza para reconocerlo dentro del
+    // nombre largo con el que la lista lo menciona.
+    const rotulo = k.match(/^(ANEXO|FORMATO|FORMULARIO)N?[0-9]{1,3}[A-Z]?/)?.[0];
+    for (const nombre of nombrados) {
+      const nk = clave(nombre);
+      if (rotulo && nk.includes(rotulo)) return true;
+      if (nk.length > 14 && k.includes(nk.slice(0, 40))) return true;
+    }
+  }
+  if (RX_NO_SE_PRESENTA.test(t)) return false;
+  return RX_SE_PRESENTA.test(t);
+}
+
+/**
+ * Los anexos partidos en dos: los que se presentan y el resto.
+ * La pantalla muestra los primeros y deja los otros detrás de un «ver todos».
+ */
+export function separarAnexos(partes, nombrados = null) {
+  const sePresentan = [], soloLectura = [];
+  for (const parte of (partes || [])) {
+    (anexoSePresenta(parte?.titulo, nombrados) ? sePresentan : soloLectura).push(parte);
+  }
+  return { sePresentan, soloLectura };
+}

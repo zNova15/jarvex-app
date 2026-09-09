@@ -331,17 +331,55 @@ describe('analizar — el mismo texto no se manda dos veces', () => {
 
   it('devuelve las cinco listas de la mig 200 ya mapeadas', async () => {
     const cita = 'La garantia de fiel cumplimiento equivale al diez por ciento del monto';
+    const citaAdel = 'La Entidad otorgara un adelanto directo del diez por ciento';
     const { apiFetch, apiParse } = apiFalso({
       localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
       extraer: { resultado: {
         garantias: [{ tipo: 'fiel_cumplimiento', porcentaje: 10, fuente_pagina: 1, fuente_cita: cita }],
-        condiciones: [{ tipo: 'adelanto', titulo: 'Adelanto del 10%' }],
+        condiciones: [{ tipo: 'adelanto', titulo: 'Adelanto del 10%', fuente_pagina: 1, fuente_cita: citaAdel }],
         penalidades: [], factores_evaluacion: [], documentos_presentacion: [],
       } },
     });
-    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: `VALOR REFERENCIAL\n${cita}` }], { apiFetch, apiParse });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: `VALOR REFERENCIAL\n${cita}\n${citaAdel}` }], { apiFetch, apiParse });
     expect(r.extras.garantias[0]).toMatchObject({ tipo: 'fiel_cumplimiento', porcentaje: 10, verificada: true });
     expect(r.extras.condiciones[0].tipo).toBe('adelanto');
+  });
+
+  // 🔴 EL HALLAZGO QUE NO ESTABA EN EL DOCUMENTO (9-set-2026).
+  // Una lectura de 94 páginas devolvió UN solo resultado: «Fiel cumplimiento ·
+  // 10% … (contexto conocido del documento)». El modelo había copiado la pista
+  // que el propio sistema le mandó sobre el régimen, no las bases. El
+  // verificador lo marcó y la pantalla lo mostró igual, como si fuera lo único
+  // que decían esas bases.
+  it('un extra que no se puede comprobar NO se muestra como hallazgo', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: {
+        garantias: [{ tipo: 'fiel_cumplimiento', porcentaje: 10, fuente_pagina: 1,
+          fuente_cita: 'Garantia de fiel cumplimiento 10% para Entidad Privada Supervisora' }],
+        condiciones: [{ tipo: 'adelanto', titulo: 'Adelanto del 10%' }],   // sin cita siquiera
+      } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: 'VALOR REFERENCIAL del proceso' }], { apiFetch, apiParse });
+    expect(r.extras.garantias).toHaveLength(0);
+    expect(r.extras.condiciones).toHaveLength(0);
+    // No desaparece en silencio: se cuenta aparte para poder avisar.
+    expect(r.extrasDudosos.length).toBe(2);
+  });
+
+  // Los requisitos SIGUEN la regla contraria: perder uno cuesta la
+  // postulación, así que se marcan y los mira una persona.
+  it('un REQUISITO sin comprobar sí se conserva, marcado', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      localizar: { rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: {
+        requisitos: [{ cargo: 'Residente de Obra', profesion: 'Ingeniero Civil',
+          meses_minimos: 36, fuente_pagina: 1, fuente_cita: 'una cita que no esta en el documento' }],
+      } },
+    });
+    const r = await analizar([{ tipo: 'texto', pagina: 1, texto: 'PERSONAL CLAVE del proceso' }], { apiFetch, apiParse });
+    expect(r.filas).toHaveLength(1);
+    expect(r.filas[0].verificada).toBe(false);
   });
 });
 

@@ -39,8 +39,8 @@ import {
   urgencia, prefillObraDesde, puedePasarATrabajos, destinoAlGanar,
 } from "../lib/licitaciones.js";
 import { buscarPlantel, formatearMeses } from "../lib/experiencia-profesional.js";
-import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES } from "../lib/bases-extraccion.js";
-import { agruparPorSobre } from "../lib/documentos-partes.js";
+import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES, agruparRequisitos } from "../lib/bases-extraccion.js";
+import { agruparPorSobre, separarAnexos } from "../lib/documentos-partes.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
@@ -713,6 +713,78 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // DETALLE — requisitos del proceso y el veredicto del plantel
 // ═══════════════════════════════════════════════════════════════════
 /**
+ * Una fila del plantel dentro del revisor. Se sacó del cuerpo del modal para
+ * poder AGRUPAR los requisitos sin duplicar el marcado: el índice `i` viaja
+ * aparte, porque marcar y desmarcar sigue siendo por índice original.
+ */
+function FilaPlantel({ f, marcado, onToggle, unidad }) {
+  return (
+    <label className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+      cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
+      <input type="checkbox" checked={marcado} onChange={onToggle} style={{ marginTop: 3 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 12.5 }}>
+          {f.cargo || '(sin cargo)'}
+          {f.profesion && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.profesion}</span>}
+          {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
+          {f.meses_generales_minimos > 0 && `Experiencia general ${f.meses_generales_minimos} meses · `}
+          {f.meses_minimos > 0 && `específica ${f.meses_minimos} meses · `}
+          {f.participaciones_minimas > 0 && `${f.participaciones_minimas} participaciones`}
+          {f.meses_por_participacion > 0 && ` de ${f.meses_por_participacion} meses c/u`}
+          {f.ventana_anios && ` · últimos ${f.ventana_anios} años`}
+        </div>
+        {f.cargos_equivalentes?.length > 0 && (
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>
+            Vale también como: {f.cargos_equivalentes.join(' · ')}
+          </div>
+        )}
+        {f.fuente_cita && (
+          <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
+            background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
+            «{f.fuente_cita}»
+            {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
+          </div>
+        )}
+        {!f.verificada && f.verificacion_motivo && (
+          <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 4 }}>
+            {f.verificacion_motivo}. Compruébalo en las bases antes de guardarlo.
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+/** Una fila de requisito de la empresa dentro del revisor. */
+function FilaEmpresa({ f, marcado, onToggle, unidad }) {
+  return (
+    <label className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
+      cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
+      <input type="checkbox" checked={marcado} onChange={onToggle} style={{ marginTop: 3 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 12.5 }}>
+          {f.cargo}
+          {f.monto_minimo && <span style={{ fontWeight: 400, color: 'var(--blue)' }}> · {money(f.monto_minimo)}</span>}
+          {f.multiplo_valor_referencial && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.multiplo_valor_referencial}× el valor referencial</span>}
+          {f.ventana_anios && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · últimos {f.ventana_anios} años</span>}
+          {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+        </div>
+        {f.descripcion && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{f.descripcion}</div>}
+        {f.fuente_cita && (
+          <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
+            background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
+            «{f.fuente_cita}»
+            {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
+          </div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+/**
  * EL EXPEDIENTE: qué va en cada sobre, y los anexos listos para llenar.
  *
  * Gabriel, 8-set-2026, dos pedidos en uno:
@@ -739,8 +811,19 @@ function Expediente({ lic, canWrite, toast }) {
   // La última lectura sabe qué anexos tenía el documento y con qué huella
   // recuperarlo de la caché.
   const ultima = (Array.isArray(lic.analisis) ? lic.analisis : []).slice(-1)[0] || null;
-  const anexos = Array.isArray(ultima?.anexos) ? ultima.anexos : [];
+  const todosLosAnexos = Array.isArray(ultima?.anexos) ? ultima.anexos : [];
   const unidad = ultima?.unidad || 'pagina';
+  // 🔴 SOLO LOS QUE SE PRESENTAN. Gabriel, 9-set: «los anexos has colocado
+  // demasiado, deberías colocar los que pide que se presenten en los sobres
+  // nada más». `partirEnAnexos` corta por rótulo y devolvía también los
+  // términos de referencia, el proyecto de convenio y la memoria descriptiva
+  // — que no se llenan, se leen. El resto no se borra: queda detrás de un
+  // «ver los demás», porque a veces hay que sacar un TDR en Word igual.
+  const { sePresentan: anexos, soloLectura: anexosLectura } = uM(
+    () => separarAnexos(todosLosAnexos, docs.map(d => d.documento)),
+    [todosLosAnexos, docs],
+  );
+  const [verTodos, setVerTodos] = uS(false);
 
   /** Saca el texto del documento de la caché y arma los Word. */
   const separar = async (soloUno = null) => {
@@ -755,14 +838,18 @@ function Expediente({ lic, canWrite, toast }) {
       }
       const { partirEnAnexos, nombreDeArchivo: nombrar } = await import('../lib/documentos-partes.js');
       const { textoADocx, anexosAZip, descargar } = await import('../lib/docx-generar.js');
-      const partes = partirEnAnexos(guardado.markdown)
+      const todas = partirEnAnexos(guardado.markdown)
         .map(p => ({ ...p, pie: `Separado por JARVEX de «${ultima.archivo || 'las bases'}» · ${lic.nomenclatura || lic.objeto || ''}` }));
-      if (!partes.length) { toast('No se reconocieron anexos separables en ese documento', 'amber'); return; }
+      if (!todas.length) { toast('No se reconocieron anexos separables en ese documento', 'amber'); return; }
       if (soloUno != null) {
-        const p = partes.find(x => x.n === soloUno) || partes[0];
+        const p = todas.find(x => x.n === soloUno) || todas[0];
         descargar(await textoADocx(p), nombrar(p));
         return;
       }
+      // El ZIP lleva SOLO los que hay que presentar: es el paquete de trabajo,
+      // no una copia del documento partida en pedazos.
+      const partes = separarAnexos(todas, docs.map(d => d.documento)).sePresentan;
+      if (!partes.length) { toast('Ninguno de los anexos reconocidos es de los que se presentan', 'amber'); return; }
       descargar(await anexosAZip(partes, { nombreDe: nombrar }), `anexos-${(lic.nomenclatura || 'bases').replace(/[^A-Za-z0-9-]/g, '-').slice(0, 40)}.zip`);
       toast(`${partes.length} anexos separados en Word`, 'green');
     } catch (e) {
@@ -770,7 +857,7 @@ function Expediente({ lic, canWrite, toast }) {
     } finally { setBajando(false); }
   };
 
-  if (!docs.length && !anexos.length) {
+  if (!docs.length && !todosLosAnexos.length) {
     return <BloqueVacio que="lista de documentos a presentar ni anexos separables" canWrite={canWrite} />;
   }
 
@@ -818,9 +905,10 @@ function Expediente({ lic, canWrite, toast }) {
         <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
           justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div>
-            <b style={{ fontSize: 12.5 }}>Los anexos, separados para llenar ({anexos.length})</b>
+            <b style={{ fontSize: 12.5 }}>Los anexos que hay que presentar ({anexos.length})</b>
             <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-              Cada anexo como su propio Word editable. Si las bases vinieron en PDF, salen en Word igual.
+              Solo los formularios que el postor llena y mete en un sobre, cada uno como su propio Word editable.
+              {anexosLectura.length > 0 && ` Los otros ${anexosLectura.length} son de lectura (términos de referencia, convenio, memorias) y no se llenan.`}
             </div>
           </div>
           {anexos.length > 0 && (
@@ -829,12 +917,17 @@ function Expediente({ lic, canWrite, toast }) {
             </button>
           )}
         </div>
-        {anexos.length === 0 ? (
+        {anexos.length === 0 && anexosLectura.length === 0 ? (
           <div className="empty-state" style={{ padding: '20px 14px', textAlign: 'center', fontSize: 11.5 }}>
             La última lectura no reconoció anexos separables. Pasa con un PDF escaneado sin rótulos claros.
           </div>
         ) : (
           <div style={{ display: 'grid', gap: 3, padding: '10px 14px' }}>
+            {anexos.length === 0 && (
+              <div style={{ fontSize: 11, color: 'var(--tm)', paddingBottom: 4 }}>
+                Ninguno de los anexos reconocidos es de los que se llenan. Los de lectura están abajo.
+              </div>
+            )}
             {anexos.map(a => (
               <div key={a.n} style={{ display: 'flex', gap: 8, alignItems: 'center',
                 padding: '5px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontSize: 11 }}>
@@ -845,6 +938,26 @@ function Expediente({ lic, canWrite, toast }) {
                 <button className="btn btn-ghost btn-xs" disabled={bajando} onClick={() => separar(a.n)}>⬇ Word</button>
               </div>
             ))}
+
+            {/* Los de lectura no desaparecen: a veces hay que sacar el TDR. */}
+            {anexosLectura.length > 0 && (
+              <>
+                <button className="btn btn-ghost btn-xs" style={{ justifySelf: 'start', marginTop: 6 }}
+                  onClick={() => setVerTodos(v => !v)}>
+                  {verTodos ? '▾ Ocultar' : '▸ Ver'} las {anexosLectura.length} partes de lectura
+                </button>
+                {verTodos && anexosLectura.map(a => (
+                  <div key={a.n} style={{ display: 'flex', gap: 8, alignItems: 'center',
+                    padding: '5px 8px', borderRadius: 5, fontSize: 11, opacity: 0.75 }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      {a.titulo}
+                      <span style={{ color: 'var(--tm)', fontSize: 10 }}> · {(a.chars || 0).toLocaleString('es-PE')} caracteres</span>
+                    </span>
+                    <button className="btn btn-ghost btn-xs" disabled={bajando} onClick={() => separar(a.n)}>⬇ Word</button>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1273,6 +1386,11 @@ const PASO_LBL = {
   indice: 'Buscando las secciones',
   localizar: 'Ubicando dónde está cada cosa',
   extraer: 'Extrayendo los requisitos',
+  anexos: 'Leyendo anexo por anexo',
+  // El barrido tarda —recorre el documento entero— y decirlo evita que
+  // parezca colgado: se dispara justo cuando la lectura dirigida no encontró
+  // nada, que es cuando más falta hace.
+  barrido: 'No apareció nada en las secciones ubicadas: recorriendo el documento entero',
   verificar: 'Verificando cada cita contra el documento',
 };
 
@@ -1719,6 +1837,9 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   const cronograma = salida?.cronograma || [];
   const extras = salida?.extras || { factores_evaluacion: [], garantias: [], penalidades: [], documentos_presentacion: [], condiciones: [] };
   const totalExtras = Object.values(extras).reduce((t, l) => t + l.length, 0);
+  // Agrupados y ordenados por lo que cuesta cada uno: primero lo que impide
+  // presentarse, después lo que se acredita, al final la gente.
+  const grupos = agruparRequisitos({ filas, filasEmpresa: filasEmp });
   // Solo se propone lo que la postulación TODAVÍA NO TIENE: pisar con una
   // lectura automática un dato que alguien cargó a mano es peor que no leer.
   const cabecera = uM(() => {
@@ -1965,18 +2086,32 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
             <div style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11.5,
               background: 'var(--bg-c2)', border: '1px solid var(--border)' }}>
               <b>Se rige por: {salida.regimenLabel}</b>
-              {salida.clasificacionRegimen?.confianza === 'media' && (
-                <span style={{ color: 'var(--tm)' }}> · señal débil, confírmalo en el documento</span>
+              {salida.clasificacionRegimen?.confianza !== 'alta' && (
+                <span style={{ color: 'var(--amber)' }}>
+                  {' '}· sin confirmar, compruébalo en el documento
+                </span>
               )}
               <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
-                {REGIMENES[salida.regimen]?.sobres > 0
-                  ? `${REGIMENES[salida.regimen].sobres} sobres`
-                  : 'sin sobres: la oferta va como archivo digitalizado'}
-                {' · '}fiel cumplimiento {REGIMENES[salida.regimen]?.fielCumplimiento}%
-                {REGIMENES[salida.regimen]?.rangoEconomico
-                  ? ` · la oferta se admite entre ${REGIMENES[salida.regimen].rangoEconomico[0]}% y ${REGIMENES[salida.regimen].rangoEconomico[1]}%`
-                  : ''}
-                {' — '}se le dijo al modelo antes de leer, para que no rellene con lo que suele ser.
+                {salida.clasificacionRegimen?.confianza === 'alta' ? (
+                  <>
+                    {REGIMENES[salida.regimen]?.sobres > 0
+                      ? `${REGIMENES[salida.regimen].sobres} sobres`
+                      : 'sin sobres: la oferta va como archivo digitalizado'}
+                    {' · '}fiel cumplimiento {REGIMENES[salida.regimen]?.fielCumplimiento}%
+                    {REGIMENES[salida.regimen]?.rangoEconomico
+                      ? ` · la oferta se admite entre ${REGIMENES[salida.regimen].rangoEconomico[0]}% y ${REGIMENES[salida.regimen].rangoEconomico[1]}%`
+                      : ''}
+                    {' — '}se le dijo al modelo antes de leer, para que no rellene con lo que suele ser.
+                  </>
+                ) : (
+                  // 🔴 Con la señal floja NO se muestran los sobres ni el
+                  // porcentaje, y tampoco se le mandan al modelo. Decir «10%»
+                  // sobre una corazonada es cómo se coló una garantía que las
+                  // bases no pedían (9-set-2026).
+                  <>El documento no da señales claras de cuál de los dos juegos de bases es.
+                    Ni el orden de los sobres ni el porcentaje de la garantía se dan por sabidos:
+                    la lectura solo tomó lo que está escrito.</>
+                )}
               </div>
             </div>
           )}
@@ -2013,6 +2148,13 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                   texto»: cada pasada lee un tramo, así que se quejan de lo que sí leyó otra.
                 </div>
               )}
+            </div>
+          )}
+
+          {salida.extrasDudosos?.length > 0 && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 10 }}>
+              Se dejaron fuera {salida.extrasDudosos.length} dato(s) (garantías, penalidades o condiciones)
+              porque su cita no aparece en el documento. Un dato que no se puede comprobar no es un hallazgo.
             </div>
           )}
 
@@ -2182,73 +2324,32 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
             </div>
           )}
 
-          {filas.length > 0 && <div style={{ fontSize: 12, fontWeight: 700, margin: '6px 0 4px' }}>Plantel clave ({filas.length})</div>}
-          <div style={{ display: 'grid', gap: 8 }}>
-            {filas.map((f, i) => (
-              <label key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
-                cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
-                <input type="checkbox" checked={marcados.has(i)} onChange={() => alternar(setMarcados, i)} style={{ marginTop: 3 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12.5 }}>
-                    {f.cargo || '(sin cargo)'}
-                    {f.profesion && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.profesion}</span>}
-                    {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
-                    {f.meses_generales_minimos > 0 && `Experiencia general ${f.meses_generales_minimos} meses · `}
-                    {f.meses_minimos > 0 && `específica ${f.meses_minimos} meses · `}
-                    {f.participaciones_minimas > 0 && `${f.participaciones_minimas} participaciones`}
-                    {f.meses_por_participacion > 0 && ` de ${f.meses_por_participacion} meses c/u`}
-                    {f.ventana_anios && ` · últimos ${f.ventana_anios} años`}
-                  </div>
-                  {f.cargos_equivalentes?.length > 0 && (
-                    <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>
-                      Vale también como: {f.cargos_equivalentes.join(' · ')}
-                    </div>
-                  )}
-                  {f.fuente_cita && (
-                    <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
-                      background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
-                      «{f.fuente_cita}»
-                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
-                    </div>
-                  )}
-                  {!f.verificada && f.verificacion_motivo && (
-                    <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 4 }}>
-                      {f.verificacion_motivo}. Compruébalo en las bases antes de guardarlo.
-                    </div>
-                  )}
-                </div>
-              </label>
-            ))}
-          </div>
-
-          {filasEmp.length > 0 && <div style={{ fontSize: 12, fontWeight: 700, margin: '12px 0 4px' }}>Requisitos de la empresa ({filasEmp.length})</div>}
-          <div style={{ display: 'grid', gap: 8 }}>
-            {filasEmp.map((f, i) => (
-              <label key={i} className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-start',
-                cursor: 'pointer', borderLeft: `3px solid ${f.verificada ? 'var(--green)' : 'var(--amber)'}` }}>
-                <input type="checkbox" checked={marcadosEmp.has(i)} onChange={() => alternar(setMarcadosEmp, i)} style={{ marginTop: 3 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12.5 }}>
-                    {f.cargo}
-                    {f.monto_minimo && <span style={{ fontWeight: 400, color: 'var(--blue)' }}> · {money(f.monto_minimo)}</span>}
-                    {f.multiplo_valor_referencial && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.multiplo_valor_referencial}× el valor referencial</span>}
-                    {f.ventana_anios && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · últimos {f.ventana_anios} años</span>}
-                    {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
-                  </div>
-                  {f.descripcion && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{f.descripcion}</div>}
-                  {f.fuente_cita && (
-                    <div style={{ fontSize: 10.5, marginTop: 5, padding: '5px 8px', borderRadius: 5,
-                      background: 'var(--bg-c2)', fontStyle: 'italic', lineHeight: 1.45 }}>
-                      «{f.fuente_cita}»
-                      {f.fuente_pagina != null && <b style={{ fontStyle: 'normal' }}> — {unidadLbl(unidad, f.fuente_pagina)}</b>}
-                    </div>
-                  )}
-                </div>
-              </label>
-            ))}
-          </div>
+          {/* ── Los requisitos, agrupados y en el orden en que hay que
+                 mirarlos: primero lo que impide presentarse, después lo que
+                 se acredita con papeles, y al final la gente. Gabriel:
+                 «ordenarlos por categorías y prioridades». ── */}
+          {grupos.map((g, gi) => (
+            <div key={g.clave} style={{ marginTop: gi === 0 ? 6 : 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--tm)',
+                  background: 'var(--bg-c2)', borderRadius: 20, padding: '2px 8px' }}>{gi + 1}</span>
+                <b style={{ fontSize: 12.5 }}>{g.titulo}</b>
+                <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>({g.items.length})</span>
+              </div>
+              {g.nota && (
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '0 0 6px 30px' }}>{g.nota}</div>
+              )}
+              <div style={{ display: 'grid', gap: 8 }}>
+                {g.items.map(({ f, i }) => (
+                  g.clase === 'personal'
+                    ? <FilaPlantel key={`p${i}`} f={f} marcado={marcados.has(i)}
+                        onToggle={() => alternar(setMarcados, i)} unidad={unidad} />
+                    : <FilaEmpresa key={`e${i}`} f={f} marcado={marcadosEmp.has(i)}
+                        onToggle={() => alternar(setMarcadosEmp, i)} unidad={unidad} />
+                ))}
+              </div>
+            </div>
+          ))}
 
           {totalExtras > 0 && (
             <div className="card card-p" style={{ marginTop: 12 }}>

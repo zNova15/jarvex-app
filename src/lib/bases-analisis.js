@@ -28,7 +28,7 @@ import {
   verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, sugerenciasDe, aExtrasProceso, normalizar,
   pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, clasificarAlertas,
-  clasificarRegimen, camposSinLlenar, clave, REGIMENES,
+  clasificarRegimen, camposSinLlenar, clave, REGIMENES, extrasNoVerificados,
 } from './bases-extraccion.js';
 
 /** Cuántas veces se parte un rango que no entra en una respuesta.
@@ -305,6 +305,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // ser» y ponía un 10% que esas bases no piden.
   const clasificacion = clasificarRegimen(markdown);
   const regimen = clasificacion.regimen;
+  // Con confianza que no sea ALTA la pista no viaja: ver `pistaDeRegimen`.
+  const regimenConfianza = clasificacion.confianza;
   if (clasificacion.conflicto) alertas.push(clasificacion.conflicto);
   avisar({ paso: 'indice', detalle: resumen, regimen });
 
@@ -406,7 +408,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     const etiqueta = etiquetaDada || (desde === hasta ? `${desde}` : `${desde}–${hasta}`);
     avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta}` });
     try {
-      const data = await pedir({ accion: 'extraer', texto, seccion: familia, regimen });
+      const data = await pedir({ accion: 'extraer', texto, seccion: familia, regimen, regimen_confianza: regimenConfianza });
       const r = data.resultado || {};
       if (data.model) modelos.add(data.model);
       usdPasadas += Number(data.costo) || 0;
@@ -516,12 +518,39 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // Solo se dispara cuando falló lo dirigido, y solo para el plantel: barrer
   // 56 tramos por gusto son 10 llamadas y dos minutos de espera.
   const tramoMax = Math.max(0, ...fragmentosPorPagina(markdown).map(f => f.pagina || 0));
-  if (!requisitos.length && !leidosPorAnexo.has('personal') && tramoMax > TRAMOS_POR_TANDA && resumen.personal?.aciertos) {
+
+  /** Recorre el documento entero con un prompt, de a `TRAMOS_POR_TANDA`. */
+  async function barrer(familia, motivo) {
     avisar({ paso: 'barrido', total: tramoMax });
-    alertas.push('No apareció ningún puesto en las secciones que el índice ubicó: se recorrió el documento entero para buscarlos.');
+    alertas.push(motivo);
     for (let d = 1; d <= tramoMax; d += TRAMOS_POR_TANDA) {
-      avisar({ paso: 'barrido', hecho: d, total: tramoMax });
-      await extraerTrozo('personal', d, Math.min(d + TRAMOS_POR_TANDA - 1, tramoMax), 0);
+      avisar({ paso: 'barrido', hecho: d, total: tramoMax, detalle: familia });
+      await extraerTrozo(familia, d, Math.min(d + TRAMOS_POR_TANDA - 1, tramoMax), 0);
+    }
+  }
+
+  // 🔴 EL BARRIDO CASI NUNCA CORRÍA, que es como un documento de 94 páginas
+  // terminó leído en tres (9-set-2026). Las dos condiciones que sobraban:
+  //
+  //   · `!leidosPorAnexo.has('personal')` — bastaba que UN anexo se hubiera
+  //     leído con el prompt del plantel, aunque no hubiera devuelto nada, para
+  //     bloquear el barrido entero. «Se intentó» no es «se encontró».
+  //   · `resumen.personal?.aciertos` — pedía que el índice hubiera ubicado la
+  //     sección. Justo cuando el OCR sale degradado y el índice no encuentra
+  //     nada es cuando el barrido hace falta, y era cuando no se disparaba.
+  //
+  // Ahora la condición es la única que importa: NO SALIÓ NADA. Con un modelo
+  // gratuito cada tanda cuesta USD 0; lo caro es presentarse sin saber qué
+  // plantel piden.
+  if (tramoMax > TRAMOS_POR_TANDA) {
+    if (!requisitos.length) {
+      await barrer('personal', 'No apareció ningún puesto del plantel en las secciones que el índice ubicó: se recorrió el documento entero para buscarlos.');
+    }
+    // El mismo criterio para lo que descalifica a la EMPRESA y para el
+    // calendario: si de las zonas dirigidas no salió NADA de eso, el documento
+    // se recorre entero antes de decir que no está.
+    if (!requisitosEmpresa.length && !extras.cronograma.length) {
+      await barrer('empresa', 'Tampoco apareció ningún requisito de la empresa ni fecha del calendario: se recorrió el documento entero para buscarlos.');
     }
   }
 
@@ -549,7 +578,10 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     cabecera: aCabeceraLicitacion(verificado),
     cronograma: aCronograma(verificado),
     // Factores, garantías, penalidades, documentos y condiciones (mig 200).
+    // Los que no se pudieron comprobar contra el documento NO entran acá: se
+    // cuentan aparte, para que un dato inventado no se lea como un hallazgo.
     extras: aExtrasProceso(verificado),
+    extrasDudosos: extrasNoVerificados(verificado),
     sugerencias: sugerenciasDe(verificado),
     // Lo accionable arriba; el ruido de «esta pasada no tenía el anexo X» va
     // aparte y no infla el contador (55 alertas eran ilegibles).

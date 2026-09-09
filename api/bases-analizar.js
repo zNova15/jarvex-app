@@ -374,13 +374,30 @@ const REGIMEN_DICHO = {
   ley30225: 'ESTE DOCUMENTO SE RIGE POR LA LEY 30225 (régimen anterior): VALOR REFERENCIAL, OBRAS SIMILARES sobre los últimos 10 años, PLANTEL PROFESIONAL CLAVE, carta fianza o póliza de caución, cuaderno de obra.',
 };
 
-/** El bloque que se le antepone al texto, si el código pudo decidir el régimen. */
-function pistaDeRegimen(regimen) {
+/**
+ * El bloque que se le antepone al texto, si el código pudo decidir el régimen
+ * CON CONFIANZA ALTA.
+ *
+ * 🔴 LA PRIMERA VERSIÓN DE ESTA PISTA FABRICÓ UN DATO (9-set-2026). Se le
+ * mandó «fiel cumplimiento 10% para Entidad Privada Supervisora» a unas bases
+ * que el clasificador había leído mal, y el modelo devolvió eso mismo COMO SI
+ * FUERA UNA GARANTÍA EXTRAÍDA, con el detalle «(contexto conocido del
+ * documento)». Salió en pantalla como el único hallazgo de la lectura. El
+ * verificador lo marcó —la cita no aparecía— pero igual se mostró.
+ *
+ * Dos cambios: la pista solo va cuando el código está SEGURO (nunca con
+ * confianza media o baja), y dice explícitamente que no es un dato del
+ * documento y que está PROHIBIDO devolverla en ninguna lista.
+ */
+function pistaDeRegimen(regimen, confianza) {
   const dicho = REGIMEN_DICHO[regimen];
-  if (!dicho) return '';
-  return `LO QUE YA SE SABE DE ESTE DOCUMENTO (lo determinó un programa contando los rótulos del documento entero, y es más confiable que la impresión que te lleves de este tramo suelto):
+  if (!dicho || confianza !== 'alta') return '';
+  return `CONTEXTO — NO ES UN DATO DEL DOCUMENTO Y NO SE EXTRAE:
 ${dicho}
-Úsalo para reconocer y para NO rellenar con lo que suele ser. Si el texto que te doy dice OTRA COSA, gana el texto: copia lo que dice y avísalo en "alertas".
+
+Esto lo dedujo un programa mirando los rótulos del documento entero, y te sirve solo para RECONOCER lo que leas y para no rellenar con lo que suele ser.
+🔴 PROHIBIDO devolver cualquier parte de este contexto dentro de "garantias", "penalidades", "requisitos", "requisitos_empresa", "condiciones", "factores_evaluacion" o "documentos_presentacion". Esas listas SOLO llevan lo que está escrito en el TEXTO DE LAS BASES de abajo, con su cita literal. Si el porcentaje de una garantía no está en el texto, la lista de garantías va VACÍA: no la completes con el de este contexto ni le inventes una cita.
+Si el texto de abajo contradice este contexto, gana el texto: copia lo que dice y avísalo en "alertas".
 
 `;
 }
@@ -604,7 +621,7 @@ export default async function handler(req, res) {
       const esProceso = seccion !== 'personal';
       const r = await pasadaDeTexto({
         system: esProceso ? SYSTEM_PROCESO : SYSTEM_EXTRAER,
-        user: `${pistaDeRegimen(body.regimen)}TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
+        user: `${pistaDeRegimen(body.regimen, body.regimen_confianza)}TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
         // Los gratuitos razonan en voz alta antes del JSON y eso también
         // cuenta contra el techo (ver presupuestoSalida en lib/openrouter.js).
         // 🔴 EL CORTE FUE EL DEFECTO DOMINANTE del 8-set: «no se pudo extraer
