@@ -478,3 +478,77 @@ describe('el dedup mira la CITA, no el tipo', () => {
     expect(r.filasEmpresa).toHaveLength(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LA BARRA, CABLEADA DE VERDAD (tanda 15, entrega 11).
+//
+// El contador tiene sus propios tests en bases-progreso.test.js. Lo que se
+// prueba acá es lo único que puede romperse en silencio: que las fases se
+// PLANIFIQUEN con el número correcto. Un plan que nunca se completa deja la
+// barra clavada faltando el 10% y nadie lo nota hasta que un usuario espera
+// tres minutos mirando un 88%.
+// ═══════════════════════════════════════════════════════════════════
+describe('la barra de progreso', () => {
+  /** Todos los avisos de una corrida. */
+  const conBarra = async (bloques, guion) => {
+    const { apiFetch, apiParse } = apiFalso(guion);
+    const avisos = [];
+    const r = await analizar(bloques, { apiFetch, apiParse, onProgreso: p => avisos.push(p) });
+    return { r, avisos, pcts: avisos.map(a => a.pct).filter(p => p != null) };
+  };
+
+  it('empieza en 0, termina en 100 y NUNCA va para atrás', async () => {
+    const { avisos, pcts } = await conBarra(bloquesEscaneados(8), {
+      ocr: ocrQueDevuelve(`REQUISITOS DE CALIFICACION\nPersonal clave\nResidente de Obra\n${CITA}.`),
+      localizar: { rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 2 }] } } },
+      extraer: { resultado: { requisitos: [{ cargo: 'Residente de Obra', meses_minimos: 36, fuente_pagina: 1, fuente_cita: CITA }] } },
+    });
+    expect(pcts[0]).toBe(0);
+    expect(pcts[pcts.length - 1]).toBe(100);
+    for (let i = 1; i < pcts.length; i++) expect(pcts[i]).toBeGreaterThanOrEqual(pcts[i - 1]);
+    // Y solo el último llega a 100: una barra llena con la ventana abierta
+    // hace cerrar la ventana antes de tiempo.
+    expect(pcts.slice(0, -1).every(p => p < 100)).toBe(true);
+    expect(avisos[avisos.length - 1].paso).toBe('listo');
+  });
+
+  it('🔴 EL PLAN DE EXTRACCIÓN SE COMPLETA aunque el dedup se coma pasadas', async () => {
+    // Dos familias que caen en el mismo texto: la segunda pasada no se manda.
+    // Si esas no se contaran, el plan nunca cerraría y la barra se clavaría.
+    const cita = 'El postor acreditara un monto facturado acumulado equivalente a dos veces el valor referencial';
+    const { pcts } = await conBarra([{ tipo: 'texto', pagina: 1, texto: `VALOR REFERENCIAL\nREQUISITOS DE CALIFICACION\n${cita}` }], {
+      localizar: { rangos: {
+        personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        empresa: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+        proceso: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] },
+      } },
+      extraer: { resultado: { requisitos_empresa: [{ tipo: 'experiencia_postor', descripcion: 'A', fuente_pagina: 1, fuente_cita: cita }] } },
+    });
+    expect(pcts[pcts.length - 1]).toBe(100);
+  });
+
+  it('sin OCR la barra arranca en 0, no en el peso de una fase que no corre', async () => {
+    const { pcts } = await conBarra([{ tipo: 'texto', pagina: 1, texto: `REQUISITOS DE CALIFICACION\nPersonal clave\n${CITA}` }], {
+      localizar: { rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } },
+      extraer: { resultado: { requisitos: [] } },
+    });
+    expect(pcts[0]).toBe(0);
+    expect(pcts[pcts.length - 1]).toBe(100);
+  });
+
+  it('el documento que no parece unas bases igual cierra la barra en 100', async () => {
+    const { pcts } = await conBarra(bloquesEscaneados(2), { ocr: ocrQueDevuelve('lista de precios de abarrotes') });
+    expect(pcts[pcts.length - 1]).toBe(100);
+  });
+
+  it('el aviso del OCR sigue trayendo hecho/total, que es lo que la pantalla muestra', async () => {
+    const { avisos } = await conBarra(bloquesEscaneados(8), {
+      ocr: ocrQueDevuelve('REQUISITOS DE CALIFICACION del PERSONAL CLAVE'),
+      localizar: { rangos: { personal: { encontrada: false, rangos: [] } } },
+      extraer: { resultado: { requisitos: [] } },
+    });
+    const deOcr = avisos.filter(a => a.paso === 'ocr');
+    expect(deOcr.length).toBeGreaterThan(0);
+    expect(deOcr[deOcr.length - 1]).toMatchObject({ hecho: 8, total: 8 });
+  });
+});

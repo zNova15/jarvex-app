@@ -23,6 +23,7 @@ import {
   bloquesDePdf, bloquesDeDocx, bloquesAMarkdown, resumenTriage,
 } from './bases-triage.js';
 import { partirEnAnexos } from './documentos-partes.js';
+import { crearProgreso } from './bases-progreso.js';
 import {
   indiceDeSecciones, resumenIndice, textoDeRango, fragmentosPorPagina,
   verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
@@ -225,6 +226,13 @@ export function crearPedidor(apiFetch, apiParse) {
   };
 }
 
+/** Las páginas que de verdad van a ir al OCR. Se exporta porque la barra
+ *  necesita saber CUÁNTAS son antes de empezar a leerlas, y contarlas dos
+ *  veces con dos filtros que se pueden desincronizar es peor. */
+export function paginasAOcr(bloques) {
+  return (bloques || []).filter(b => b.tipo === 'imagen' && b.necesitaOcr && (b.imagen || b._page));
+}
+
 /**
  * OCR de las páginas que lo necesitan, de a seis. Compartido con el lector de
  * CV: es exactamente el mismo trabajo sobre otro documento.
@@ -232,7 +240,7 @@ export function crearPedidor(apiFetch, apiParse) {
  * @returns { ocrPorMedia, leidas }  — y agrega a `alertas` y `modelos`
  */
 export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas = [], modelos = new Set() }) {
-  const aOcr = bloques.filter(b => b.tipo === 'imagen' && b.necesitaOcr && (b.imagen || b._page));
+  const aOcr = paginasAOcr(bloques);
   const sinImagen = bloques.filter(b => b.tipo === 'imagen' && b.necesitaOcr && !b.imagen && !b._page);
   if (sinImagen.length) {
     alertas.push(`${sinImagen.length} página(s) escaneada(s) no se pudieron extraer del archivo y quedaron sin leer.`);
@@ -270,6 +278,11 @@ export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas 
  *                  lib/cache-lectura.js.
  */
 export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null } = {}) {
+  // La barra. Reparte el reloj entre las fases y le agrega `pct` a cada aviso;
+  // todo lo que la pantalla ya leía (paso, hecho, total, detalle) sigue igual.
+  // Ver el comentario largo de lib/bases-progreso.js sobre por qué el
+  // porcentaje no se puede calcular contando llamadas.
+  const prog = crearProgreso((p) => { if (onProgreso) onProgreso(p); });
   const avisar = (p) => { if (onProgreso) onProgreso(p); };
   const pedir = crearPedidor(apiFetch, apiParse);
 
@@ -284,9 +297,20 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   if (cacheado?.markdown) {
     reusado = true;
     leidas = 0;                       // no se leyó nada AHORA: no se cobra
-    avisar({ paso: 'cache', detalle: `${cacheado.paginasOcr || 0} páginas ya leídas antes` });
+    // Sin OCR el peso de esa fase sale del denominador: la barra tiene que
+    // arrancar en 0 y repartirse entre lo que SÍ va a correr.
+    prog.plan('ocr', 0);
+    prog.paso('cache', { detalle: `${cacheado.paginasOcr || 0} páginas ya leídas antes` });
   } else {
-    ({ ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar, alertas, modelos }));
+    prog.plan('ocr', paginasAOcr(bloques).length);
+    // `ocrDeBloques` lleva su propia cuenta y avisa con el ACUMULADO, no con
+    // el delta: por eso `en()` y no `avance()`.
+    const avisarOcr = (p) => {
+      if (p?.paso === 'ocr') prog.en('ocr', p.hecho || 0);
+      else avisar(p);
+    };
+    ({ ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar: avisarOcr, alertas, modelos }));
+    prog.cerrar('ocr');
   }
 
   // ── 2. El documento híbrido y su índice, sin IA ──────────────────
@@ -308,7 +332,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // Con confianza que no sea ALTA la pista no viaja: ver `pistaDeRegimen`.
   const regimenConfianza = clasificacion.confianza;
   if (clasificacion.conflicto) alertas.push(clasificacion.conflicto);
-  avisar({ paso: 'indice', detalle: resumen, regimen });
+  prog.plan('indice', 1);
+  prog.avance('indice', 1, { detalle: resumen, regimen });
 
   // ── 2.c. Los campos que la entidad dejó sin llenar ───────────────
   //
@@ -324,6 +349,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   const hayAlgo = Object.values(resumen).some(r => r.aciertos > 0);
   if (!hayAlgo) {
     alertas.push('No se reconoció ninguna sección típica de unas bases. Puede que el documento no sea unas bases, o que el OCR haya salido ilegible.');
+    prog.fin();
     return { markdown, indice, rangos: null, resultado: { requisitos: [], alertas }, alertas,
       regimen, clasificacionRegimen: clasificacion,
       regimenLabel: regimen ? REGIMENES[regimen]?.label : null, camposSinLlenar: sinLlenar,
@@ -333,7 +359,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   }
 
   // ── 3. Pase 1: la IA elige rangos entre lo que el índice encontró ─
-  avisar({ paso: 'localizar' });
+  prog.plan('localizar', 1);
+  prog.paso('localizar');
   let rangos = null;
   try {
     const data = await pedir({ accion: 'localizar', indice });
@@ -345,6 +372,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     // encontró el índice por su cuenta. Peor extracción, no ninguna.
     alertas.push(`El paso que ubica las secciones falló (${e.message}). Se usó el índice sin afinar.`);
   }
+  prog.cerrar('localizar');
 
   // ── 4. Pase 2: extraer, solo sobre los rangos elegidos ───────────
   const requisitos = [];
@@ -397,6 +425,15 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
    * rendirse era caro: se perdía la sección entera del plantel.
    */
   async function extraerTrozo(familia, desde, hasta, nivel, textoDado = null, etiquetaDada = null) {
+    // LA UNIDAD DE LA BARRA ES «UNA PASADA PLANIFICADA», Y SE CUENTA ACÁ
+    // ARRIBA, antes de las dos salidas tempranas. Una pasada que el dedup se
+    // come —dos familias que caen en el mismo texto— es trabajo que ya no hay
+    // que hacer: si no se contara, el plan nunca se completaría y la barra se
+    // quedaría clavada faltando el 10%. Las pasadas de nivel > 0 (partir un
+    // rango que no entró) son trabajo extra ADENTRO de una unidad ya contada y
+    // no suman: si sumaran, el denominador crecería justo cuando la lectura se
+    // está complicando y la barra iría para atrás.
+    if (nivel === 0) prog.avance('extraer', 1);
     const texto = textoDado != null ? textoDado : textoDeRango(markdown, desde, hasta);
     if (!texto.trim()) return;
     // La llave es el TEXTO, no el rango: dos familias pueden pedir rangos
@@ -406,7 +443,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     if (pedidos.has(llave)) return;
     pedidos.set(llave, familia);
     const etiqueta = etiquetaDada || (desde === hasta ? `${desde}` : `${desde}–${hasta}`);
-    avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta}` });
+    prog.paso('extraer', { detalle: `${familia} · ${etiqueta}` });
     try {
       const data = await pedir({ accion: 'extraer', texto, seccion: familia, regimen, regimen_confianza: regimenConfianza });
       const r = data.resultado || {};
@@ -441,7 +478,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
       }
     } catch (e) {
       if (e.code === 'respuesta_cortada' && nivel < MAX_PARTICIONES) {
-        avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta} era muy largo, se parte en dos` });
+        prog.paso('extraer', { detalle: `${familia} · ${etiqueta} era muy largo, se parte en dos` });
         if (textoDado != null) {
           // Un anexo largo se corta por la mitad de su texto, en un salto de
           // línea para no partir una cita al medio.
@@ -485,8 +522,25 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // reconocibles no tiene anexos que separar.
   const anexos = partirEnAnexos(markdown);
   const leidosPorAnexo = new Set();
-  if (anexos.length >= 3) {
-    avisar({ paso: 'anexos', total: anexos.length });
+  const porAnexo = anexos.length >= 3;
+
+  // CUÁNTAS PASADAS VAN A SER, antes de empezar. Se sabe: los anexos ya están
+  // separados y los rangos ya los eligió el Pase 1. Sin este número la fase
+  // más larga de la lectura no tendría denominador y la barra se quedaría
+  // quieta en el mismo punto durante minutos.
+  const trozosPorFamilia = new Map(FAMILIAS_EXTRAIBLES.map(familia => [familia,
+    familia === 'proceso'
+      // El calendario vive con los datos del proceso: sus rangos se suman.
+      ? fusionarRangos([...rangosDeFamilia(rangos, resumen, 'proceso'), ...rangosDeFamilia(rangos, resumen, 'cronograma')])
+      : rangosDeFamilia(rangos, resumen, familia),
+  ]));
+  let pasadasPrevistas = 0;
+  if (porAnexo) for (const parte of anexos) pasadasPrevistas += familiasDeAnexo(parte.titulo).length;
+  for (const trozos of trozosPorFamilia.values()) pasadasPrevistas += trozos.length;
+  prog.plan('extraer', pasadasPrevistas);
+
+  if (porAnexo) {
+    prog.paso('anexos', { total: anexos.length });
     for (const parte of anexos) {
       const familias = familiasDeAnexo(parte.titulo);
       for (const familia of familias) {
@@ -498,14 +552,11 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   }
 
   for (const familia of FAMILIAS_EXTRAIBLES) {
-    const trozos = familia === 'proceso'
-      // El calendario vive con los datos del proceso: sus rangos se suman.
-      ? fusionarRangos([...rangosDeFamilia(rangos, resumen, 'proceso'), ...rangosDeFamilia(rangos, resumen, 'cronograma')])
-      : rangosDeFamilia(rangos, resumen, familia);
-    for (const trozo of trozos) {
+    for (const trozo of trozosPorFamilia.get(familia)) {
       await extraerTrozo(familia, trozo.desde, trozo.hasta, 0);
     }
   }
+  prog.cerrar('extraer');
 
   // ── 4.5. EL BARRIDO DE RESPALDO ──────────────────────────────────
   //
@@ -521,10 +572,11 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
 
   /** Recorre el documento entero con un prompt, de a `TRAMOS_POR_TANDA`. */
   async function barrer(familia, motivo) {
-    avisar({ paso: 'barrido', total: tramoMax });
     alertas.push(motivo);
     for (let d = 1; d <= tramoMax; d += TRAMOS_POR_TANDA) {
-      avisar({ paso: 'barrido', hecho: d, total: tramoMax, detalle: familia });
+      // La tanda del barrido es su propia unidad: `extraerTrozo` va a sumar
+      // una a `extraer`, que a esta altura ya está cerrada y no se mueve.
+      prog.avance('barrido', 1, { detalle: familia });
       await extraerTrozo(familia, d, Math.min(d + TRAMOS_POR_TANDA - 1, tramoMax), 0);
     }
   }
@@ -543,6 +595,17 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // gratuito cada tanda cuesta USD 0; lo caro es presentarse sin saber qué
   // plantel piden.
   if (tramoMax > TRAMOS_POR_TANDA) {
+    // CUÁNTO BARRIDO VIENE, si es que viene. Es la única fase que puede no
+    // correr, y su peso solo sale del denominador cuando se sabe: por eso se
+    // planifica con las dos condiciones ya evaluadas, y se cierra abajo por si
+    // el barrido del plantel terminó llenando lo que el de la empresa iba a
+    // buscar (un puesto mal clasificado que pasa a ser requisito del postor).
+    const tandas = Math.ceil(tramoMax / TRAMOS_POR_TANDA);
+    let previstos = 0;
+    if (!requisitos.length) previstos++;
+    if (!requisitosEmpresa.length && !extras.cronograma.length) previstos++;
+    prog.plan('barrido', previstos * tandas);
+
     if (!requisitos.length) {
       await barrer('personal', 'No apareció ningún puesto del plantel en las secciones que el índice ubicó: se recorrió el documento entero para buscarlos.');
     }
@@ -555,12 +618,15 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   }
 
   // ── 5. Verificar cada cita contra el documento ───────────────────
-  avisar({ paso: 'verificar' });
+  prog.cerrar('barrido');
+  prog.plan('verificar', 1);
+  prog.paso('verificar');
   const verificado = verificarResultado(
     { ...extras, requisitos, requisitos_empresa: requisitosEmpresa, alertas: alertasUnicas(alertas) },
     markdown,
   );
   const filas = aFilasRequisitos(verificado);
+  prog.fin();
 
   return {
     markdown, indice, rangos,

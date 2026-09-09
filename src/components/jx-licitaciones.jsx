@@ -241,7 +241,13 @@ function LicitacionesPage({ showToast }) {
     const nid = window.__newId();
     // `verificada` y su motivo son de la pantalla, no columnas de la tabla:
     // si viajan al insert, Dexie los guarda y el push a Supabase falla.
-    const { verificada, verificacion_motivo, ...fila } = campos;
+    // Y las marcas de la comparación entre lecturas (`_corridas`, `_deTodas`)
+    // son de la pantalla también. El push ya las descarta —stripLocalFields
+    // saca todo lo que empieza con `_`— pero sin esto quedarían guardadas en
+    // Dexie, que es un dato de la sesión metido en la tabla del negocio.
+    const { verificada, verificacion_motivo, ...resto } = campos;
+    const fila = {};
+    for (const [k, v] of Object.entries(resto)) if (!k.startsWith('_')) fila[k] = v;
     void verificada; void verificacion_motivo;
     return {
       id: nid, licitacion_id: licitacionId,
@@ -268,11 +274,27 @@ function LicitacionesPage({ showToast }) {
     requisitos: requisitos ?? 0,
   });
 
+  /**
+   * Saca las marcas de la comparación entre lecturas (`_corridas`, `_deTodas`).
+   *
+   * El calendario y las listas del contrato se guardan como JSONB DENTRO de la
+   * fila de la postulación, así que `stripLocalFields` —que solo mira las
+   * claves de primer nivel— no las alcanza: sin esto, «salió en 1 de 2
+   * lecturas» quedaría guardado para siempre en la tabla del negocio, y una
+   * marca de cómo se leyó el documento no es un dato del proceso.
+   */
+  const sinMarcasDeLectura = (lista) => (Array.isArray(lista) ? lista.map(x => {
+    if (!x || typeof x !== 'object') return x;
+    const out = {};
+    for (const [k, v] of Object.entries(x)) if (!k.startsWith('_')) out[k] = v;
+    return out;
+  }) : lista);
+
   /** Las listas de la mig 200 que traiga la lectura, solo si hay algo. */
   const parcheDeExtras = (extras, previo = null) => {
     const patch = {};
     for (const clave of ['factores_evaluacion', 'garantias', 'penalidades', 'documentos_presentacion', 'condiciones']) {
-      const lista = extras?.[clave];
+      const lista = sinMarcasDeLectura(extras?.[clave]);
       if (!Array.isArray(lista) || !lista.length) continue;
       // No se pisa lo que ya había: una segunda lectura SUMA lo que la
       // primera no encontró (la convocatoria primero, las bases después).
@@ -306,7 +328,7 @@ function LicitacionesPage({ showToast }) {
       // El calendario se guarda solo si la postulación todavía no tiene uno:
       // pisar uno cargado a mano con una lectura automática es peor que no leer.
       if (Array.isArray(cronograma) && cronograma.length && !(Array.isArray(prev?.cronograma) && prev.cronograma.length)) {
-        patch.cronograma = cronograma;
+        patch.cronograma = sinMarcasDeLectura(cronograma);
       }
       Object.assign(patch, parcheDeExtras(extras, prev));
       // Lo que el lector marcó para revisar se guarda: en la prueba del 8-set
@@ -353,7 +375,7 @@ function LicitacionesPage({ showToast }) {
         id: nid, etapa: 'requisitos', moneda: 'PEN',
         tipo_trabajo: TIPO_PROCESO_DEFAULT, origen: 'publico',
         ...cabecera,
-        cronograma: Array.isArray(cronograma) ? cronograma : [],
+        cronograma: Array.isArray(cronograma) ? sinMarcasDeLectura(cronograma) : [],
         consorcio: [],
         ...parcheDeExtras(extras),
         alertas: Array.isArray(alertas) ? alertas.slice(0, 60) : [],
@@ -713,6 +735,24 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // DETALLE — requisitos del proceso y el veredicto del plantel
 // ═══════════════════════════════════════════════════════════════════
 /**
+ * «Salió en 1 de las 2 lecturas».
+ *
+ * Solo aparece cuando el documento se leyó más de una vez (ver
+ * lib/bases-corridas.js). No dice que el dato esté mal: dice que una lectura
+ * lo encontró y la otra no, que es una razón concreta para ir a mirarlo al
+ * documento. Por eso es ámbar y no rojo, y por eso la fila sigue tildada.
+ */
+function MarcaCorridas({ x }) {
+  if (!x || x._deTodas !== false) return null;
+  return (
+    <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}
+      title="Este dato apareció en unas lecturas del documento y en otras no. Compruébalo contra las bases antes de guardarlo.">
+      {x._corridas} de {x._deCorridas} lecturas
+    </span>
+  );
+}
+
+/**
  * Una fila del plantel dentro del revisor. Se sacó del cuerpo del modal para
  * poder AGRUPAR los requisitos sin duplicar el marcado: el índice `i` viaja
  * aparte, porque marcar y desmarcar sigue siendo por índice original.
@@ -727,6 +767,7 @@ function FilaPlantel({ f, marcado, onToggle, unidad }) {
           {f.cargo || '(sin cargo)'}
           {f.profesion && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.profesion}</span>}
           {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+          <MarcaCorridas x={f} />
         </div>
         <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
           {f.meses_generales_minimos > 0 && `Experiencia general ${f.meses_generales_minimos} meses · `}
@@ -770,6 +811,7 @@ function FilaEmpresa({ f, marcado, onToggle, unidad }) {
           {f.multiplo_valor_referencial && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · {f.multiplo_valor_referencial}× el valor referencial</span>}
           {f.ventana_anios && <span style={{ fontWeight: 400, color: 'var(--tm)' }}> · últimos {f.ventana_anios} años</span>}
           {!f.verificada && <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>sin verificar</span>}
+          <MarcaCorridas x={f} />
         </div>
         {f.descripcion && <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>{f.descripcion}</div>}
         {f.fuente_cita && (
@@ -1392,6 +1434,7 @@ const PASO_LBL = {
   // nada, que es cuando más falta hace.
   barrido: 'No apareció nada en las secciones ubicadas: recorriendo el documento entero',
   verificar: 'Verificando cada cita contra el documento',
+  listo: 'Listo',
 };
 
 const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
@@ -1728,6 +1771,10 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   // La huella del archivo y lo que ya se pagó por él (lib/cache-lectura.js).
   const [huella, setHuella] = uS(null);
   const [cacheado, setCacheado] = uS(null);
+  // Cuántas veces se lee el mismo documento. Ver lib/bases-corridas.js: el
+  // escaneo se paga una sola vez, así que la segunda lectura cuesta USD 0 y
+  // sirve para saber qué parte del resultado es estable.
+  const [corridas, setCorridas] = uS(1);
   const [unidad, setUnidad] = uS('pagina');
   const [marcados, setMarcados] = uS(() => new Set());        // puestos (personal)
   const [marcadosEmp, setMarcadosEmp] = uS(() => new Set());  // requisitos de empresa
@@ -1775,7 +1822,31 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     try {
       const { analizar } = await import('../lib/bases-analisis.js');
       const { apiFetch, apiParse } = await import('../lib/api-client');
-      const r = await analizar(bloques, { apiFetch, apiParse, onProgreso: setProgreso, cacheado });
+      const { fusionarCorridas } = await import('../lib/bases-corridas.js');
+      const { pctDeCorrida } = await import('../lib/bases-progreso.js');
+      const veces = Math.max(1, Number(corridas) || 1);
+
+      // LAS CORRIDAS VAN UNA DETRÁS DE OTRA, NO EN PARALELO. Dos análisis a la
+      // vez son el doble de pedidos por minuto contra el mismo endpoint, que
+      // tiene su propio rate limit (40/min por usuario): la segunda lectura
+      // empezaría a devolver 429 y compararíamos una lectura completa contra
+      // una lectura rota. La espera es el precio de que la comparación
+      // signifique algo.
+      const hechas = [];
+      for (let i = 0; i < veces; i++) {
+        // La segunda lectura reusa el texto YA ESCANEADO de la primera: el OCR
+        // —lo único que cuesta plata— se paga una sola vez.
+        const reuso = i === 0 ? cacheado : { markdown: hechas[0].markdown, paginasOcr: hechas[0].paginasOcr };
+        hechas.push(await analizar(bloques, {
+          apiFetch, apiParse, cacheado: reuso,
+          onProgreso: (p) => setProgreso({
+            ...p,
+            pct: pctDeCorrida(p.pct, i, veces),
+            corrida: i + 1, corridas: veces,
+          }),
+        }));
+      }
+      const r = veces > 1 ? fusionarCorridas(hechas) : hechas[0];
       // Guardar el texto leído ANTES de mirar si la extracción salió bien: lo
       // que se pagó fue el escaneo, y eso ya está hecho aunque la IA falle.
       if (huella && !r.reusado && r.paginasOcr > 0) {
@@ -1831,6 +1902,18 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
 
   /** Reintentar la extracción SIN volver a escanear. */
   const reintentar = () => { setSalida(null); correr(); };
+
+  /** El número de la barra. `analizar()` ya reparte el porcentaje entre sus
+   *  fases; abrir el documento —que pasa antes, en el navegador y sin gastar—
+   *  lleva su propia cuenta de páginas. */
+  const pctProgreso = uM(() => {
+    if (!progreso) return null;
+    if (Number.isFinite(progreso.pct)) return Math.max(0, Math.min(100, Math.round(progreso.pct)));
+    if (progreso.paso === 'leyendo' && progreso.total > 0) {
+      return Math.max(0, Math.min(100, Math.round(((progreso.pagina || 0) / progreso.total) * 100)));
+    }
+    return null;
+  }, [progreso]);
 
   const filas = salida?.filas || [];
   const filasEmp = salida?.filasEmpresa || [];
@@ -1996,41 +2079,81 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               </div>
             )}
           </div>
+          {/* LEER DOS VECES Y COMPARAR. La misma lectura del mismo documento
+              no devuelve siempre lo mismo: el pedido va con temperature 0
+              desde el principio, pero la cadena de respaldos hace que una
+              corrida la atienda un modelo y la siguiente otro, y el barrido de
+              respaldo solo se dispara si la lectura dirigida no encontró nada.
+              El escaneo ya está pagado, así que la segunda lectura cuesta
+              USD 0: lo único que cuesta es esperar de nuevo. Ver
+              lib/bases-corridas.js. */}
+          <div className="card card-p" style={{ marginBottom: 12 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}>
+              <input type="checkbox" checked={corridas > 1} style={{ marginTop: 2 }}
+                onChange={e => setCorridas(e.target.checked ? 2 : 1)} />
+              <span style={{ fontSize: 11.5, lineHeight: 1.5 }}>
+                <b>Leer el documento dos veces y comparar</b> — el escaneo ya está pagado, así que la segunda
+                lectura cuesta <b>USD 0</b>: lo único que cuesta es esperar de nuevo (más o menos el doble).
+                <div style={{ color: 'var(--tm)', marginTop: 3 }}>
+                  Sirve para saber de qué fiarse. Lo que salga en las dos lecturas es un hallazgo firme; lo que
+                  salga en una sola queda marcado <b>1 de 2</b> para que lo mires contra el documento. No se
+                  descarta nada: perder un requisito cuesta la postulación.
+                </div>
+              </span>
+            </label>
+          </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => { setFase('elegir'); setArchivo(null); }}>
               Elegir otro archivo
             </button>
             <button className="btn btn-blue btn-sm" onClick={correr}>
-              Analizar · {cacheado ? 'USD 0.000' : usd(presupuesto.costo.total)}
+              Analizar {corridas > 1 ? '(dos lecturas) ' : ''}· {cacheado ? 'USD 0.000' : usd(presupuesto.costo.total)}
             </button>
           </div>
         </div>
       )}
 
-      {/* ── Corriendo ── */}
+      {/* ── Corriendo ──
+          UNA barra para toda la lectura, no una por fase. Analizar unas bases
+          de 94 páginas escaneadas son entre dos y cinco minutos, y hasta la
+          entrega 11 solo el OCR tenía barra: después quedaba un rótulo que
+          cambiaba sin ningún número, y una espera sin número se lee como que
+          se colgó. El porcentaje lo reparte lib/bases-progreso.js entre las
+          fases que de verdad van a correr. */}
       {fase === 'corriendo' && (
         <div style={{ padding: '28px 10px', textAlign: 'center' }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
             {PASO_LBL[progreso?.paso] || 'Trabajando'}…
           </div>
-          {progreso?.paso === 'ocr' && progreso.total > 0 && (
+          {pctProgreso != null && (
             <>
-              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
-                {progreso.hecho} de {progreso.total} páginas
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 8, marginBottom: 6 }}>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{pctProgreso}%</div>
+                {progreso?.corridas > 1 && (
+                  <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                    lectura {progreso.corrida} de {progreso.corridas}
+                  </div>
+                )}
               </div>
-              <div style={{ height: 6, borderRadius: 3, background: 'var(--bg-c2)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.round((progreso.hecho / progreso.total) * 100)}%`, background: 'var(--blue)' }} />
+              <div style={{ height: 8, borderRadius: 4, background: 'var(--bg-c2)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pctProgreso}%`, background: 'var(--blue)', transition: 'width .35s ease' }} />
               </div>
             </>
           )}
+          {progreso?.paso === 'ocr' && progreso.total > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 8 }}>
+              {progreso.hecho} de {progreso.total} páginas escaneadas
+            </div>
+          )}
           {progreso?.paso === 'leyendo' && progreso.total > 0 && (
-            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>página {progreso.pagina} de {progreso.total}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 8 }}>página {progreso.pagina} de {progreso.total}</div>
           )}
           {progreso?.detalle && typeof progreso.detalle === 'string' && (
-            <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>{progreso.detalle}</div>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 6 }}>{progreso.detalle}</div>
           )}
-          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 14 }}>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 14, lineHeight: 1.5 }}>
             No cierres esta ventana: el documento se está leyendo en tu computadora.
+            <br />El porcentaje es del <b>trabajo hecho</b>, no del tiempo que falta.
           </div>
         </div>
       )}
@@ -2077,6 +2200,35 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               </div>
             )}
           </div>
+
+          {/* ── QUÉ TAN ESTABLE ES ESTA LECTURA ──
+              Solo aparece cuando se leyó más de una vez. Es el número que
+              contesta «¿cuánto me puedo fiar de esto?»: cuántos de los
+              hallazgos salieron en TODAS las lecturas y cuántos en una sola.
+              Los de una sola NO se descartan —perder un requisito cuesta la
+              postulación, mostrar uno de más cuesta una mirada— pero van
+              marcados en su fila. */}
+          {salida.corridas > 1 && salida.estabilidad && (
+            <div style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11.5,
+              background: salida.estabilidad.inestables > 0 ? 'rgba(245,158,11,0.10)' : 'rgba(34,197,94,0.10)',
+              border: '1px solid var(--border)' }}>
+              <b>
+                Se leyó {salida.corridas} veces · {salida.estabilidad.estables} de {salida.estabilidad.total} hallazgos
+                salieron en todas{salida.estabilidad.pct != null ? ` (${salida.estabilidad.pct}%)` : ''}
+              </b>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, lineHeight: 1.5 }}>
+                {salida.estabilidad.inestables > 0
+                  ? <>Los {salida.estabilidad.inestables} que salieron en una sola lectura están marcados con <b>1 de {salida.corridas}</b>. No se descartaron: puede que una lectura los haya encontrado y la otra no, que es distinto de que no estén. Míralos contra el documento antes de guardarlos.</>
+                  : <>Las {salida.corridas} lecturas devolvieron lo mismo. Esto es lo más parecido a una lectura confiable que da este método.</>}
+              </div>
+              {salida.cabeceraDiscrepa?.length > 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 5 }}>
+                  ⚠ Las lecturas no coinciden en: <b>{salida.cabeceraDiscrepa.map(d => d.campo).join(', ')}</b>.
+                  Se dejó el valor de la primera.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ── Bajo qué norma se rige, que es lo que ordena todo lo demás ──
               Lo decide el código contando rótulos, gratis, antes de gastar una
@@ -2296,6 +2448,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                   {cronograma.map((e, i) => (
                     <div key={i} style={{ color: e.verificada === false ? 'var(--amber)' : 'inherit' }}>
                       <b>{e.desde}</b>{e.hasta ? ` → ${e.hasta}` : ''} · {e.etapa}
+                      <MarcaCorridas x={e} />
                     </div>
                   ))}
                 </div>
@@ -2360,19 +2513,19 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               <div style={{ display: 'grid', gap: 4, fontSize: 11 }}>
                 {extras.factores_evaluacion.map((f, i) => (
                   <div key={`f${i}`}><span className="badge b-purple" style={{ fontSize: 8.5 }}>puntaje</span>{' '}
-                    {f.factor}{f.puntaje_maximo ? <b> · {f.puntaje_maximo} pts</b> : ''}</div>
+                    {f.factor}{f.puntaje_maximo ? <b> · {f.puntaje_maximo} pts</b> : ''}<MarcaCorridas x={f} /></div>
                 ))}
                 {extras.garantias.map((g, i) => (
                   <div key={`g${i}`}><span className="badge b-blue" style={{ fontSize: 8.5 }}>garantía</span>{' '}
-                    {TIPO_GARANTIA_LBL[g.tipo] || g.tipo}{g.porcentaje ? <b> · {g.porcentaje}%</b> : ''}{g.detalle ? ` — ${g.detalle.slice(0, 110)}` : ''}</div>
+                    {TIPO_GARANTIA_LBL[g.tipo] || g.tipo}{g.porcentaje ? <b> · {g.porcentaje}%</b> : ''}{g.detalle ? ` — ${g.detalle.slice(0, 110)}` : ''}<MarcaCorridas x={g} /></div>
                 ))}
                 {extras.penalidades.map((p, i) => (
                   <div key={`p${i}`}><span className="badge b-red" style={{ fontSize: 8.5 }}>penalidad</span>{' '}
-                    {p.tipo === 'mora' ? 'Mora' : 'Otra'}{p.formula ? ` · ${p.formula}` : ''}{p.tope ? ` · tope ${p.tope}` : ''}</div>
+                    {p.tipo === 'mora' ? 'Mora' : 'Otra'}{p.formula ? ` · ${p.formula}` : ''}{p.tope ? ` · tope ${p.tope}` : ''}<MarcaCorridas x={p} /></div>
                 ))}
                 {extras.condiciones.map((c, i) => (
                   <div key={`c${i}`}><span className="badge b-amber" style={{ fontSize: 8.5 }}>{TIPO_CONDICION_LBL[c.tipo] || c.tipo}</span>{' '}
-                    {c.titulo || (c.detalle || '').slice(0, 120)}</div>
+                    {c.titulo || (c.detalle || '').slice(0, 120)}<MarcaCorridas x={c} /></div>
                 ))}
                 {extras.documentos_presentacion.length > 0 && (
                   <div><span className="badge b-gray" style={{ fontSize: 8.5 }}>expediente</span>{' '}
