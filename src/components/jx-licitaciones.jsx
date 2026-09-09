@@ -39,7 +39,7 @@ import {
   urgencia, prefillObraDesde, puedePasarATrabajos, destinoAlGanar,
 } from "../lib/licitaciones.js";
 import { buscarPlantel, formatearMeses } from "../lib/experiencia-profesional.js";
-import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL } from "../lib/bases-extraccion.js";
+import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES } from "../lib/bases-extraccion.js";
 import { agruparPorSobre } from "../lib/documentos-partes.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
@@ -1956,6 +1956,49 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               </div>
             )}
           </div>
+
+          {/* ── Bajo qué norma se rige, que es lo que ordena todo lo demás ──
+              Lo decide el código contando rótulos, gratis, antes de gastar una
+              llamada. Se muestra porque cambia cuántos sobres hay y en qué
+              orden, de cuánto es la garantía y si existen los adelantos. */}
+          {salida.regimenLabel && (
+            <div style={{ padding: '8px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11.5,
+              background: 'var(--bg-c2)', border: '1px solid var(--border)' }}>
+              <b>Se rige por: {salida.regimenLabel}</b>
+              {salida.clasificacionRegimen?.confianza === 'media' && (
+                <span style={{ color: 'var(--tm)' }}> · señal débil, confírmalo en el documento</span>
+              )}
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                {REGIMENES[salida.regimen]?.sobres > 0
+                  ? `${REGIMENES[salida.regimen].sobres} sobres`
+                  : 'sin sobres: la oferta va como archivo digitalizado'}
+                {' · '}fiel cumplimiento {REGIMENES[salida.regimen]?.fielCumplimiento}%
+                {REGIMENES[salida.regimen]?.rangoEconomico
+                  ? ` · la oferta se admite entre ${REGIMENES[salida.regimen].rangoEconomico[0]}% y ${REGIMENES[salida.regimen].rangoEconomico[1]}%`
+                  : ''}
+                {' — '}se le dijo al modelo antes de leer, para que no rellene con lo que suele ser.
+              </div>
+            </div>
+          )}
+
+          {/* ── Los campos que la ENTIDAD dejó sin llenar ──
+              No es un error de la lectura: es que las bases salieron con el
+              marcador de la plantilla puesto. Eso se pregunta en consultas. */}
+          {salida.camposSinLlenar?.length > 0 && (
+            <div style={{ padding: '9px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11,
+              background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)' }}>
+              <b style={{ color: 'var(--red)' }}>
+                La entidad dejó {salida.camposSinLlenar.length} campo(s) sin llenar en la plantilla
+              </b>
+              <div style={{ marginTop: 4, color: 'var(--tm)' }}>
+                {salida.camposSinLlenar.slice(0, 6).join(' · ')}
+                {salida.camposSinLlenar.length > 6 ? ' …' : ''}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
+                Lo que dependa de esos campos no está en las bases y no se extrajo. Pregúntalo en la etapa de consultas.
+              </div>
+            </div>
+          )}
 
           {salida.alertas?.length > 0 && (
             <div style={{ padding: '9px 12px', marginBottom: 10, borderRadius: 8, fontSize: 11,

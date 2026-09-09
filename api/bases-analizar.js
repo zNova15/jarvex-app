@@ -84,8 +84,18 @@ Responde SOLO con este JSON, sin markdown:
   "cronograma":   { "encontrada": true, "rangos": [{"desde": 12, "hasta": 13}], "por_que": "..." },
   "evaluacion":   { "encontrada": false, "rangos": [], "por_que": "no aparece en el índice" },
   "presentacion": { "encontrada": true, "rangos": [{"desde": 30, "hasta": 36}], "por_que": "..." },
-  "proceso":      { "encontrada": true, "rangos": [{"desde": 1, "hasta": 4}], "por_que": "..." }
-}`;
+  "proceso":      { "encontrada": true, "rangos": [{"desde": 1, "hasta": 4}], "por_que": "..." },
+  "contrato":     { "encontrada": true, "rangos": [{"desde": 58, "hasta": 63}], "por_que": "..." }
+}
+
+Qué es cada familia, para que no las confundas:
+- "personal": los profesionales que se exigen (residente, especialistas) y su experiencia.
+- "empresa": lo que se le exige al POSTOR (experiencia, facturación, RNP, capacidad de contratación, patrimonio).
+- "cronograma": las fechas del proceso.
+- "evaluacion": los factores que dan PUNTAJE.
+- "presentacion": qué documento va en cada sobre u oferta.
+- "proceso": los datos de cabecera (objeto, montos, entidad, plazo, CUI).
+- "contrato": el proyecto de contrato o convenio — GARANTÍAS, PENALIDADES y ADELANTOS. Está casi siempre al FINAL del documento, lejos de los requisitos de calificación, y sus rótulos son «CLÁUSULA … GARANTÍAS», «CLÁUSULA … PENALIDADES», «Adelanto directo», «Penalidad por mora».`;
 
 const SYSTEM_EXTRAER = `Eres un analista de licitaciones públicas peruanas. Te doy el TEXTO de unas páginas de las bases (con marcadores "<!-- página N -->") y extraes los requisitos EXACTAMENTE como están escritos.
 
@@ -110,6 +120,8 @@ NO INVENTES:
 - Si las bases no dicen un número, el campo va en 0 o null. Nunca en un valor "típico".
 - Si un puesto se nombra pero sus requisitos están en otra página que no te di, ponlo en "alertas" y no lo inventes.
 - Si el texto viene de un OCR y una cifra es ilegible, dilo en "alertas".
+
+🔴 LOS CORCHETES SON CAMPOS QUE LA ENTIDAD NO LLENÓ. Estas bases se publican a partir de una plantilla oficial, y donde la entidad tenía que escribir el dato quedan marcadores como «[CONSIGNAR EL MONTO]», «[INDICAR LA FECHA]», «[……]». Si el dato que ibas a devolver está DENTRO de un corchete así, ese dato NO EXISTE en las bases: devuélvelo en null y ponlo en "alertas" («la entidad dejó sin llenar el monto referencial»). No copies el marcador como si fuera el valor, y no lo reemplaces por lo que suele ser.
 
 Si en el mismo tramo encuentras una exigencia para LA EMPRESA (experiencia del postor por monto acumulado, facturación, capacidad de contratación, RNP), ponla en "requisitos_empresa" con su "tipo": experiencia_postor · facturacion · capacidad_contratacion · rnp · patrimonio · habilitacion · otro. Es muy común que estén en la misma sección de «REQUISITOS DE CALIFICACIÓN» que el plantel.
 
@@ -200,6 +212,54 @@ D) PENALIDAD POR MORA, fórmula estándar en los tres regímenes:
    penalidad diaria = (0.10 x monto) / (F x plazo en días)
    F = 0.40 si el plazo es de 60 días o menos; F = 0.15 si es mayor. En la Ley
    32069 hay una franja intermedia con F = 0.25 entre 61 y 120 días.
+
+E) GLOSARIO — palabras que NO se pueden deducir del castellano común y que
+   significan cosas distintas en cada régimen. Si el documento usa la palabra
+   de la izquierda, NO la traduzcas a la de la derecha: son cosas distintas.
+   · Obras por Impuestos (Ley 29230):
+     «Empresa Privada» (financia) ≠ «Ejecutor» o «Empresa Ejecutora»
+     (construye, y es la que necesita RNP) ≠ «Entidad Privada Supervisora».
+     «Comité Especial» (NO «comité de selección»).
+     «Convenio de Inversión» (NO «contrato»); «Contrato de Supervisión» sí es
+     un contrato. «Monto Referencial del Convenio de Inversión» o «Monto Total
+     de Inversión Referencial» (NO «valor referencial»). CIPRL y CIPGN son los
+     certificados con los que se paga. CUI = Código Único de Inversiones.
+     «Expresión de Interés» es una etapa previa a la propuesta. «Credenciales»
+     es el nombre del Sobre 1. «Cuaderno de Incidencias» (NO «cuaderno de
+     obra»). «Conformidad de Recepción». IOARR es un tipo de inversión.
+     «Liquidación del Convenio de Inversión». «Adjudicación directa».
+   · Ley 32069: «entidad contratante» (NO «la Entidad»); «cuantía de la
+     contratación» (NO «valor referencial»); Pladicop es la plataforma y el
+     SEACE vive dentro de ella; «sistema de entrega» (solo construcción /
+     diseño y construcción) es distinto de «modalidad de pago» (suma alzada /
+     precios unitarios); «especialidad y subespecialidad» (NO «obras
+     similares»); «personal clave» (NO «plantel profesional clave»); las
+     garantías pueden ser carta fianza financiera, contrato de seguro,
+     fideicomiso o retención de pago; «adelanto por avance»; JPRD = Junta de
+     Prevención y Resolución de Disputas; REDAM = registro de deudores
+     alimentarios; el organismo es OECE (NO «OSCE»).
+   · Ley 30225: «valor referencial», «sistema de contratación», «obras
+     similares», «plantel profesional clave», «carta fianza o póliza de
+     caución», «cuaderno de obra», «LA ENTIDAD».
+
+F) REGLAS DE NEGOCIO que el documento da por sabidas:
+   · En OxI-Empresa Privada el Sobre 2 es el ECONÓMICO y el 3 el TÉCNICO, y se
+     evalúa la técnica SOLO del que ganó la económica.
+   · En OxI-Supervisora el Sobre 1 es el TÉCNICO y el 2 el económico, con
+     ponderación 80/20 obligatoria.
+   · Rango de admisión de la oferta económica: 90%-110% del monto referencial
+     en OxI; 95%-110% de la cuantía bajo la Ley 32069.
+   · Bajo la Ley 32069 no hay sobres: se presenta un archivo digitalizado.
+   · Las bases de OxI NO se publican en el SEACE al convocar, sino en el portal
+     de la entidad y en el de Proinversión. Que no diga «SEACE» no significa
+     que no sea un proceso público.
+
+G) 🔴 LOS ARTÍCULOS CITADOS NO DICEN BAJO QUÉ NORMA SE RIGE EL PROCESO. Hay
+   bases nuevas que citan artículos del reglamento viejo por copiar la
+   plantilla, y además la numeración se movió entre reglamentos (el art. 114
+   era «conformidad» en el DS 210-2022-EF y es «Garantías para el caso de
+   Consorcio» en el DS 038-2026-EF). Guíate por el VOCABULARIO de arriba, no
+   por el número de artículo.
 `;
 
 const SYSTEM_PROCESO = `Eres un analista de licitaciones públicas peruanas (Ley de Contrataciones del Estado, Obras por Impuestos Ley 29230 y procesos privados).
@@ -259,6 +319,8 @@ Si el proceso es de la Ley 32069 no hay sobres: usa «Oferta técnica» y «Ofer
 
 CONDICIONES A CONSIDERAR: lo que cambia la decisión de presentarse y no es un requisito ni un factor. El campo "tipo" solo puede ser uno de estos ocho, exactamente así: "adelanto" (¿la entidad da adelantos y de cuánto?) · "forma_pago" (valorizaciones, plazos de pago, límites de la oferta económica) · "visita_obra" (si hay visita y si es obligatoria, con fecha) · "plazo_firma" (cuántos días para firmar el contrato o convenio) · "subcontratacion" (si se permite y hasta qué porcentaje) · "seguros" (SCTR, CAR, responsabilidad civil) · "personal_obligatorio" (personal que debe estar permanentemente en obra) · "otra". Usa "otra" solo si de verdad no encaja. Cada una con "titulo" corto y "detalle".
 
+🔴 LOS CORCHETES SON CAMPOS QUE LA ENTIDAD NO LLENÓ. Estas bases se publican a partir de una plantilla oficial, y donde la entidad tenía que escribir el dato quedan marcadores como «[CONSIGNAR EL MONTO]», «[INDICAR LA FECHA]», «[……]». Si el dato que ibas a devolver está DENTRO de un corchete así, ese dato NO EXISTE en las bases: devuélvelo en null y ponlo en "alertas" («la entidad dejó sin llenar el monto referencial»). No copies el marcador como si fuera el valor, y no lo reemplaces por lo que suele ser.
+
 NO INVENTES: si un dato no está en el texto que te di, va en null y la lista va vacía. No pongas una penalidad «típica» ni una garantía «estándar» del 10% si el texto no la dice. Si un monto es ilegible por el OCR, dilo en "alertas". Si el texto es una publicación con varias convocatorias, quédate con la que corresponde al proceso principal del texto y avísalo.
 
 Responde SOLO con este JSON, sin markdown:
@@ -291,6 +353,38 @@ Responde SOLO con este JSON, sin markdown:
 // es SUSTENTADA (evidencia_id + página), y en un proceso solo vale lo
 // sustentado. Sin este cruce el padrón se llenaría de meses que nadie puede
 // presentar.
+/**
+ * Lo que el CÓDIGO ya averiguó del documento, dicho en una línea antes de
+ * pedir la extracción.
+ *
+ * `bases-extraccion.js` decide el régimen contando rótulos —gratis, sin IA— y
+ * el resultado es mucho más confiable que la impresión que se lleva un modelo
+ * al leer un tramo de tres páginas. Decírselo cierra el error más caro de esta
+ * lectura: poner la garantía de fiel cumplimiento en 10% «porque es lo normal»
+ * cuando estas bases piden 4%, o inventar un adelanto en un régimen que no
+ * tiene adelantos.
+ *
+ * Es una PISTA, no un permiso: la regla de la cita sigue mandando, y el
+ * recordatorio final lo dice con todas las letras.
+ */
+const REGIMEN_DICHO = {
+  oxi_empresa: 'ESTE DOCUMENTO ES DE OBRAS POR IMPUESTOS (Ley 29230), bases de la EMPRESA PRIVADA: tres sobres, el 1 CREDENCIALES, el 2 la PROPUESTA ECONÓMICA y el 3 la PROPUESTA TÉCNICA. La garantía de fiel cumplimiento es del 4% y NO existen los adelantos. El dinero se llama «monto referencial del convenio de inversión».',
+  oxi_supervisora: 'ESTE DOCUMENTO ES DE OBRAS POR IMPUESTOS (Ley 29230), bases de la ENTIDAD PRIVADA SUPERVISORA: dos sobres, el 1 la PROPUESTA TÉCNICA y el 2 la ECONÓMICA, ponderadas 80/20. La garantía de fiel cumplimiento es del 10% y NO existen los adelantos.',
+  ley32069: 'ESTE DOCUMENTO SE RIGE POR LA LEY 32069: NO hay sobres (se presenta un archivo digitalizado en la Pladicop). El dinero se llama «cuantía de la contratación», la experiencia se acredita en la ESPECIALIDAD Y SUBESPECIALIDAD sobre 25 años, y el plantel se llama PERSONAL CLAVE.',
+  ley30225: 'ESTE DOCUMENTO SE RIGE POR LA LEY 30225 (régimen anterior): VALOR REFERENCIAL, OBRAS SIMILARES sobre los últimos 10 años, PLANTEL PROFESIONAL CLAVE, carta fianza o póliza de caución, cuaderno de obra.',
+};
+
+/** El bloque que se le antepone al texto, si el código pudo decidir el régimen. */
+function pistaDeRegimen(regimen) {
+  const dicho = REGIMEN_DICHO[regimen];
+  if (!dicho) return '';
+  return `LO QUE YA SE SABE DE ESTE DOCUMENTO (lo determinó un programa contando los rótulos del documento entero, y es más confiable que la impresión que te lleves de este tramo suelto):
+${dicho}
+Úsalo para reconocer y para NO rellenar con lo que suele ser. Si el texto que te doy dice OTRA COSA, gana el texto: copia lo que dice y avísalo en "alertas".
+
+`;
+}
+
 const SYSTEM_CV_FICHA = `Eres un analista de RR.HH. de una constructora peruana. Te doy el TEXTO de un currículum (con marcadores "<!-- página N -->") y extraes la FICHA PROFESIONAL y la lista de EXPERIENCIAS LABORALES, cada una como un periodo con fechas.
 
 LA REGLA QUE MANDA: cada experiencia trae "fuente_cita", una frase COPIADA LITERAL del texto (por ejemplo la línea del cargo o del periodo, tal como está escrita) y "fuente_pagina". Un programa la busca en el documento; si no aparece, se marca para revisión. NO inventes citas ni fechas.
@@ -502,11 +596,15 @@ export default async function handler(req, res) {
       // La familia elige el prompt: el plantel tiene sus cinco criterios; el
       // proceso, la empresa y el calendario van juntos porque en una
       // convocatoria de una página están en el mismo texto.
+      // Todo lo que no es el plantel se lee con el prompt del proceso: la
+      // empresa, el calendario, el contrato (garantías y penalidades), los
+      // factores de evaluación y el índice del expediente. Ese prompt ya sabe
+      // sacar las cinco listas; lo que faltaba era mandarle esas páginas.
       const seccion = String(body.seccion || 'personal');
-      const esProceso = seccion === 'proceso' || seccion === 'empresa' || seccion === 'cronograma';
+      const esProceso = seccion !== 'personal';
       const r = await pasadaDeTexto({
         system: esProceso ? SYSTEM_PROCESO : SYSTEM_EXTRAER,
-        user: `TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
+        user: `${pistaDeRegimen(body.regimen)}TEXTO DE LAS BASES:\n\n${texto}\n\nExtrae el JSON. Recuerda: cada dato con su cita literal y su página.`,
         // Los gratuitos razonan en voz alta antes del JSON y eso también
         // cuenta contra el techo (ver presupuestoSalida en lib/openrouter.js).
         // 🔴 EL CORTE FUE EL DEFECTO DOMINANTE del 8-set: «no se pudo extraer

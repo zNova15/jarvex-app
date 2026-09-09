@@ -56,6 +56,12 @@ export const SECCIONES = {
       'EXPERIENCIA DEL PERSONAL', 'REQUISITOS DE CALIFICACION',
       'RESIDENTE DE OBRA', 'JEFE DE SUPERVISION', 'ESPECIALISTA EN',
       'INGENIERO RESIDENTE', 'SUPERVISOR DE OBRA', 'CALIFICACIONES DEL PLANTEL',
+      // Ley 32069: el plantel se llama PERSONAL CLAVE y se parte en dos
+      // rótulos —lo que el profesional ES y lo que HIZO— que en las bases
+      // estándar son dos secciones distintas y consecutivas.
+      'CALIFICACIONES DEL PERSONAL CLAVE', 'EXPERIENCIA DEL PERSONAL CLAVE',
+      'PLANTEL PROFESIONAL CLAVE', 'CAPACIDAD TECNICA Y PROFESIONAL',
+      'PERSONAL PERMANENTE EN OBRA',
     ],
   },
   empresa: {
@@ -78,6 +84,13 @@ export const SECCIONES = {
       'REQUISITOS DE CALIFICACION ADICIONALES', 'CAPACIDAD TECNICA Y PROFESIONAL',
       'EQUIPAMIENTO ESTRATEGICO', 'PARTICIPACION EN CONSORCIO',
       'SOLVENCIA ECONOMICA', 'EXPERIENCIA DEL POSTOR EN LA ACTIVIDAD',
+      'EXPERIENCIA DEL POSTOR EN LA ESPECIALIDAD', 'ESPECIALIDAD Y SUBESPECIALIDAD',
+      // `CAPACIDAD LEGAL` es el primer subtítulo de los requisitos de
+      // calificación en las bases estándar y en las de la supervisora, y hoy
+      // no estaba: la sección entera empezaba una página después de donde el
+      // índice la ubicaba.
+      'CAPACIDAD LEGAL', 'REPRESENTACION', 'EQUIPAMIENTO', 'INFRAESTRUCTURA',
+      'CONSTANCIA DE PRESTACION', 'REDAM',
     ],
   },
   cronograma: {
@@ -100,6 +113,13 @@ export const SECCIONES = {
     claves: [
       'FACTORES DE EVALUACION', 'CRITERIOS DE EVALUACION', 'PUNTAJE',
       'EVALUACION DE LAS OFERTAS', 'PUNTAJE TOTAL',
+      // Ley 32069 y bases estándar del MEF.
+      'EVALUACION DE OFERTAS', 'EVALUACION TECNICA', 'EVALUACION ECONOMICA',
+      'CUADRO RESUMEN FACTORES DE EVALUACION', 'GUIA DE PUNTUACION',
+      // Obras por Impuestos: la técnica se evalúa DESPUÉS de la económica, y
+      // solo la del ganador. El rótulo lleva el número de sobre pegado.
+      'EVALUACION DE LA PROPUESTA TECNICA',
+      'OTORGAMIENTO DE LA BUENA PRO', 'CONSENTIMIENTO DE LA BUENA PRO',
     ],
   },
   presentacion: {
@@ -118,6 +138,11 @@ export const SECCIONES = {
       // Ley 32069: no hay sobres, hay oferta técnica y económica.
       'OFERTA TECNICA', 'OFERTA ECONOMICA',
       'DOCUMENTOS PARA LA ADMISION DE LA OFERTA',
+      'CONTENIDO DE LOS SOBRES A SER PRESENTADOS POR EL POSTOR',
+      'DOCUMENTACION DE PRESENTACION OBLIGATORIA',
+      'DOCUMENTACION DE PRESENTACION FACULTATIVA',
+      'DOCUMENTOS PARA ACREDITAR LOS REQUISITOS DE CALIFICACION',
+      'PROPUESTA ECONOMICA', 'PROPUESTA TECNICA',
     ],
   },
   proceso: {
@@ -137,7 +162,43 @@ export const SECCIONES = {
       'CONVENIO DE INVERSION', 'COMITE ESPECIAL',
       // Ley 32069 y su plataforma.
       'CUANTIA DE LA CONTRATACION', 'SISTEMA DE ENTREGA', 'MODALIDAD DE PAGO',
-      'LEY N 32069', 'PLADICOP',
+      'LEY N 32069', 'PLADICOP', 'ENTIDAD CONTRATANTE',
+      'SECCION GENERAL', 'SECCION ESPECIFICA',
+    ],
+  },
+
+  // ── El contrato o convenio: garantías, penalidades y adelantos ────
+  //
+  // Familia NUEVA, y estaba faltando de verdad. Estos rótulos viven en el
+  // proyecto de contrato —el final del documento—, lejísimos de los
+  // requisitos de calificación, así que ninguna ventana de las otras familias
+  // llegaba hasta ahí: las garantías y las penalidades salían solo cuando
+  // caían de casualidad dentro de un anexo leído por otro motivo.
+  //
+  // Y el dato importa: la garantía de fiel cumplimiento es 4% en Obras por
+  // Impuestos con Empresa Privada y 10% en todo lo demás, y en OxI NO hay
+  // adelantos. Ese número entra en la oferta económica.
+  contrato: {
+    label: 'Garantías, penalidades y adelantos',
+    claves: [
+      'GARANTIAS DE FIEL CUMPLIMIENTO', 'GARANTIA DE FIEL CUMPLIMIENTO',
+      'GARANTIA DE APELACION', 'GARANTIA DE SERIEDAD',
+      'REQUISITOS DE LAS GARANTIAS', 'GARANTIA POR ADELANTO',
+      'CONSIDERACIONES PARA LAS GARANTIAS FINANCIERAS',
+      'CLAUSULA OCTAVA', 'CLAUSULA SETIMA',
+      // Las bases oficiales escriben las dos, con y sin tilde, en el mismo
+      // documento; `clave()` las junta igual, pero se dejan las dos escritas
+      // para que se vea que es a propósito.
+      'CLAUSULA DECIMOTERCERA', 'CLAUSULA DECIMO TERCERA', 'CLAUSULA DECIMA QUINTA',
+      'PENALIDADES POR MORA', 'PENALIDAD POR MORA', 'OTRAS PENALIDADES',
+      'PENALIDAD DIARIA', 'PENALIDADES',
+      'ADELANTO DIRECTO', 'ADELANTO PARA MATERIALES', 'ADELANTO POR AVANCE',
+      'ADELANTO DE MATERIALES',
+      'CONFORMIDAD DE RECEPCION', 'LIQUIDACION DEL CONVENIO DE INVERSION',
+      // El «cuaderno» cambia de nombre con el régimen y es un detector fino:
+      // OxI lleva CUADERNO DE INCIDENCIAS, la Ley 30225 CUADERNO DE OBRA.
+      'CUADERNO DE INCIDENCIAS', 'CUADERNO DE OBRA',
+      'JUNTA DE PREVENCION Y RESOLUCION DE DISPUTAS', 'SUBCONTRATACION',
     ],
   },
 };
@@ -165,6 +226,54 @@ export function normalizar(texto) {
 }
 
 /**
+ * La MISMA cadena, reducida a lo único que el OCR no puede cambiar: letras y
+ * dígitos. Es `normalizar()` llevado hasta el final, y existe por una trampa
+ * medida que `normalizar()` no puede cubrir.
+ *
+ * 🔴 EL KERNING METE ESPACIOS ADENTRO DE LAS PALABRAS. En el CUERPO de las
+ * bases —no en el índice, que sale limpio— el extractor de texto parte
+ * palabras donde el PDF separó las letras para justificar el renglón:
+ *   «MODELO DE CA RTA DE EXPRESIÓN DE INTERES»
+ *   «CONTENIDO DE LO S SOBRES»
+ *   «ANEXO N° 4- B:»
+ * `normalizar()` colapsa RUNS de espacios, pero deja UNO, así que
+ * `'CONTENIDO DE LOS SOBRES'` no cae dentro de `'CONTENIDO DE LO S SOBRES'` y
+ * el rótulo se pierde justo en la página donde la sección de verdad empieza.
+ * Sacando TODO lo que no es letra ni dígito, las dos puntas se juntan.
+ *
+ * Se usa para BUSCAR RÓTULOS (el índice, el régimen, los anexos), nunca para
+ * mostrar: lo que devuelve no es texto legible. Para comparar una cita con el
+ * documento sigue mandando `normalizar()`, y esto entra solo como segunda
+ * oportunidad — ver `verificarCita`.
+ *
+ * El orden importa: los ceros a la izquierda se arreglan AL FINAL, cuando
+ * «SOBRE N° 01» ya es «SOBREN01» y el `N0` quedó pegado.
+ */
+export function clave(texto) {
+  return String(texto || '')
+    .replace(/[°º]/g, '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase()
+    .replace(/N0+(\d)/g, 'N$1');
+}
+
+/** ¿El rótulo `aguja` aparece en `heno`, mirándolos como los miraría una
+ *  persona que no ve los espacios que metió el kerning? */
+export const contieneClave = (heno, aguja) => clave(heno).includes(clave(aguja));
+
+/** Cuántas veces aparece el rótulo. `clasificarRegimen` cuenta, no solo mira:
+ *  los contadores del corpus real son tajantes y una mención suelta no es lo
+ *  mismo que un rótulo repetido 21 veces. */
+export function contarClave(claveTexto, rotulo) {
+  const k = clave(rotulo);
+  if (!k) return 0;
+  let n = 0, i = claveTexto.indexOf(k);
+  while (i !== -1) { n++; i = claveTexto.indexOf(k, i + k.length); }
+  return n;
+}
+
+/**
  * Bajo qué norma se rige este proceso. Lo dice el documento, y cambia todo:
  * cuántos sobres hay y en qué orden, cuánto es la garantía de fiel
  * cumplimiento, qué porcentaje admite la oferta económica y hasta cómo se
@@ -189,16 +298,109 @@ export const REGIMENES = {
   ley30225: { label: 'Ley 30225 · régimen anterior', sobres: 0, fielCumplimiento: 10, rangoEconomico: null },
 };
 
-export function detectarRegimen(markdown) {
-  const n = normalizar(markdown);
-  const hay = (t) => n.includes(t);
-  if (hay('CREDENCIALES') && hay('SOBRE N 3')) return 'oxi_empresa';
-  if (hay('CUANTIA DE LA CONTRATACION') || hay('PLADICOP') || hay('LEY N 32069')) return 'ley32069';
-  if (hay('LEY N 29230') || hay('CONVENIO DE INVERSION') || hay('OBRAS POR IMPUESTOS')) {
-    return hay('SOBRE N 3') ? 'oxi_empresa' : 'oxi_supervisora';
+/**
+ * Los rótulos que se cuentan para decidir el régimen, con lo que dieron sobre
+ * el corpus real (medido el 8-set-2026 sobre cinco juegos de bases):
+ *
+ *   rótulo                      Pira(EP) Jesús(EP) Pangoa(EPS) 32069  30225
+ *   SOBRE N° 3                     10        6          0         0      0
+ *   CREDENCIALES                    3        3          0         0      0
+ *   REQUISITOS DE CALIFICACIÓN      0        0          6         ✓      ✓
+ *   MONTO REFERENCIAL              21       23          3         0      0
+ *   VALOR REFERENCIAL               3        2         24         0     16
+ *   CUANTÍA DE LA CONTRATACIÓN      0        0          0        14      0
+ *
+ * Se cuenta con `clave()` y no con `normalizar()` porque «SOBRE N° 3», «SOBRE
+ * Nº 03» y «SOBRE N°3» son el mismo rótulo y los tres están en el corpus.
+ */
+export const ROTULOS_REGIMEN = {
+  sobre3: 'SOBRE N 3',
+  sobre2: 'SOBRE N 2',
+  credenciales: 'CREDENCIALES',
+  requisitosCalificacion: 'REQUISITOS DE CALIFICACION',
+  montoReferencial: 'MONTO REFERENCIAL',
+  valorReferencial: 'VALOR REFERENCIAL',
+  cuantia: 'CUANTIA DE LA CONTRATACION',
+  pladicop: 'PLADICOP',
+  ley32069: 'LEY N 32069',
+  ley29230: 'LEY N 29230',
+  convenioInversion: 'CONVENIO DE INVERSION',
+  obrasPorImpuestos: 'OBRAS POR IMPUESTOS',
+  comiteEspecial: 'COMITE ESPECIAL',
+  ciprl: 'CIPRL',
+  obrasSimilares: 'OBRAS SIMILARES',
+  plantelProfesional: 'PLANTEL PROFESIONAL',
+  cuadernoObra: 'CUADERNO DE OBRA',
+  cuadernoIncidencias: 'CUADERNO DE INCIDENCIAS',
+  polizaCaucion: 'POLIZA DE CAUCION',
+};
+
+/**
+ * El régimen, con la cuenta que lo justifica.
+ *
+ * 🔴 `VALOR REFERENCIAL` y `CUANTIA DE LA CONTRATACION` son **mutuamente
+ * excluyentes** en todo el corpus revisado: son el mejor discriminador entre
+ * los dos regímenes de contratación. Si aparecen los DOS, el archivo trae dos
+ * procesos mezclados o una plantilla mal editada, y eso se AVISA en vez de
+ * elegir uno en silencio: el régimen manda sobre cuántos sobres hay, en qué
+ * orden y de cuánto es la garantía.
+ *
+ * 🔴 LOS ARTÍCULOS CITADOS NO SIRVEN PARA DECIDIR EL RÉGIMEN, y por eso no
+ * están en la lista. Hay bases nuevas que citan artículos del reglamento viejo
+ * por copiar la plantilla, y la numeración se movió: el art. 114 era
+ * «conformidad» en el DS 210-2022-EF y es «Garantías para el caso de
+ * Consorcio» en el DS 038-2026-EF. Se decide por el VOCABULARIO, que sí cambió
+ * de verdad entre un régimen y otro.
+ *
+ * @returns { regimen, confianza: 'alta'|'media'|null, senales, conflicto }
+ */
+export function clasificarRegimen(markdown) {
+  const k = clave(markdown);
+  const senales = {};
+  for (const [nombre, rotulo] of Object.entries(ROTULOS_REGIMEN)) {
+    senales[nombre] = contarClave(k, rotulo);
   }
-  if (hay('VALOR REFERENCIAL') && hay('OBRAS SIMILARES')) return 'ley30225';
-  return null;
+  const conflicto = senales.valorReferencial > 0 && senales.cuantia > 0
+    ? 'El documento usa «valor referencial» y «cuantía de la contratación» a la vez, y en las bases reales son excluyentes: puede traer dos procesos mezclados o ser una plantilla a medio editar. Confirma bajo qué norma se rige antes de armar la oferta.'
+    : null;
+
+  const oxi = senales.ley29230 + senales.convenioInversion + senales.obrasPorImpuestos
+    + senales.comiteEspecial + senales.ciprl + senales.montoReferencial;
+
+  // 1. Obras por Impuestos con Empresa Privada: TRES sobres, y el sobre 1 se
+  //    llama CREDENCIALES. Es el detector más limpio del corpus — cero
+  //    apariciones en los otros cuatro juegos de bases.
+  if (senales.credenciales > 0 && senales.sobre3 > 0) {
+    return { regimen: 'oxi_empresa', confianza: 'alta', senales, conflicto };
+  }
+  // 2. Ley 32069: la plataforma y la palabra nueva para el dinero.
+  if (senales.cuantia > 0 || senales.pladicop > 0 || senales.ley32069 > 0) {
+    const confianza = (senales.cuantia > 0 && (senales.pladicop > 0 || senales.ley32069 > 0)) ? 'alta' : 'media';
+    return { regimen: 'ley32069', confianza, senales, conflicto };
+  }
+  // 3. Obras por Impuestos sin el sobre de credenciales: es la SUPERVISORA,
+  //    que lleva dos sobres y arranca por la técnica.
+  if (oxi > 0) {
+    const regimen = senales.sobre3 > 0 ? 'oxi_empresa' : 'oxi_supervisora';
+    return { regimen, confianza: oxi > 2 ? 'alta' : 'media', senales, conflicto };
+  }
+  // 4. Ley 30225: el vocabulario viejo, y ninguno de los de arriba.
+  if (senales.valorReferencial > 0
+    && (senales.obrasSimilares > 0 || senales.plantelProfesional > 0
+      || senales.cuadernoObra > 0 || senales.polizaCaucion > 0)) {
+    return { regimen: 'ley30225', confianza: 'media', senales, conflicto };
+  }
+  // 5. Dos sobres sin un tercero, y requisitos de calificación: la forma de
+  //    las bases de la Entidad Privada Supervisora aunque no se nombre la ley.
+  if (senales.sobre2 > 0 && senales.sobre3 === 0 && senales.requisitosCalificacion > 0) {
+    return { regimen: 'oxi_supervisora', confianza: 'media', senales, conflicto };
+  }
+  return { regimen: null, confianza: null, senales, conflicto };
+}
+
+/** Solo el régimen. Lo que ya usaban el separador de anexos y los tests. */
+export function detectarRegimen(markdown) {
+  return clasificarRegimen(markdown).regimen;
 }
 
 // ── PASE 0.5 — el índice, sin IA ───────────────────────────────────
@@ -243,23 +445,51 @@ export function indiceDeSecciones(markdown, { maxPorFamilia = 12 } = {}) {
   for (const frag of fragmentos) {
     const lineas = frag.texto.split(/\n+/);
     for (const linea of lineas) {
-      const n = normalizar(linea);
-      if (!n) continue;
+      // 🔴 SE BUSCA CON `clave()`, NO CON `normalizar()`. El renglón viene del
+      // cuerpo del documento, que es justo donde el kerning mete espacios
+      // adentro de las palabras: «CONTENIDO DE LO S SOBRES» y «ANEXO N° 4- B»
+      // son renglones reales del corpus y con `normalizar()` no caían.
+      const k = clave(linea);
+      if (!k) continue;
+      const esIndice = esRenglonDeIndice(linea);
       for (const [fam, def] of Object.entries(SECCIONES)) {
         if (indice[fam].length >= maxPorFamilia) continue;
-        const clave = def.claves.find(k => n.includes(k));
-        if (!clave) continue;
+        const rotulo = def.claves.find(c => k.includes(clave(c)));
+        if (!rotulo) continue;
         // El renglón se recorta: al Pase 1 le alcanza para reconocer la
         // sección, y mandar párrafos enteros devolvería el problema de origen.
         indice[fam].push({
           pagina: frag.pagina,
-          clave,
+          clave: rotulo,
           linea: linea.trim().slice(0, 220),
+          // Un renglón del índice de contenidos NO es la sección: es su
+          // referencia. Se marca en vez de descartarse, porque a veces el
+          // índice es lo único legible de un escaneo malo.
+          ...(esIndice ? { deIndice: true } : {}),
         });
       }
     }
   }
   return indice;
+}
+
+/**
+ * ¿Este renglón es una línea del ÍNDICE DE CONTENIDOS y no la sección?
+ *
+ * Se reconoce por la forma, que es la misma en todas las bases: el rótulo, una
+ * fila de puntos (o de espacios) y el número de página al final. Distinguirlo
+ * importa porque el rótulo aparece DOS veces en el documento —una en el índice
+ * y otra donde la sección de verdad empieza— y leer la página del índice
+ * devuelve una lista de títulos, no requisitos.
+ *
+ * El brief lo dice al revés y también es cierto: el índice sale LIMPIO (sin
+ * los espacios espurios del kerning), así que sirve para el mapa de secciones
+ * aunque no sirva para extraer.
+ */
+export function esRenglonDeIndice(linea) {
+  const t = String(linea || '').trim();
+  if (!t) return false;
+  return /\.{3,}\s*\d{1,3}$/.test(t) || /\s{4,}\d{1,3}$/.test(t);
 }
 
 /** Cuántas páginas distintas tocó cada familia — para decidir si hace falta IA. */
@@ -320,6 +550,46 @@ const contiene = (heno, aguja) => normalizar(heno).includes(normalizar(aguja));
  *
  * @returns { verificada, motivo, paginaReal }
  */
+/**
+ * El marcador de campo a llenar de las bases estándar del MEF: `[CONSIGNAR EL
+ * MONTO]`, `[CONSIGNAR LA FECHA]`, `[……]`.
+ *
+ * 🔴 ES EL MEJOR ANCLA DEL DOCUMENTO Y TAMBIÉN LA PEOR TRAMPA. Las bases se
+ * publican a partir de una plantilla y la entidad reemplaza estos corchetes
+ * por el dato real; cuando se le pasa uno, el documento sale a la calle con el
+ * marcador puesto. Una cita que ES el marcador se verifica perfecto —está
+ * literal en el documento— y el dato que la acompaña vale cero: no es que el
+ * modelo lo inventó, es que LA ENTIDAD no lo escribió.
+ *
+ * Sin esto, un «valor referencial» sacado de «[CONSIGNAR EL MONTO]» entraría a
+ * la postulación con su ✅ verde.
+ */
+export const RX_CAMPO_SIN_LLENAR = /\[\s*(CONSIGNAR|INDICAR|COMPLETAR|SEÑALAR|SENALAR|PRECISAR|INCLUIR|DE SER EL CASO|\.{2,}|…)/i;
+
+/** ¿La cita es un campo que la entidad dejó sin llenar? */
+export function citaEsPlantilla(cita) {
+  return RX_CAMPO_SIN_LLENAR.test(String(cita || ''));
+}
+
+/**
+ * Cuántos campos sin llenar quedaron en el documento. Se cuenta y se avisa:
+ * unas bases con marcadores adentro son unas bases a medio publicar, y eso
+ * cambia si conviene presentarse o pedir una consulta a la entidad.
+ */
+export function camposSinLlenar(markdown) {
+  const m = String(markdown || '').match(/\[\s*(?:CONSIGNAR|INDICAR|COMPLETAR|SEÑALAR|SENALAR|PRECISAR)[^\]]{0,120}\]/gi);
+  if (!m) return [];
+  const vistos = new Set();
+  const out = [];
+  for (const x of m) {
+    const k = normalizar(x).slice(0, 80);
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(x.trim().replace(/\s+/g, ' ').slice(0, 120));
+  }
+  return out;
+}
+
 export function verificarCita(markdown, cita, pagina = null) {
   const texto = String(cita || '').trim();
   if (texto.length < 12) {
@@ -328,11 +598,40 @@ export function verificarCita(markdown, cita, pagina = null) {
   const fragmentos = fragmentosPorPagina(markdown);
   if (!fragmentos.length) return { verificada: false, motivo: 'documento vacío', paginaReal: null };
 
-  const donde = fragmentos.filter(f => contiene(f.texto, texto));
+  // PRIMERA VUELTA: la cita, literal. Es la exigente y la que da el ✅ limpio.
+  let donde = fragmentos.filter(f => contiene(f.texto, texto));
+  let porKerning = false;
+  if (!donde.length) {
+    // SEGUNDA VUELTA: sin los espacios que metió el kerning.
+    //
+    // 🔴 Un modelo que copia «CONTENIDO DE LO S SOBRES» casi siempre lo
+    // escribe bien —arregla la palabra rota sin darse cuenta—, y la primera
+    // vuelta lo tomaba por una cita inventada. Era un falso ⚠ sobre un dato
+    // BUENO, que es peor que no verificar: manda a revisar a mano justo lo que
+    // estaba bien. Se acepta, pero se dice de dónde salió.
+    donde = fragmentos.filter(f => contieneClave(f.texto, texto));
+    porKerning = donde.length > 0;
+  }
   if (!donde.length) {
     return { verificada: false, motivo: 'la cita no aparece en el documento', paginaReal: null };
   }
+  // La cita existe, pero lo que dice es un campo que la entidad dejó vacío.
+  if (citaEsPlantilla(texto)) {
+    return {
+      verificada: false,
+      paginaReal: donde[0].pagina,
+      motivo: 'la cita es un campo que la entidad dejó SIN LLENAR en la plantilla ([CONSIGNAR …]): el documento no trae ese dato',
+    };
+  }
   const paginaReal = donde[0].pagina;
+  if (porKerning) {
+    if (pagina != null && paginaReal != null && !donde.some(f => f.pagina === pagina)) {
+      return { verificada: false, paginaReal,
+        motivo: `la cita existe, pero en la página ${paginaReal}, no en la ${pagina}` };
+    }
+    return { verificada: true, paginaReal,
+      motivo: 'cita verificada (el documento la trae con espacios partidos por el kerning)' };
+  }
   if (pagina != null && paginaReal != null && !donde.some(f => f.pagina === pagina)) {
     return { verificada: false, paginaReal,
       motivo: `la cita existe, pero en la página ${paginaReal}, no en la ${pagina}` };
@@ -846,8 +1145,10 @@ export function costoDelAnalisis({ paginasOcr = 0, usdPasadas = 0 } = {}) {
 }
 
 export default {
-  SECCIONES, REGIMENES, detectarRegimen,
-  normalizar, fragmentosPorPagina, indiceDeSecciones, resumenIndice,
+  SECCIONES, REGIMENES, detectarRegimen, clasificarRegimen, ROTULOS_REGIMEN,
+  normalizar, clave, contieneClave, contarClave, esRenglonDeIndice,
+  citaEsPlantilla, camposSinLlenar, RX_CAMPO_SIN_LLENAR,
+  fragmentosPorPagina, indiceDeSecciones, resumenIndice,
   textoDeRango, verificarCita, verificarResultado,
   aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,

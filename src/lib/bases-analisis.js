@@ -28,6 +28,7 @@ import {
   verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, sugerenciasDe, aExtrasProceso, normalizar,
   pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, clasificarAlertas,
+  clasificarRegimen, camposSinLlenar, clave, REGIMENES,
 } from './bases-extraccion.js';
 
 /** Cuántas veces se parte un rango que no entra en una respuesta.
@@ -43,13 +44,30 @@ export const PAGINAS_POR_TANDA = 6;
  *  de mejorar: más resolución solo engorda el base64 y hace fallar la tanda. */
 export const ESCALA_OCR = 2;
 
-/** Familias que se extraen, en este orden. `proceso` va primero y se lee con
- *  el prompt del proceso entero (montos, CUI, plazo, calendario, consorcio):
- *  es lo que hace que una convocatoria de El Peruano alcance para CREAR la
- *  postulación. `personal` es el plantel; `empresa`, lo que descalifica al
- *  postor. El calendario no es una pasada aparte: sus páginas se suman a las
- *  de `proceso`, porque en una convocatoria están en el mismo texto. */
-export const FAMILIAS_EXTRAIBLES = ['proceso', 'personal', 'empresa'];
+/**
+ * Familias que se extraen, en este orden.
+ *
+ * `proceso` va primero y se lee con el prompt del proceso entero (montos, CUI,
+ * plazo, calendario, consorcio): es lo que hace que una convocatoria de El
+ * Peruano alcance para CREAR la postulación. `personal` es el plantel;
+ * `empresa`, lo que descalifica al postor. El calendario no es una pasada
+ * aparte: sus páginas se suman a las de `proceso`, porque en una convocatoria
+ * están en el mismo texto.
+ *
+ * 🔴 `contrato`, `evaluacion` y `presentacion` SE AGREGARON DESPUÉS, y estaban
+ * faltando de verdad. El prompt del proceso ya sabía sacar garantías,
+ * penalidades, factores y el índice del expediente, pero NADIE le mandaba las
+ * páginas donde eso vive: el proyecto de convenio está al final del documento,
+ * a treinta páginas de los requisitos de calificación, y ninguna ventana de
+ * las otras tres llegaba. Salían solo cuando caían de casualidad dentro de un
+ * anexo leído por otro motivo — por eso la garantía de fiel cumplimiento
+ * aparecía en unas bases y en otras no.
+ *
+ * No cuesta lo que parece: el dedup de `extraerTrozo` es por TEXTO, así que
+ * una zona que otra familia ya leyó no se vuelve a mandar. Solo se pagan (en
+ * segundos, no en plata: son modelos gratuitos) las zonas nuevas de verdad.
+ */
+export const FAMILIAS_EXTRAIBLES = ['proceso', 'personal', 'empresa', 'contrato', 'evaluacion', 'presentacion'];
 
 const esPdf = (file) => /\.pdf$/i.test(file?.name || '') || file?.type === 'application/pdf';
 const esDocx = (file) => /\.docx$/i.test(file?.name || '')
@@ -275,12 +293,38 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   const markdown = reusado ? cacheado.markdown : bloquesAMarkdown(bloques, ocrPorMedia);
   const indice = indiceDeSecciones(markdown);
   const resumen = resumenIndice(indice);
-  avisar({ paso: 'indice', detalle: resumen });
+
+  // ── 2.b. BAJO QUÉ NORMA SE RIGE ESTO, antes de leer nada ─────────
+  //
+  // Se decide con `grep` y contadores, gratis, y se le PASA al modelo en cada
+  // pasada. No es cosmético: el régimen decide qué sobre es cuál (en Obras por
+  // Impuestos con Empresa Privada el 2 es la ECONÓMICA y el 3 la técnica, al
+  // revés de lo que cualquiera supondría), de cuánto es la garantía de fiel
+  // cumplimiento (4% ahí, 10% en todo lo demás) y si existen los adelantos
+  // (en OxI no existen). Sin decírselo, el modelo rellenaba con «lo que suele
+  // ser» y ponía un 10% que esas bases no piden.
+  const clasificacion = clasificarRegimen(markdown);
+  const regimen = clasificacion.regimen;
+  if (clasificacion.conflicto) alertas.push(clasificacion.conflicto);
+  avisar({ paso: 'indice', detalle: resumen, regimen });
+
+  // ── 2.c. Los campos que la entidad dejó sin llenar ───────────────
+  //
+  // Unas bases publicadas con «[CONSIGNAR EL MONTO]» adentro son unas bases a
+  // medio editar. El verificador ya no deja pasar un dato sacado de ahí; acá
+  // se avisa una sola vez, con la cuenta, porque cambia la decisión: eso se
+  // pregunta en la etapa de consultas, no se adivina.
+  const sinLlenar = camposSinLlenar(markdown);
+  if (sinLlenar.length) {
+    alertas.push(`El documento trae ${sinLlenar.length} campo(s) de la plantilla SIN LLENAR por la entidad (${sinLlenar.slice(0, 3).join(' · ')}${sinLlenar.length > 3 ? ' …' : ''}). Lo que dependa de ellos no está en las bases: consúltalo a la entidad.`);
+  }
 
   const hayAlgo = Object.values(resumen).some(r => r.aciertos > 0);
   if (!hayAlgo) {
     alertas.push('No se reconoció ninguna sección típica de unas bases. Puede que el documento no sea unas bases, o que el OCR haya salido ilegible.');
     return { markdown, indice, rangos: null, resultado: { requisitos: [], alertas }, alertas,
+      regimen, clasificacionRegimen: clasificacion,
+      regimenLabel: regimen ? REGIMENES[regimen]?.label : null, camposSinLlenar: sinLlenar,
       filas: [], filasEmpresa: [], cabecera: null, cronograma: [], extras: aExtrasProceso({}),
       sugerencias: { tipo_trabajo: null }, reusado,
       paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos] };
@@ -362,7 +406,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     const etiqueta = etiquetaDada || (desde === hasta ? `${desde}` : `${desde}–${hasta}`);
     avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta}` });
     try {
-      const data = await pedir({ accion: 'extraer', texto, seccion: familia });
+      const data = await pedir({ accion: 'extraer', texto, seccion: familia, regimen });
       const r = data.resultado || {};
       if (data.model) modelos.add(data.model);
       usdPasadas += Number(data.costo) || 0;
@@ -491,6 +535,11 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
 
   return {
     markdown, indice, rangos,
+    // Bajo qué norma se rige, con la cuenta que lo justifica. La pantalla lo
+    // muestra: es el dato que ordena todo lo demás.
+    regimen, clasificacionRegimen: clasificacion,
+    regimenLabel: regimen ? REGIMENES[regimen]?.label : null,
+    camposSinLlenar: sinLlenar,
     resultado: verificado,
     // Ya traducido a lo que la pantalla guarda: la fila de licitacion_requisitos
     // y los campos de cabecera. Que la traducción viva acá y no en el
@@ -526,15 +575,21 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
  */
 export function familiasDeAnexo(titulo) {
   const t = normalizar(titulo);
+  // El título de un anexo es EXACTAMENTE donde pega el kerning: «ANEXO N° 4- B»
+  // y «MODELO DE CA RTA DE EXPRESIÓN DE INTERES» salieron así del corpus real.
+  // Se prueban las dos formas: la legible y la que ignora los espacios.
+  const k = clave(titulo);
+  const hay = (rx, plano) => rx.test(t) || k.includes(clave(plano));
   const out = new Set();
-  if (/REQUISITOS? DE CALIFICACION|PERSONAL|PLANTEL|TERMINOS DE REFERENCIA|EXPERIENCIA DEL PERSONAL/.test(t)) {
+  if (/REQUISITOS? DE CALIFICACION|PERSONAL|PLANTEL|TERMINOS DE REFERENCIA|EXPERIENCIA DEL PERSONAL/.test(t)
+    || k.includes('REQUISITOSDECALIFICACION') || k.includes('PERSONALCLAVE')) {
     out.add('personal'); out.add('empresa');
   }
-  if (/CALENDARIO|CRONOGRAMA|ETAPAS DEL PROCESO/.test(t)) out.add('proceso');
-  if (/FACTORES DE EVALUACION|CALIFICACION DE LAS PROPUESTAS|EVALUACION/.test(t)) out.add('empresa');
-  if (/PRESENTACION DE PROPUESTAS|CONTENIDO DE LAS? (OFERTAS?|PROPUESTAS?)|SOBRE/.test(t)) out.add('empresa');
-  if (/CONTRATO|CONVENIO|GARANTIA|PENALIDAD|CONDICIONES/.test(t)) out.add('empresa');
-  if (/GENERALIDADES|CONVOCATORIA|OBJETO|VALOR REFERENCIAL|MONTO REFERENCIAL/.test(t)) out.add('proceso');
+  if (hay(/CALENDARIO|CRONOGRAMA|ETAPAS DEL PROCESO/, 'CRONOGRAMA')) out.add('proceso');
+  if (hay(/FACTORES DE EVALUACION|CALIFICACION DE LAS PROPUESTAS|EVALUACION/, 'FACTORES DE EVALUACION')) out.add('empresa');
+  if (hay(/PRESENTACION DE PROPUESTAS|CONTENIDO DE LAS? (OFERTAS?|PROPUESTAS?)|SOBRE/, 'CONTENIDO DE LOS SOBRES')) out.add('empresa');
+  if (hay(/CONTRATO|CONVENIO|GARANTIA|PENALIDAD|CONDICIONES/, 'PENALIDADES')) out.add('empresa');
+  if (hay(/GENERALIDADES|CONVOCATORIA|OBJETO|VALOR REFERENCIAL|MONTO REFERENCIAL/, 'MONTO REFERENCIAL')) out.add('proceso');
   return [...out];
 }
 
@@ -572,7 +627,14 @@ export function fusionarRangos(rangos) {
  */
 export const MAX_VENTANAS = 6;
 export const MAX_VENTANAS_PERSONAL = 14;
-const ventanasDe = (familia) => (familia === 'personal' ? MAX_VENTANAS_PERSONAL : MAX_VENTANAS);
+/** Las familias nuevas llevan menos ventanas a propósito: sus rótulos son muy
+ *  repetidos («PENALIDADES» sale en el índice, en el pliego y en el convenio)
+ *  y abrir seis zonas por cada una alargaba la espera sin traer datos nuevos.
+ *  Cuatro alcanza para el proyecto de convenio, que es donde están de verdad. */
+export const MAX_VENTANAS_SECUNDARIA = 4;
+const FAMILIAS_SECUNDARIAS = new Set(['contrato', 'evaluacion', 'presentacion']);
+const ventanasDe = (familia) => (familia === 'personal' ? MAX_VENTANAS_PERSONAL
+  : (FAMILIAS_SECUNDARIAS.has(familia) ? MAX_VENTANAS_SECUNDARIA : MAX_VENTANAS));
 
 /** Tramos por tanda en el barrido de respaldo. */
 export const TRAMOS_POR_TANDA = 6;

@@ -12,6 +12,8 @@ import {
   textoDeRango, verificarCita, verificarResultado,
   aFilaRequisito, aFilasRequisitos, aCabeceraLicitacion, costoDelAnalisis,
   USD_POR_PAGINA_OCR,
+  clave, contarClave, clasificarRegimen, esRenglonDeIndice,
+  citaEsPlantilla, camposSinLlenar, SECCIONES,
 } from '../bases-extraccion.js';
 import { rangosDeFamilia } from '../bases-analisis.js';
 
@@ -479,5 +481,188 @@ describe('verificarResultado — la aduana ahora cubre también lo de la mig 200
     expect(r.garantias[1].verificada).toBe(false);
     expect(r.garantias).toHaveLength(2);           // no se borra: se marca
     expect(r.alertas.join(' ')).toMatch(/adelanto directo del treinta|garantía/i);
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// LAS CINCO TRAMPAS DE PARSEO, medidas sobre el corpus real y no supuestas.
+// Cada `it` de acá abajo es una variante que EXISTE en un documento oficial.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('clave — el normalizador que ignora los espacios del kerning', () => {
+  // Las cinco variantes con las que se validó el normalizador al 100%.
+  it('acierta en las variantes reales del corpus', () => {
+    const pares = [
+      ['SOBRE N° 1: CREDENCIALES', 'SOBRE N°01: CREDENCIALES'],
+      ['SOBRE N° 1: CREDENCIALES', 'SOBRE Nº 1: Credenciales'],
+      ['ANEXO N° 4-B:', 'ANEXO N° 4- B:'],
+      ['MODELO DE CARTA DE EXPRESIÓN DE INTERÉS', 'MODELO DE CA RTA DE EXPRESIÓN DE INTERES'],
+      ['SOBRE N° 3: PROPUESTA TÉCNICA', 'SOBRE N°03: PROPUESTA TÉCNICA'],
+      ['CONTENIDO DE LOS SOBRES', 'CONTENIDO DE LO S SOBRES'],
+    ];
+    for (const [rotulo, real] of pares) {
+      expect(clave(real)).toContain(clave(rotulo));
+    }
+  });
+
+  it('N° (grado) y Nº (ordinal) se ven igual y conviven en el mismo documento', () => {
+    expect(clave('ANEXO N° 7')).toBe(clave('ANEXO Nº 7'));
+  });
+
+  it('los ceros a la izquierda no hacen un sobre distinto', () => {
+    expect(clave('SOBRE N° 01')).toBe(clave('SOBRE N°1'));
+    expect(clave('SOBRE N 03')).toBe(clave('SOBRE N° 3'));
+  });
+
+  it('las tildes que el original oficial no puso no rompen nada', () => {
+    expect(clave('CAPITULO II')).toBe(clave('CAPÍTULO II'));
+    expect(clave('OFERTA ECONOMICA')).toBe(clave('OFERTA ECONÓMICA'));
+  });
+
+  it('normalizar() NO alcanza para esto, y por eso clave() existe', () => {
+    expect(normalizar('CONTENIDO DE LO S SOBRES')).not.toContain('CONTENIDO DE LOS SOBRES');
+    expect(clave('CONTENIDO DE LO S SOBRES')).toContain(clave('CONTENIDO DE LOS SOBRES'));
+  });
+});
+
+describe('el índice encuentra los rótulos partidos por el kerning', () => {
+  const MD_KERNING = `<!-- página 30 -->
+CONTENIDO DE LO S SOBRES A SER PRESENTADOS POR EL POSTOR
+
+<!-- página 58 -->
+CLÁUSULA OCTAVA: GARANTIAS
+El Ejecutor entregará una carta fianza por el 4% del monto referencial.
+
+<!-- página 62 -->
+CLÁUSULA DÉCIMOTERCERA: PENALIDADES
+Penalidad Diaria = 0.10 x monto / (0.15 x plazo)`;
+
+  it('el rótulo con el espacio adentro cae igual', () => {
+    const i = indiceDeSecciones(MD_KERNING);
+    expect(i.presentacion.map(h => h.pagina)).toContain(30);
+  });
+
+  it('las garantías y las penalidades tienen su propia familia (viven al final)', () => {
+    const i = indiceDeSecciones(MD_KERNING);
+    expect(i.contrato.map(h => h.pagina)).toEqual(expect.arrayContaining([58, 62]));
+  });
+
+  it('la familia contrato existe con sus rótulos medidos', () => {
+    expect(SECCIONES.contrato.claves).toContain('ADELANTO POR AVANCE');
+    expect(SECCIONES.contrato.claves).toContain('CUADERNO DE INCIDENCIAS');
+  });
+});
+
+describe('esRenglonDeIndice — el rótulo del índice no es la sección', () => {
+  it('reconoce la línea de puntos con el número de página', () => {
+    expect(esRenglonDeIndice('ANEXO C: REQUISITOS DE CALIFICACIÓN ............ 31')).toBe(true);
+    expect(esRenglonDeIndice('CAPÍTULO IV     41')).toBe(true);
+  });
+  it('la sección de verdad no se marca', () => {
+    expect(esRenglonDeIndice('REQUISITOS DE CALIFICACIÓN')).toBe(false);
+  });
+  it('el índice queda marcado en el hit, no borrado', () => {
+    const i = indiceDeSecciones(`<!-- página 3 -->
+REQUISITOS DE CALIFICACIÓN ................ 31
+
+<!-- página 31 -->
+REQUISITOS DE CALIFICACIÓN
+Capacidad legal`);
+    const hits = i.personal;
+    expect(hits.find(h => h.pagina === 3)?.deIndice).toBe(true);
+    expect(hits.find(h => h.pagina === 31)?.deIndice).toBeUndefined();
+  });
+});
+
+describe('clasificarRegimen — los contadores medidos, no una impresión', () => {
+  it('SOBRE N° 3 + CREDENCIALES es Obras por Impuestos, Empresa Privada', () => {
+    const c = clasificarRegimen('SOBRE N° 1: CREDENCIALES ... SOBRE N°03: PROPUESTA TÉCNICA');
+    expect(c.regimen).toBe('oxi_empresa');
+    expect(c.confianza).toBe('alta');
+    expect(c.senales.sobre3).toBe(1);
+  });
+
+  it('SOBRE N° 2 sin un tercero, con requisitos de calificación, es la supervisora', () => {
+    const c = clasificarRegimen('SOBRE N° 2: PROPUESTA ECONÓMICA — REQUISITOS DE CALIFICACIÓN del postor');
+    expect(c.regimen).toBe('oxi_supervisora');
+  });
+
+  it('cuantía + Pladicop es la Ley 32069, con confianza alta', () => {
+    const c = clasificarRegimen('la CUANTÍA DE LA CONTRATACIÓN se publica en la Pladicop');
+    expect(c.regimen).toBe('ley32069');
+    expect(c.confianza).toBe('alta');
+  });
+
+  it('valor referencial + obras similares + póliza de caución es la Ley 30225', () => {
+    const c = clasificarRegimen('el VALOR REFERENCIAL de OBRAS SIMILARES, con carta fianza o póliza de caución');
+    expect(c.regimen).toBe('ley30225');
+  });
+
+  it('cuenta las apariciones, no solo si están', () => {
+    const k = clave('MONTO REFERENCIAL uno, MONTO REFERENCIAL dos, MONTO REFERENCIAL tres');
+    expect(contarClave(k, 'MONTO REFERENCIAL')).toBe(3);
+  });
+
+  it('valor referencial y cuantía son excluyentes: si están los dos, se avisa', () => {
+    const c = clasificarRegimen('el VALOR REFERENCIAL … la CUANTÍA DE LA CONTRATACIÓN');
+    expect(c.conflicto).toBeTruthy();
+    expect(c.conflicto).toContain('excluyentes');
+  });
+
+  it('un documento que no es unas bases no se fuerza a ningún régimen', () => {
+    expect(clasificarRegimen('lista de precios de abarrotes').regimen).toBeNull();
+  });
+});
+
+describe('[CONSIGNAR …] — el campo que la ENTIDAD dejó sin llenar', () => {
+  const MD_PLANTILLA = `<!-- página 4 -->
+El valor referencial asciende a [CONSIGNAR EL MONTO] soles, IGV incluido.
+La presentación de ofertas será el [INDICAR LA FECHA].`;
+
+  it('una cita que es el marcador NO se da por buena, aunque esté literal', () => {
+    const v = verificarCita(MD_PLANTILLA, 'El valor referencial asciende a [CONSIGNAR EL MONTO] soles');
+    expect(v.verificada).toBe(false);
+    expect(v.motivo).toContain('SIN LLENAR');
+  });
+
+  it('los marcadores se listan para avisarle a la persona', () => {
+    const c = camposSinLlenar(MD_PLANTILLA);
+    expect(c).toHaveLength(2);
+    expect(c[0]).toContain('CONSIGNAR EL MONTO');
+  });
+
+  it('una cita normal sigue pasando', () => {
+    expect(citaEsPlantilla('Experiencia no menor de 03 años')).toBe(false);
+  });
+
+  it('el dato sacado de un marcador va a revisión con su motivo', () => {
+    const r = verificarResultado({
+      proceso: {},
+      requisitos_empresa: [{
+        tipo: 'experiencia_postor', descripcion: 'monto facturado',
+        fuente_pagina: 4, fuente_cita: 'El valor referencial asciende a [CONSIGNAR EL MONTO] soles',
+      }],
+    }, MD_PLANTILLA);
+    expect(r.requisitos_empresa[0].verificada).toBe(false);
+    expect(r.alertas.join(' ')).toContain('SIN LLENAR');
+  });
+});
+
+describe('la cita que el modelo copió arreglando el kerning', () => {
+  const MD = `<!-- página 30 -->
+CONTENIDO DE LO S SOBRES A SER PRESENTADOS POR EL POSTOR, bajo sanción de nulidad`;
+
+  it('se acepta, y se dice por qué (antes era un ⚠ falso sobre un dato bueno)', () => {
+    const v = verificarCita(MD, 'CONTENIDO DE LOS SOBRES A SER PRESENTADOS POR EL POSTOR');
+    expect(v.verificada).toBe(true);
+    expect(v.motivo).toContain('kerning');
+    expect(v.paginaReal).toBe(30);
+  });
+
+  it('una cita de verdad inventada sigue sin pasar', () => {
+    const v = verificarCita(MD, 'el postor deberá acreditar un patrimonio neto de S/ 5,000,000');
+    expect(v.verificada).toBe(false);
+    expect(v.motivo).toContain('no aparece');
   });
 });
