@@ -570,7 +570,73 @@ export function armarFicha({ ficha: resFicha, documentos = [], markdown = '', ru
   };
 }
 
+// ── Volver a leer el CV: qué CAMBIA, no qué pisa ───────────────────
+//
+// Gabriel, 8-set-2026: «debería el botón decir como volver a revisar con IA
+// para ver mejoras. En caso de que encuentre cosas distintas o fallos, pues
+// serviría eso, NO PARA QUE LO CAMBIE Y YA».
+//
+// Tiene razón y es la misma regla de todo el módulo: la IA propone, la persona
+// decide. Releer un CV que ya se cargó no puede pisar en silencio un dato que
+// alguien corrigió a mano o que ya verificó contra su constancia. Esto compara
+// lo leído con lo guardado y devuelve las tres cosas que importan: lo que
+// falta, lo que difiere, y lo que ya está igual.
+
+const CAMPOS_FICHA_COMPARABLES = [
+  ['profesion', 'Profesión'], ['titulo', 'Título'], ['universidad', 'Universidad'],
+  ['anio_egreso', 'Año de egreso'], ['colegio', 'Colegio'], ['colegiatura_numero', 'N° de colegiatura'],
+  ['colegiatura_fecha', 'Colegiado desde'], ['colegiatura_habil_hasta', 'Habilitado hasta'],
+  ['ruc', 'RUC'], ['rnp_numero', 'RNP'], ['resumen', 'Resumen'],
+];
+
+const vacio = (v) => v == null || v === '' || (Array.isArray(v) && !v.length);
+
+/** ¿Estas dos experiencias son la misma? Misma entidad y periodo que se pisa. */
+export function mismaExperiencia(a, b) {
+  if (!mismaEntidad(a.entidad, b.entidad, a.entidad_ruc, b.entidad_ruc)) return false;
+  const ai = aDia(a.fecha_inicio), bi = aDia(b.fecha_inicio);
+  if (ai == null || bi == null) return normalizar(a.cargo) === normalizar(b.cargo);
+  return Math.abs(ai - bi) <= 45;
+}
+
+/**
+ * Compara una lectura nueva contra lo que ya está guardado.
+ * @returns {
+ *   campos:   [{ campo, label, actual, leido, estado }]  estado: falta|difiere|igual
+ *   nuevas:   experiencias que no estaban
+ *   yaEstan:  cuántas coinciden con una guardada
+ *   cursos:   capacitaciones que no estaban
+ *   hayAlgo:  si vale la pena mostrar algo
+ * }
+ */
+export function compararCv({ fichaActual = {}, experienciasActuales = [], leido = {} }) {
+  const fl = leido.ficha || {};
+  const campos = CAMPOS_FICHA_COMPARABLES.map(([campo, label]) => {
+    const actual = fichaActual?.[campo] ?? null;
+    const nuevo = fl[campo] ?? null;
+    if (vacio(nuevo)) return null;
+    const estado = vacio(actual) ? 'falta'
+      : (normalizar(String(actual)) === normalizar(String(nuevo)) ? 'igual' : 'difiere');
+    return { campo, label, actual, leido: nuevo, estado };
+  }).filter(Boolean);
+
+  const vivas = (experienciasActuales || []).filter(e => !e.deleted_at);
+  const nuevas = [], yaEstan = [];
+  for (const e of (leido.experiencias || [])) {
+    (vivas.some(x => mismaExperiencia(x, e)) ? yaEstan : nuevas).push(e);
+  }
+
+  const yaCursos = new Set((fichaActual?.capacitaciones || []).map(c => normalizar(c.nombre).slice(0, 80)));
+  const cursos = (fl.capacitaciones || []).filter(c => !yaCursos.has(normalizar(c.nombre).slice(0, 80)));
+
+  return {
+    campos, nuevas, yaEstan: yaEstan.length, cursos,
+    hayAlgo: campos.some(c => c.estado !== 'igual') || nuevas.length > 0 || cursos.length > 0,
+  };
+}
+
 export default {
+  compararCv, mismaExperiencia,
   normalizarFechaCv, separarNombre, aPersona, aFicha, aCapacitaciones, colegioDeProfesion,
   PALABRAS_RUBRO, proponerRubro, TIPOS_SUSTENTO_TRABAJO, mismaEntidad, emparejarConstancias,
   completarFichaConDocumentos, aFilaExperiencia, aFilasExperiencia, filaLimpia, verificarCv,

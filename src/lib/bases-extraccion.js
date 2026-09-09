@@ -373,6 +373,65 @@ export function aFilasRequisitos(resultado) {
 }
 
 /**
+ * Palabras que delatan que un supuesto «puesto del plantel» es en realidad un
+ * requisito de la EMPRESA.
+ *
+ * 🔴 CASO REAL (8-set-2026): las bases de ejecución devolvieron «Ejecutor del
+ * Proyecto» como cuarto puesto del plantel, con la cita «el Postor deberá
+ * acreditar MONTO FACTURADO ACUMULADO EQUIVALENTE A DOS (2) VECES EL MONTO
+ * TOTAL DE INVERSIÓN REFERENCIAL». Eso no es una persona: es la experiencia
+ * del postor. Gabriel lo vio de una: «ejecutor de obra es la entidad que se
+ * encarga de ejecutar, eso no es un profesional».
+ *
+ * Y no es un detalle cosmético: un puesto falso deja el veredicto en ⛔ para
+ * siempre, porque ninguna persona del padrón va a «calificar» como empresa.
+ */
+export const CARGOS_QUE_SON_LA_EMPRESA = [
+  'POSTOR', 'EJECUTOR DEL PROYECTO', 'EJECUTOR DE LA INVERSION', 'EJECUTOR DE OBRA',
+  'EMPRESA PRIVADA', 'ENTIDAD PRIVADA SUPERVISORA', 'CONSORCIO', 'CONTRATISTA',
+  'PERSONA JURIDICA', 'EL PROVEEDOR', 'LA EMPRESA', 'CONSULTOR EJECUTOR',
+];
+
+/** Señales de que la exigencia se mide en DINERO o en papeles de la empresa,
+ *  no en meses de una persona. */
+const RX_PLATA_DE_EMPRESA = /(MONTO FACTURADO|FACTURACION|VALOR REFERENCIAL|CAPACIDAD LIBRE DE CONTRATACION|PATRIMONIO NETO|VECES EL MONTO|VOLUMEN DE VENTAS)/;
+
+/**
+ * ¿Este «puesto» es en realidad la empresa? Mira el cargo y, si el cargo no lo
+ * delata, la exigencia: nadie le pide a un ingeniero un monto facturado.
+ */
+export function pareceRequisitoDeEmpresa(req = {}) {
+  const cargo = normalizar(req.cargo);
+  if (!cargo) return false;
+  if (CARGOS_QUE_SON_LA_EMPRESA.some(c => cargo === c || cargo.startsWith(c + ' ') || cargo.endsWith(' ' + c) || cargo === `EL ${c}` || cargo === `LA ${c}`)) return true;
+  const texto = normalizar(`${req.fuente_cita || ''} ${req.notas || ''} ${req.descripcion || ''}`);
+  // Un cargo que además exige plata de empresa: es del postor.
+  if (RX_PLATA_DE_EMPRESA.test(texto) && !/COLEGIAD|TITULAD|PROFESIONAL TITULADO/.test(texto)) return true;
+  return false;
+}
+
+/** Un puesto mal clasificado, convertido a requisito de empresa. */
+export function comoRequisitoDeEmpresa(req = {}) {
+  const texto = normalizar(`${req.fuente_cita || ''} ${req.descripcion || ''}`);
+  const tipo = /MONTO FACTURADO|VECES EL MONTO|EXPERIENCIA/.test(texto) ? 'experiencia_postor'
+    : (/FACTURACION|VOLUMEN DE VENTAS/.test(texto) ? 'facturacion'
+      : (/CAPACIDAD LIBRE/.test(texto) ? 'capacidad_contratacion'
+        : (/PATRIMONIO/.test(texto) ? 'patrimonio' : 'otro')));
+  return {
+    tipo,
+    descripcion: req.descripcion || req.cargo || null,
+    monto_minimo: null,
+    multiplo_valor_referencial: null,
+    ventana_anios: req.ventana_anios ?? null,
+    fuente_pagina: req.fuente_pagina ?? null,
+    fuente_cita: req.fuente_cita || null,
+    verificada: req.verificada,
+    verificacion_motivo: req.verificacion_motivo,
+    _reclasificado: req.cargo || null,
+  };
+}
+
+/**
  * Un requisito de la EMPRESA (clase 'empresa', mig 199): no se mide en meses
  * de un cargo sino en montos, múltiplos del valor referencial y papeles (RNP,
  * capacidad de contratación). `cargo` guarda el rótulo corto del tipo para que
@@ -397,7 +456,8 @@ export function aFilaRequisitoEmpresa(req = {}, { orden = 100 } = {}) {
     orden,
     cargo: TIPO_REQ_EMPRESA_LBL[tipo],
     profesion: null,
-    descripcion: req.descripcion ? String(req.descripcion).trim().slice(0, 600) : null,
+    descripcion: [req.descripcion, req.obras_similares ? `Obras similares según estas bases: ${req.obras_similares}` : null]
+      .filter(Boolean).join(' — ').trim().slice(0, 900) || null,
     monto_minimo: Number.isFinite(monto) && monto > 0 ? monto : null,
     multiplo_valor_referencial: Number.isFinite(mult) && mult > 0 ? mult : null,
     ventana_anios: req.ventana_anios != null ? Math.round(num(req.ventana_anios)) || null : null,
@@ -620,15 +680,80 @@ export function aCondiciones(resultado = {}) {
     .filter(c => c.titulo || c.detalle);
 }
 
+/**
+ * Quita repetidos de una lista de extras.
+ *
+ * 🔴 En la prueba del 8-set salieron «Sistema de contratación de Tarifas»,
+ * «Costo de reproducción de las Bases» y «Plazo de prestación del servicio»
+ * DOS VECES cada uno: dos pasadas sobre zonas que se pisan devuelven lo mismo,
+ * y las listas de extras no tenían dedup (los requisitos sí). La identidad es
+ * la cita, que es lo único que no cambia entre una pasada y la otra; si no hay
+ * cita, el título.
+ */
+export function sinRepetidos(lista) {
+  const vistos = new Set();
+  const out = [];
+  for (const x of (lista || [])) {
+    const k = normalizar(x.fuente_cita || x.titulo || x.factor || x.documento || x.detalle).slice(0, 140);
+    if (!k || vistos.has(k)) continue;
+    vistos.add(k);
+    out.push(x);
+  }
+  return out;
+}
+
 /** Todo lo de la mig 200 junto, para guardarlo en la postulación. */
 export function aExtrasProceso(resultado = {}) {
   return {
-    factores_evaluacion: aFactoresEvaluacion(resultado),
-    garantias: aGarantias(resultado),
-    penalidades: aPenalidades(resultado),
-    documentos_presentacion: aDocumentosPresentacion(resultado),
-    condiciones: aCondiciones(resultado),
+    factores_evaluacion: sinRepetidos(aFactoresEvaluacion(resultado)),
+    garantias: sinRepetidos(aGarantias(resultado)),
+    penalidades: sinRepetidos(aPenalidades(resultado)),
+    documentos_presentacion: sinRepetidos(aDocumentosPresentacion(resultado)),
+    condiciones: sinRepetidos(aCondiciones(resultado)),
   };
+}
+
+/**
+ * El RUIDO de las alertas: lo que una pasada dice sobre lo que NO le tocó leer.
+ *
+ * 🔴 En la prueba del 8-set salieron 55 alertas y la mayoría eran la misma
+ * queja escrita de ocho maneras: «el ANEXO C no fue proporcionado», «se
+ * requiere el texto de las páginas 30 en adelante», «no es posible determinar
+ * el objeto porque el contenido no fue incluido». Son ciertas para ESA pasada
+ * —cada una recibe un tramo, no el documento— y falsas para la lectura
+ * completa, porque otra pasada sí leyó esa parte. Gabriel: «55 para revisar a
+ * mano es una barbaridad».
+ *
+ * No se borran a ciegas: se apartan. Lo accionable queda arriba y el ruido se
+ * puede ver aparte, porque a veces el anexo de verdad no vino en el archivo.
+ */
+const RX_ALERTA_DE_TRAMO = new RegExp([
+  'NO (FUE|FUERON|ESTA|ESTAN|SE) (PROPORCIONAD|INCLUID|SUMINISTRAD|ENCONTR)',
+  'NO (APARECE|APARECEN|SE ENCUENTRA|SE ENCUENTRAN|SE INDICA|SE ESPECIFICA|SE MENCIONA|SE PUDO EXTRAER|ESTA DISPONIBLE|ESTAN DISPONIBLES)',
+  'NO (ES POSIBLE|SE PUDIERON|PUDIERON) (DETERMINAR|EXTRAER)',
+  'SE REQUIERE (EL TEXTO|REVISAR|LAS PAGINAS)',
+  'EN EL TEXTO PROPORCIONADO',
+  'PAGINAS PROPORCIONADAS',
+  'EL TEXTO PROPORCIONADO (CONTIENE|CORRESPONDE)',
+  'NO INCLUIDO',
+].join('|'));
+
+/**
+ * Parte las alertas en las que hay que atender y el ruido de tramo.
+ * @returns { accionables, deTramo }
+ */
+export function clasificarAlertas(alertas) {
+  const accionables = [], deTramo = [];
+  for (const a of (alertas || [])) {
+    const t = String(a || '');
+    // Las que arma `verificarResultado` NUNCA son ruido: son datos que el
+    // modelo afirmó y el documento no respalda. Empiezan con la cosa entre
+    // comillas angulares y dicen que la cita no aparece — que es exactamente
+    // lo que el filtro de abajo buscaría, y acá significa lo contrario.
+    if (t.trimStart().startsWith('«')) { accionables.push(t); continue; }
+    (RX_ALERTA_DE_TRAMO.test(normalizar(t)) ? deTramo : accionables).push(t);
+  }
+  return { accionables, deTramo };
 }
 
 // ── El costo, medido y no estimado ─────────────────────────────────
@@ -658,6 +783,8 @@ export default {
   aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
   aFactoresEvaluacion, aGarantias, aPenalidades, aDocumentosPresentacion,
-  aCondiciones, aExtrasProceso, TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL,
+  aCondiciones, aExtrasProceso, sinRepetidos, clasificarAlertas,
+  pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, CARGOS_QUE_SON_LA_EMPRESA,
+  TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL,
   TIPO_REQ_EMPRESA_LBL, MAX_CHARS_RANGO, costoDelAnalisis, USD_POR_PAGINA_OCR,
 };

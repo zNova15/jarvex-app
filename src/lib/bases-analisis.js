@@ -22,10 +22,12 @@
 import {
   bloquesDePdf, bloquesDeDocx, bloquesAMarkdown, resumenTriage,
 } from './bases-triage.js';
+import { partirEnAnexos } from './documentos-partes.js';
 import {
-  indiceDeSecciones, resumenIndice, textoDeRango,
+  indiceDeSecciones, resumenIndice, textoDeRango, fragmentosPorPagina,
   verificarResultado, costoDelAnalisis, aFilasRequisitos, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, sugerenciasDe, aExtrasProceso, normalizar,
+  pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, clasificarAlertas,
 } from './bases-extraccion.js';
 
 /** Cuántas veces se parte un rango que no entra en una respuesta.
@@ -348,8 +350,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
    * Cada intento con un gratuito cuesta USD 0, así que insistir es gratis y
    * rendirse era caro: se perdía la sección entera del plantel.
    */
-  async function extraerTrozo(familia, desde, hasta, nivel) {
-    const texto = textoDeRango(markdown, desde, hasta);
+  async function extraerTrozo(familia, desde, hasta, nivel, textoDado = null, etiquetaDada = null) {
+    const texto = textoDado != null ? textoDado : textoDeRango(markdown, desde, hasta);
     if (!texto.trim()) return;
     // La llave es el TEXTO, no el rango: dos familias pueden pedir rangos
     // distintos —{1,1} y {1,2}— que en un documento de una página resuelven
@@ -357,7 +359,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     const llave = `${promptDe(familia)}|${texto.length}|${texto.slice(0, 300)}|${texto.slice(-300)}`;
     if (pedidos.has(llave)) return;
     pedidos.set(llave, familia);
-    const etiqueta = desde === hasta ? `${desde}` : `${desde}–${hasta}`;
+    const etiqueta = etiquetaDada || (desde === hasta ? `${desde}` : `${desde}–${hasta}`);
     avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta}` });
     try {
       const data = await pedir({ accion: 'extraer', texto, seccion: familia });
@@ -370,6 +372,10 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
         const h = huella(req);
         if (vistos.has(h)) continue;
         vistos.add(h);
+        // UN «PUESTO» QUE EN REALIDAD ES EL POSTOR NO VA AL PLANTEL. «Ejecutor
+        // del Proyecto» con un monto facturado acumulado no es una persona, y
+        // dejarlo entre los puestos deja el veredicto en ⛔ para siempre.
+        if (pareceRequisitoDeEmpresa(req)) { requisitosEmpresa.push(comoRequisitoDeEmpresa(req)); continue; }
         requisitos.push({ ...req, clase: 'personal' });
       }
       for (const req of (Array.isArray(r.requisitos_empresa) ? r.requisitos_empresa : [])) {
@@ -388,13 +394,24 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
         extras.consorcio = r.consorcio;
       }
     } catch (e) {
-      const partible = e.code === 'respuesta_cortada' && nivel < MAX_PARTICIONES && hasta > desde;
-      if (partible) {
-        const medio = Math.floor((desde + hasta) / 2);
+      if (e.code === 'respuesta_cortada' && nivel < MAX_PARTICIONES) {
         avisar({ paso: 'extraer', detalle: `${familia} · ${etiqueta} era muy largo, se parte en dos` });
-        await extraerTrozo(familia, desde, medio, nivel + 1);
-        await extraerTrozo(familia, medio + 1, hasta, nivel + 1);
-        return;
+        if (textoDado != null) {
+          // Un anexo largo se corta por la mitad de su texto, en un salto de
+          // línea para no partir una cita al medio.
+          const mitad = Math.floor(textoDado.length / 2);
+          const corte = textoDado.indexOf('\n', mitad);
+          const punto = corte > 0 ? corte : mitad;
+          await extraerTrozo(familia, desde, hasta, nivel + 1, textoDado.slice(0, punto), `${etiqueta} (1/2)`);
+          await extraerTrozo(familia, desde, hasta, nivel + 1, textoDado.slice(punto), `${etiqueta} (2/2)`);
+          return;
+        }
+        if (hasta > desde) {
+          const medio = Math.floor((desde + hasta) / 2);
+          await extraerTrozo(familia, desde, medio, nivel + 1);
+          await extraerTrozo(familia, medio + 1, hasta, nivel + 1);
+          return;
+        }
       }
       if (e.code === 'respuesta_cortada') {
         alertas.push(`El tramo ${etiqueta} de ${familia} tiene demasiado contenido para leerlo de una: quedó sin extraer. Revísalo a mano en el documento.`);
@@ -405,6 +422,35 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   }
 
 
+  // ── 4.a. LEER POR ANEXOS, cuando el documento los tiene ──────────
+  //
+  // 🔴 ESTA ES LA MEJOR UNIDAD DE LECTURA Y LA DESCUBRIMOS TARDE. Unas bases
+  // peruanas están hechas de anexos y formatos, y cada anexo ES una sección
+  // completa: el ANEXO C son los requisitos de calificación enteros, el ANEXO
+  // B el calendario entero, el ANEXO E los factores de evaluación. Medido
+  // sobre el Anexo 13 de Chilete: 23 partes, y el ANEXO C mide 11.521
+  // caracteres — entra cómodo en una sola pasada.
+  //
+  // Trocear ESO es mucho mejor que cortar cada 3.000 caracteres: un tramo
+  // arbitrario parte el requisito del Residente por la mitad y el modelo ve
+  // media frase. Por eso antes salía un puesto de cuatro.
+  //
+  // Los tramos siguen existiendo como respaldo: un PDF escaneado sin rótulos
+  // reconocibles no tiene anexos que separar.
+  const anexos = partirEnAnexos(markdown);
+  const leidosPorAnexo = new Set();
+  if (anexos.length >= 3) {
+    avisar({ paso: 'anexos', total: anexos.length });
+    for (const parte of anexos) {
+      const familias = familiasDeAnexo(parte.titulo);
+      for (const familia of familias) {
+        leidosPorAnexo.add(familia);
+        await extraerTrozo(familia, parte.pagina ?? 1, parte.pagina ?? 1, 0,
+          `<!-- página ${parte.pagina ?? 1} -->\n${parte.texto}`, parte.titulo.slice(0, 60));
+      }
+    }
+  }
+
   for (const familia of FAMILIAS_EXTRAIBLES) {
     const trozos = familia === 'proceso'
       // El calendario vive con los datos del proceso: sus rangos se suman.
@@ -412,6 +458,26 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
       : rangosDeFamilia(rangos, resumen, familia);
     for (const trozo of trozos) {
       await extraerTrozo(familia, trozo.desde, trozo.hasta, 0);
+    }
+  }
+
+  // ── 4.5. EL BARRIDO DE RESPALDO ──────────────────────────────────
+  //
+  // Si después de leer las zonas que el índice y la IA eligieron NO apareció
+  // ni un puesto del plantel, se recorre el documento entero en tandas y se
+  // apila lo que salga. Es la idea de Gabriel, y es razonable justamente
+  // porque con un gratuito cada tanda cuesta USD 0: lo caro es presentarse a
+  // un proceso sin saber qué plantel piden.
+  //
+  // Solo se dispara cuando falló lo dirigido, y solo para el plantel: barrer
+  // 56 tramos por gusto son 10 llamadas y dos minutos de espera.
+  const tramoMax = Math.max(0, ...fragmentosPorPagina(markdown).map(f => f.pagina || 0));
+  if (!requisitos.length && !leidosPorAnexo.has('personal') && tramoMax > TRAMOS_POR_TANDA && resumen.personal?.aciertos) {
+    avisar({ paso: 'barrido', total: tramoMax });
+    alertas.push('No apareció ningún puesto en las secciones que el índice ubicó: se recorrió el documento entero para buscarlos.');
+    for (let d = 1; d <= tramoMax; d += TRAMOS_POR_TANDA) {
+      avisar({ paso: 'barrido', hecho: d, total: tramoMax });
+      await extraerTrozo('personal', d, Math.min(d + TRAMOS_POR_TANDA - 1, tramoMax), 0);
     }
   }
 
@@ -436,13 +502,40 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     // Factores, garantías, penalidades, documentos y condiciones (mig 200).
     extras: aExtrasProceso(verificado),
     sugerencias: sugerenciasDe(verificado),
-    alertas: alertasUnicas(verificado.alertas),
+    // Lo accionable arriba; el ruido de «esta pasada no tenía el anexo X» va
+    // aparte y no infla el contador (55 alertas eran ilegibles).
+    alertas: clasificarAlertas(alertasUnicas(verificado.alertas)).accionables,
+    alertasDeTramo: clasificarAlertas(alertasUnicas(verificado.alertas)).deTramo,
     costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
     modelos: [...modelos],
     paginasOcr: leidas,
+    // Los anexos y formatos que se pudieron separar: la pantalla ofrece
+    // descargarlos como Word.
+    anexos,
     // Si el OCR salió de la caché, esta lectura no cobró el escaneo.
     reusado,
   };
+}
+
+/**
+ * Qué familias hay que buscar en este anexo, por su título.
+ *
+ * Los rótulos son los de las bases peruanas reales. Un anexo que no encaja en
+ * ninguno no se lee: leer el ANEXO A de definiciones con el prompt del plantel
+ * es una llamada tirada.
+ */
+export function familiasDeAnexo(titulo) {
+  const t = normalizar(titulo);
+  const out = new Set();
+  if (/REQUISITOS? DE CALIFICACION|PERSONAL|PLANTEL|TERMINOS DE REFERENCIA|EXPERIENCIA DEL PERSONAL/.test(t)) {
+    out.add('personal'); out.add('empresa');
+  }
+  if (/CALENDARIO|CRONOGRAMA|ETAPAS DEL PROCESO/.test(t)) out.add('proceso');
+  if (/FACTORES DE EVALUACION|CALIFICACION DE LAS PROPUESTAS|EVALUACION/.test(t)) out.add('empresa');
+  if (/PRESENTACION DE PROPUESTAS|CONTENIDO DE LAS? (OFERTAS?|PROPUESTAS?)|SOBRE/.test(t)) out.add('empresa');
+  if (/CONTRATO|CONVENIO|GARANTIA|PENALIDAD|CONDICIONES/.test(t)) out.add('empresa');
+  if (/GENERALIDADES|CONVOCATORIA|OBJETO|VALOR REFERENCIAL|MONTO REFERENCIAL/.test(t)) out.add('proceso');
+  return [...out];
 }
 
 /** Une rangos que se tocan o se pisan; el resto queda ordenado. */
@@ -465,8 +558,24 @@ export function fusionarRangos(rangos) {
  * página con acierto). Sin páginas —un .docx— se devuelve el documento entero
  * como un solo rango, que es lo que `textoDeRango` sabe manejar.
  */
-/** Cuántas zonas del documento se leen por familia. */
+/**
+ * Cuántas zonas del documento se leen por familia.
+ *
+ * El PLANTEL lleva más que las demás y no es un capricho: los puestos están
+ * repartidos por todo el documento —el Residente en un anexo, los
+ * especialistas en otro, el maestro de obra en el TDR— y leer solo seis zonas
+ * dejaba fuera la mitad. Gabriel lo propuso así: «reintentar buscando a ver si
+ * encuentra más información e ir apilándola […] en la primera tanda los
+ * requisitos del residente, en la siguiente los del ingeniero residente, y
+ * luego los de la ambiental y el de calidad». Cada zona de más con un modelo
+ * gratuito cuesta USD 0.
+ */
 export const MAX_VENTANAS = 6;
+export const MAX_VENTANAS_PERSONAL = 14;
+const ventanasDe = (familia) => (familia === 'personal' ? MAX_VENTANAS_PERSONAL : MAX_VENTANAS);
+
+/** Tramos por tanda en el barrido de respaldo. */
+export const TRAMOS_POR_TANDA = 6;
 
 /**
  * Los rangos a leer de una familia: **la unión** de lo que eligió el Pase 1 y
@@ -504,18 +613,20 @@ export function rangosDeFamilia(rangos, resumen, familia) {
 
   if (!candidatos.length) return resumen?.[familia]?.aciertos ? [{ desde: 1, hasta: 1 }] : [];
 
+  const tope = ventanasDe(familia);
   const fusionadas = fusionarRangos(candidatos);
-  if (fusionadas.length <= MAX_VENTANAS) return fusionadas;
+  if (fusionadas.length <= tope) return fusionadas;
   // Si hay más zonas que el tope, se quedan las MÁS GRANDES: una zona larga es
   // donde el rótulo se repite, que es donde está la sección de verdad, no la
   // línea suelta del índice de contenidos.
   return [...fusionadas]
     .sort((a, b) => (b.hasta - b.desde) - (a.hasta - a.desde))
-    .slice(0, MAX_VENTANAS)
+    .slice(0, tope)
     .sort((a, b) => a.desde - b.desde);
 }
 
 export default {
   leerDocumento, presupuestar, analizar, rangosDeFamilia, fusionarRangos,
   rasterizarPagina, rotarImagen, ocrDeBloques, crearPedidor, alertasUnicas,
+  familiasDeAnexo,
 };

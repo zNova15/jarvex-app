@@ -40,6 +40,7 @@ import {
 } from "../lib/licitaciones.js";
 import { buscarPlantel, formatearMeses } from "../lib/experiencia-profesional.js";
 import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL } from "../lib/bases-extraccion.js";
+import { agruparPorSobre } from "../lib/documentos-partes.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
@@ -253,10 +254,14 @@ function LicitacionesPage({ showToast }) {
   });
 
   /** La entrada de la bitácora `licitaciones.analisis` de esta lectura. */
-  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos, unidad }) => ({
+  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos, unidad, huella, anexos }) => ({
     fecha: new Date().toISOString(),
     archivo: archivo || null,
     unidad: unidad || 'pagina',
+    // La huella permite volver a sacar los anexos de la caché sin pedir el
+    // archivo otra vez, y `anexos` es solo la lista de títulos para mostrarla.
+    huella: huella || null,
+    anexos: Array.isArray(anexos) ? anexos.slice(0, 60) : null,
     costo: costo?.total ?? null,
     modelos: modelos || [],
     paginasOcr: paginasOcr ?? null,
@@ -707,6 +712,146 @@ function PostulacionModal({ lic, rubros, companies, canWrite, busy, onClose, onG
 // ═══════════════════════════════════════════════════════════════════
 // DETALLE — requisitos del proceso y el veredicto del plantel
 // ═══════════════════════════════════════════════════════════════════
+/**
+ * EL EXPEDIENTE: qué va en cada sobre, y los anexos listos para llenar.
+ *
+ * Gabriel, 8-set-2026, dos pedidos en uno:
+ *
+ * 1. «Los sobres es algo que en toda base te explica qué es lo que deben tener
+ *    detalladamente, cómo se deben estructurar. Serían los tres sobres, casi
+ *    todas las bases te piden eso. Apártalo y que esté más desglosado.»
+ *    El dato ya se extraía —cada documento sabe a qué sobre va— pero salía en
+ *    una lista corrida de dieciocho renglones. Acá va agrupado y en el orden
+ *    en que se presentan.
+ *
+ * 2. «Me encantaría que me lo pueda separar en diferentes words para que yo
+ *    los pueda descargar […] y si está en PDF, que lo puedas convertir a Word
+ *    para reutilizarlo.»
+ *    Armar una propuesta es LLENAR estos anexos. Que la app entregue cada uno
+ *    como su propio archivo editable ahorra el copiar y pegar de un documento
+ *    de cien páginas — y funciona igual si las bases vinieron en PDF, porque
+ *    el texto ya se extrajo al leerlas.
+ */
+function Expediente({ lic, canWrite, toast }) {
+  const [bajando, setBajando] = uS(false);
+  const docs = Array.isArray(lic.documentos_presentacion) ? lic.documentos_presentacion : [];
+  const sobres = uM(() => agruparPorSobre(docs), [docs]);
+  // La última lectura sabe qué anexos tenía el documento y con qué huella
+  // recuperarlo de la caché.
+  const ultima = (Array.isArray(lic.analisis) ? lic.analisis : []).slice(-1)[0] || null;
+  const anexos = Array.isArray(ultima?.anexos) ? ultima.anexos : [];
+  const unidad = ultima?.unidad || 'pagina';
+
+  /** Saca el texto del documento de la caché y arma los Word. */
+  const separar = async (soloUno = null) => {
+    if (!ultima?.huella) { toast('Vuelve a subir las bases para poder separarlas', 'amber'); return; }
+    setBajando(true);
+    try {
+      const { leerCache } = await import('../lib/cache-lectura.js');
+      const guardado = await leerCache(ultima.huella);
+      if (!guardado?.markdown) {
+        toast('El texto de ese documento ya no está guardado en este equipo. Vuelve a subir las bases con «Leer las bases».', 'amber');
+        return;
+      }
+      const { partirEnAnexos, nombreDeArchivo: nombrar } = await import('../lib/documentos-partes.js');
+      const { textoADocx, anexosAZip, descargar } = await import('../lib/docx-generar.js');
+      const partes = partirEnAnexos(guardado.markdown)
+        .map(p => ({ ...p, pie: `Separado por JARVEX de «${ultima.archivo || 'las bases'}» · ${lic.nomenclatura || lic.objeto || ''}` }));
+      if (!partes.length) { toast('No se reconocieron anexos separables en ese documento', 'amber'); return; }
+      if (soloUno != null) {
+        const p = partes.find(x => x.n === soloUno) || partes[0];
+        descargar(await textoADocx(p), nombrar(p));
+        return;
+      }
+      descargar(await anexosAZip(partes, { nombreDe: nombrar }), `anexos-${(lic.nomenclatura || 'bases').replace(/[^A-Za-z0-9-]/g, '-').slice(0, 40)}.zip`);
+      toast(`${partes.length} anexos separados en Word`, 'green');
+    } catch (e) {
+      toast('No se pudieron separar los anexos: ' + (e?.message || e), 'red');
+    } finally { setBajando(false); }
+  };
+
+  if (!docs.length && !anexos.length) {
+    return <BloqueVacio que="lista de documentos a presentar ni anexos separables" canWrite={canWrite} />;
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {/* ── Los sobres ── */}
+      {sobres.length > 0 && (
+        <div className="card" style={{ overflow: 'hidden' }}>
+          <div style={{ padding: '9px 14px', background: 'var(--bg-c2)' }}>
+            <b style={{ fontSize: 12.5 }}>Qué va en cada sobre ({docs.length} documentos)</b>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+              En el orden en que se presentan. Lo que la lectura no supo ubicar queda al final.
+            </div>
+          </div>
+          <div style={{ padding: '10px 14px', display: 'grid', gap: 10 }}>
+            {sobres.map((g, i) => (
+              <div key={i}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 4,
+                  color: g.sinUbicar ? 'var(--amber)' : 'inherit' }}>
+                  {g.sobre} <span style={{ fontWeight: 400, color: 'var(--tm)' }}>({g.documentos.length})</span>
+                </div>
+                <div style={{ display: 'grid', gap: 3 }}>
+                  {g.documentos.map((d, k) => (
+                    <div key={k} style={{ display: 'flex', gap: 8, alignItems: 'flex-start',
+                      padding: '4px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontSize: 11 }}>
+                      <span style={{ flex: '0 0 auto', color: 'var(--tm)' }}>{k + 1}.</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        {d.documento}
+                        {d.obligatorio === false && <span style={{ color: 'var(--tm)' }}> (opcional)</span>}
+                        {d.fuente_pagina != null && (
+                          <span style={{ color: 'var(--tm)', fontSize: 10 }}> — {unidadLbl(unidad, d.fuente_pagina)}</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Los anexos, para llenar ── */}
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '9px 14px', background: 'var(--bg-c2)', display: 'flex',
+          justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div>
+            <b style={{ fontSize: 12.5 }}>Los anexos, separados para llenar ({anexos.length})</b>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+              Cada anexo como su propio Word editable. Si las bases vinieron en PDF, salen en Word igual.
+            </div>
+          </div>
+          {anexos.length > 0 && (
+            <button className="btn btn-blue btn-sm" disabled={bajando} onClick={() => separar()}>
+              {bajando ? 'Armando…' : `⬇ Descargar los ${anexos.length} en un ZIP`}
+            </button>
+          )}
+        </div>
+        {anexos.length === 0 ? (
+          <div className="empty-state" style={{ padding: '20px 14px', textAlign: 'center', fontSize: 11.5 }}>
+            La última lectura no reconoció anexos separables. Pasa con un PDF escaneado sin rótulos claros.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gap: 3, padding: '10px 14px' }}>
+            {anexos.map(a => (
+              <div key={a.n} style={{ display: 'flex', gap: 8, alignItems: 'center',
+                padding: '5px 8px', borderRadius: 5, background: 'var(--bg-c2)', fontSize: 11 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  {a.titulo}
+                  <span style={{ color: 'var(--tm)', fontSize: 10 }}> · {(a.chars || 0).toLocaleString('es-PE')} caracteres</span>
+                </span>
+                <button className="btn btn-ghost btn-xs" disabled={bajando} onClick={() => separar(a.n)}>⬇ Word</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Lo que se ve cuando un bloque del desglose está vacío: qué falta y cómo se
  *  llena. Un bloque en blanco sin explicación parece un error de la app. */
 function BloqueVacio({ que, canWrite }) {
@@ -806,6 +951,7 @@ function DetalleModal({
   const empresa = companies.find(c => c.id === lic.postulante_company_id);
   const u = urgencia(lic, hoy);
   const destino = destinoAlGanar(lic.tipo_trabajo);
+  const anexosLeidos = ((Array.isArray(lic.analisis) ? lic.analisis : []).slice(-1)[0]?.anexos || []).length;
 
   // Cada puesto de la tabla con su evaluación ya calculada por el veredicto.
   const puestoDe = (reqId) => (v?.puestos || []).find(p => p.requisitoId === reqId) || null;
@@ -817,7 +963,8 @@ function DetalleModal({
     { k: 'empresa',    icono: '🏢', label: 'La empresa',    n: filasEmpresa.length,         sub: 'requisitos del postor' },
     { k: 'participar', icono: '🤝', label: 'Cómo vamos',    n: lista('consorcio').length,   sub: 'socios del consorcio' },
     { k: 'reglas',     icono: '⚖️', label: 'Reglas',        n: reglas,                      sub: 'garantías y condiciones' },
-    { k: 'expediente', icono: '📎', label: 'Expediente',    n: lista('documentos_presentacion').length, sub: 'documentos a presentar' },
+    { k: 'expediente', icono: '📎', label: 'Expediente',    n: lista('documentos_presentacion').length,
+      sub: `documentos a presentar${anexosLeidos ? ` · ${anexosLeidos} anexos en Word` : ''}` },
     { k: 'avisos',     icono: '🔎', label: 'Lecturas',      n: lista('alertas').length,     sub: 'avisos por revisar' },
   ];
 
@@ -1079,10 +1226,7 @@ function DetalleModal({
           : <BloqueVacio que="garantías, penalidades ni condiciones" canWrite={canWrite} />
       )}
 
-      {bloque === 'expediente' && (
-        lista('documentos_presentacion').length ? <ReglasDelProceso lic={lic} soloExpediente />
-          : <BloqueVacio que="lista de documentos a presentar" canWrite={canWrite} />
-      )}
+      {bloque === 'expediente' && <Expediente lic={lic} canWrite={canWrite} toast={toast} />}
 
       {bloque === 'avisos' && <LecturasYAvisos lic={lic} />}
 
@@ -1592,7 +1736,11 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   }, [salida, lic, creando]);
   const licTieneCalendario = !creando && Array.isArray(lic.cronograma) && lic.cronograma.length > 0;
 
-  const bitacora = () => ({ archivo: archivo?.name || null, modelos: salida?.modelos || [], paginasOcr: salida?.paginasOcr ?? null, unidad });
+  const bitacora = () => ({
+    archivo: archivo?.name || null, modelos: salida?.modelos || [],
+    paginasOcr: salida?.paginasOcr ?? null, unidad, huella,
+    anexos: (salida?.anexos || []).map(a => ({ n: a.n, titulo: a.titulo, chars: a.chars })),
+  });
 
   const guardar = async () => {
     if (guardandoRef.current) return;
@@ -1816,6 +1964,12 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
               <ul style={{ margin: '6px 0 0 16px', padding: 0, lineHeight: 1.5 }}>
                 {salida.alertas.slice(0, 10).map((a, i) => <li key={i}>{a}</li>)}
               </ul>
+              {(salida.alertasDeTramo?.length || 0) > 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 6 }}>
+                  Se dejaron fuera {salida.alertasDeTramo.length} avisos del tipo «esta parte no estaba en el
+                  texto»: cada pasada lee un tramo, así que se quejan de lo que sí leyó otra.
+                </div>
+              )}
             </div>
           )}
 
@@ -2081,6 +2235,26 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                     {extras.documentos_presentacion.length} documento(s) de presentación obligatoria</div>
                 )}
               </div>
+            </div>
+          )}
+
+          {(salida.anexos?.length || 0) > 0 && (
+            <div className="card card-p" style={{ marginTop: 12, display: 'flex', gap: 10,
+              alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 240px' }}>
+                <b style={{ fontSize: 12.5 }}>Se reconocieron {salida.anexos.length} anexos y formatos</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  Quedan disponibles en el bloque «Expediente» de la postulación, cada uno como Word para llenar.
+                </div>
+              </div>
+              <button className="btn btn-ghost btn-sm" disabled={guardando} onClick={async () => {
+                try {
+                  const { nombreDeArchivo: nombrar } = await import('../lib/documentos-partes.js');
+                  const { anexosAZip, descargar } = await import('../lib/docx-generar.js');
+                  const partes = salida.anexos.map(a => ({ ...a, pie: `Separado por JARVEX de «${archivo?.name || 'las bases'}»` }));
+                  descargar(await anexosAZip(partes, { nombreDe: nombrar }), 'anexos.zip');
+                } catch (e) { toast('No se pudo armar el ZIP: ' + (e?.message || e), 'red'); }
+              }}>⬇ Descargarlos ahora</button>
             </div>
           )}
 

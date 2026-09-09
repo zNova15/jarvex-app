@@ -414,8 +414,10 @@ describe('rangosDeFamilia — el Pase 1 AFINA, no reemplaza al índice', () => {
   });
 
   it('con demasiadas zonas se queda con las más grandes, que son las secciones de verdad', () => {
-    const muchas = { personal: { aciertos: 30, paginas: [1, 5, 9, 13, 17, 21, 22, 23, 24, 25, 40, 50] } };
-    const r = rangosDeFamilia(null, muchas, 'personal');
+    // `empresa` usa el tope normal; el plantel tiene el suyo, más alto, porque
+    // los puestos están repartidos por todo el documento.
+    const muchas = { empresa: { aciertos: 30, paginas: [1, 5, 9, 13, 17, 21, 22, 23, 24, 25, 40, 50] } };
+    const r = rangosDeFamilia(null, muchas, 'empresa');
     expect(r.length).toBeLessThanOrEqual(MAX_VENTANAS);
     // La zona 21-25 es la más densa: no se puede perder.
     expect(r.some(x => 23 >= x.desde && 23 <= x.hasta)).toBe(true);

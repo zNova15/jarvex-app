@@ -99,6 +99,11 @@ QUÉ ES CADA CAMPO (son cinco criterios distintos y se confunden entre sí):
 - "ventana_anios": "en los últimos 10 años" = 10. Sin ventana, null.
 - "cargos_equivalentes": la lista de cargos que las bases aceptan como equivalentes ("Residente de obra y/o Supervisor de obra y/o Inspector..."). Cópialos todos.
 
+🔴 UN PUESTO ES UNA PERSONA, NO LA EMPRESA. Solo van en "requisitos" los CARGOS QUE OCUPA UN PROFESIONAL: Residente de Obra, Jefe de Supervisión, Especialista en …, Asistente de Residente, Maestro de Obra, Ingeniero de Seguridad, Arqueólogo, Ingeniero Ambiental, Ingeniero de Calidad, Administrador de Obra, Topógrafo.
+NO son puestos y NO van en esa lista: «el Postor», «el Ejecutor del Proyecto», «la Empresa Privada», «la Entidad Privada Supervisora», «el Consorcio», «el Contratista». Esas son LA EMPRESA. Lo que se les exige —monto facturado acumulado, X veces el valor referencial, facturación, capacidad libre de contratación, patrimonio— va en "requisitos_empresa", nunca en el plantel. La prueba fácil: si la exigencia se mide en DINERO, es de la empresa; si se mide en MESES o PARTICIPACIONES de una persona colegiada, es del plantel.
+
+BUSCA TODOS LOS PUESTOS DEL TRAMO, no solo el primero. Unas bases piden entre tres y ocho profesionales y cada uno tiene su propio párrafo con sus propios números. Si el texto nombra cinco cargos, devuelve cinco entradas.
+
 DISTINGUE REQUISITO DE FACTOR DE EVALUACIÓN. Un REQUISITO DE CALIFICACIÓN es obligatorio: no cumplirlo descalifica. Un FACTOR DE EVALUACIÓN da puntaje: no cumplirlo solo resta puntos. Van a listas distintas y confundirlos es el error más caro de este trabajo.
 
 NO INVENTES:
@@ -106,9 +111,12 @@ NO INVENTES:
 - Si un puesto se nombra pero sus requisitos están en otra página que no te di, ponlo en "alertas" y no lo inventes.
 - Si el texto viene de un OCR y una cifra es ilegible, dilo en "alertas".
 
+Si en el mismo tramo encuentras una exigencia para LA EMPRESA (experiencia del postor por monto acumulado, facturación, capacidad de contratación, RNP), ponla en "requisitos_empresa" con su "tipo": experiencia_postor · facturacion · capacidad_contratacion · rnp · patrimonio · habilitacion · otro. Es muy común que estén en la misma sección de «REQUISITOS DE CALIFICACIÓN» que el plantel.
+
 Responde SOLO con este JSON, sin markdown:
 {
   "proceso": { "nomenclatura": null, "objeto": null, "entidad_convocante": null, "entidad_ruc": null, "valor_referencial": null, "moneda": "PEN", "fecha_presentacion": null, "definicion_obras_similares": null },
+  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": null, "ventana_anios": null, "fuente_pagina": 47, "fuente_cita": "..." } ],
   "requisitos": [
     { "clase": "personal", "cargo": "Jefe de Supervisión del Proyecto", "profesion": "Ingeniero Civil",
       "meses_minimos": 36, "meses_generales_minimos": 0, "participaciones_minimas": 2,
@@ -166,6 +174,8 @@ Cada uno con "descripcion" (la exigencia en una línea), "monto_minimo" (número
 
 NO ES UN REQUISITO DE CALIFICACIÓN y NO va en esta lista: un artículo del Reglamento copiado (impedimentos para contratar, prohibiciones generales, definiciones), una regla de procedimiento, ni un FACTOR DE EVALUACIÓN (ése da puntaje y va a su propia lista). Un requisito de calificación es algo que el postor ACREDITA con un documento suyo y que, si no cumple, lo descalifica.
 
+LA EXPERIENCIA DEL POSTOR ES EL REQUISITO MÁS IMPORTANTE Y EL QUE MÁS SE PIERDE. Búscalo con cuidado: suele decir «el postor debe acreditar un monto facturado acumulado equivalente a X veces el valor referencial en la ejecución de obras similares en los últimos N años». Guarda el múltiplo en "multiplo_valor_referencial", los años en "ventana_anios", y en "obras_similares" el texto con el que ESAS bases definen qué obra cuenta como similar (suele ser una lista larga: «edificaciones en general y/o mercados y/o colegios y/o…»). Ese texto es el que decide si nuestra experiencia sirve, así que cópialo entero.
+
 FACTORES DE EVALUACIÓN: los que dan PUNTAJE («Experiencia del postor: 40 puntos», «Mejoras a las condiciones: 20 puntos»). Cada uno con su puntaje máximo y el criterio con que se asigna.
 
 GARANTÍAS: fiel cumplimiento, adelanto directo, adelanto de materiales, seriedad de oferta. Con su porcentaje (10 = 10%) o su monto, y el detalle («carta fianza solidaria, incondicional, irrevocable y de realización automática»). "tipo": fiel_cumplimiento · adelanto_directo · adelanto_materiales · seriedad_oferta · otra.
@@ -190,7 +200,7 @@ Responde SOLO con este JSON, sin markdown:
   },
   "cronograma": [ { "etapa": "Presentación de Propuestas", "desde": "2026-09-23", "hasta": "2026-09-24", "fuente_pagina": 1, "fuente_cita": "..." } ],
   "consorcio": { "permitido": true, "max_integrantes": null, "porcentaje_minimo": null, "reglas": "...", "fuente_pagina": 1, "fuente_cita": "..." },
-  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": null, "ventana_anios": null, "fuente_pagina": 48, "fuente_cita": "..." } ],
+  "requisitos_empresa": [ { "tipo": "experiencia_postor", "descripcion": "...", "monto_minimo": null, "multiplo_valor_referencial": null, "ventana_anios": null, "obras_similares": null, "fuente_pagina": 48, "fuente_cita": "..." } ],
   "factores_evaluacion": [ { "factor": "...", "puntaje_maximo": null, "criterio": "...", "fuente_pagina": 51, "fuente_cita": "..." } ],
   "garantias": [ { "tipo": "fiel_cumplimiento", "porcentaje": null, "monto": null, "detalle": "...", "fuente_pagina": 60, "fuente_cita": "..." } ],
   "penalidades": [ { "tipo": "mora", "formula": "...", "tope": "...", "detalle": "...", "fuente_pagina": 62, "fuente_cita": "..." } ],

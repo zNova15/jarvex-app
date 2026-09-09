@@ -31,7 +31,7 @@ import {
 } from "../lib/experiencia-profesional.js";
 import { categoriaDe } from "../lib/personal-categoria.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
-import { filaLimpia, CAMPOS_VERIFICABLES } from "../lib/cv-extraccion.js";
+import { filaLimpia, CAMPOS_VERIFICABLES, compararCv } from "../lib/cv-extraccion.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 
@@ -212,7 +212,10 @@ function ProfesionalesPage({ showToast }) {
       if (!ev) return toast('El archivo todavía no está disponible en este equipo', 'amber');
       const { getEvidenciaSrc, abrirUrlEvidencia } = await import('../lib/evidencias-url.js');
       const r = await getEvidenciaSrc(ev);
-      if (r?.url) abrirUrlEvidencia(r);
+      // 🔴 `abrirUrlEvidencia` recibe la URL, NO el objeto. Pasarle `r` hacía
+      // que `url.startsWith` reventara y el botón «Ver CV» no abriera nada:
+      // era el único lugar del repo que lo llamaba mal (8-set-2026).
+      if (r?.url) abrirUrlEvidencia(r.url);
       else toast('El archivo aún no terminó de subir', 'amber');
     } catch (e) { toast('No se pudo abrir: ' + (e?.message || e), 'red'); }
   };
@@ -500,6 +503,8 @@ function ProfesionalesPage({ showToast }) {
       {cvIa && (
         <AnalisisCvModal
           personaFija={cvIa.personaFija} personal={personal || []} rubros={rubros || []}
+          fichaActual={cvIa.personaFija ? fichaPorPersona.get(cvIa.personaFija.id) : null}
+          experienciasActuales={cvIa.personaFija ? (expsPorPersona.get(cvIa.personaFija.id) || []) : []}
           busy={busy} toast={toast}
           onClose={() => setCvIa(null)}
           onAplicar={async (payload) => {
@@ -534,7 +539,8 @@ const PASO_CV_LBL = {
 };
 const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
 
-function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplicar, toast }) {
+function AnalisisCvModal({ personaFija, personal, rubros, fichaActual = null, experienciasActuales = [],
+                           busy, onClose, onAplicar, toast }) {
   const Modal = window.Modal;
   const [archivo, setArchivo] = uS(null);
   const [fase, setFase] = uS('elegir');
@@ -553,6 +559,13 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
   const guardandoRef = uR(false);
 
   const rubrosVivos = uM(() => (rubros || []).filter(r => r.activo !== false), [rubros]);
+  // QUÉ CAMBIA respecto de lo guardado. Solo tiene sentido si la ficha ya
+  // existe: releer un CV no puede pisar en silencio lo que alguien corrigió a
+  // mano o ya verificó contra su constancia.
+  const relectura = !!fichaActual?.cv_analisis;
+  const diff = uM(() => (relectura && salida
+    ? compararCv({ fichaActual, experienciasActuales, leido: { ficha: salida.ficha, experiencias: salida.experiencias } })
+    : null), [relectura, salida, fichaActual, experienciasActuales]);
   // ¿Ya está en el padrón? Por DNI, que es la identidad de `personal`.
   const existente = uM(() => {
     if (personaFija) return personaFija;
@@ -590,8 +603,14 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
       setPersona({ ...r.persona });
       setFicha({ ...r.ficha });
       setExps(r.experiencias);
-      // Arrancan tildadas las que tienen fecha de inicio y cita verificada.
-      setMarcadas(new Set(r.experiencias.map((e, i) => (e.fecha_inicio && e._verificada ? i : -1)).filter(i => i >= 0)));
+      // Arrancan tildadas las que tienen fecha de inicio y cita verificada. En
+      // una RELECTURA, además, solo las que NO estaban: volver a guardar las
+      // mismas duplicaría el padrón.
+      const yaEstaban = relectura
+        ? compararCv({ fichaActual, experienciasActuales, leido: { ficha: r.ficha, experiencias: r.experiencias } })
+        : null;
+      const esNueva = (e) => !yaEstaban || yaEstaban.nuevas.includes(e);
+      setMarcadas(new Set(r.experiencias.map((e, i) => (e.fecha_inicio && e._verificada && esNueva(e) ? i : -1)).filter(i => i >= 0)));
       setFase('revisar');
     } catch (e) {
       toast('La lectura falló: ' + (e?.message || e), 'red');
@@ -627,7 +646,9 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
   };
 
   return (
-    <Modal title={personaFija ? `Leer el CV con IA — ${nombreDe(personaFija)}` : 'Cargar un profesional desde su CV'} onClose={onClose} size="xl">
+    <Modal title={personaFija
+      ? `${fichaActual?.cv_analisis ? 'Volver a revisar el CV' : 'Leer el CV con IA'} — ${nombreDe(personaFija)}`
+      : 'Cargar un profesional desde su CV'} onClose={onClose} size="xl">
 
       {fase === 'elegir' && (
         <div style={{ padding: '18px 4px' }}>
@@ -728,6 +749,49 @@ function AnalisisCvModal({ personaFija, personal, rubros, busy, onClose, onAplic
               <ul style={{ margin: '6px 0 0 16px', padding: 0, lineHeight: 1.5 }}>
                 {salida.alertas.slice(0, 10).map((a, i) => <li key={i}>{a}</li>)}
               </ul>
+            </div>
+          )}
+
+          {/* ── QUÉ CAMBIA (relectura) ── */}
+          {diff && (
+            <div className="card card-p" style={{ borderLeft: '3px solid var(--blue)' }}>
+              <b style={{ fontSize: 12.5 }}>Qué cambia respecto de lo que ya está guardado</b>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 6 }}>
+                Nada se pisa solo. Esto es para que veas si la lectura nueva encontró algo mejor.
+              </div>
+              {!diff.hayAlgo ? (
+                <div style={{ fontSize: 11.5, color: 'var(--green)' }}>
+                  ✅ La lectura nueva dice lo mismo que ya tienes guardado. No hay nada que cambiar.
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gap: 4, fontSize: 11 }}>
+                  {diff.campos.filter(c => c.estado !== 'igual').map(c => (
+                    <div key={c.campo} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                      <span className={`badge ${c.estado === 'falta' ? 'b-blue' : 'b-amber'}`} style={{ fontSize: 8.5 }}>
+                        {c.estado === 'falta' ? 'faltaba' : 'difiere'}
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <b>{c.label}:</b>{' '}
+                        {c.estado === 'difiere' && <span style={{ color: 'var(--tm)', textDecoration: 'line-through' }}>{String(c.actual)} </span>}
+                        <b style={{ color: 'var(--blue)' }}>{String(c.leido)}</b>
+                      </span>
+                    </div>
+                  ))}
+                  {diff.nuevas.length > 0 && (
+                    <div><span className="badge b-green" style={{ fontSize: 8.5 }}>nuevas</span>{' '}
+                      {diff.nuevas.length} experiencia(s) que no estaban cargadas</div>
+                  )}
+                  {diff.cursos.length > 0 && (
+                    <div><span className="badge b-green" style={{ fontSize: 8.5 }}>nuevos</span>{' '}
+                      {diff.cursos.length} curso(s) que no estaban</div>
+                  )}
+                  {diff.yaEstan > 0 && (
+                    <div style={{ color: 'var(--tm)' }}>
+                      {diff.yaEstan} experiencia(s) ya estaban: vienen destildadas para no duplicarlas.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1120,8 +1184,10 @@ function FichaModal({ candidato, rubros, rubroById, obras, hoy, canWrite, busy,
             )}
             {onLeerCv && (
               <button className="btn btn-blue btn-sm" disabled={busy} onClick={onLeerCv}
-                title="Sube el CV en PDF y la IA propone la ficha y las experiencias, con la página de cada constancia">
-                🤖 Leer el CV con IA
+                title={ficha?.cv_analisis?.fecha
+                  ? 'Vuelve a leer el CV y te muestra QUÉ CAMBIA respecto de lo que ya está guardado. No pisa nada sin que lo apruebes.'
+                  : 'Sube el CV en PDF y la IA propone la ficha y las experiencias'}>
+                {ficha?.cv_analisis?.fecha ? '🤖 Volver a revisar con IA' : '🤖 Leer el CV con IA'}
               </button>
             )}
             {ficha?.cv_analisis?.fecha && (
