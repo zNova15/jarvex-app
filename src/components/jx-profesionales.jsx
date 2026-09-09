@@ -595,6 +595,11 @@ function AnalisisCvModal({ personaFija, personal, rubros, fichaActual = null, ex
 
   const correr = async () => {
     setFase('corriendo');
+    // Un CV con constancias escaneadas es la misma espera larga que unas bases,
+    // sobre el mismo endpoint: mientras corre, la sesión no se cierra sola.
+    // Ver lib/sesion-ocupada.js.
+    const { ocupar } = await import('../lib/sesion-ocupada.js');
+    const liberar = ocupar('Lectura de un currículum con IA');
     try {
       const { analizarCv } = await import('../lib/cv-analisis.js');
       const { apiFetch, apiParse } = await import('../lib/api-client');
@@ -615,6 +620,8 @@ function AnalisisCvModal({ personaFija, personal, rubros, fichaActual = null, ex
     } catch (e) {
       toast('La lectura falló: ' + (e?.message || e), 'red');
       setFase('presupuesto');
+    } finally {
+      liberar();
     }
   };
 

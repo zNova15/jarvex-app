@@ -552,3 +552,68 @@ describe('la barra de progreso', () => {
     expect(deOcr[deOcr.length - 1]).toMatchObject({ hecho: 8, total: 8 });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE SE PAGÓ SE GUARDA APENAS ESTÁ (tanda 19, 9-set-2026).
+//
+// El escaneo es lo único que cuesta plata y es la PRIMERA fase; las pasadas de
+// extracción que vienen después pueden tardar media hora y romperse. Guardar
+// el texto recién al final significaba perder los USD 0,19 del OCR por un 429
+// a los cuarenta minutos.
+// ═══════════════════════════════════════════════════════════════════
+describe('analizar — el escaneo se avisa apenas termina', () => {
+  it('llama a onOcrListo ANTES de la primera pasada de IA', async () => {
+    const orden = [];
+    const { apiFetch, apiParse } = apiFalso({
+      ocr: (body) => {
+        orden.push('ocr');
+        return { textos: Object.fromEntries(body.paginas.map(p => [p.clave, `REQUISITOS DE CALIFICACIÓN\nResidente de Obra. ${CITA}`])), fallidas: [], model: 'mistral-ocr-2512' };
+      },
+      localizar: () => { orden.push('localizar'); return { rangos: {} }; },
+      extraer: () => { orden.push('extraer'); return { resultado: { requisitos: [] } }; },
+    });
+    let guardado = null;
+    await analizar(bloquesEscaneados(2), {
+      apiFetch, apiParse,
+      onOcrListo: (d) => { orden.push('guardado'); guardado = d; },
+    });
+    expect(guardado?.paginasOcr).toBe(2);
+    expect(guardado?.markdown).toContain('Residente de Obra');
+    expect(guardado?.costoOcr).toBeCloseTo(2 * USD_POR_PAGINA_OCR, 4);
+    // Lo importante: el guardado ocurre antes de cualquier pasada de IA.
+    expect(orden.indexOf('guardado')).toBeLessThan(orden.indexOf('localizar'));
+  });
+
+  it('si la caché falla, la lectura sigue igual', async () => {
+    const { apiFetch, apiParse } = apiFalso({ ocr: ocrQueDevuelve('REQUISITOS DE CALIFICACIÓN') });
+    const r = await analizar(bloquesEscaneados(1), {
+      apiFetch, apiParse,
+      onOcrListo: () => { throw new Error('IndexedDB bloqueado'); },
+    });
+    expect(r.paginasOcr).toBe(1);
+  });
+
+  it('no avisa cuando el texto vino de la caché: no hay nada nuevo que guardar', async () => {
+    const { apiFetch, apiParse } = apiFalso({ localizar: () => ({ rangos: {} }) });
+    let veces = 0;
+    await analizar(bloquesEscaneados(3), {
+      apiFetch, apiParse,
+      cacheado: { markdown: '<!-- página 1 -->\nREQUISITOS DE CALIFICACIÓN', paginasOcr: 3 },
+      onOcrListo: () => { veces++; },
+    });
+    expect(veces).toBe(0);
+  });
+
+  it('mide el tiempo de cada fase y cuántas pasadas fueron', async () => {
+    const { apiFetch, apiParse } = apiFalso({
+      ocr: ocrQueDevuelve('REQUISITOS DE CALIFICACIÓN\nResidente de Obra'),
+      localizar: () => ({ rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } }),
+      extraer: () => ({ resultado: { requisitos: [] } }),
+    });
+    const r = await analizar(bloquesEscaneados(1), { apiFetch, apiParse });
+    expect(r.tiempos.total).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(r.tiempos)).toContain('ocr');
+    expect(Object.keys(r.tiempos)).toContain('extraer');
+    expect(r.pasadas).toBeGreaterThan(0);
+  });
+});

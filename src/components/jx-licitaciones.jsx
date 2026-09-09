@@ -43,9 +43,16 @@ import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES, agruparRequisitos } f
 import { agruparPorSobre, separarAnexos } from "../lib/documentos-partes.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
-const { useState: uS, useMemo: uM, useRef: uR } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
 
 const nombreDe = (p) => `${p?.nombres || ''} ${p?.apellidos || ''}`.trim() || '(sin nombre)';
+/** Milisegundos a «12 min 03 s». Para el reloj de la lectura y para los
+ *  tiempos por fase que se muestran al final. */
+const reloj = (ms) => {
+  const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m} min ${String(s % 60).padStart(2, '0')} s` : `${s} s`;
+};
 const hoyLocal = () => (window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10));
 const money = (n, mon = 'PEN') => n == null || n === ''
   ? '—'
@@ -260,7 +267,7 @@ function LicitacionesPage({ showToast }) {
   });
 
   /** La entrada de la bitácora `licitaciones.analisis` de esta lectura. */
-  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos, unidad, huella, anexos }) => ({
+  const entradaBitacora = ({ archivo, costo, modelos, paginasOcr, requisitos, unidad, huella, anexos, segundos, pasadas, corridas }) => ({
     fecha: new Date().toISOString(),
     archivo: archivo || null,
     unidad: unidad || 'pagina',
@@ -272,6 +279,12 @@ function LicitacionesPage({ showToast }) {
     modelos: modelos || [],
     paginasOcr: paginasOcr ?? null,
     requisitos: requisitos ?? 0,
+    // CUÁNTO TARDÓ Y CUÁNTAS LLAMADAS FUERON. Queda guardado con la lectura
+    // para poder comparar, dentro de un mes y con documentos distintos, si un
+    // modelo nuevo mejoró algo o solo lo pareció.
+    segundos: segundos ?? null,
+    pasadas: pasadas ?? null,
+    corridas: corridas ?? 1,
   });
 
   /**
@@ -1776,6 +1789,10 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   // sirve para saber qué parte del resultado es estable.
   const [corridas, setCorridas] = uS(1);
   const [unidad, setUnidad] = uS('pagina');
+  // El reloj en pantalla. Una espera de media hora sin un número que se mueva
+  // se lee como que se colgó, por más que la barra avance de a poquito.
+  const [desde, setDesde] = uS(null);
+  const [ahora, setAhora] = uS(0);
   const [marcados, setMarcados] = uS(() => new Set());        // puestos (personal)
   const [marcadosEmp, setMarcadosEmp] = uS(() => new Set());  // requisitos de empresa
   const [aplicarCabecera, setAplicarCabecera] = uS(true);
@@ -1784,6 +1801,14 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   const [guardando, setGuardando] = uS(false);
   // Guard SÍNCRONO: el doble clic en «Guardar» duplicaría todos los puestos.
   const guardandoRef = uR(false);
+
+  // Un tic por segundo mientras corre, y nada el resto del tiempo.
+  uE(() => {
+    if (fase !== 'corriendo' || !desde) return;
+    setAhora(Date.now() - desde);
+    const id = setInterval(() => setAhora(Date.now() - desde), 1000);
+    return () => clearInterval(id);
+  }, [fase, desde]);
 
   if (!Modal) return null;
   const creando = !lic;
@@ -1819,12 +1844,38 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   // ── Pasos 1 a 4: acá sí se gasta ─────────────────────────────────
   const correr = async () => {
     setFase('corriendo');
+    setDesde(Date.now());
+    setAhora(0);
+    // 🔴 LA SESIÓN NO SE CIERRA MIENTRAS ESTO CORRE (tanda 19, 9-set-2026).
+    // Una lectura de bases de 94 páginas con dos pasadas pasa holgadamente los
+    // 30 minutos del cierre por inactividad, y quien espera mirando la barra no
+    // toca el mouse: la sesión se cerraba sola, el modal se desmontaba y se
+    // perdía el OCR ya pagado. Ver lib/sesion-ocupada.js — además mantiene la
+    // pantalla despierta y hace que cerrar la pestaña pregunte antes.
+    const { ocupar } = await import('../lib/sesion-ocupada.js');
+    const liberar = ocupar('Análisis de bases con IA');
     try {
       const { analizar } = await import('../lib/bases-analisis.js');
       const { apiFetch, apiParse } = await import('../lib/api-client');
       const { fusionarCorridas } = await import('../lib/bases-corridas.js');
       const { pctDeCorrida } = await import('../lib/bases-progreso.js');
+      const { guardarCache } = await import('../lib/cache-lectura.js');
       const veces = Math.max(1, Number(corridas) || 1);
+
+      // EL ESCANEO SE GUARDA APENAS ESTÁ, no al final de todo. Es lo único que
+      // cuesta plata y es la primera fase; guardarlo recién al terminar las dos
+      // lecturas significaba que cualquier tropiezo de la media hora siguiente
+      // lo tiraba a la basura.
+      let ocrGuardado = false;
+      const guardarOcr = async ({ markdown, paginasOcr, costoOcr }) => {
+        if (!huella || !paginasOcr) return;
+        await guardarCache(huella, {
+          markdown, paginasOcr, costoOcr: costoOcr ?? 0,
+          nombre: archivo?.name || null, unidad,
+        });
+        ocrGuardado = true;
+        setCacheado({ markdown, paginasOcr });
+      };
 
       // LAS CORRIDAS VAN UNA DETRÁS DE OTRA, NO EN PARALELO. Dos análisis a la
       // vez son el doble de pedidos por minuto contra el mismo endpoint, que
@@ -1833,31 +1884,43 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
       // una lectura rota. La espera es el precio de que la comparación
       // signifique algo.
       const hechas = [];
+      let fallo = null;
       for (let i = 0; i < veces; i++) {
         // La segunda lectura reusa el texto YA ESCANEADO de la primera: el OCR
         // —lo único que cuesta plata— se paga una sola vez.
         const reuso = i === 0 ? cacheado : { markdown: hechas[0].markdown, paginasOcr: hechas[0].paginasOcr };
-        hechas.push(await analizar(bloques, {
-          apiFetch, apiParse, cacheado: reuso,
-          onProgreso: (p) => setProgreso({
-            ...p,
-            pct: pctDeCorrida(p.pct, i, veces),
-            corrida: i + 1, corridas: veces,
-          }),
-        }));
-      }
-      const r = veces > 1 ? fusionarCorridas(hechas) : hechas[0];
-      // Guardar el texto leído ANTES de mirar si la extracción salió bien: lo
-      // que se pagó fue el escaneo, y eso ya está hecho aunque la IA falle.
-      if (huella && !r.reusado && r.paginasOcr > 0) {
         try {
-          const { guardarCache } = await import('../lib/cache-lectura.js');
-          await guardarCache(huella, {
-            markdown: r.markdown, paginasOcr: r.paginasOcr,
-            costoOcr: r.costo?.ocr ?? 0, nombre: archivo?.name || null, unidad,
-          });
-          setCacheado({ markdown: r.markdown, paginasOcr: r.paginasOcr });
-        } catch { /* sin caché se sigue igual */ }
+          hechas.push(await analizar(bloques, {
+            apiFetch, apiParse, cacheado: reuso,
+            onOcrListo: guardarOcr,
+            onProgreso: (p) => setProgreso({
+              ...p,
+              pct: pctDeCorrida(p.pct, i, veces),
+              corrida: i + 1, corridas: veces,
+            }),
+          }));
+        } catch (e) {
+          // UNA LECTURA QUE SE CAE NO SE LLEVA A LA QUE YA SALIÓ BIEN. Si la
+          // segunda pasada falla —un 429, un corte de red a los 40 minutos— se
+          // muestra la primera con el aviso, en vez de perder todo y pedirle a
+          // la persona que empiece de nuevo.
+          if (hechas.length === 0) throw e;
+          fallo = e;
+          break;
+        }
+      }
+      const r = hechas.length > 1 ? fusionarCorridas(hechas) : hechas[0];
+      if (fallo) {
+        r.alertas = [
+          `La lectura ${hechas.length + 1} de ${veces} falló (${fallo?.message || fallo}). Se muestra${hechas.length > 1 ? 'n las ' + hechas.length + ' lecturas' : ' la lectura'} que sí terminó. Puedes reintentar sin volver a escanear: el documento ya está leído.`,
+          ...(r.alertas || []),
+        ];
+      }
+      // Red de seguridad por si `onOcrListo` no llegó a correr (documento
+      // nativo, o caché que no se pudo abrir en ese momento).
+      if (huella && !r.reusado && r.paginasOcr > 0 && !ocrGuardado) {
+        try { await guardarOcr({ markdown: r.markdown, paginasOcr: r.paginasOcr, costoOcr: r.costo?.ocr ?? 0 }); }
+        catch { /* sin caché se sigue igual */ }
       }
       setSalida(r);
       // Arrancan tildados SOLO los que pasaron la verificación de cita. Lo que
@@ -1897,6 +1960,8 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     } catch (e) {
       toast('El análisis falló: ' + (e?.message || e), 'red');
       setFase('presupuesto');
+    } finally {
+      liberar();
     }
   };
 
@@ -1944,6 +2009,9 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     archivo: archivo?.name || null, modelos: salida?.modelos || [],
     paginasOcr: salida?.paginasOcr ?? null, unidad, huella,
     anexos: (salida?.anexos || []).map(a => ({ n: a.n, titulo: a.titulo, chars: a.chars })),
+    segundos: salida?.tiempos?.total ? Math.round(salida.tiempos.total / 1000) : null,
+    pasadas: salida?.pasadas ?? null,
+    corridas: salida?.corridas ?? 1,
   });
 
   const guardar = async () => {
@@ -2151,9 +2219,16 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
           {progreso?.detalle && typeof progreso.detalle === 'string' && (
             <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 6 }}>{progreso.detalle}</div>
           )}
+          {ahora > 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 8 }}>
+              {reloj(ahora)} transcurridos
+            </div>
+          )}
           <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 14, lineHeight: 1.5 }}>
             No cierres esta ventana: el documento se está leyendo en tu computadora.
             <br />El porcentaje es del <b>trabajo hecho</b>, no del tiempo que falta.
+            <br />Mientras esto corre <b>la sesión no se cierra sola</b> y la pantalla no se apaga,
+            aunque tarde media hora. El escaneo ya pagado queda guardado apenas termina.
           </div>
         </div>
       )}
@@ -2194,12 +2269,39 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
                 costó de verdad · {salida.paginasOcr} páginas leídas
               </div>
             </div>
+            {salida.tiempos?.total > 0 && (
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{reloj(salida.tiempos.total)}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  tardó{salida.pasadas ? ` · ${salida.pasadas} pasadas de IA` : ''}
+                </div>
+              </div>
+            )}
             {salida.modelos?.length > 0 && (
               <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}>
                 leído por<br />{salida.modelos.join(' · ')}
               </div>
             )}
           </div>
+
+          {/* ── EN QUÉ SE FUE EL TIEMPO ──
+              El número con el que se compara un modelo contra otro. Sin esto,
+              «tarda mucho» no se puede discutir: no se sabe si el reloj se lo
+              llevó el escaneo (que es de Mistral y se paga una vez) o las
+              pasadas de extracción (que son del modelo de texto y se repiten
+              en cada lectura). Ver lib/bases-analisis.js. */}
+          {salida.tiempos && Object.keys(salida.tiempos).length > 1 && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 10, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {[['ocr', 'escaneo'], ['localizar', 'ubicar secciones'], ['extraer', 'extracción'],
+                ['barrido', 'barrido de respaldo'], ['verificar', 'verificar citas']]
+                .filter(([k]) => salida.tiempos[k] > 500)
+                .map(([k, lbl]) => (
+                  <span key={k} style={{ padding: '2px 7px', borderRadius: 6, background: 'var(--bg-c2)' }}>
+                    {lbl}: <b>{reloj(salida.tiempos[k])}</b>
+                  </span>
+                ))}
+            </div>
+          )}
 
           {/* ── QUÉ TAN ESTABLE ES ESTA LECTURA ──
               Solo aparece cuando se leyó más de una vez. Es el número que

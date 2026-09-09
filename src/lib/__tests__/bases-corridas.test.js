@@ -207,3 +207,19 @@ describe('fusionarCorridas', () => {
     expect(r.extras.garantias.find(x => x.detalle === 'adelanto 30%')._corridas).toBe(1);
   });
 });
+
+// El reloj de dos lecturas es lo que la persona esperó, no lo que tardó la
+// primera (tanda 19).
+describe('fusionarCorridas — el tiempo se suma', () => {
+  it('suma los tiempos y las pasadas de las dos lecturas', () => {
+    const base = { filas: [], filasEmpresa: [], cronograma: [], extras: {}, alertas: [], modelos: [] };
+    const r = fusionarCorridas([
+      { ...base, tiempos: { ocr: 300000, extraer: 600000, total: 900000 }, pasadas: 40 },
+      { ...base, tiempos: { ocr: 0, extraer: 540000, total: 540000 }, pasadas: 38 },
+    ]);
+    expect(r.tiempos.ocr).toBe(300000);       // el escaneo se paga y se mide una vez
+    expect(r.tiempos.extraer).toBe(1140000);
+    expect(r.tiempos.total).toBe(1440000);
+    expect(r.pasadas).toBe(78);
+  });
+});

@@ -3,6 +3,7 @@ import { getCurrentUser, login as authLogin, logout as authLogout } from '../lib
 import { db } from '../db/jarvex.db';
 import { syncAll } from '../sync/SyncEngine';
 import { identifyUser, resetUser } from '../lib/posthog.js';
+import { hayTrabajoEnCurso, trabajosEnCurso } from '../lib/sesion-ocupada.js';
 
 export const AuthContext = createContext(null);
 
@@ -32,6 +33,8 @@ const INACTIVITY_DEFAULT_MIN = 30;
 export const INACTIVITY_MIN_MIN = 5;    // piso: evita el lockout de un typo (ej. 0)
 export const INACTIVITY_MAX_MIN = 480;  // techo: 8 h (una jornada)
 const INACTIVITY_LS_KEY = 'jx_sesion_timeout_min';
+// Cada cuánto se vuelve a preguntar si el trabajo largo ya terminó.
+const ESPERA_TRABAJO_MS = 60 * 1000;
 export function clampTimeoutMin(v) {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) return INACTIVITY_DEFAULT_MIN;
@@ -216,16 +219,40 @@ export function useAuthProvider() {
   // actividad, cierra sesión automáticamente. Esto también ayuda contra
   // sesiones colgadas con datos en cache desactualizados — al volver a
   // loguear se vuelven a leer profile/permisos frescos del servidor.
+  //
+  // 🔴 ESPERAR NO ES ESTAR INACTIVO (tanda 19, 9-set-2026). El contador solo
+  // se reinicia con eventos de PERSONA, y una lectura de bases con IA son 30 a
+  // 50 minutos mirando una barra sin tocar nada: a los 30 la sesión se cerraba
+  // sola, el modal se desmontaba y se perdía el OCR ya pagado. Mientras haya
+  // un trabajo largo registrado (lib/sesion-ocupada.js) el cierre se POSTERGA
+  // —se vuelve a preguntar en un minuto—, y cuando el trabajo termina el reloj
+  // arranca de nuevo completo desde ese momento. La regla sigue en pie: una
+  // sesión que de verdad nadie usa se cierra igual.
   const inactivityTimer = useRef(null);
   useEffect(() => {
     if (!profile?.id) return;
+    // `hubo` recuerda que el vencimiento lo agarró trabajando: cuando el
+    // trabajo termina NO se cierra en el acto —quedaría sin sesión justo al
+    // aparecer el resultado que estuvo media hora esperando— sino que el
+    // reloj vuelve a empezar entero desde ese momento.
+    let hubo = false;
+    const vencer = () => {
+      if (hayTrabajoEnCurso()) {
+        hubo = true;
+        const que = trabajosEnCurso().map(t => t.motivo).join(', ');
+        console.log(`[useAuth] Cierre por inactividad POSTERGADO: ${que}`);
+        inactivityTimer.current = setTimeout(vencer, ESPERA_TRABAJO_MS);
+        return;
+      }
+      if (hubo) { hubo = false; reset(); return; }
+      console.log('[useAuth] Sesión cerrada por inactividad');
+      try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
+      logout();
+    };
     const reset = () => {
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
-      inactivityTimer.current = setTimeout(() => {
-        console.log('[useAuth] Sesión cerrada por inactividad');
-        try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
-        logout();
-      }, getInactivityMin() * 60 * 1000);
+      hubo = false;
+      inactivityTimer.current = setTimeout(vencer, getInactivityMin() * 60 * 1000);
     };
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
     events.forEach(ev => window.addEventListener(ev, reset, { passive: true }));

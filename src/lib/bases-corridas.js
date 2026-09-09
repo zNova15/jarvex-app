@@ -209,5 +209,13 @@ export function fusionarCorridas(corridas) {
     corridas: lista.length,
     estabilidad,
     cabeceraDiscrepa: discrepan,
+    // El reloj también se SUMA: lo que tardó la lectura entera es lo que la
+    // persona esperó, no lo que tardó la primera pasada. El escaneo aparece
+    // una sola vez porque la segunda corrida lo reusa y su fase mide 0.
+    tiempos: lista.reduce((acc, r) => {
+      for (const [k, v] of Object.entries(r.tiempos || {})) acc[k] = (acc[k] || 0) + (Number(v) || 0);
+      return acc;
+    }, {}),
+    pasadas: lista.reduce((t, r) => t + (Number(r.pasadas) || 0), 0),
   };
 }

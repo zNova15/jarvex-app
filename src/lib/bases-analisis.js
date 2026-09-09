@@ -277,7 +277,24 @@ export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas 
  *                  archivo. Si viene, el OCR NO se vuelve a pagar. Ver
  *                  lib/cache-lectura.js.
  */
-export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null } = {}) {
+/**
+ * @param onOcrListo  se llama con { markdown, paginasOcr, costoOcr } APENAS
+ *   terminó el escaneo, mucho antes de que la lectura entera termine.
+ *
+ *   🔴 POR QUÉ EXISTE (tanda 19, 9-set-2026). El texto escaneado —lo ÚNICO
+ *   que cuesta plata— se guardaba recién al final de todo. Una lectura de 94
+ *   páginas son 6 minutos de OCR y media hora larga de pasadas encima: si algo
+ *   se rompía en esa media hora (o la sesión se cerraba, que es lo que le pasó
+ *   a Gabriel), los USD 0,19 del escaneo se perdían y había que pagarlos de
+ *   nuevo. Ahora se avisa apenas está, y la pantalla lo guarda ahí mismo.
+ */
+export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null, onOcrListo = null } = {}) {
+  // El reloj de cada fase. No es adorno: es el número con el que se compara un
+  // modelo contra otro. Sin esto, «tarda mucho» no se puede discutir.
+  const t0 = Date.now();
+  const tiempos = {};
+  let marca = t0;
+  const cerrarTiempo = (fase) => { tiempos[fase] = (tiempos[fase] || 0) + (Date.now() - marca); marca = Date.now(); };
   // La barra. Reparte el reloj entre las fases y le agrega `pct` a cada aviso;
   // todo lo que la pantalla ya leía (paso, hecho, total, detalle) sigue igual.
   // Ver el comentario largo de lib/bases-progreso.js sobre por qué el
@@ -312,9 +329,16 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     ({ ocrPorMedia, leidas } = await ocrDeBloques(bloques, { pedir, avisar: avisarOcr, alertas, modelos }));
     prog.cerrar('ocr');
   }
+  cerrarTiempo('ocr');
 
   // ── 2. El documento híbrido y su índice, sin IA ──────────────────
   const markdown = reusado ? cacheado.markdown : bloquesAMarkdown(bloques, ocrPorMedia);
+  // LO PAGADO SE GUARDA ACÁ, no al final. Ver `onOcrListo` arriba.
+  if (!reusado && leidas > 0 && typeof onOcrListo === 'function') {
+    try {
+      await onOcrListo({ markdown, paginasOcr: leidas, costoOcr: costoDelAnalisis({ paginasOcr: leidas, usdPasadas: 0 }).ocr });
+    } catch { /* que falle la caché no puede tumbar la lectura */ }
+  }
   const indice = indiceDeSecciones(markdown);
   const resumen = resumenIndice(indice);
 
@@ -334,6 +358,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   if (clasificacion.conflicto) alertas.push(clasificacion.conflicto);
   prog.plan('indice', 1);
   prog.avance('indice', 1, { detalle: resumen, regimen });
+  cerrarTiempo('indice');
 
   // ── 2.c. Los campos que la entidad dejó sin llenar ───────────────
   //
@@ -355,7 +380,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
       regimenLabel: regimen ? REGIMENES[regimen]?.label : null, camposSinLlenar: sinLlenar,
       filas: [], filasEmpresa: [], cabecera: null, cronograma: [], extras: aExtrasProceso({}),
       sugerencias: { tipo_trabajo: null }, reusado,
-      paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos] };
+      paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos],
+      tiempos: { ...tiempos, total: Date.now() - t0 }, pasadas: 0 };
   }
 
   // ── 3. Pase 1: la IA elige rangos entre lo que el índice encontró ─
@@ -373,6 +399,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     alertas.push(`El paso que ubica las secciones falló (${e.message}). Se usó el índice sin afinar.`);
   }
   prog.cerrar('localizar');
+  cerrarTiempo('localizar');
 
   // ── 4. Pase 2: extraer, solo sobre los rangos elegidos ───────────
   const requisitos = [];
@@ -557,6 +584,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     }
   }
   prog.cerrar('extraer');
+  cerrarTiempo('extraer');
 
   // ── 4.5. EL BARRIDO DE RESPALDO ──────────────────────────────────
   //
@@ -619,6 +647,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
 
   // ── 5. Verificar cada cita contra el documento ───────────────────
   prog.cerrar('barrido');
+  cerrarTiempo('barrido');
   prog.plan('verificar', 1);
   prog.paso('verificar');
   const verificado = verificarResultado(
@@ -626,6 +655,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     markdown,
   );
   const filas = aFilasRequisitos(verificado);
+  cerrarTiempo('verificar');
   prog.fin();
 
   return {
@@ -661,6 +691,10 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     anexos,
     // Si el OCR salió de la caché, esta lectura no cobró el escaneo.
     reusado,
+    // Cuánto tardó cada fase y cuántas pasadas de IA hubo. Es lo que permite
+    // comparar dos modelos con números en vez de con sensaciones.
+    tiempos: { ...tiempos, total: Date.now() - t0 },
+    pasadas: pedidos.size,
   };
 }
 
