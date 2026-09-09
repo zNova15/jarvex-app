@@ -138,7 +138,72 @@ Responde SOLO con este JSON, sin markdown:
 // empezar a participar: usualmente se hacen consorcios». Este prompt es esa
 // apertura: además del plantel, saca los requisitos de la EMPRESA y las reglas
 // de consorcio, que son la forma real de llegar a la experiencia o al capital.
-const SYSTEM_PROCESO = `Eres un analista de licitaciones públicas peruanas (Ley de Contrataciones del Estado, Obras por Impuestos Ley 29230 y procesos privados). Te doy el TEXTO de unas páginas de una convocatoria o de unas bases (con marcadores "<!-- página N -->") y extraes los DATOS DEL PROCESO, el CALENDARIO, las REGLAS DE CONSORCIO y los REQUISITOS DE LA EMPRESA postora. NO extraes el plantel profesional: eso lo hace otra pasada.
+// ── Lo que la NORMA dice, para que el modelo no lo adivine ─────────
+//
+// Investigado el 8-set-2026 contra los documentos oficiales: DS 038-2026-EF
+// (reglamento vigente de la Ley 29230, publicado el 13-mar-2026), Ley 32069 y
+// su DS 009-2025-EF, las bases estándar del MEF (Directiva 0005-2025-EF/54.01)
+// y cinco juegos de bases reales. Tres cosas que el modelo se inventaba y
+// ahora tiene escritas:
+//
+//   · En Obras por Impuestos con Empresa Privada, el SOBRE 2 ES LA ECONÓMICA y
+//     el 3 la TÉCNICA. Se abre primero la económica, se elige la más favorable
+//     y recién ahí se evalúa la técnica de ESE postor. En las bases de la
+//     Entidad Privada Supervisora es al revés: 1 técnica, 2 económica.
+//   · La garantía de fiel cumplimiento en OxI-Empresa Privada es 4%, NO 10%.
+//     Y en OxI no existen los adelantos.
+//   · La Ley 32069 cambió el vocabulario entero: «cuantía de la contratación»
+//     en vez de valor referencial, «especialidad y subespecialidad» en vez de
+//     obras similares, y la experiencia se mide sobre 25 años, no 10.
+const CONTEXTO_NORMATIVO = `
+CONTEXTO NORMATIVO PERUANO (verificado contra las normas vigentes; úsalo para
+reconocer, NUNCA para rellenar un dato que el texto no diga):
+
+A) OBRAS POR IMPUESTOS — Ley N° 29230, Reglamento DS N° 038-2026-EF.
+   Vocabulario propio: «Empresa Privada» (la que financia) NO es lo mismo que
+   «Ejecutor» o «Empresa Ejecutora» (la que construye, y es la que necesita
+   RNP) ni que «Entidad Privada Supervisora». Se firma un CONVENIO DE
+   INVERSIÓN, no un contrato. El dinero se llama MONTO REFERENCIAL DEL
+   CONVENIO DE INVERSIÓN. Convoca un COMITÉ ESPECIAL. El proyecto lleva CUI.
+   Se paga con CIPRL o CIPGN.
+   · Bases de EMPRESA PRIVADA: TRES sobres. Sobre 1 CREDENCIALES (requisitos
+     legales, información financiera, patrimonio neto), Sobre 2 PROPUESTA
+     ECONÓMICA, Sobre 3 PROPUESTA TÉCNICA. En ese orden: la económica se abre
+     ANTES que la técnica.
+   · Bases de ENTIDAD PRIVADA SUPERVISORA: DOS sobres. Sobre 1 PROPUESTA
+     TÉCNICA, Sobre 2 PROPUESTA ECONÓMICA. Se ponderan 80% técnica y 20%
+     económica como mínimo y máximo respectivamente.
+   · Se admiten ofertas entre el 90% y el 110% del monto referencial.
+   · Garantía de fiel cumplimiento: 4% para la Empresa Privada (solo carta
+     fianza), 10% para la Entidad Privada Supervisora.
+   · Garantía de apelación: 3% del monto referencial.
+   · NO HAY ADELANTOS en este régimen. Si el texto no menciona adelantos, no
+     los inventes.
+
+B) LEY N° 32069 (contrataciones públicas, vigente desde abril de 2025).
+   NO HAY SOBRES: la oferta se sube como archivo digitalizado a la plataforma
+   (Pladicop). El dinero se llama CUANTÍA DE LA CONTRATACIÓN. La experiencia
+   del postor se acredita en la ESPECIALIDAD Y SUBESPECIALIDAD (no «obras
+   similares») sobre los ÚLTIMOS 25 AÑOS, por un monto que no puede superar
+   UNA VEZ la cuantía. Los rótulos son «Documentación de presentación
+   obligatoria», «Documentos para la admisión de la oferta», «Requisitos de
+   calificación obligatorios» y «adicionales». Fiel cumplimiento 10%, y admite
+   fideicomiso, carta fianza, contrato de seguro o retención de pago. Ofertas
+   admitidas entre 95% y 110%. La suma de la penalidad por mora y las otras
+   penalidades no puede pasar el 10%.
+
+C) LEY N° 30225 (régimen anterior, todavía aparece en bases viejas).
+   VALOR REFERENCIAL, OBRAS SIMILARES, últimos 10 años, PLANTEL PROFESIONAL
+   CLAVE, carta fianza o póliza de caución, cuaderno de obra.
+
+D) PENALIDAD POR MORA, fórmula estándar en los tres regímenes:
+   penalidad diaria = (0.10 x monto) / (F x plazo en días)
+   F = 0.40 si el plazo es de 60 días o menos; F = 0.15 si es mayor. En la Ley
+   32069 hay una franja intermedia con F = 0.25 entre 61 y 120 días.
+`;
+
+const SYSTEM_PROCESO = `Eres un analista de licitaciones públicas peruanas (Ley de Contrataciones del Estado, Obras por Impuestos Ley 29230 y procesos privados).
+${CONTEXTO_NORMATIVO} Te doy el TEXTO de unas páginas de una convocatoria o de unas bases (con marcadores "<!-- página N -->") y extraes los DATOS DEL PROCESO, el CALENDARIO, las REGLAS DE CONSORCIO y los REQUISITOS DE LA EMPRESA postora. NO extraes el plantel profesional: eso lo hace otra pasada.
 
 LA REGLA QUE MANDA: cada dato con número o fecha viene con "fuente_cita" —una frase COPIADA LITERAL del texto, palabra por palabra— y "fuente_pagina", que es el número del marcador «<!-- página N -->» donde está esa frase. Un programa la busca en el documento; si no aparece tal cual, el dato se marca para revisión. NO inventes citas.
 
@@ -149,7 +214,8 @@ QUÉ ES CADA COSA:
 - "objeto": qué se contrata, en una línea corta (ej. «Ejecución y financiamiento del proyecto…» o «Supervisión de la ejecución hasta la liquidación…»).
 - "cui": Código Único de Inversión, 7 dígitos («CUI N° 2611946»).
 - "nomenclatura": el número del proceso («PROCESO DE SELECCIÓN N° 021-2026-CEPIP-GRDE-OXI-GORECAJ-PRIMERA CONVOCATORIA», «LP-SM-1-2026-MDCH-1»).
-- "mecanismo": "oxi" si es Obras por Impuestos / Ley 29230 / convenio de inversión / CIPRL; "ley_contrataciones" si es licitación, concurso o adjudicación bajo la Ley de Contrataciones (OSCE/OECE, SEACE); "privado" si convoca una empresa privada; si no se sabe, null.
+- "mecanismo": "oxi" si es Obras por Impuestos / Ley 29230 / convenio de inversión / CIPRL / CIPGN / Comité Especial; "ley_contrataciones" si es licitación o adjudicación bajo la Ley 32069 o la 30225 (Pladicop, SEACE, OECE, OSCE); "privado" si convoca una empresa privada; si no se sabe, null.
+- "valor_referencial" se llama distinto en cada régimen y todos valen: «monto referencial del convenio de inversión» (Obras por Impuestos), «cuantía de la contratación» (Ley 32069), «valor referencial» (Ley 30225).
 - "valor_referencial": el monto TOTAL del proceso (en OxI: «monto referencial del convenio de inversión»). Número sin separadores: «S/ 1,234,567.89» = 1234567.89.
 - "monto_ejecucion" y "monto_supervision": el DESGLOSE cuando existe («contempla el financiamiento de la ejecución S/ …, la supervisión S/ … y la liquidación S/ …»). Si la convocatoria es de SUPERVISIÓN, el valor_referencial es el costo de la supervisión. Toma SIEMPRE las cifras del texto que te di; los números de este instructivo son ejemplos de formato, no datos del proceso.
 - "plazo_ejecucion_dias": en días calendario. Si dice meses, conviértelo (1 mes = 30 días) y dilo en alertas.
@@ -174,15 +240,22 @@ Cada uno con "descripcion" (la exigencia en una línea), "monto_minimo" (número
 
 NO ES UN REQUISITO DE CALIFICACIÓN y NO va en esta lista: un artículo del Reglamento copiado (impedimentos para contratar, prohibiciones generales, definiciones), una regla de procedimiento, ni un FACTOR DE EVALUACIÓN (ése da puntaje y va a su propia lista). Un requisito de calificación es algo que el postor ACREDITA con un documento suyo y que, si no cumple, lo descalifica.
 
-LA EXPERIENCIA DEL POSTOR ES EL REQUISITO MÁS IMPORTANTE Y EL QUE MÁS SE PIERDE. Búscalo con cuidado: suele decir «el postor debe acreditar un monto facturado acumulado equivalente a X veces el valor referencial en la ejecución de obras similares en los últimos N años». Guarda el múltiplo en "multiplo_valor_referencial", los años en "ventana_anios", y en "obras_similares" el texto con el que ESAS bases definen qué obra cuenta como similar (suele ser una lista larga: «edificaciones en general y/o mercados y/o colegios y/o…»). Ese texto es el que decide si nuestra experiencia sirve, así que cópialo entero.
+LA EXPERIENCIA DEL POSTOR ES EL REQUISITO MÁS IMPORTANTE Y EL QUE MÁS SE PIERDE. Se escribe de dos maneras según el régimen y las DOS cuentan:
+  · «monto facturado acumulado equivalente a X veces el VALOR REFERENCIAL en la ejecución de OBRAS SIMILARES durante los últimos 10 años» (Ley 30225 y la mayoría de las bases de Obras por Impuestos);
+  · «monto facturado acumulado equivalente a … la CUANTÍA DE LA CONTRATACIÓN, en la ejecución de obras en la ESPECIALIDAD Y LAS SUBESPECIALIDADES correspondientes durante los 25 años anteriores» (Ley 32069).
+Guarda el múltiplo en "multiplo_valor_referencial", los años en "ventana_anios", y en "obras_similares" el texto con el que ESAS bases definen qué obra cuenta (suele ser una lista larga: «edificaciones en general y/o mercados y/o colegios y/o…», o la especialidad y subespecialidad). Ese texto decide si nuestra experiencia sirve, así que cópialo entero.
+Para la Entidad Privada Supervisora la exigencia suele ser en cantidad y no en dinero: «experiencia mínima como supervisora en dos (2) proyectos similares durante los últimos diez (10) años». Eso también es "experiencia_postor".
 
 FACTORES DE EVALUACIÓN: los que dan PUNTAJE («Experiencia del postor: 40 puntos», «Mejoras a las condiciones: 20 puntos»). Cada uno con su puntaje máximo y el criterio con que se asigna.
 
-GARANTÍAS: fiel cumplimiento, adelanto directo, adelanto de materiales, seriedad de oferta. Con su porcentaje (10 = 10%) o su monto, y el detalle («carta fianza solidaria, incondicional, irrevocable y de realización automática»). "tipo": fiel_cumplimiento · adelanto_directo · adelanto_materiales · seriedad_oferta · otra.
+GARANTÍAS: fiel cumplimiento, adelanto directo, adelanto de materiales, seriedad de oferta, garantía de apelación. Con su porcentaje (10 = 10%) o su monto, y el detalle («carta fianza solidaria, incondicional, irrevocable y de realización automática»). "tipo": fiel_cumplimiento · adelanto_directo · adelanto_materiales · seriedad_oferta · otra.
+TOMA EL PORCENTAJE DEL TEXTO, no de lo que suele ser: en Obras por Impuestos el fiel cumplimiento de la Empresa Privada es 4% y el de la Supervisora 10%, mientras que en la Ley de Contrataciones es 10%. Y en Obras por Impuestos NO existen los adelantos: si el texto no los menciona, la lista va sin ellos.
 
 PENALIDADES: la de MORA (con su fórmula, por ejemplo «0.10 × monto / (F × plazo)») y las OTRAS penalidades que la entidad liste, con su tope («hasta el 10% del monto del contrato»).
 
-DOCUMENTOS DE PRESENTACIÓN: qué hay que meter en cada sobre. Un renglón por documento, con el sobre al que va («Sobre N° 1», «Sobre N° 2») y si es obligatorio. Copia el nombre del documento como lo escriben («Anexo N° 1 - Declaración jurada de datos del postor»).
+DOCUMENTOS DE PRESENTACIÓN: qué hay que meter en cada sobre. Un renglón por documento, con el sobre al que va y si es obligatorio. Copia el nombre del documento como lo escriben («Anexo N° 1 - Declaración jurada de datos del postor», «Formato N° 6: Promesa formal de consorcio»).
+COPIA EL SOBRE TAL COMO LO DICE EL DOCUMENTO y no lo deduzcas del contenido: en Obras por Impuestos con Empresa Privada el Sobre 2 es la ECONÓMICA y el 3 la TÉCNICA, mientras que en las bases de la Supervisora el 1 es la técnica. Poner «Sobre 2» porque «ahí suele ir la técnica» es un error.
+Si el proceso es de la Ley 32069 no hay sobres: usa «Oferta técnica» y «Oferta económica» como valor del campo "sobre".
 
 CONDICIONES A CONSIDERAR: lo que cambia la decisión de presentarse y no es un requisito ni un factor. El campo "tipo" solo puede ser uno de estos ocho, exactamente así: "adelanto" (¿la entidad da adelantos y de cuánto?) · "forma_pago" (valorizaciones, plazos de pago, límites de la oferta económica) · "visita_obra" (si hay visita y si es obligatoria, con fecha) · "plazo_firma" (cuántos días para firmar el contrato o convenio) · "subcontratacion" (si se permite y hasta qué porcentaje) · "seguros" (SCTR, CAR, responsabilidad civil) · "personal_obligatorio" (personal que debe estar permanentemente en obra) · "otra". Usa "otra" solo si de verdad no encaja. Cada una con "titulo" corto y "detalle".
 

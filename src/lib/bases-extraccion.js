@@ -70,6 +70,14 @@ export const SECCIONES = {
       'REQUISITOS DE LA EMPRESA PRIVADA', 'PROMESA FORMAL DE CONSORCIO',
       'EMPRESA PRIVADA O CONSORCIO', 'PATRIMONIO NETO',
       'REQUISITOS DEL POSTOR', 'CONSORCIO',
+      // Ley 32069 (vigente desde abril de 2025): cambió la terminología
+      // entera. Ya no se dice «valor referencial» sino CUANTÍA DE LA
+      // CONTRATACIÓN, ni «obras similares» sino ESPECIALIDAD Y SUBESPECIALIDAD,
+      // y la experiencia se mide sobre 25 años, no 10.
+      'CUANTIA DE LA CONTRATACION', 'REQUISITOS DE CALIFICACION OBLIGATORIOS',
+      'REQUISITOS DE CALIFICACION ADICIONALES', 'CAPACIDAD TECNICA Y PROFESIONAL',
+      'EQUIPAMIENTO ESTRATEGICO', 'PARTICIPACION EN CONSORCIO',
+      'SOLVENCIA ECONOMICA', 'EXPERIENCIA DEL POSTOR EN LA ACTIVIDAD',
     ],
   },
   cronograma: {
@@ -100,6 +108,16 @@ export const SECCIONES = {
       'CONTENIDO DE LAS OFERTAS', 'DOCUMENTOS DE PRESENTACION OBLIGATORIA',
       'DOCUMENTACION DE PRESENTACION', 'FOLIADO', 'SOBRE N',
       'ANEXO N', 'FORMATO N',
+      // Los sobres de Obras por Impuestos. El sobre 1 se llama CREDENCIALES y
+      // es el mejor detector de unas bases de Empresa Privada: aparece 3 veces
+      // ahí y CERO en las de la supervisora y en las de la Ley de
+      // Contrataciones.
+      'CREDENCIALES', 'CONTENIDO DE LOS SOBRES', 'CONTENIDO DEL SOBRE',
+      'PRESENTACION DE LOS SOBRES', 'APERTURA DEL SOBRE',
+      'FORMA DE PRESENTACION DE PROPUESTAS',
+      // Ley 32069: no hay sobres, hay oferta técnica y económica.
+      'OFERTA TECNICA', 'OFERTA ECONOMICA',
+      'DOCUMENTOS PARA LA ADMISION DE LA OFERTA',
     ],
   },
   proceso: {
@@ -114,8 +132,12 @@ export const SECCIONES = {
       // 0 aciertos en esta familia.
       'MONTO REFERENCIAL', 'CONVOCATORIA DEL PROCESO DE SELECCION',
       'ENTIDAD PUBLICA QUE CONVOCA', 'CUI N', 'CODIGO UNICO DE INVERSION',
-      'OBRAS POR IMPUESTOS', 'LEY N° 29230', 'LEY N 29230', 'NOMBRE DE LA INVERSION',
+      'OBRAS POR IMPUESTOS', 'LEY N 29230', 'NOMBRE DE LA INVERSION',
       'PROCESO DE SELECCION N', 'MONTO DE INVERSION',
+      'CONVENIO DE INVERSION', 'COMITE ESPECIAL',
+      // Ley 32069 y su plataforma.
+      'CUANTIA DE LA CONTRATACION', 'SISTEMA DE ENTREGA', 'MODALIDAD DE PAGO',
+      'LEY N 32069', 'PLADICOP',
     ],
   },
 };
@@ -127,10 +149,56 @@ export const SECCIONES = {
  *  puntas de la comparación pasan por acá. */
 export function normalizar(texto) {
   return String(texto || '')
+    // 🔴 `N°` (U+00B0, signo de grado) y `Nº` (U+00BA, ordinal masculino) se
+    // ven IGUAL y conviven en el mismo documento oficial: en unas bases de
+    // Obras por Impuestos hay 1.132 del primero y 61 del segundo, y en las
+    // bases del MEF «ANEXO Nº» aparece 23 veces contra 7 de «ANEXO N°».
+    // Buscar con uno solo pierde la mitad de los rótulos.
+    .replace(/[°º]/g, '')
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toUpperCase()
     .replace(/\s+/g, ' ')
+    // Ceros a la izquierda: «SOBRE N 01», «SOBRE N 1» y «SOBRE N01» son el
+    // mismo sobre, y los tres aparecen en el mismo juego de bases.
+    .replace(/\bN\s*0+(\d)/g, 'N $1')
     .trim();
+}
+
+/**
+ * Bajo qué norma se rige este proceso. Lo dice el documento, y cambia todo:
+ * cuántos sobres hay y en qué orden, cuánto es la garantía de fiel
+ * cumplimiento, qué porcentaje admite la oferta económica y hasta cómo se
+ * llama el dinero.
+ *
+ * Medido sobre cinco juegos de bases reales (8-set-2026). Los contadores son
+ * tajantes y no se pisan entre sí:
+ *   «CREDENCIALES» + «SOBRE N 3»   → Obras por Impuestos, EMPRESA PRIVADA
+ *   «SOBRE N 2» sin «SOBRE N 3»
+ *     + «REQUISITOS DE CALIFICACION» → Obras por Impuestos, SUPERVISORA
+ *   «CUANTIA DE LA CONTRATACION»    → Ley 32069 (vigente desde abril de 2025)
+ *   «VALOR REFERENCIAL» + «OBRAS SIMILARES» → Ley 30225 (régimen anterior)
+ *
+ * `VALOR REFERENCIAL` y `CUANTIA DE LA CONTRATACION` son **mutuamente
+ * excluyentes** en todo el corpus revisado: son el mejor discriminador entre
+ * los dos regímenes de contratación.
+ */
+export const REGIMENES = {
+  oxi_empresa: { label: 'Obras por Impuestos · Empresa Privada', sobres: 3, fielCumplimiento: 4, rangoEconomico: [90, 110] },
+  oxi_supervisora: { label: 'Obras por Impuestos · Entidad Privada Supervisora', sobres: 2, fielCumplimiento: 10, rangoEconomico: [90, 110] },
+  ley32069: { label: 'Ley 32069 · Contrataciones Públicas', sobres: 0, fielCumplimiento: 10, rangoEconomico: [95, 110] },
+  ley30225: { label: 'Ley 30225 · régimen anterior', sobres: 0, fielCumplimiento: 10, rangoEconomico: null },
+};
+
+export function detectarRegimen(markdown) {
+  const n = normalizar(markdown);
+  const hay = (t) => n.includes(t);
+  if (hay('CREDENCIALES') && hay('SOBRE N 3')) return 'oxi_empresa';
+  if (hay('CUANTIA DE LA CONTRATACION') || hay('PLADICOP') || hay('LEY N 32069')) return 'ley32069';
+  if (hay('LEY N 29230') || hay('CONVENIO DE INVERSION') || hay('OBRAS POR IMPUESTOS')) {
+    return hay('SOBRE N 3') ? 'oxi_empresa' : 'oxi_supervisora';
+  }
+  if (hay('VALOR REFERENCIAL') && hay('OBRAS SIMILARES')) return 'ley30225';
+  return null;
 }
 
 // ── PASE 0.5 — el índice, sin IA ───────────────────────────────────
@@ -778,7 +846,8 @@ export function costoDelAnalisis({ paginasOcr = 0, usdPasadas = 0 } = {}) {
 }
 
 export default {
-  SECCIONES, normalizar, fragmentosPorPagina, indiceDeSecciones, resumenIndice,
+  SECCIONES, REGIMENES, detectarRegimen,
+  normalizar, fragmentosPorPagina, indiceDeSecciones, resumenIndice,
   textoDeRango, verificarCita, verificarResultado,
   aFilaRequisito, aFilasRequisitos, aFilaRequisitoEmpresa, aFilasEmpresa,
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,

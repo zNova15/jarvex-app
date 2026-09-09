@@ -30,9 +30,18 @@ import { fragmentosPorPagina, normalizar } from './bases-extraccion.js';
  * «FORMATO N° 18»; las bases estándar de OSCE/OECE usan «ANEXO N° 1» y
  * siguientes. Se captura el número para poder ordenar y nombrar el archivo.
  */
+// Se corre sobre el texto YA normalizado (`normalizar` saca ° y º, y arregla
+// los ceros a la izquierda), así que acá no hay que repetir esas trampas.
+//
+// Lo que sí contempla, medido sobre bases reales:
+//   «ANEXO N 4-B»   los anexos de Obras por Impuestos llevan letra después del
+//                   número, y saltan de 4-H a 4-J (no existe el 4-I).
+//   «ANEXO A»       las bases de la supervisora numeran con letra sola.
+//   «FORMATO N 12»  hasta tres dígitos.
+//   «ANEXO N 4- B»  el kerning del PDF mete espacios dentro del rótulo.
 const RX_PARTE = new RegExp(
   '^\\s*(' +
-  '(?:ANEXO|FORMATO|FORMULARIO)\\s*(?:N\\s*[°º"]?\\s*)?([0-9]{1,3}|[A-Z](?![A-Z]))' +
+  '(?:ANEXO|FORMATO|FORMULARIO)\\s*(?:N\\s*)?([0-9]{1,3}\\s*-?\\s*[A-Z]?|[A-Z](?![A-Z]))' +
   '|CAPITULO\\s+([IVXL]+)' +
   ')\\b',
 );
@@ -119,30 +128,40 @@ export function nombreDeArchivo(parte, sufijo = '.docx') {
 export function agruparPorSobre(documentos) {
   const grupos = new Map();
   const sinSobre = [];
+  let aparicion = 0;
   for (const d of (documentos || [])) {
     const s = String(d?.sobre || '').trim();
     if (!s) { sinSobre.push(d); continue; }
     const clave = normalizar(s);
-    if (!grupos.has(clave)) grupos.set(clave, { sobre: s, orden: ordenDeSobre(clave), documentos: [] });
+    if (!grupos.has(clave)) {
+      grupos.set(clave, { sobre: s, orden: ordenDeSobre(clave), aparicion: aparicion++, documentos: [] });
+    }
     grupos.get(clave).documentos.push(d);
   }
-  const lista = [...grupos.values()].sort((a, b) => a.orden - b.orden || a.sobre.localeCompare(b.sobre));
+  // Los numerados por su número; los demás, en el orden en que el documento
+  // los nombró, que es el único orden que no inventa nada.
+  const lista = [...grupos.values()].sort((a, b) => a.orden - b.orden || a.aparicion - b.aparicion);
   if (sinSobre.length) lista.push({ sobre: 'Sin sobre indicado', orden: 99, documentos: sinSobre, sinUbicar: true });
   return lista;
 }
 
 /**
- * «Sobre N° 2» → 2. Sin número se ordena por lo que contiene, que es el orden
- * en que se presentan: primero la acreditación, después la técnica y al final
- * la económica (que se abre aparte y solo si la técnica pasó).
+ * «Sobre N° 2» → 2. El NÚMERO manda siempre.
+ *
+ * 🔴 Y no se puede adivinar por el contenido, que era lo que hacía antes.
+ * Investigado el 8-set-2026 sobre bases reales: en Obras por Impuestos con
+ * Empresa Privada el **sobre 2 es la propuesta ECONÓMICA y el 3 la TÉCNICA**,
+ * porque el procedimiento abre primero la económica, elige la más favorable y
+ * recién ahí evalúa la técnica de ESE postor. En las bases de la Entidad
+ * Privada Supervisora, en cambio, el sobre 1 es la técnica y el 2 la
+ * económica. Dos convenciones opuestas dentro del MISMO mecanismo.
+ *
+ * Por eso, sin número, se conserva el orden en que aparecen en el documento en
+ * vez de imponer una lógica que sería falsa la mitad de las veces.
  */
 function ordenDeSobre(clave) {
   const m = /(\d+)/.exec(clave);
-  if (m) return Number(m[1]);
-  if (/ACREDITA|LEGAL|CAPACIDAD|EXPRESION DE INTERES/.test(clave)) return 1;
-  if (/TECNIC/.test(clave)) return 2;
-  if (/ECONOMIC|OFERTA ECONOMICA|PROPUESTA ECONOMICA/.test(clave)) return 3;
-  return 50;
+  return m ? Number(m[1]) : 50;
 }
 
 export default { partirEnAnexos, nombreDeArchivo, agruparPorSobre, MIN_CHARS_PARTE };

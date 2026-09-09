@@ -119,6 +119,66 @@ ajuste es el mismo de siempre: **agregar el rótulo a `SECCIONES`** (los de OxI
 son «monto referencial», «CUI N°», «calendario del proceso», «presentación de
 propuestas», «entidad pública que convoca»).
 
+## Entrega 8 — la norma, investigada y metida en el prompt
+
+> 8-set-2026. Se investigaron los documentos oficiales (DS 038-2026-EF, Ley
+> 32069 y su DS 009-2025-EF, las bases estándar del MEF y cinco juegos de
+> bases reales) porque el modelo estaba adivinando cosas que la norma fija.
+> Tres supuestos nuestros resultaron FALSOS.
+
+### 1. El orden de los sobres está al revés de lo que parece
+
+| Régimen | Sobre 1 | Sobre 2 | Sobre 3 |
+|---|---|---|---|
+| Obras por Impuestos · **Empresa Privada** | Credenciales | **Propuesta económica** | **Propuesta técnica** |
+| Obras por Impuestos · **Supervisora** | Propuesta técnica | Propuesta económica | — |
+| Ley 32069 | *no hay sobres: archivo digitalizado* | | |
+
+No es capricho de una entidad: el procedimiento abre primero la económica,
+elige la más favorable y **recién ahí** evalúa la técnica de ese postor. Por
+eso `agruparPorSobre` ordena por el NÚMERO y nunca por el contenido: dentro
+del mismo mecanismo conviven dos convenciones opuestas.
+
+### 2. Las garantías no son 10% siempre
+
+- Obras por Impuestos, Empresa Privada: **4%**, y **solo carta fianza**.
+- Obras por Impuestos, Supervisora: **10%**, sustituible por 1% después.
+- Ley 32069: 10%, y admite fideicomiso, carta fianza, seguro o retención.
+- **En Obras por Impuestos NO existen los adelantos.** Cero ocurrencias en el
+  reglamento. El modelo los inventaba porque son habituales en obra pública.
+
+### 3. La Ley 32069 cambió el vocabulario entero
+
+| Ley 30225 | Ley 32069 |
+|---|---|
+| valor referencial | **cuantía de la contratación** |
+| obras similares | **especialidad y subespecialidad** |
+| últimos 10 años | **últimos 25 años** |
+| plantel profesional clave | **personal clave** |
+| carta fianza o póliza | fideicomiso · carta fianza · seguro · retención |
+
+`VALOR REFERENCIAL` y `CUANTÍA DE LA CONTRATACIÓN` son **mutuamente
+excluyentes** en todo el corpus revisado: es el mejor discriminador de régimen,
+y de ahí sale `detectarRegimen()`.
+
+### Las trampas de parseo que esto destapó
+
+- **`N°` (U+00B0) y `Nº` (U+00BA) conviven en el mismo documento**: 1.132 del
+  primero contra 61 del segundo en unas bases de OxI. `normalizar()` ahora saca
+  los dos.
+- **Ceros a la izquierda**: `SOBRE N° 1`, `SOBRE N°01` y `SOBRE N° 01` son el
+  mismo sobre y aparecen los tres.
+- **Espacios espurios por el kerning del PDF**: `ANEXO N° 4- B`, `CONTENIDO DE
+  LO S SOBRES`.
+- Los anexos de OxI llevan letra tras el número y **saltan de 4-H a 4-J**.
+
+### Cuánto texto por página delata un escaneo
+
+Medido sobre cuatro juegos de bases: los nativos dan entre 2.431 y 3.161 bytes
+de texto por página; unas bases escaneadas dieron **1**. El umbral seguro para
+mandar a OCR es **menos de 200 bytes por página**, y coincide con lo que ya
+hacía `clasificarPaginaPdf`.
+
 ## Qué modelo
 
 El de `docs/ia-postproceso-openrouter.md`: titular gratuito con **ZDR**, cadena

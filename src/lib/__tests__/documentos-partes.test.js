@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import { partirEnAnexos, nombreDeArchivo, agruparPorSobre, MIN_CHARS_PARTE } from '../documentos-partes.js';
+import { detectarRegimen, REGIMENES, normalizar } from '../bases-extraccion.js';
 
 const relleno = (n) => 'contenido del anexo con texto suficiente. '.repeat(n);
 
@@ -69,6 +70,45 @@ describe('partirEnAnexos — cada anexo es su propia unidad', () => {
   });
 });
 
+describe('detectarRegimen — bajo qué norma se rige el proceso', () => {
+  it('«CREDENCIALES» + «SOBRE N° 3» son Obras por Impuestos con Empresa Privada', () => {
+    expect(detectarRegimen('SOBRE N° 1: CREDENCIALES ... SOBRE N° 3: PROPUESTA TÉCNICA')).toBe('oxi_empresa');
+    expect(REGIMENES.oxi_empresa.sobres).toBe(3);
+    // Fiel cumplimiento 4%, no 10%: en OxI es distinto que en contratación ordinaria.
+    expect(REGIMENES.oxi_empresa.fielCumplimiento).toBe(4);
+  });
+  it('sin el sobre 3 pero con Ley 29230 es la supervisora, con 2 sobres', () => {
+    expect(detectarRegimen('proceso bajo la Ley N° 29230 · SOBRE N° 2: PROPUESTA ECONÓMICA')).toBe('oxi_supervisora');
+    expect(REGIMENES.oxi_supervisora.sobres).toBe(2);
+    expect(REGIMENES.oxi_supervisora.fielCumplimiento).toBe(10);
+  });
+  it('«cuantía de la contratación» es la Ley 32069, que NO tiene sobres', () => {
+    expect(detectarRegimen('el postor acredita un monto sobre la CUANTÍA DE LA CONTRATACIÓN')).toBe('ley32069');
+    expect(REGIMENES.ley32069.sobres).toBe(0);
+    expect(REGIMENES.ley32069.rangoEconomico).toEqual([95, 110]);
+  });
+  it('«valor referencial» + «obras similares» es el régimen anterior', () => {
+    expect(detectarRegimen('una (1) vez el VALOR REFERENCIAL en OBRAS SIMILARES')).toBe('ley30225');
+  });
+  it('un documento que no es unas bases no fuerza ningún régimen', () => {
+    expect(detectarRegimen('lista de precios de abarrotes')).toBeNull();
+  });
+  it('el rango económico de Obras por Impuestos es 90-110, distinto del 95-110 de la 32069', () => {
+    expect(REGIMENES.oxi_empresa.rangoEconomico).toEqual([90, 110]);
+  });
+});
+
+describe('normalizar — las trampas de los documentos oficiales', () => {
+  it('«N°» y «Nº» se ven igual y conviven en el MISMO documento', () => {
+    // Medido: 1.132 del signo de grado contra 61 del ordinal masculino.
+    expect(normalizar('ANEXO N° 4')).toBe(normalizar('ANEXO Nº 4'));
+  });
+  it('los ceros a la izquierda no hacen otro sobre', () => {
+    expect(normalizar('SOBRE N° 01')).toBe(normalizar('SOBRE N° 1'));
+    expect(normalizar('SOBRE N°03')).toBe(normalizar('SOBRE N° 3'));
+  });
+});
+
 describe('agruparPorSobre — lo que Gabriel pidió desglosado', () => {
   const docs = [
     { sobre: 'Sobre N° 2', documento: 'Propuesta técnica' },
@@ -87,13 +127,25 @@ describe('agruparPorSobre — lo que Gabriel pidió desglosado', () => {
     expect(g[3].sinUbicar).toBe(true);
     expect(g[3].documentos[0].documento).toBe('Anexo suelto sin sobre');
   });
-  it('sin número, ordena por lo que contiene: acreditación, técnica, económica', () => {
+  it('el NÚMERO manda, aunque el contenido diga otra cosa', () => {
+    // En Obras por Impuestos con Empresa Privada el sobre 2 es la ECONÓMICA y
+    // el 3 la TÉCNICA: se abre primero la económica y solo se evalúa la
+    // técnica del que ganó. Ordenar por contenido las daría vuelta.
+    const g = agruparPorSobre([
+      { sobre: 'Sobre N° 3: Propuesta técnica', documento: 'a' },
+      { sobre: 'Sobre N° 2: Propuesta económica', documento: 'b' },
+      { sobre: 'Sobre N° 1: Credenciales', documento: 'c' },
+    ]);
+    expect(g.map(x => x.orden)).toEqual([1, 2, 3]);
+    expect(g[1].sobre).toMatch(/económica/i);
+    expect(g[2].sobre).toMatch(/técnica/i);
+  });
+  it('sin número conserva el orden en que el documento los nombró', () => {
     const g = agruparPorSobre([
       { sobre: 'Propuesta económica', documento: 'a' },
       { sobre: 'Acreditación', documento: 'b' },
-      { sobre: 'Propuesta técnica', documento: 'c' },
     ]);
-    expect(g.map(x => x.sobre)).toEqual(['Acreditación', 'Propuesta técnica', 'Propuesta económica']);
+    expect(g.map(x => x.sobre)).toEqual(['Propuesta económica', 'Acreditación']);
   });
   it('sin documentos devuelve lista vacía', () => {
     expect(agruparPorSobre([])).toEqual([]);
