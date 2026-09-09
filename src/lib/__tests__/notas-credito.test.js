@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   esNota, esNotaCredito, motivoEsAnulacion, motivoDeNota,
-  notasPorFactura, anulaFacturaCompleta, avisoSerieRepetida,
+  notasPorFactura, anulaFacturaCompleta, avisoSerieRepetida, candidatasDeNota,
 } from '../notas-credito.js';
 
 const FAC = (id, document_number, amount, extra = {}) =>
@@ -122,5 +122,75 @@ describe('notas-credito — avisoSerieRepetida', () => {
   it('sin coincidencia no hay aviso', () => {
     expect(avisoSerieRepetida({ serieNota: 'E001-2', serieFactura: 'E001-1' })).toBe(null);
     expect(avisoSerieRepetida({ serieNota: '', serieFactura: 'E001-1' })).toBe(null);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// A QUÉ FACTURA PUEDE APUNTAR UNA NOTA HUÉRFANA (tanda 18, entrega B)
+//
+// 11 de las 19 notas de crédito vivas al 9-set-2026 no tienen factura
+// enlazada: no rebajan nada y la factura que anulan sigue contando entera.
+// La app PROPONE candidatas; elegir la sigue eligiendo una persona contra el
+// PDF, porque de esas 11 solo 6 tenían una sola candidata posible.
+// ═══════════════════════════════════════════════════════════════════
+describe('notas-credito — candidatasDeNota', () => {
+  const EMP = 'emp-1';
+  const RUC = '20112273922';
+  const mov = (id, doc, amount, date, extra = {}) => ({
+    id, document_number: doc, amount, date, company_id: EMP,
+    third_party_ruc: RUC, document_type: 'factura', ...extra,
+  });
+  const nota = (amount, date, extra = {}) => ({
+    id: 'nc', document_number: 'F748-7773', amount, date, company_id: EMP,
+    third_party_ruc: RUC, document_type: 'nota_credito', ...extra,
+  });
+
+  it('propone las facturas del mismo proveedor que alcanzan a cubrirla', () => {
+    const movs = [
+      mov('f1', 'F748-100', 2000, '2026-05-01'),
+      mov('f2', 'F748-200', 1019.90, '2026-05-10'),
+    ];
+    const r = candidatasDeNota(nota(-1019.90, '2026-05-12'), movs);
+    expect(r).toHaveLength(2);
+    // La del importe EXACTO manda: una anulación total cubre justo la factura.
+    expect(r[0].documento).toBe('F748-200');
+    expect(r[0].exacta).toBe(true);
+  });
+
+  it('no propone facturas posteriores a la nota', () => {
+    const movs = [mov('f', 'F748-300', 5000, '2026-06-01')];
+    expect(candidatasDeNota(nota(-100, '2026-05-12'), movs)).toHaveLength(0);
+  });
+
+  it('no propone una factura que no alcanza a cubrir la nota', () => {
+    const movs = [mov('f', 'F748-300', 50, '2026-05-01')];
+    expect(candidatasDeNota(nota(-1000, '2026-05-12'), movs)).toHaveLength(0);
+  });
+
+  it('no cruza proveedores ni empresas', () => {
+    const movs = [
+      mov('otro-ruc', 'F001-1', 9000, '2026-05-01', { third_party_ruc: '20999999999' }),
+      mov('otra-emp', 'F001-2', 9000, '2026-05-01', { company_id: 'emp-2' }),
+    ];
+    expect(candidatasDeNota(nota(-100, '2026-05-12'), movs)).toHaveLength(0);
+  });
+
+  it('una nota no puede apuntar a otra nota', () => {
+    const movs = [mov('n2', 'F748-400', 9000, '2026-05-01', { document_type: 'nota_credito' })];
+    expect(candidatasDeNota(nota(-100, '2026-05-12'), movs)).toHaveLength(0);
+  });
+
+  it('sin RUC no se propone nada: adivinar sería peor que no proponer', () => {
+    const movs = [mov('f', 'F748-500', 9000, '2026-05-01')];
+    expect(candidatasDeNota(nota(-100, '2026-05-12', { third_party_ruc: '' }), movs)).toHaveLength(0);
+  });
+
+  it('a igual importe, primero la más cercana en fecha', () => {
+    const movs = [
+      mov('vieja', 'F748-1', 5000, '2026-01-01'),
+      mov('nueva', 'F748-2', 5000, '2026-05-01'),
+    ];
+    const r = candidatasDeNota(nota(-100, '2026-05-12'), movs);
+    expect(r[0].documento).toBe('F748-2');
   });
 });

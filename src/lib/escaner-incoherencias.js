@@ -89,11 +89,28 @@ const hallazgo = (familia, regla, mov, { gravedad = 'media', titulo, detalle, mo
  * espejo se carga a mano y la serie se tipea distinta (es el mismo criterio que
  * ya usa `tieneEspejo` en costo-obra.js). Exigir el número daría falsos
  * positivos en masa.
+ *
+ * ── 🔴 LO QUE NO TIENE ESPEJO Y NO ES UN ERROR (9-set-2026) ───────
+ * Medido en producción el 9-set: de todo el grupo quedaban DOS hallazgos de
+ * esta familia, y los dos eran ruido — la venta E001-1 de JARVEX a EL INCA
+ * (S/ 12.920, ANULADA por su nota de crédito) y la nota de crédito que la
+ * anula. Ninguna de las dos puede tener espejo, y la pantalla las pedía igual.
+ * `interco-espejo.js` ya lo tenía escrito desde la tanda 15 y esta regla no lo
+ * había copiado:
+ *   · Una operación ANULADA quedó sin efecto: el comprador no tiene nada que
+ *     registrar. (Y si la factura anulada sigue viva y sumando, eso lo dice la
+ *     familia 2 —`factura_anulada_viva`—, que es el problema de verdad.)
+ *   · Una nota de crédito o débito no es una compra nueva: es el otro lado de
+ *     un espejo que ya existe o de una operación que se deshizo.
+ * Sin estos dos frenos, la única familia que puede reclamar plata de verdad
+ * llegaba con el 100% de sus avisos equivocados — y un escáner así se apaga a
+ * la semana (la regla de oro de arriba).
  */
 export function intercompanySinEspejo(movs, { companies = [] } = {}) {
   const vivas = vivos(movs);
   const rucDeEmpresa = new Map(vivos(companies).map(c => [rucLimpio(c.ruc), c]));
   const nombreEmpresa = new Map(vivos(companies).map(c => [c.id, c.name]));
+  const anuladas = notasPorFactura(vivas);
 
   // Índice de lo que existe del otro lado: empresa + RUC del tercero + importe.
   const existe = new Set();
@@ -106,6 +123,11 @@ export function intercompanySinEspejo(movs, { companies = [] } = {}) {
   const out = [];
   for (const m of vivas) {
     if (!m.is_intercompany) continue;
+    // Una nota no abre una operación nueva: sigue a su factura.
+    if (esNota(m)) continue;
+    // La operación se deshizo: del otro lado no hay nada que registrar.
+    if (m.payment_status === 'cancelled') continue;
+    if (anuladas.get(m.id)?.anulada) continue;
     const ruc = rucLimpio(m.third_party_ruc);
     const otra = rucDeEmpresa.get(ruc);
     // Marcado intercompany contra alguien que no es del grupo: eso lo dice la

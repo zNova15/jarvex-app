@@ -19,10 +19,23 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { getCurrentMode } from './app-mode-core.js';
+import { filasGuardables, avisosGuardables } from './sunat-csv.js';
 
 const esModoPrueba = () => { try { return getCurrentMode() === 'prueba'; } catch { return false; } };
 const filaDelModo = (r, esPrueba) => (esPrueba ? r.demo === true : r.demo !== true);
 const ahora = () => new Date().toISOString();
+
+/**
+ * Avisar a los hooks que la tabla cambió.
+ *
+ * `useOfflineData` se refresca con `jx_data_changed`; sin esto, escribir en
+ * Dexie no movía la pantalla. Se notaba al marcar una diferencia: el click
+ * guardaba la decisión y la fila seguía igual hasta el siguiente pull del
+ * SyncEngine, así que parecía que el botón no hacía nada.
+ */
+const avisarCambio = (tabla) => {
+  try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch { /* SSR / tests */ }
+};
 
 const filaNueva = (tabla, campos, esPrueba, userId) => ({
   id: newId(),
@@ -70,14 +83,22 @@ export async function leerDecisiones(ambito = null) {
  * El corte anterior se da de baja con `deleted_at` (baja lógica, como todo en
  * la app) en la MISMA transacción que crea el nuevo: si el guardado falla a
  * medias, no puede quedar el mes sin ningún corte ni con dos.
+ *
+ * 🔴 Desde la mig 202 acá viajan también LAS FILAS del archivo. Antes solo se
+ * guardaba el resumen —que es lo derivado— y el CSV, que es la fuente de
+ * afuera, se tiraba: al cambiar de pestaña quedaba la brecha en pesos y
+ * ninguna lista con la que trabajar. Las filas van podadas por
+ * `filasGuardables()`; el podado vive en la lib del parser, con sus tests.
  */
-export async function guardarCorte({ companyId, periodo, libro, archivo, resumen, filasArchivo = 0, avisos = 0 }, userId) {
+export async function guardarCorte({ companyId, periodo, libro, archivo, resumen, filas = [], avisosDetalle = [], filasArchivo = 0, avisos = 0 }, userId) {
   const esPrueba = esModoPrueba();
   const nuevo = filaNueva('sunat_cortes', {
     company_id: companyId,
     periodo: String(periodo || ''),
     libro,
     archivo: archivo || null,
+    filas: filasGuardables(filas),
+    avisos_detalle: avisosGuardables(avisosDetalle),
     filas_archivo: filasArchivo,
     avisos,
     resumen: resumen || {},
@@ -95,7 +116,25 @@ export async function guardarCorte({ companyId, periodo, libro, archivo, resumen
     }
     await db.sunat_cortes.add(nuevo);
   });
+  avisarCambio('sunat_cortes');
   return nuevo;
+}
+
+/**
+ * Da de baja un corte: el mes vuelve a quedar sin archivo cargado.
+ *
+ * Hace falta porque el corte ya no es una cuenta que se pisa sola — ahora
+ * arrastra las filas del CSV, y un archivo cargado en la empresa o el mes
+ * equivocado tiene que poder sacarse sin esperar a que alguien cargue otro
+ * encima. Baja lógica, como todo: el corte sigue en la base para el historial.
+ */
+export async function borrarCorte(id, userId) {
+  const esPrueba = esModoPrueba();
+  const prev = await db.sunat_cortes.get(id);
+  if (!prev) return false;
+  await db.sunat_cortes.update(id, parcheUpdate({ deleted_at: ahora() }, prev, esPrueba, userId));
+  avisarCambio('sunat_cortes');
+  return true;
 }
 
 /**
@@ -117,7 +156,7 @@ export async function decidirCotejo({ ambito, llave, decision, nota = '', compan
     monto: monto == null ? null : Number(monto) || 0,
   };
 
-  return db.transaction('rw', db.cotejo_decisiones, async () => {
+  const escrita = await db.transaction('rw', db.cotejo_decisiones, async () => {
     const previas = (await db.cotejo_decisiones.toArray()).filter(r =>
       !r.deleted_at && filaDelModo(r, esPrueba) && r.ambito === ambito && r.llave === llave);
 
@@ -141,6 +180,8 @@ export async function decidirCotejo({ ambito, llave, decision, nota = '', compan
     await db.cotejo_decisiones.add(nueva);
     return nueva;
   });
+  avisarCambio('cotejo_decisiones');
+  return escrita;
 }
 
 /** Decidir varias de una (el botón «marcar todas las seleccionadas»). */
@@ -151,5 +192,6 @@ export async function decidirCotejoLote(items = [], userId) {
     // puede llevarse puestas a las anteriores.
     try { await decidirCotejo(it, userId); n += 1; } catch { /* sigue con las demás */ }
   }
+  avisarCambio('cotejo_decisiones');
   return n;
 }

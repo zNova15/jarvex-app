@@ -8,9 +8,11 @@
 // tests dicen qué columna se corrió y de qué factura era la plata.
 // ═══════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
+import { compararLibro } from '../comparativa-sunat.js';
 import {
   parseCsvSunat, dividirLineaCsv, repararFila, detectarLibro,
   aFechaIso, aNumero, partirPeriodo, nombreTipoCp,
+  filaGuardable, filasGuardables, avisosGuardables, CAMPOS_FILA_GUARDADA,
 } from '../sunat-csv.js';
 
 // ── Los encabezados reales (setiembre-2026) ───────────────────────
@@ -249,5 +251,81 @@ describe('parseCsvSunat — lo que no se puede leer no se traga', () => {
     const r = parseCsvSunat([H_COMPRAS, C_CON_COMA, ''].join('\r\n'));
     expect(r.filas).toHaveLength(1);
     expect(r.filas[0].moneda).toBe('PEN');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE SE GUARDA DEL ARCHIVO (mig 202, tanda 18 entrega B)
+//
+// Gabriel cargó los CSV de julio, cambió de pestaña y se le borró todo: la
+// mig 196 guardaba el resumen —lo derivado— y tiraba las filas, que son lo
+// único que la app no puede recalcular. Ahora se guardan, podadas.
+// El test que importa es el ÚLTIMO: podar no puede cambiar el cruce.
+// ═══════════════════════════════════════════════════════════════════
+describe('las filas que se guardan con el corte', () => {
+  const filaDe = (texto, header = H_COMPRAS) => parseCsvSunat(csv(header, texto)).filas[0];
+
+  it('deja los campos con los que se cruza', () => {
+    const g = filaGuardable(filaDe(C_CON_COMA));
+    expect(g.documento).toBe('F001-163254');
+    expect(g.serie).toBe('F001');
+    expect(g.numero).toBe(163254);
+    expect(g.tipoCp).toBe('01');
+    expect(g.contraparteRuc).toBe('20614539756');
+    expect(g.contraparteNombre).toBe('INVERSIONES Y DESARROLLO ANDINO E.I.R.L.');
+    expect(g.total).toBe(12956.40);
+    expect(g.fecha).toBe('2026-07-18');
+  });
+
+  it('tira lo que ya está en el corte o se deriva', () => {
+    const g = filaGuardable(filaDe(C_CON_COMA));
+    // `libro` y `periodo` viven en el corte; repetidos por fila podrían
+    // contradecirlo. `numeroTexto` sale de `numero`.
+    expect(g).not.toHaveProperty('libro');
+    expect(g).not.toHaveProperty('periodo');
+    expect(g).not.toHaveProperty('numeroTexto');
+    expect(g).not.toHaveProperty('carSunat');
+  });
+
+  it('se queda con lo que SOLO trae el archivo, aunque hoy nadie lo lea', () => {
+    // Tirarlos obligaría a volver a bajar el CSV de SUNAT para recuperarlos:
+    // exactamente el error que esta migración corrige.
+    expect(CAMPOS_FILA_GUARDADA).toContain('detraccion');
+    expect(CAMPOS_FILA_GUARDADA).toContain('estado');
+    expect(CAMPOS_FILA_GUARDADA).toContain('tipoCambio');
+  });
+
+  it('no guarda campos vacíos, pero sí los ceros', () => {
+    const g = filaGuardable(filaDe(C_BANCO));
+    expect(g).not.toHaveProperty('modificaSerie');   // '' → no se guarda
+    expect(g.base).toBe(0);                          // 0 sí: es un dato
+    expect(g.noGravado).toBe(10);
+  });
+
+  it('los avisos se guardan con su línea, con tope', () => {
+    const muchos = Array.from({ length: 80 }, (_, i) => ({ linea: i + 2, motivo: 'no_se_pudo_alinear', texto: 'x'.repeat(400) }));
+    const g = avisosGuardables(muchos);
+    expect(g).toHaveLength(50);
+    expect(g[0].linea).toBe(2);
+    expect(g[0].texto.length).toBe(200);
+  });
+
+  it('🔴 podar NO cambia el resultado del cruce', () => {
+    // La prueba de fuego: el corte que se guarda tiene que dar el MISMO
+    // veredicto que el archivo recién leído. Si algún día el cruce empieza a
+    // mirar un campo que el podado tira, este test lo dice.
+    const texto = csv(H_COMPRAS, C_CON_COMA, C_MINUSCULAS, C_CON_GUION, C_BANCO);
+    const r = parseCsvSunat(texto);
+    const movs = [{
+      id: 'm1', company_id: 'jx', clase: 'compra', type: 'cost',
+      document_type: 'factura', document_number: 'F001-163254',
+      third_party_ruc: '20614539756', amount: 12956.40, date: '2026-07-18',
+    }];
+    const opts = { companyId: 'jx', libro: 'compras', periodo: '202607', companies: [] };
+    const completo = compararLibro(r.filas, movs, opts);
+    const podado = compararLibro(filasGuardables(r.filas), movs, opts);
+    expect(podado.resumen).toEqual(completo.resumen);
+    expect(podado.filas.map(f => `${f.llave}|${f.estado}|${f.diferencia}`))
+      .toEqual(completo.filas.map(f => `${f.llave}|${f.estado}|${f.diferencia}`));
   });
 });

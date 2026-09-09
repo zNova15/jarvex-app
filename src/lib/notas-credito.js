@@ -151,3 +151,58 @@ export function avisoSerieRepetida({ serieNota, serieFactura } = {}) {
   if (!a || !b || a !== b) return null;
   return `La nota y la factura que modifica comparten el número ${a}. Es válido: SUNAT numera cada tipo de comprobante por separado, así que la nota de crédito ${a} y la factura ${a} conviven. Verificá contra el PDF que sea el número propio de la nota.`;
 }
+
+/**
+ * Las facturas a las que PODRÍA estar apuntando una nota de crédito huérfana.
+ *
+ * EL PEDIDO (Gabriel, 9-set-2026): «el escáner no propone soluciones». La
+ * familia más grande del escáner son las notas sin factura — 11 de las 19 notas
+ * vivas al 9-set-2026 no tienen `related_movement_id`, así que no rebajan nada
+ * en ningún reporte y la factura que anulan sigue contando entera.
+ *
+ * Encontrar la factura a mano es entrar a Movimientos, filtrar por el proveedor
+ * y buscar entre las suyas. Acá se propone: misma empresa, mismo RUC, fecha
+ * anterior o igual a la nota, e importe que ALCANCE para cubrirla (una nota no
+ * puede rebajar más de lo que dice la factura).
+ *
+ * 🔴 PROPONE, NO ENLAZA. De las 11 huérfanas medidas, 6 tienen una sola
+ * candidata y 5 tienen entre 2 y 4 — con proveedores como HOMECENTERS o
+ * KOPLAST, que facturan muchas veces al mes, elegir sola sería adivinar. La
+ * pantalla muestra la lista y la persona confirma contra el PDF.
+ *
+ * Orden: primero la del importe EXACTO (una anulación total cubre justo la
+ * factura entera) y después la más cercana en fecha, que es como se busca de
+ * verdad. `exacta` viaja en cada candidata para que la pantalla lo pueda decir.
+ *
+ * @returns [{ id, documento, fecha, monto, exacta }]
+ */
+export function candidatasDeNota(nota, movimientos, { tolerancia = 0.05, maximo = 6 } = {}) {
+  if (!nota || !esNotaCredito(nota)) return [];
+  const rucNota = String(nota.third_party_ruc ?? '').replace(/\D/g, '');
+  if (!rucNota || !nota.company_id) return [];
+  const montoNota = abs(nota.amount);
+
+  const candidatas = (movimientos || []).filter(m => {
+    if (!m || m.deleted_at || m.id === nota.id) return false;
+    if (m.company_id !== nota.company_id) return false;
+    if (esNota(m)) return false;                       // una nota no anula a otra
+    if (m.payment_status === 'cancelled') return false;
+    if (String(m.third_party_ruc ?? '').replace(/\D/g, '') !== rucNota) return false;
+    // La nota es POSTERIOR a lo que modifica (o del mismo día).
+    if (nota.date && m.date && String(m.date) > String(nota.date)) return false;
+    // Y la factura tiene que alcanzar para cubrirla.
+    return abs(m.amount) + tolerancia >= montoNota;
+  });
+
+  return candidatas
+    .map(m => ({
+      id: m.id,
+      documento: m.document_number || 's/n',
+      fecha: m.date || '',
+      monto: abs(m.amount),
+      exacta: Math.abs(abs(m.amount) - montoNota) <= tolerancia,
+    }))
+    .sort((a, b) => (Number(b.exacta) - Number(a.exacta))
+      || String(b.fecha).localeCompare(String(a.fecha)))
+    .slice(0, maximo);
+}

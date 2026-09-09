@@ -371,6 +371,70 @@ const LAYOUT_COMPRAS = {
   noGravado: (v) => aNumero(v('valorNg')),
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE SE GUARDA DEL ARCHIVO (mig 202, tanda 18 entrega B)
+//
+// Hasta la mig 202 el CSV se leía, se cruzaba y se tiraba: al cambiar de
+// pestaña quedaba el resumen y ninguna lista. Ahora las filas viajan con el
+// corte, pero PODADAS — un corte se guarda una vez y se lee muchas, y cada
+// campo guardado es un campo que promete estar bien.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Los campos de una fila que sobreviven al guardado. Son EXACTAMENTE los que
+ * `compararLibro()` y la tabla de la pantalla leen; ni uno más.
+ *
+ * Lo que se tira, y por qué:
+ *   · `libro` y `periodo` — ya están en el corte, y repetidos por fila podrían
+ *     contradecirlo.
+ *   · `numeroTexto` — `numero` ya es el número; el texto solo servía para leer.
+ *   · `carSunat`, `fechaVcto`, `contraparteTipoDoc`, `otros` — nadie los mira.
+ *   · `modificaTipo`, `modificaFecha`, `tipoNota` — de la nota se muestra QUÉ
+ *     comprobante modifica (serie y número); el resto no se usa.
+ * Lo que se queda aunque hoy nadie lo lea: `detraccion`, `estado` y
+ * `tipoCambio`. Son tres escalares que SOLO trae el archivo — si se tiran, la
+ * única forma de recuperarlos es volver a bajar el CSV de SUNAT, que es
+ * justamente el error que se corrige acá.
+ */
+export const CAMPOS_FILA_GUARDADA = [
+  'linea', 'fecha', 'tipoCp', 'tipoNombre', 'serie', 'numero', 'documento',
+  'contraparteRuc', 'contraparteNombre',
+  'base', 'igv', 'noGravado', 'total', 'moneda', 'tipoCambio',
+  'modificaSerie', 'modificaNumero',
+  'estado', 'detraccion',
+];
+
+/** Una fila lista para guardar: solo los campos de `CAMPOS_FILA_GUARDADA`. */
+export function filaGuardable(fila) {
+  const out = {};
+  for (const k of CAMPOS_FILA_GUARDADA) {
+    const v = fila?.[k];
+    if (v === undefined || v === null || v === '') continue;   // no guardar vacíos
+    out[k] = v;
+  }
+  return out;
+}
+
+/** Las filas de un corte, listas para guardar. */
+export const filasGuardables = (filas = []) =>
+  (Array.isArray(filas) ? filas : []).map(filaGuardable);
+
+/**
+ * Los avisos que se guardan con el corte, con tope.
+ *
+ * Un archivo sano trae cero; uno que SUNAT cambió de formato puede traer una
+ * por línea, y guardar 3.000 textos para decir «este archivo no se pudo leer»
+ * no ayuda a nadie. Con 50 alcanza para ir a mirar el archivo, y la CUENTA
+ * completa vive aparte, en la columna `avisos`.
+ */
+export function avisosGuardables(avisos = [], maximo = 50) {
+  return (Array.isArray(avisos) ? avisos : []).slice(0, maximo).map(a => ({
+    linea: a?.linea ?? null,
+    motivo: a?.motivo || '',
+    texto: String(a?.texto || '').slice(0, 200),
+  }));
+}
+
 /**
  * Lee un `File` del navegador y devuelve el texto, resolviendo el encoding.
  *

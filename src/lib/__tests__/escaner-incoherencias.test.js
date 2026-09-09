@@ -70,6 +70,47 @@ describe('1. intercompany sin espejo', () => {
     const movs = [compra('c', JARVEX, 'F001-1', '20111111111', 100, '2026-07-06', { is_intercompany: true })];
     expect(intercompanySinEspejo(movs, { companies: COMPANIES })).toHaveLength(0);
   });
+
+  // ── Lo medido el 9-set-2026: los DOS únicos hallazgos vivos de esta
+  // familia en todo el grupo eran ruido, y los dos por esto. ─────────
+  it('🔴 no pide el espejo de una venta ANULADA por su nota de crédito', () => {
+    // E001-1: JARVEX se la emitió a EL INCA por S/ 12.920 y la anuló el mismo
+    // día. EL INCA no tiene ni debe tener ese costo. (Que la factura anulada
+    // siga viva lo dice la familia 2, que es el problema de verdad.)
+    const movs = [
+      venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06', { is_intercompany: true }),
+      venta('n', JARVEX, 'E001-1', '20615346081', -12920, '2026-07-06',
+        { is_intercompany: true, document_type: 'nota_credito', related_movement_id: 'f' }),
+    ];
+    expect(intercompanySinEspejo(movs, { companies: COMPANIES })).toHaveLength(0);
+  });
+
+  it('🔴 una nota de crédito interna no necesita espejo propio', () => {
+    // Una nota no abre una operación nueva: sigue a su factura.
+    const movs = [
+      venta('n', JARVEX, 'E001-7', '20615346081', -500, '2026-07-10',
+        { is_intercompany: true, document_type: 'nota_credito' }),
+    ];
+    expect(intercompanySinEspejo(movs, { companies: COMPANIES })).toHaveLength(0);
+  });
+
+  it('una venta dada de baja tampoco pide espejo', () => {
+    const movs = [
+      venta('v', JARVEX, 'E001-8', '20615346081', 800, '2026-07-11',
+        { is_intercompany: true, payment_status: 'cancelled' }),
+    ];
+    expect(intercompanySinEspejo(movs, { companies: COMPANIES })).toHaveLength(0);
+  });
+
+  it('la venta VIVA sin espejo se sigue reportando (no se silenció la familia)', () => {
+    const movs = [
+      venta('v2', JARVEX, 'E001-2', '20615346081', 19028.68, '2026-07-06', { is_intercompany: true }),
+      // Una nota PARCIAL no anula: la operación sigue en pie.
+      venta('n', JARVEX, 'E001-2', '20615346081', -100, '2026-07-08',
+        { document_type: 'nota_credito', related_movement_id: 'v2' }),
+    ];
+    expect(intercompanySinEspejo(movs, { companies: COMPANIES })).toHaveLength(1);
+  });
 });
 
 describe('2. notas de crédito', () => {
