@@ -1,4 +1,5 @@
-import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, setLastSync } from '../db/jarvex.db';
+import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, getLastSyncId, setLastSync } from '../db/jarvex.db';
+import { filtroIncremental, idDelBorde } from './cursor-incremental';
 import { supabase } from '../lib/supabase';
 import { uploadPendingEvidencias } from './EvidenceUploader';
 import { syncPendingAuditLogs } from '../lib/audit';
@@ -2293,6 +2294,7 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
     if (tablaExcluidaPorRol(tabla)) continue;
     try {
       let lastSync = await getLastSync(tabla);
+      let lastSyncId = await getLastSyncId(tabla);
       // Auto-recovery: si Dexie tiene 0 records pero hay lastSync grabado,
       // ignoramos lastSync y hacemos full pull. Pasa cuando IndexedDB se
       // borró parcialmente.
@@ -2302,6 +2304,7 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
           if (localCount === 0) {
             console.warn(`[SyncEngine] ${tabla}: Dexie vacío con lastSync grabado → full pull (recovery)`);
             lastSync = null;
+            lastSyncId = null; // el cursor compuesto va en pareja: sin sello no hay id
           }
         } catch {}
       }
@@ -2321,15 +2324,26 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
       //    "vivos" de "tombstones" para hacer bulkPut + bulkDelete.
       const buildQuery = () => {
         let q = supabase.from(tabla).select('*');
-        // .gte (no .gt): con .gt, una fila cuyo updated_at empata EXACTO con el
-        // watermark quedaba fuera para siempre. El re-pull del borde es barato e
-        // idempotente (bulkPut). Igual criterio que el pull transaccional.
-        if (lastSync) q = q.gte('updated_at', lastSync);
+        // Cursor compuesto (updated_at, id) — ver filtroIncremental. Mantiene la
+        // garantía del .gte de antes (no perder la fila que empata con el sello)
+        // pero sin re-descargar el borde entero en cada ciclo.
+        if (lastSync) q = filtroIncremental(q, lastSync, lastSyncId);
         else q = q.is('deleted_at', null);
         return q;
       };
 
-      const { data, error } = await fetchAllRows(buildQuery);
+      let { data, error } = await fetchAllRows(buildQuery);
+
+      // REPLIEGUE SEGURO: el cursor compuesto usa un .or() anidado de PostgREST.
+      // Si por lo que sea el server lo rechaza, NO dejamos la tabla sin sincronizar
+      // — reintentamos con el .gte de siempre (correcto, solo más caro) y dejamos
+      // de usar el cursor para esta tabla en esta corrida.
+      if (error && lastSyncId) {
+        console.warn(`[SyncEngine] pull ${tabla}: cursor compuesto rechazado (${error.message}) → repliegue a .gte`);
+        lastSyncId = null;
+        ({ data, error } = await fetchAllRows(buildQuery));
+      }
+
       if (error) {
         const code = error.code || '';
         const msg = String(error.message || '').toLowerCase();
@@ -2354,7 +2368,7 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
             for (const r of data2) {
               if (r.updated_at && (!maxUpd2 || r.updated_at > maxUpd2)) maxUpd2 = r.updated_at;
             }
-            if (maxUpd2) await setLastSync(tabla, maxUpd2);
+            if (maxUpd2) await setLastSync(tabla, maxUpd2, idDelBorde(data2, maxUpd2));
           }
           continue;
         }
@@ -2480,7 +2494,9 @@ async function aplicarPullMaster(tabla, dataArr, lastSync) {
       for (const r of dataArr) {
         if (r.updated_at && (!maxUpd || r.updated_at > maxUpd)) maxUpd = r.updated_at;
       }
-      if (maxUpd) await setLastSync(tabla, maxUpd);
+      // Junto al sello guardamos el id más alto que lo comparte: es la segunda
+      // mitad del cursor y lo que evita re-bajar el borde entero cada ciclo.
+      if (maxUpd) await setLastSync(tabla, maxUpd, idDelBorde(dataArr, maxUpd));
 }
 
 // Tablas hijas/items que NO tienen columna created_by en el schema —
@@ -2712,6 +2728,7 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
    if (tablaExcluidaPorRol(tabla)) continue;   // sync por rol (ver PULL_SCOPE_POR_ROL)
    try {
     let lastSync = await getLastSync(`${tabla}_pull`);
+    let lastSyncId = await getLastSyncId(`${tabla}_pull`);
 
     // Auto-recovery: si Dexie está vacío pero hay lastSync grabado (típico tras
     // "Limpiar caché local" / "Forzar resync completo"), ignoramos el watermark
@@ -2723,15 +2740,17 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
         if ((await db[tabla].count()) === 0) {
           console.warn(`[SyncEngine] ${tabla} (tx): Dexie vacío con lastSync grabado → full pull (recovery)`);
           lastSync = null;
+          lastSyncId = null; // el cursor compuesto va en pareja
         }
       } catch {}
     }
 
     const baseQuery = () =>
-      supabase
-        .from(tabla)
-        .select('*')
-        .gte('updated_at', lastSync ?? '2020-01-01T00:00:00Z');
+      filtroIncremental(
+        supabase.from(tabla).select('*'),
+        lastSync ?? '2020-01-01T00:00:00Z',
+        lastSync ? lastSyncId : null, // el fondo de escala no lleva cursor
+      );
 
     // ANTES filtrábamos .neq('created_by', userId) ("no traer lo que yo mismo
     // creé"). Eso causaba PÉRDIDA DE VISTA: tras un cache-clear, los registros
@@ -2748,6 +2767,15 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
     const buildQuery = () => baseQuery();
 
     let { data, error } = await fetchAllRows(buildQuery);
+
+    // REPLIEGUE SEGURO del cursor compuesto (ver filtroIncremental): si el
+    // server rechaza el .or() anidado, reintentamos con el .gte de siempre en
+    // vez de dejar la tabla sin sincronizar.
+    if (error && lastSyncId) {
+      console.warn(`[SyncEngine] pull tx ${tabla}: cursor compuesto rechazado (${error.message}) → repliegue a .gte`);
+      lastSyncId = null;
+      ({ data, error } = await fetchAllRows(buildQuery));
+    }
 
     // Auto-retry: si el error es por columna created_by inexistente,
     // reintentamos sin el filtro y cacheamos el resultado para futuras syncs.
@@ -2818,7 +2846,9 @@ async function aplicarPullTx(tabla, data, lastSync) {
     // que no los trajera dejaba el watermark adelantado y .gte() los saltaba para
     // siempre (causa raíz de "no veo los movimientos importados").
     if (maxUpd) {
-      await setLastSync(`${tabla}_pull`, maxUpd);
+      // Con el id del borde: mismo cursor compuesto que el pull master. oc_items
+      // ya estaba re-bajando la mitad de la tabla en cada ciclo por sellos iguales.
+      await setLastSync(`${tabla}_pull`, maxUpd, idDelBorde(data, maxUpd));
     } else if (data.length) {
       // Caso patológico: trajimos filas pero ninguna tiene updated_at. Sin
       // avanzar, esta tabla haría full re-pull cada sync. Avanzamos al reloj

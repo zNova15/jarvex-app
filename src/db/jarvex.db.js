@@ -1304,6 +1304,17 @@ export async function getLastSync(tabla) {
   return meta?.last_synced_at ?? null;
 }
 
-export async function setLastSync(tabla, ts) {
-  await db.sync_metadata.put({ tabla, last_synced_at: ts });
+// Segunda mitad del cursor de pull: el id más alto entre las filas que
+// compartían el sello `last_synced_at`. Sin esto el pull incremental usa
+// .gte(sello) y vuelve a bajar TODAS las filas que empatan con el sello en
+// cada ciclo — con una tabla importada de golpe (todas las filas con el mismo
+// updated_at) eso es la tabla entera cada 30 segundos. Ver getLastSyncId en
+// SyncEngine.buildQuery.
+export async function getLastSyncId(tabla) {
+  const meta = await db.sync_metadata.get(tabla);
+  return meta?.last_synced_id ?? null;
+}
+
+export async function setLastSync(tabla, ts, id = null) {
+  await db.sync_metadata.put({ tabla, last_synced_at: ts, last_synced_id: id });
 }
