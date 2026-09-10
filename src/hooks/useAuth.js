@@ -4,6 +4,7 @@ import { db } from '../db/jarvex.db';
 import { syncAll } from '../sync/SyncEngine';
 import { identifyUser, resetUser } from '../lib/posthog.js';
 import { hayTrabajoEnCurso, trabajosEnCurso } from '../lib/sesion-ocupada.js';
+import { hayServicioRestringido } from '../lib/servicio-restringido.js';
 
 export const AuthContext = createContext(null);
 
@@ -245,6 +246,26 @@ export function useAuthProvider() {
         return;
       }
       if (hubo) { hubo = false; reset(); return; }
+
+      // Con el servidor restringido (402), cerrar sesión por inactividad deja
+      // al usuario AFUERA PARA SIEMPRE: `logout()` hace fullLocalCleanup(), que
+      // borra la sesión cacheada de IndexedDB, y para volver a entrar hace falta
+      // el servidor, que es justo el que no está. Pasó el 9-set-2026: cada
+      // equipo que se quedaba media hora quieto quemaba su propio salvavidas
+      // offline, con todos los datos ahí al lado.
+      //
+      // Mientras dure la restricción postergamos el cierre y seguimos
+      // revisando. El timeout protege un equipo desatendido; acá el costo de
+      // aplicarlo (perder el acceso por días, hasta que se reinicie el ciclo de
+      // facturación) es muchísimo mayor que el riesgo que evita, y es un estado
+      // temporal y visible. Cuando el servicio vuelve, el reloj sigue como
+      // siempre.
+      if (hayServicioRestringido()) {
+        console.warn('[useAuth] Cierre por inactividad POSTERGADO: el servicio está restringido y volver a entrar sería imposible.');
+        inactivityTimer.current = setTimeout(vencer, ESPERA_TRABAJO_MS);
+        return;
+      }
+
       console.log('[useAuth] Sesión cerrada por inactividad');
       try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
       logout();

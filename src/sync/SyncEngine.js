@@ -1,5 +1,20 @@
 import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, getLastSyncId, setLastSync } from '../db/jarvex.db';
 import { filtroIncremental, idDelBorde } from './cursor-incremental';
+import {
+  hayServicioRestringido, registrarSiEsRestriccion, limpiarServicioRestringido,
+} from '../lib/servicio-restringido';
+
+// Con el servicio restringido no dejamos de mirar del todo: cada 5 minutos se
+// deja pasar UN ciclo para detectar el momento en que vuelve. Sin este sondeo
+// la app se quedaría offline hasta que alguien recargue.
+const SONDEO_RESTRINGIDO_MS = 5 * 60_000;
+let _ultimoSondeoRestringido = 0;
+function tocaSondearElServicio() {
+  const ahora = Date.now();
+  if (ahora - _ultimoSondeoRestringido < SONDEO_RESTRINGIDO_MS) return false;
+  _ultimoSondeoRestringido = ahora;
+  return true;
+}
 import { supabase } from '../lib/supabase';
 import { uploadPendingEvidencias } from './EvidenceUploader';
 import { syncPendingAuditLogs } from '../lib/audit';
@@ -855,6 +870,11 @@ let _lastPullEventAt = 0; // throttle del evento jx_sync_pull (max 1/min)
 
 export async function syncAll() {
   if (syncInProgress || !navigator.onLine) return;
+  // Servicio restringido (402): el servidor rechaza TODO. Seguir sincronizando
+  // es golpear una puerta cerrada cada 30 s, y encima cada intento fallido
+  // consume cuota. Se reintenta espaciado (SONDEO_RESTRINGIDO_MS) para notar
+  // solo el momento en que el servicio vuelve. Ver src/lib/servicio-restringido.js.
+  if (hayServicioRestringido() && !tocaSondearElServicio()) return;
   // Sin sesión no hay nada que sincronizar: antes una pestaña deslogueada o
   // abandonada seguía consultando ~84 tablas maestras cada ciclo con la anon
   // key (todas rechazadas o vacías por RLS). getSession() es local: 0 red.
@@ -881,6 +901,9 @@ export async function syncAll() {
     console.log('[SyncEngine] 4/4 pull consolidado (RPC fase 2 + legacy para full pulls)…');
     await pullConsolidado();
 
+    // Llegamos hasta acá sin errores: si veníamos restringidos, el servicio volvió.
+    limpiarServicioRestringido();
+
     const [pending, failed] = await Promise.all([getPendingCount(), getFailedCount()]);
     const ms = Math.round(performance.now() - t0);
     console.log(`[SyncEngine] ✓ syncAll OK en ${ms}ms · pending=${pending} failed=${failed}`);
@@ -897,6 +920,7 @@ export async function syncAll() {
     emit({ syncing: false, pending, failed, lastSync: new Date(), error: null, phase: null, current: 0, total: 0 });
   } catch (err) {
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
+    registrarSiEsRestriccion(err);
     emit({ syncing: false, error: err.message, phase: null, current: 0, total: 0 });
     // Sentry: syncAll completo falló (no un record individual). Es grave.
     captureException(err, {
@@ -2372,6 +2396,10 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
           }
           continue;
         }
+        // El 402 del servicio restringido entra por acá, tabla por tabla, y
+        // el `continue` se lo comía en silencio: syncAll terminaba "bien" y
+        // nadie se enteraba de que el proyecto estaba cortado.
+        registrarSiEsRestriccion(error);
         console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
         continue;
       }
