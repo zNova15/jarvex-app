@@ -16,7 +16,7 @@
 import React from 'react';
 import {
   getFailedDetails, retryAllFailed, getPendingCount, getFailedCount,
-  syncAll, forceFullResync, getSyncHealth,
+  syncAll, forceFullResync, getSyncHealth, getTechoPullHealth,
 } from '../sync/SyncEngine';
 import { migrarEvidenciasHeic } from '../lib/migrar-heic';
 import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
@@ -76,6 +76,10 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
   // Verificación de integridad (local vs servidor) — bajo demanda (hace red).
   const [health, setHealth] = useState(null);        // null | [] | [{...}]
   const [verificando, setVerificando] = useState(false);
+  // Techo de pull (ver src/sync/techo-pull.js): solo se pinta cuando hay algo
+  // sospechoso que mirar — el 99% de las sesiones no tienen nada que decir acá
+  // y no vale la pena ocupar espacio con un "todo bien" más.
+  const [techo, setTecho] = useState(null);
   // Fase 3 consumo: migración one-shot de fotos HEIC antiguas (solo admin).
   const [migrandoHeic, setMigrandoHeic] = useState(false);
   const [heicMsg, setHeicMsg] = useState(null);
@@ -91,6 +95,9 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
       setFailed(det);
       setPending(p);
       setFailedTotal(f);
+      // Síncrono (no golpea red ni Dexie): lee el historial en memoria que ya
+      // fueron dejando los pulls de esta sesión.
+      try { setTecho(getTechoPullHealth()); } catch { setTecho(null); }
     } finally {
       setLoading(false);
     }
@@ -344,6 +351,34 @@ export default function SyncDetailModal({ open, onClose, showToast }) {
                     ✓ Estás viendo todo lo que hay en el servidor y todo lo tuyo ya subió.
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Techo de pull — el detector de la próxima bomba de egress (ver
+                jarvex-corte-egress-9sep). Solo aparece cuando hay algo sospechoso:
+                una tabla cuyo pull incremental trajo una fracción grande de sus
+                filas, que es exactamente la forma del corte del 9-set-2026. */}
+            {techo?.haySospecha && (
+              <div style={{ marginTop:14, paddingTop:10, borderTop:'1px solid var(--border)' }}>
+                <div style={{ fontSize:11.5, fontWeight:700, color:'var(--red)' }}>
+                  ⚠ Un pull está trayendo demasiado de golpe
+                </div>
+                <div style={{ fontSize:11.5, color:'var(--ts)', lineHeight:1.6, marginTop:4 }}>
+                  Es la misma forma del corte del 9-set-2026: una tabla vuelve a bajarse casi entera en
+                  cada sincronización aunque nada haya cambiado. Si se repite muchas veces, agota la
+                  cuota del servidor. Avisá al admin — probablemente una tabla necesita revisión.
+                </div>
+                <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:5 }}>
+                  {techo.tablas.filter(t => t.sospechoso).map(t => (
+                    <div key={t.tabla} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8,
+                      padding:'6px 9px', background:'rgba(0,0,0,0.16)', borderRadius:5, fontSize:11.5 }}>
+                      <span style={{ color:'var(--tp)', fontWeight:600 }}>{t.tabla}</span>
+                      <span style={{ color:'var(--red)', fontSize:10.5, whiteSpace:'nowrap' }}>
+                        {t.filasTraidas} de {t.filasLocales} filas ({t.pct}%) en el último pull
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

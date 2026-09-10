@@ -1,5 +1,6 @@
 import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, getLastSyncId, setLastSync } from '../db/jarvex.db';
 import { filtroIncremental, idDelBorde } from './cursor-incremental';
+import { medirCicloIncremental, saludDelTecho, haySospechaActiva } from './techo-pull';
 import {
   hayServicioRestringido, registrarSiEsRestriccion, limpiarServicioRestringido,
 } from '../lib/servicio-restringido';
@@ -800,6 +801,14 @@ function tablaExcluidaPorRol(tabla) {
     const excl = PULL_SCOPE_POR_ROL[rol];
     return !!(excl && excl.has(tabla));
   } catch { return false; }
+}
+
+// Salud del TECHO DE PULL (ver src/sync/techo-pull.js): tablas cuyo último
+// pull incremental trajo una fracción sospechosa de sus filas totales — la
+// forma exacta del bug que tumbó el servicio el 9-set-2026. Vacío en un
+// device recién abierto (nada medido todavía en esta sesión).
+export function getTechoPullHealth() {
+  return { tablas: saludDelTecho(), haySospecha: haySospechaActiva() };
 }
 
 export async function getSyncHealth() {
@@ -2319,13 +2328,15 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
     try {
       let lastSync = await getLastSync(tabla);
       let lastSyncId = await getLastSyncId(tabla);
+      const eraIncremental = lastSync != null; // para el techo de pull, más abajo
+      let localCountAntes = 0;
       // Auto-recovery: si Dexie tiene 0 records pero hay lastSync grabado,
       // ignoramos lastSync y hacemos full pull. Pasa cuando IndexedDB se
       // borró parcialmente.
       if (lastSync && db[tabla]) {
         try {
-          const localCount = await db[tabla].count();
-          if (localCount === 0) {
+          localCountAntes = await db[tabla].count();
+          if (localCountAntes === 0) {
             console.warn(`[SyncEngine] ${tabla}: Dexie vacío con lastSync grabado → full pull (recovery)`);
             lastSync = null;
             lastSyncId = null; // el cursor compuesto va en pareja: sin sello no hay id
@@ -2402,6 +2413,14 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
         registrarSiEsRestriccion(error);
         console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
         continue;
+      }
+      // TECHO DE PULL: solo mide ciclos que ARRANCARON como incrementales
+      // (no un full pull — ahí bajar todo es lo esperado). Compara lo que trajo
+      // este ciclo contra lo que ya había en Dexie ANTES del pull; si la
+      // fracción es grande, es exactamente la forma del bug del 9-set. Ver
+      // src/sync/techo-pull.js.
+      if (eraIncremental && (data || []).length) {
+        medirCicloIncremental(tabla, data.length, localCountAntes);
       }
       await aplicarPullMaster(tabla, data || [], lastSync);
     } catch (e) {
@@ -2757,6 +2776,8 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
    try {
     let lastSync = await getLastSync(`${tabla}_pull`);
     let lastSyncId = await getLastSyncId(`${tabla}_pull`);
+    const eraIncremental = lastSync != null; // para el techo de pull, más abajo
+    let localCountAntes = 0;
 
     // Auto-recovery: si Dexie está vacío pero hay lastSync grabado (típico tras
     // "Limpiar caché local" / "Forzar resync completo"), ignoramos el watermark
@@ -2765,7 +2786,8 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
     // invisibles aunque existieran en el server.
     if (lastSync && db[tabla]) {
       try {
-        if ((await db[tabla].count()) === 0) {
+        localCountAntes = await db[tabla].count();
+        if (localCountAntes === 0) {
           console.warn(`[SyncEngine] ${tabla} (tx): Dexie vacío con lastSync grabado → full pull (recovery)`);
           lastSync = null;
           lastSyncId = null; // el cursor compuesto va en pareja
@@ -2818,6 +2840,10 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
     }
 
     if (error || !data?.length) continue;
+
+    // Techo de pull (ver bloque equivalente en pullMasterTables, y
+    // src/sync/techo-pull.js).
+    if (eraIncremental) medirCicloIncremental(tabla, data.length, localCountAntes);
 
     await aplicarPullTx(tabla, data, lastSync);
    } catch (e) {
