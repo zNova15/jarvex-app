@@ -2572,6 +2572,61 @@ function SistemaTab({ showToast }) {
     } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
   };
 
+  // ── Modelos de IA por ámbito (tanda 19, 9-set-2026) ──────────────
+  //
+  // Gabriel: «quiero configurar qué modelos utilizar desde la app… todo
+  // seleccionable y que salga con sus costes reales», y «solo para admin, y
+  // aparte de Captura Mágica».
+  //
+  // DOS ÁMBITOS SEPARADOS porque son documentos distintos: una factura
+  // electrónica es un PDF nítido de una página y el OCR barato le sobra; unas
+  // bases integradas son 94 páginas escaneadas y fotocopiadas, donde ese mismo
+  // OCR devolvió páginas enteras en basura. Captura Mágica arranca EXACTAMENTE
+  // como venía y no cambia hasta que alguien la toque acá.
+  //
+  // Los precios los trae el endpoint del catálogo de OpenRouter con el mismo
+  // filtro ZDR con el que la app llama de verdad — no están escritos a mano,
+  // porque un precio escrito a mano ya nos mintió una vez (el alias de Mistral
+  // que se movió solo y duplicó el costo del OCR).
+  const [catIA, setCatIA] = uSAd(null);
+  const [ocupadoIA, setOcupadoIA] = uSAd('');
+  uEAd(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const { traerCatalogo } = await import('../lib/modelos-ia-config.js');
+        const { apiFetch, apiParse } = await import('../lib/api-client');
+        const c = await traerCatalogo(apiFetch, apiParse);
+        if (vivo && c) setCatIA(c);
+      } catch { /* sin catálogo, la sección avisa y no se puede elegir */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
+  const CLAVES_IA = {
+    licitaciones: { ocr: 'ia_licitaciones_ocr', texto: 'ia_licitaciones_texto' },
+    captura: { ocr: 'ia_captura_ocr', texto: 'ia_captura_texto' },
+  };
+  const leerIA = (ambito, tipo) => {
+    const clave = CLAVES_IA[ambito][tipo];
+    const v = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(appCfgHook.data, clave, null) : null;
+    const t = v == null ? '' : String(v).trim();
+    return t || (catIA?.defaults?.[ambito]?.[tipo] || '');
+  };
+  const guardarIA = async (ambito, tipo, valor) => {
+    const clave = CLAVES_IA[ambito][tipo];
+    setOcupadoIA(clave);
+    try {
+      // Reusar la fila viva más reciente (mismo criterio que el resto de
+      // app_config: no acumular una fila por cada cambio de opinión).
+      const vivas = (appCfgHook.data || []).filter(r => !r.deleted_at && r.clave === clave);
+      vivas.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+      if (vivas[0]) await appCfgHook.update(vivas[0].id, { valor });
+      else await appCfgHook.create({ clave, valor });
+      showToast?.('✓ Guardado — rige en cada equipo tras su próximo sync', 'green');
+    } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
+    finally { setOcupadoIA(''); }
+  };
+
   // Umbral de respaldo por orden (app_config 'orden_umbral_monto', mig 179).
   // Gabriel lo propuso en S/ 2.000 midiendo contra la base: con el 17% de los
   // comprobantes de compra se respalda el 97% del monto. Es configurable y no
@@ -2902,6 +2957,87 @@ function SistemaTab({ showToast }) {
             disabled={!isAdmin} value={timeoutMostrado} onChange={e=>setTimeoutSel(e.target.value)}/>
           <span style={{ fontSize:12, color:'var(--tm)' }}>minutos (entre 5 y 480)</span>
           {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarTimeout}>Guardar</button>}
+        </div>
+        {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
+      </div>
+      {/* ── MODELOS DE IA, POR ÁMBITO (tanda 19) ──
+          Solo admin. Dos bloques separados a propósito: lo que le sirve a una
+          factura nítida no es lo que necesita un escaneo de 94 páginas. Cada
+          opción muestra lo que cuesta HOY (precio traído de OpenRouter con el
+          mismo filtro ZDR con el que la app llama). */}
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft:'3px solid var(--purple)' }}>
+        <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <JxIcon name="zap" size={14} color="var(--purple)"/> Modelos de IA
+        </div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:12 }}>
+          Qué motor lee los documentos en cada módulo. Son <b>configuraciones separadas</b>:
+          lo que le sirve a una factura nítida no es lo que necesita un escaneo de 94 páginas.
+          El cambio llega a cada equipo por el sync.
+          {catIA && (
+            <> Precios {catIA.enVivo ? <b>traídos de OpenRouter ahora</b> : <>medidos el {catIA.medidoEl}</>}, en USD por millón de tokens.</>
+          )}
+        </div>
+        {!catIA && (
+          <div style={{ fontSize:11.5, color:'var(--amber)' }}>
+            No se pudo traer el catálogo de modelos. Revisá la conexión o que el módulo de licitaciones esté habilitado para tu rol.
+          </div>
+        )}
+        {catIA && [
+          { ambito:'licitaciones', titulo:'Licitaciones (bases y currículums)', nota:'Documentos escaneados, largos y con tablas. Acá es donde el OCR barato se queda corto.' },
+          { ambito:'captura', titulo:'Captura Mágica (facturas, guías, SCTR)', nota:'Comprobantes nítidos de una o dos páginas. Hoy funciona bien: cambiá esto solo si algo empieza a fallar.' },
+        ].map(({ ambito, titulo, nota }) => (
+          <div key={ambito} style={{ marginBottom:14, paddingBottom:14, borderBottom:'1px solid var(--border)' }}>
+            <div style={{ fontSize:12.5, fontWeight:600 }}>{titulo}</div>
+            <div style={{ fontSize:11, color:'var(--tm)', marginBottom:8 }}>{nota}</div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))', gap:12 }}>
+              <div>
+                <label style={{ fontSize:11, color:'var(--tm)', display:'block', marginBottom:3 }}>Escaneo (OCR)</label>
+                <select className="fi" disabled={!isAdmin || ocupadoIA === CLAVES_IA[ambito].ocr}
+                  value={leerIA(ambito, 'ocr')}
+                  onChange={e => guardarIA(ambito, 'ocr', e.target.value)}>
+                  {catIA.ocr.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.nombre} — USD {Number(m.usdPorPagina).toFixed(3)}/página
+                      {(m.recomendadoEn || []).includes(ambito) ? ' · recomendado' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4, lineHeight:1.45 }}>
+                  {catIA.ocr.find(m => m.id === leerIA(ambito, 'ocr'))?.detalle}
+                  {catIA.ocr.find(m => m.id === leerIA(ambito, 'ocr'))?.flojo && (
+                    <><br/><span style={{ color:'var(--amber)' }}>{catIA.ocr.find(m => m.id === leerIA(ambito, 'ocr')).flojo}</span></>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize:11, color:'var(--tm)', display:'block', marginBottom:3 }}>Extracción (texto → datos)</label>
+                <select className="fi" disabled={!isAdmin || ocupadoIA === CLAVES_IA[ambito].texto}
+                  value={leerIA(ambito, 'texto')}
+                  onChange={e => guardarIA(ambito, 'texto', e.target.value)}>
+                  {catIA.texto.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.nombre}{m.gratis ? ' — USD 0' : ` — ${Number(m.precio?.entrada ?? 0).toFixed(3)} entrada / ${Number(m.precio?.salida ?? 0).toFixed(3)} salida`}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4, lineHeight:1.45 }}>
+                  {catIA.texto.find(m => m.id === leerIA(ambito, 'texto'))?.detalle}
+                  {catIA.texto.find(m => m.id === leerIA(ambito, 'texto'))?.flojo && (
+                    <><br/><span style={{ color:'var(--amber)' }}>{catIA.texto.find(m => m.id === leerIA(ambito, 'texto')).flojo}</span></>
+                  )}
+                  {catIA.texto.find(m => m.id === leerIA(ambito, 'texto'))?.ojo && (
+                    <><br/><span style={{ color:'var(--amber)' }}>{catIA.texto.find(m => m.id === leerIA(ambito, 'texto')).ojo}</span></>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div style={{ fontSize:10.5, color:'var(--tm)', lineHeight:1.5 }}>
+          Un modelo elegido a mano <b>va solo, sin respaldos</b>: si lo pediste para compararlo, tiene que
+          contestar él. Los «gratuitos» sí llevan cadena de respaldo y el que atiende puede cambiar entre
+          una lectura y otra. Todas las llamadas exigen que el proveedor <b>no guarde el pedido</b> (ZDR);
+          si ninguno cumple, no se manda nada.
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
       </div>

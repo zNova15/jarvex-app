@@ -1793,6 +1793,12 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   // se lee como que se colgó, por más que la barra avance de a poquito.
   const [desde, setDesde] = uS(null);
   const [ahora, setAhora] = uS(0);
+  // Con qué modelos se va a leer. Los elige el admin en Administración →
+  // Modelos de IA y viajan por `app_config`; acá solo se LEEN y se muestran,
+  // porque gastar sin saber con qué se está leyendo fue justamente el problema
+  // de la corrida del 8-set (la atendió en parte un modelo afinado en salud).
+  const cfgIA = window.__hooks?.useAppConfig ? window.__hooks.useAppConfig() : { data: [] };
+  const [catIA, setCatIA] = uS(null);
   const [marcados, setMarcados] = uS(() => new Set());        // puestos (personal)
   const [marcadosEmp, setMarcadosEmp] = uS(() => new Set());  // requisitos de empresa
   const [aplicarCabecera, setAplicarCabecera] = uS(true);
@@ -1801,6 +1807,63 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   const [guardando, setGuardando] = uS(false);
   // Guard SÍNCRONO: el doble clic en «Guardar» duplicaría todos los puestos.
   const guardandoRef = uR(false);
+
+  // El catálogo con los precios que OpenRouter cobra hoy. Si no se puede
+  // traer, la pantalla sigue funcionando: solo muestra el precio de siempre.
+  uE(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const { traerCatalogo } = await import('../lib/modelos-ia-config.js');
+        const { apiFetch, apiParse } = await import('../lib/api-client');
+        const c = await traerCatalogo(apiFetch, apiParse);
+        if (vivo && c) setCatIA(c);
+      } catch { /* sin catálogo se sigue igual */ }
+    })();
+    return () => { vivo = false; };
+  }, []);
+
+  // Lo que el admin dejó configurado (o el default del ámbito si nadie tocó
+  // nada). `elegidoOcr`/`elegidoTexto` pueden ser null = «el de siempre».
+  const elegido = (() => {
+    try {
+      const k = { ocr: 'ia_licitaciones_ocr', texto: 'ia_licitaciones_texto' };
+      const leer = (c) => {
+        const v = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(cfgIA.data, c, null) : null;
+        const t = v == null ? '' : String(v).trim();
+        return t || null;
+      };
+      return { ocr: leer(k.ocr), texto: leer(k.texto) };
+    } catch { return { ocr: null, texto: null }; }
+  })();
+  const ocrEnUso = elegido.ocr || catIA?.defaults?.licitaciones?.ocr || 'mistral-ocr-2512';
+  const textoEnUso = elegido.texto || catIA?.defaults?.licitaciones?.texto || 'auto';
+  const usdPagina = (() => {
+    const m = (catIA?.ocr || []).find(x => x.id === ocrEnUso);
+    const v = Number(m?.usdPorPagina);
+    return Number.isFinite(v) && v > 0 ? v : 0.002;
+  })();
+  const nombreIA = (id, tipo) => (catIA?.[tipo] || []).find(x => x.id === id)?.nombre || id;
+  const cuerpoModelos = {
+    ...(elegido.ocr ? { modelo_ocr: elegido.ocr } : {}),
+    ...(elegido.texto ? { modelo_texto: elegido.texto } : {}),
+  };
+
+  // EL PRESUPUESTO SE RECALCULA CUANDO LLEGA EL PRECIO. El catálogo se trae por
+  // red y puede aterrizar DESPUÉS de que la persona eligió el archivo: sin
+  // esto, el modal mostraría el precio del OCR barato mientras va a leer con el
+  // caro, que es exactamente la clase de número equivocado que esta pantalla
+  // existe para evitar.
+  uE(() => {
+    if (!bloques) return;
+    let vivo = true;
+    (async () => {
+      const { presupuestar } = await import('../lib/bases-analisis.js');
+      if (vivo) setPresupuesto(presupuestar(bloques, { usdPorPagina: usdPagina }));
+    })();
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usdPagina, bloques]);
 
   // Un tic por segundo mientras corre, y nada el resto del tiempo.
   uE(() => {
@@ -1825,7 +1888,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
       const { bloques: bs, unidad: u } = await leerDocumento(file, { onProgreso: setProgreso });
       setBloques(bs);
       setUnidad(u || 'pagina');
-      setPresupuesto(presupuestar(bs));
+      setPresupuesto(presupuestar(bs, { usdPorPagina: usdPagina }));
       // ¿Este archivo ya se leyó antes? Entonces el escaneo no se vuelve a
       // pagar. Es lo que pidió Gabriel el 8-set: «no me gustaría perder eso».
       try {
@@ -1893,6 +1956,7 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
           hechas.push(await analizar(bloques, {
             apiFetch, apiParse, cacheado: reuso,
             onOcrListo: guardarOcr,
+            modelosElegidos: cuerpoModelos, usdPorPaginaOcr: usdPagina,
             onProgreso: (p) => setProgreso({
               ...p,
               pct: pctDeCorrida(p.pct, i, veces),
@@ -2103,6 +2167,33 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
       {/* ── El presupuesto, antes de gastar ── */}
       {fase === 'presupuesto' && presupuesto && (
         <div style={{ padding: '10px 4px' }}>
+          {/* ── CON QUÉ SE VA A LEER ──
+              Se muestra ANTES de gastar y con su precio. La corrida del 8-set
+              terminó atendida en parte por un modelo afinado en SALUD leyendo
+              unas bases de licitación, y no había forma de saberlo hasta
+              después. Lo elige el admin en Administración → Modelos de IA;
+              acá es solo para verlo. */}
+          <div className="card card-p" style={{ marginBottom: 12, display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 11.5 }}>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--tm)' }}>escaneo</div>
+              <b>{nombreIA(ocrEnUso, 'ocr')}</b>
+              <span style={{ color: 'var(--tm)' }}> · {usd(usdPagina)}/página</span>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--tm)' }}>extracción</div>
+              <b>{nombreIA(textoEnUso, 'texto')}</b>
+              {(() => {
+                const m = (catIA?.texto || []).find(x => x.id === textoEnUso);
+                if (!m) return null;
+                return m.gratis
+                  ? <span style={{ color: 'var(--green)' }}> · USD 0</span>
+                  : <span style={{ color: 'var(--tm)' }}> · {usd(m.precio?.entrada)}/{usd(m.precio?.salida)} por millón</span>;
+              })()}
+            </div>
+            <div style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}>
+              lo cambia el admin en<br />Administración → Modelos de IA
+            </div>
+          </div>
           <div className="card card-p" style={{ marginBottom: 12 }}>
             <b style={{ fontSize: 12.5 }}>Esto es lo que hay en {archivo?.name}</b>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, marginTop: 10, fontSize: 12 }}>

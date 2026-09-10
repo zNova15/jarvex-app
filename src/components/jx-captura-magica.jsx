@@ -477,6 +477,14 @@ function CapturaMagicaPage({ showToast }) {
   // PENDING eternos (trampa TABLA_TO_MODULO). Así solo lo usan jefe contable/admin.
   const canWritePro = isAdmin || ((window.__hasPerm?.(myRol, 'Proveedores', 'w') ?? false) && (window.__hasPerm?.(myRol, 'Movs. Contables', 'w') ?? false));
 
+  // La configuración de modelos de ESTE ámbito (tanda 19). En un ref porque el
+  // handler de subida es async y corre mucho después del render que lo creó:
+  // leer el estado directo daría el valor viejo si el sync trajo un cambio en
+  // el medio.
+  const { data: cfgIA } = window.__hooks?.useAppConfig?.() || { data: [] };
+  const cfgIAFilas = uRCM([]);
+  uECM(() => { cfgIAFilas.current = cfgIA || []; }, [cfgIA]);
+
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: obras } = window.__hooks?.useObras?.() || { data: [] };
   const { data: consorcios } = window.__hooks?.useConsorcios?.() || { data: [] };
@@ -870,11 +878,21 @@ function CapturaMagicaPage({ showToast }) {
       // implementó el postprocesamiento en OpenRouter hay más de un motor
       // posible y conviene ver cuál leyó cada comprobante y en cuánto.
       const t0Lectura = Date.now();
+      // Los modelos configurados para ESTE ámbito (Administración → Modelos de
+      // IA). Captura Mágica tiene su propia configuración, separada de la de
+      // licitaciones, y su default es exactamente lo que venía usando: sin que
+      // el admin toque nada, `cuerpoDeModelos` devuelve {} y el pedido sale
+      // idéntico a como salía antes de que esto existiera.
+      let modelosIA = {};
+      try {
+        const { cuerpoDeModelos } = await import('../lib/modelos-ia-config.js');
+        modelosIA = cuerpoDeModelos(cfgIAFilas.current || [], 'captura');
+      } catch { /* sin configuración se usa el default del servidor */ }
       const resp = await apiFetch('/api/captura-magica', {
         method: 'POST',
         timeout: 90000,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: base64, mimeType: file.type }),
+        body: JSON.stringify({ file: base64, mimeType: file.type, ...modelosIA }),
       });
       // apiParse NUNCA explota con respuestas no-JSON: traduce el 402
       // "Payment required" de la plataforma (deployment deshabilitado por

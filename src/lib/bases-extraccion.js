@@ -1304,7 +1304,10 @@ export function tipoDeFilaEmpresa(fila = {}) {
 
 // ── El costo, medido y no estimado ─────────────────────────────────
 
-/** USD por página de OCR — el snapshot fijo `mistral-ocr-2512` (lib/mistral-ocr.js). */
+/** USD por página de OCR con el default histórico, `mistral-ocr-2512` = OCR 3
+ *  (lib/mistral-ocr.js). Desde la tanda 19 el modelo se elige en Administración
+ *  → Modelos de IA y OCR 4.1 vale el doble, así que el precio VIAJA con la
+ *  llamada: esta constante es solo el piso para cuando nadie eligió nada. */
 export const USD_POR_PAGINA_OCR = 0.002;
 
 /**
@@ -1313,8 +1316,9 @@ export const USD_POR_PAGINA_OCR = 0.002;
  * estimaciones de IA de esta app ya fallaron una vez (el alias de Mistral que
  * se movió solo y duplicó el precio sin que nadie se enterara).
  */
-export function costoDelAnalisis({ paginasOcr = 0, usdPasadas = 0 } = {}) {
-  const ocr = num(paginasOcr) * USD_POR_PAGINA_OCR;
+export function costoDelAnalisis({ paginasOcr = 0, usdPasadas = 0, usdPorPagina = USD_POR_PAGINA_OCR } = {}) {
+  const precio = num(usdPorPagina) > 0 ? num(usdPorPagina) : USD_POR_PAGINA_OCR;
+  const ocr = num(paginasOcr) * precio;
   const total = ocr + num(usdPasadas);
   return {
     ocr: Number(ocr.toFixed(4)),

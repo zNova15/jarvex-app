@@ -41,6 +41,8 @@
 import { requireAuth, rateLimit, sanitizeError } from '../lib/api-helpers.js';
 import { modeloOcr } from '../lib/mistral-ocr.js';
 import { leerConfig, construirCuerpo, openrouterChat, normalizarRespuesta } from '../lib/openrouter.js';
+import { catalogo, resolverOcr, resolverTexto } from '../lib/modelos-ia.js';
+import { preciosEnVivo } from '../lib/openrouter-precios.js';
 
 export const maxDuration = 60;
 
@@ -450,9 +452,9 @@ Responde SOLO con este JSON, sin markdown:
 
 // ── Mistral OCR de UNA página (imagen). Ver el comentario de arriba sobre
 //    por qué está duplicado y no importado. ──────────────────────────
-async function ocrDeImagen(base64, mimeType, apiKey, deadline) {
+async function ocrDeImagen(base64, mimeType, apiKey, deadline, modelo = OCR.modelo) {
   const dataUri = `data:${mimeType};base64,${base64}`;
-  const body = { model: OCR.modelo, document: { type: 'image_url', image_url: dataUri }, include_image_base64: false };
+  const body = { model: modelo, document: { type: 'image_url', image_url: dataUri }, include_image_base64: false };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.min(30000, Math.max(deadline - Date.now(), 1000)));
   // Sin `= null`: si el fetch lanza, el error sube y nadie lee la variable.
@@ -487,15 +489,28 @@ function jsonDeTexto(txt) {
   return null;
 }
 
-async function pasadaDeTexto({ system, user, deadline, maxTokens, razonamiento = 'bajo' }) {
+/**
+ * @param elegido  el modelo que pidió la pantalla (lista blanca de
+ *   lib/modelos-ia.js). 'auto' o vacío = la cadena de gratuitos de siempre.
+ *
+ *   🔴 UN MODELO ELEGIDO VA SOLO, SIN RESPALDOS. Si alguien pide GLM para
+ *   compararlo, tiene que contestar GLM: un respaldo silencioso mediría una
+ *   mezcla. Ya pasó — la corrida del 8-set terminó atendida en parte por la
+ *   variante afinada en SALUD porque un respaldo había desaparecido del
+ *   catálogo de OpenRouter.
+ */
+async function pasadaDeTexto({ system, user, deadline, maxTokens, razonamiento = 'bajo', elegido = null }) {
   const cfg = leerConfig(process.env);
   if (!cfg.activo) {
     const err = new Error('El motor de texto no está configurado (falta OPENROUTER_API_KEY)');
     err.status = 503; err.code = 'ia_no_configurada';
     throw err;
   }
+  const t = resolverTexto(elegido, 'licitaciones');
   const body = construirCuerpo({
-    modelo: cfg.modelo, respaldos: cfg.respaldos, politica: cfg.politica,
+    modelo: t.auto ? cfg.modelo : t.modelo,
+    respaldos: t.auto ? cfg.respaldos : [],
+    politica: cfg.politica,
     system, user, maxTokens, razonamiento,
   });
   const data = await openrouterChat(cfg.apiKey, body, deadline);
@@ -509,7 +524,7 @@ async function pasadaDeTexto({ system, user, deadline, maxTokens, razonamiento =
     // El modelo REALMENTE servido, que con una cadena de respaldos puede no ser
     // el titular. Se devuelve al cliente y se guarda: cuando una extracción
     // salga mal hay que saber quién la hizo.
-    model: r.model || cfg.modelo,
+    model: r.model || (t.auto ? cfg.modelo : t.modelo),
     usage: r.usage || null,
     // OpenRouter informa el costo real de la llamada. Con un gratuito es 0, y
     // ese 0 es un dato medido, no un supuesto.
@@ -539,10 +554,24 @@ export default async function handler(req, res) {
 
     const deadline = Date.now() + 52_000;
 
+    // ── El catálogo: qué se puede elegir y cuánto cuesta hoy ───────
+    // Lo consume la pantalla de configuración (solo admin) y el modal de
+    // bases, que muestra con qué va a leer antes de gastar.
+    if (accion === 'modelos') {
+      const ids = catalogo().texto.filter(m => !m.gratis).map(m => m.id);
+      const precios = await preciosEnVivo(ids);
+      return res.status(200).json({ catalogo: catalogo({ precios }) });
+    }
+
     // ── OCR de una tanda de páginas ────────────────────────────────
     if (accion === 'ocr') {
       const apiKey = process.env.MISTRAL_API_KEY;
       if (!apiKey) return res.status(503).json({ error: 'El OCR no está configurado (falta MISTRAL_API_KEY)', code: 'ia_no_configurada' });
+
+      // El modelo elegido en Administración → Modelos de IA. La lista blanca
+      // de lib/modelos-ia.js manda: un id desconocido cae al de siempre en vez
+      // de dejar el documento sin leer.
+      const modeloDelOcr = resolverOcr(body.modelo_ocr, 'licitaciones').modelo;
 
       const paginas = Array.isArray(body.paginas) ? body.paginas : [];
       if (!paginas.length) return res.status(422).json({ error: 'No mandaste páginas' });
@@ -563,13 +592,13 @@ export default async function handler(req, res) {
         // resto: una tanda a medias es recuperable, un 504 no dice qué se leyó.
         if (Date.now() > deadline - 6000) { fallidas.push({ clave, motivo: 'sin tiempo en esta tanda' }); continue; }
         try {
-          textos[clave] = await ocrDeImagen(b64, mime, apiKey, deadline);
+          textos[clave] = await ocrDeImagen(b64, mime, apiKey, deadline, modeloDelOcr);
         } catch (e) {
           fallidas.push({ clave, motivo: e?.upstreamStatus ? `OCR ${e.upstreamStatus}` : 'OCR falló' });
         }
       }
       return res.status(200).json({
-        textos, fallidas, model: OCR.modelo,
+        textos, fallidas, model: modeloDelOcr,
         paginasLeidas: Object.keys(textos).length,
       });
     }
@@ -591,7 +620,7 @@ export default async function handler(req, res) {
         // medido para Captura Mágica —1.571 tokens de salida donde Haiku
         // usaba 493— y este paso pedía menos que eso. Nunca llegaba a
         // escribir la primera llave.
-        deadline, maxTokens: 8000,
+        deadline, maxTokens: 8000, elegido: body.modelo_texto,
       });
       if (r.cortado) {
         return res.status(502).json({
@@ -630,7 +659,7 @@ export default async function handler(req, res) {
         // modelo lo gastaba razonando. Ahora el máximo, y con razonamiento
         // bajo para que el espacio se use en el JSON. Con un gratuito, pedir
         // de más cuesta USD 0; cortar cuesta la sección entera.
-        deadline, maxTokens: 16000,
+        deadline, maxTokens: 16000, elegido: body.modelo_texto,
       });
       if (r.cortado) {
         // El cliente parte el rango en dos y reintenta solo: decirle al
@@ -661,7 +690,7 @@ export default async function handler(req, res) {
         // Un CV con 12 periodos y 10 cursos son ~3.000 tokens de JSON, más el
         // razonamiento. Con 8.000 se cortaba (prueba real del 8-set: «no se
         // pudo leer el currículum»). Al máximo, y razonando poco.
-        deadline, maxTokens: 16000,
+        deadline, maxTokens: 16000, elegido: body.modelo_texto,
       });
       if (r.cortado) {
         return res.status(422).json({

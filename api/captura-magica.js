@@ -204,6 +204,10 @@ import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib
 import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
 import { estimarItems } from '../lib/ocr-items.js';
 import { modeloOcr, textoPaginadoSctr } from '../lib/mistral-ocr.js';
+// El CATÁLOGO lo sirve api/bases-analizar.js (acción 'modelos') para los dos
+// ámbitos: es el mismo módulo y multiplexar sale más barato que un endpoint
+// nuevo. Acá solo hace falta RESOLVER lo que llega del navegador.
+import { resolverOcr, resolverTexto } from '../lib/modelos-ia.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
 // para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).
@@ -489,6 +493,15 @@ export default async function handler(req, res) {
   // certificados y SCTR. Acá solo exigimos que haya AL MENOS un motor; la
   // exigencia fina se hace donde se sabe qué camino se tomó.
   const cfgOR = leerConfigOR();
+  // 🔴 LOS MODELOS DE CAPTURA MÁGICA SE CONFIGURAN APARTE DE LOS DE
+  // LICITACIONES (tanda 19, pedido de Gabriel). Son documentos distintos: una
+  // factura electrónica es un PDF nítido de una página y OCR 3 le sobra;
+  // unas bases integradas son 94 páginas escaneadas. El default de este ámbito
+  // es EXACTAMENTE lo que venía usando, así que sin tocar nada no cambia nada.
+  // La lista blanca de lib/modelos-ia.js impide que el navegador pida un
+  // modelo caro que no esté aprobado.
+  const elegidoOcr = resolverOcr((req.body || {}).modelo_ocr, 'captura');
+  const elegidoTexto = resolverTexto((req.body || {}).modelo_texto, 'captura');
   if (!apiKey && !cfgOR.activo) {
     return res.status(503).json({
       error: 'No hay ningún motor de IA configurado en Vercel (ANTHROPIC_API_KEY u OPENROUTER_API_KEY). Pídele al admin que agregue una en Project Settings → Environment Variables.',
@@ -615,7 +628,7 @@ export default async function handler(req, res) {
   // Si el OCR falla o devuelve pocas páginas, se cae a la visión de siempre.
   if (mistralKey) {
     try {
-      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : MISTRAL_OCR_MODEL);
+      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : elegidoOcr.modelo);
       // Para SCTR el texto no alcanza: lo que se pide es en QUÉ PÁGINA está
       // cada documento, así que sin `paginas` el OCR no sirve y hay que ir por
       // visión igual que antes.
@@ -722,8 +735,10 @@ export default async function handler(req, res) {
       const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
       try {
         const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          modelo: cfgOR.modelo,
-          respaldos: cfgOR.respaldos,
+          // Un modelo elegido a mano va SOLO, sin respaldos: si se pidió para
+          // compararlo, tiene que contestar él. Ver lib/modelos-ia.js.
+          modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
+          respaldos: elegidoTexto.auto ? cfgOR.respaldos : [],
           politica: cfgOR.politica,
           system: systemPrompt,
           user: content[0].text,
@@ -778,7 +793,8 @@ export default async function handler(req, res) {
         + `Responde SOLO con el JSON minificado.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }];
       const dataRescate = usaOpenRouter
         ? normalizarRespuestaOR(await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-            modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+            modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
+            respaldos: elegidoTexto.auto ? cfgOR.respaldos : [], politica: cfgOR.politica,
             system: systemPrompt, user: contentSinItems[0].text, maxTokens: 4000,
           }), deadline))
         : await anthropicMessages(apiKey, {

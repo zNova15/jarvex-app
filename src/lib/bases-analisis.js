@@ -173,12 +173,15 @@ export async function rotarImagen(dataUrl, grados) {
  * Es la única forma honesta de contestar «¿cuánto me cuesta analizar esto?»:
  * contando las páginas que de verdad van a ir al OCR, no estimando el archivo.
  */
-export function presupuestar(bloques) {
+/** @param usdPorPagina  el precio del OCR ELEGIDO (OCR 4.1 vale el doble que
+ *  OCR 3). Sin él se presupuesta con el default histórico, que es lo que hacía
+ *  hasta la tanda 19. */
+export function presupuestar(bloques, { usdPorPagina } = {}) {
   const r = resumenTriage(bloques);
   return {
     ...r,
     tandas: Math.ceil(r.paginasOcr / PAGINAS_POR_TANDA),
-    costo: costoDelAnalisis({ paginasOcr: r.paginasOcr }),
+    costo: costoDelAnalisis({ paginasOcr: r.paginasOcr, usdPorPagina }),
   };
 }
 
@@ -209,12 +212,17 @@ export function alertasUnicas(alertas) {
  */
 /** El cliente HTTP del endpoint, con el error ya desarmado. Se exporta porque
  *  el lector de CV (cv-analisis.js) habla con el mismo endpoint. */
-export function crearPedidor(apiFetch, apiParse) {
+/** @param extra  campos que se agregan a TODOS los pedidos. Es por donde
+ *  viajan `modelo_ocr` y `modelo_texto` (lo que el admin eligió en
+ *  Administración → Modelos de IA). Va acá y no en cada llamada porque una
+ *  sola pasada que se olvide de mandarlo la atendería otro modelo y la
+ *  comparación quedaría mezclada. */
+export function crearPedidor(apiFetch, apiParse, extra = null) {
   return async (body, timeout = 90000) => {
     const resp = await apiFetch('/api/bases-analizar', {
       method: 'POST', timeout,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(extra ? { ...body, ...extra } : body),
     });
     const data = await apiParse(resp);
     if (!resp.ok) {
@@ -288,7 +296,7 @@ export async function ocrDeBloques(bloques, { pedir, avisar = () => {}, alertas 
  *   a Gabriel), los USD 0,19 del escaneo se perdían y había que pagarlos de
  *   nuevo. Ahora se avisa apenas está, y la pantalla lo guarda ahí mismo.
  */
-export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null, onOcrListo = null } = {}) {
+export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null, cacheado = null, onOcrListo = null, modelosElegidos = null, usdPorPaginaOcr = undefined } = {}) {
   // El reloj de cada fase. No es adorno: es el número con el que se compara un
   // modelo contra otro. Sin esto, «tarda mucho» no se puede discutir.
   const t0 = Date.now();
@@ -301,7 +309,8 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // porcentaje no se puede calcular contando llamadas.
   const prog = crearProgreso((p) => { if (onProgreso) onProgreso(p); });
   const avisar = (p) => { if (onProgreso) onProgreso(p); };
-  const pedir = crearPedidor(apiFetch, apiParse);
+  // `modelosElegidos` ({modelo_ocr, modelo_texto}) viaja en TODOS los pedidos.
+  const pedir = crearPedidor(apiFetch, apiParse, modelosElegidos);
 
   const alertas = [];
   const modelos = new Set();
@@ -336,7 +345,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
   // LO PAGADO SE GUARDA ACÁ, no al final. Ver `onOcrListo` arriba.
   if (!reusado && leidas > 0 && typeof onOcrListo === 'function') {
     try {
-      await onOcrListo({ markdown, paginasOcr: leidas, costoOcr: costoDelAnalisis({ paginasOcr: leidas, usdPasadas: 0 }).ocr });
+      await onOcrListo({ markdown, paginasOcr: leidas, costoOcr: costoDelAnalisis({ paginasOcr: leidas, usdPasadas: 0, usdPorPagina: usdPorPaginaOcr }).ocr });
     } catch { /* que falle la caché no puede tumbar la lectura */ }
   }
   const indice = indiceDeSecciones(markdown);
@@ -380,7 +389,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
       regimenLabel: regimen ? REGIMENES[regimen]?.label : null, camposSinLlenar: sinLlenar,
       filas: [], filasEmpresa: [], cabecera: null, cronograma: [], extras: aExtrasProceso({}),
       sugerencias: { tipo_trabajo: null }, reusado,
-      paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }), modelos: [...modelos],
+      paginasOcr: leidas, costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas, usdPorPagina: usdPorPaginaOcr }), modelos: [...modelos],
       tiempos: { ...tiempos, total: Date.now() - t0 }, pasadas: 0 };
   }
 
@@ -683,7 +692,7 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
     // aparte y no infla el contador (55 alertas eran ilegibles).
     alertas: clasificarAlertas(alertasUnicas(verificado.alertas)).accionables,
     alertasDeTramo: clasificarAlertas(alertasUnicas(verificado.alertas)).deTramo,
-    costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas }),
+    costo: costoDelAnalisis({ paginasOcr: leidas, usdPasadas, usdPorPagina: usdPorPaginaOcr }),
     modelos: [...modelos],
     paginasOcr: leidas,
     // Los anexos y formatos que se pudieron separar: la pantalla ofrece

@@ -617,3 +617,46 @@ describe('analizar — el escaneo se avisa apenas termina', () => {
     expect(r.pasadas).toBeGreaterThan(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// EL MODELO ELEGIDO VIAJA EN TODAS LAS PASADAS (tanda 19).
+//
+// Una sola llamada que se olvide de mandarlo la atiende otro modelo, y ahí la
+// comparación deja de medir lo que se creía medir. Ya pasó de verdad: la
+// corrida del 8-set terminó atendida en parte por la variante afinada en SALUD.
+// ═══════════════════════════════════════════════════════════════════
+describe('analizar — los modelos elegidos', () => {
+  it('manda modelo_ocr y modelo_texto en TODOS los pedidos', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({
+      ocr: ocrQueDevuelve('REQUISITOS DE CALIFICACIÓN\nResidente de Obra. ' + CITA),
+      localizar: () => ({ rangos: { personal: { encontrada: true, rangos: [{ desde: 1, hasta: 1 }] } } }),
+      extraer: () => ({ resultado: { requisitos: [] } }),
+    });
+    await analizar(bloquesEscaneados(2), {
+      apiFetch, apiParse,
+      modelosElegidos: { modelo_ocr: 'mistral-ocr-4-1', modelo_texto: 'z-ai/glm-5.3-flash' },
+    });
+    expect(llamadas.length).toBeGreaterThan(1);
+    for (const l of llamadas) {
+      expect(l.modelo_ocr).toBe('mistral-ocr-4-1');
+      expect(l.modelo_texto).toBe('z-ai/glm-5.3-flash');
+    }
+  });
+
+  it('sin elección, el pedido sale idéntico a como salía antes', async () => {
+    const { apiFetch, apiParse, llamadas } = apiFalso({ ocr: ocrQueDevuelve('nada reconocible') });
+    await analizar(bloquesEscaneados(1), { apiFetch, apiParse });
+    for (const l of llamadas) {
+      expect(l).not.toHaveProperty('modelo_ocr');
+      expect(l).not.toHaveProperty('modelo_texto');
+    }
+  });
+
+  it('el costo del escaneo sigue al precio del OCR elegido, no a una constante', async () => {
+    const { apiFetch, apiParse } = apiFalso({ ocr: ocrQueDevuelve('REQUISITOS DE CALIFICACIÓN') });
+    const r = await analizar(bloquesEscaneados(10), { apiFetch, apiParse, usdPorPaginaOcr: 0.004 });
+    expect(r.costo.ocr).toBeCloseTo(10 * 0.004, 4);
+    const barato = await analizar(bloquesEscaneados(10), { apiFetch, apiParse });
+    expect(barato.costo.ocr).toBeCloseTo(10 * USD_POR_PAGINA_OCR, 4);
+  });
+});
