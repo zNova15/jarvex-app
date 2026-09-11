@@ -1573,6 +1573,7 @@ function OrdenesPage({ showToast }) {
     // vuelve a descargar mil veces, y la aclaración casi siempre aparece
     // cuando alguien ya miró el papel.
     observaciones: o.observaciones || '',
+    condicion_pago: o.condicion_pago || '',
   });
   const guardarFirmas = async () => {
     if (!firmasOrden) return;
@@ -1584,6 +1585,7 @@ function OrdenesPage({ showToast }) {
         firma_aprobado_por: limpio(firmasOrden.aprobado),
         firma_receptor: limpio(firmasOrden.receptor),
         observaciones: limpio(firmasOrden.observaciones),
+        condicion_pago: limpio(firmasOrden.condicion_pago),
         updated_at: new Date().toISOString(), updated_by: userId,
         version: (o.version ?? 0) + 1,
         sync_status: o.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -2400,7 +2402,7 @@ function OrdenesPage({ showToast }) {
                 <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Lugar de entrega</div>
                   <input className="fi" style={{ width: '100%' }} value={nueva.lugarEntrega} onChange={e => setNu({ lugarEntrega: e.target.value })} /></label>
                 <label><div style={{ fontSize: 11, color: 'var(--tm)' }}>Condición de pago</div>
-                  <input className="fi" style={{ width: '100%' }} value={nueva.condicionPago} onChange={e => setNu({ condicionPago: e.target.value })} placeholder="Contado / 30 días" /></label>
+                  <input className="fi" style={{ width: '100%' }} list="condiciones-pago-list" value={nueva.condicionPago} onChange={e => setNu({ condicionPago: e.target.value })} placeholder="Contado / 30 días" /></label>
                 <label style={{ gridColumn: '1 / -1' }}><div style={{ fontSize: 11, color: 'var(--tm)' }}>Notas para el proveedor</div>
                   <input className="fi" style={{ width: '100%' }} value={nueva.notas} onChange={e => setNu({ notas: e.target.value })} /></label>
               </div>
@@ -3444,14 +3446,24 @@ function OrdenesPage({ showToast }) {
                               existía para quien no abre el detalle. Acá se ve
                               si la hay, y el lápiz lleva a escribirla. */}
                           {!abierta && (
-                            b.observaciones
-                              ? <div style={{ fontSize: 9.5, color: 'var(--tm)', marginTop: 3, fontStyle: 'italic' }}
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 3 }}>
+                              {b.condicion_pago ? (
+                                <span className="badge b-blue" style={{ fontSize: 9.5 }} title={`Condición de pago: ${b.condicion_pago}`}>
+                                  💳 {b.condicion_pago}
+                                </span>
+                              ) : null}
+                              {b.observaciones ? (
+                                <div style={{ fontSize: 9.5, color: 'var(--tm)', fontStyle: 'italic' }}
                                   title={`Sale impreso en el PDF: ${b.observaciones}`}>
-                                  ✎ {b.observaciones.slice(0, 60)}{b.observaciones.length > 60 ? '…' : ''}
+                                  ✎ {b.observaciones.slice(0, 50)}{b.observaciones.length > 50 ? '…' : ''}
                                 </div>
-                              : <button className="btn btn-ghost btn-xs" style={{ padding: '1px 6px', fontSize: 9.5, marginTop: 3, marginLeft: 4, color: 'var(--tm)' }}
-                                  title="Agregar una observación que salga impresa en el PDF de esta orden"
-                                  onClick={() => setRespAbierta(b.movimiento_id)}>✎ observación</button>
+                              ) : null}
+                              {!b.observaciones && !b.condicion_pago ? (
+                                <button className="btn btn-ghost btn-xs" style={{ padding: '1px 6px', fontSize: 9.5, color: 'var(--tm)' }}
+                                  title="Editar condición de pago y observaciones que saldrán en el PDF"
+                                  onClick={() => setRespAbierta(b.movimiento_id)}>✎ pago / observación</button>
+                              ) : null}
+                            </div>
                           )}
                           {b.heredadoDe && (
                             <span className="badge b-blue" style={{ fontSize: 8.5, marginLeft: 6 }}
@@ -3548,13 +3560,24 @@ function OrdenesPage({ showToast }) {
                                 {desc && <> {'—'} al emitir se ajusta la última línea para cuadrar contra el comprobante.</>}
                               </div>
                             </div>
-                            <div>
-                              <label className="flabel" style={{ fontSize: 10.5 }}>
-                                Observaciones (opcional {'—'} si lo dejas vacío, el PDF no imprime nada)
-                              </label>
-                              <input className="fi" style={{ fontSize: 11, width: '100%' }}
-                                value={b.observaciones || ''} placeholder="En blanco por defecto"
-                                onChange={e => actualizarBorrador(idx, { observaciones: e.target.value })} />
+                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 2fr', gap: 10 }}>
+                              <div>
+                                <label className="flabel" style={{ fontSize: 10.5 }}>
+                                  Condición de pago
+                                </label>
+                                <input className="fi" style={{ fontSize: 11, width: '100%' }}
+                                  list="condiciones-pago-list"
+                                  value={b.condicion_pago || ''} placeholder="Ej: Contado, Crédito 30 días…"
+                                  onChange={e => actualizarBorrador(idx, { condicion_pago: e.target.value })} />
+                              </div>
+                              <div>
+                                <label className="flabel" style={{ fontSize: 10.5 }}>
+                                  Observaciones (opcional {'—'} si lo dejas vacío, el PDF no imprime nada)
+                                </label>
+                                <input className="fi" style={{ fontSize: 11, width: '100%' }}
+                                  value={b.observaciones || ''} placeholder="En blanco por defecto"
+                                  onChange={e => actualizarBorrador(idx, { observaciones: e.target.value })} />
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -3628,6 +3651,15 @@ function OrdenesPage({ showToast }) {
         const ph = (deEmpresa, porDefecto) => (String(deEmpresa || '').trim() || porDefecto);
         return (
           <Modal title={`Lo que sale en el PDF de ${firmasOrden.orden.codigo || 'la orden'}`} icon="edit" onClose={() => setFirmasOrden(null)}>
+            <div style={{ marginBottom: 14 }}>
+              <label className="flabel">Condición / Forma de pago (sale impresa en el PDF)</label>
+              <input className="fi" list="condiciones-pago-list" maxLength={100} value={firmasOrden.condicion_pago || ''}
+                placeholder="Ej.: Contado · Crédito 30 días · 50% adelanto, 50% contra entrega"
+                onChange={e => setFirmasOrden(f => ({ ...f, condicion_pago: e.target.value }))} />
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                Aparece en la cabecera del documento como «Forma de pago». En blanco = no imprime el campo.
+              </div>
+            </div>
             <div style={{ marginBottom: 14 }}>
               <label className="flabel">Observaciones (salen impresas en el PDF)</label>
               <textarea className="fi" rows={2} maxLength={500} value={firmasOrden.observaciones}
@@ -3977,8 +4009,14 @@ function OrdenesPage({ showToast }) {
             <div><label className="flabel">Proveedor</label><div className="fi" style={{ background: 'var(--bg-c2)' }}>{detalle.proveedor_nombre || lookupProv(detalle.proveedor_id)?.razon_social || '—'}</div></div>
             <div><label className="flabel">Fecha</label><div className="fi" style={{ background: 'var(--bg-c2)' }}>{detalle.fecha || '—'}</div></div>
             <div><label className="flabel">Estado</label><div className="fi" style={{ background: 'var(--bg-c2)' }}>{ESTADO_LABEL[detalle.estado] || detalle.estado}</div></div>
+            {detalle.condicion_pago && (
+              <div><label className="flabel">Condición de pago</label><div className="fi" style={{ background: 'var(--bg-c2)' }}>💳 {detalle.condicion_pago}</div></div>
+            )}
             {detalle.obra_descripcion && (
-              <div style={{ gridColumn: '1/-1' }}><label className="flabel">Obra</label><div className="fi" style={{ background: 'var(--bg-c2)', height: 'auto', minHeight: 34, whiteSpace: 'normal' }}>{detalle.obra_descripcion}</div></div>
+              <div style={{ gridColumn: detalle.condicion_pago ? 'auto' : '1/-1' }}><label className="flabel">Obra</label><div className="fi" style={{ background: 'var(--bg-c2)', height: 'auto', minHeight: 34, whiteSpace: 'normal' }}>{detalle.obra_descripcion}</div></div>
+            )}
+            {detalle.observaciones && (
+              <div style={{ gridColumn: '1/-1' }}><label className="flabel">Observaciones</label><div className="fi" style={{ background: 'var(--bg-c2)', height: 'auto', minHeight: 34, whiteSpace: 'normal' }}>{detalle.observaciones}</div></div>
             )}
           </div>
           <div style={{ marginTop: 14, overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
@@ -4012,10 +4050,25 @@ function OrdenesPage({ showToast }) {
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => { setDetalle(null); setDetalleItems([]); }}>Cerrar</button>
+            {canEmitir && detalle.estado !== 'anulado' && (
+              <button className="btn btn-ghost" onClick={() => { const d = detalle; setDetalle(null); abrirFirmas(d); }}>
+                <JxIcon name="edit" size={13} /> Editar pago / notas / firmas
+              </button>
+            )}
             <button className="btn btn-amber" onClick={() => descargarPdf(detalle)}><JxIcon name="download" size={13} />Descargar PDF</button>
           </div>
         </Modal>
       )}
+
+      <datalist id="condiciones-pago-list">
+        <option value="Contado" />
+        <option value="Crédito 15 días" />
+        <option value="Crédito 30 días" />
+        <option value="Crédito 45 días" />
+        <option value="Crédito 60 días" />
+        <option value="50% adelanto, 50% contra entrega" />
+        <option value="Contra entrega" />
+      </datalist>
     </div>
   );
 }

@@ -1108,7 +1108,10 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   doc.setFont('helvetica', 'normal');
   doc.text(moneda, 140, y + 3.6);
   y += 3.6;
-  y = ordenCampo(doc, y, 'Forma de pago:', safe(orden.condicion_pago, '—'), { pageWidth, xValor: 55 });
+  const condPago = String(orden.condicion_pago || '').trim();
+  if (condPago) {
+    y = ordenCampo(doc, y, 'Forma de pago:', condPago, { pageWidth, xValor: 55 });
+  }
   // ⛔ LA LÍNEA «Comprobantes:» YA NO SE IMPRIME (8-set-2026).
   // Se había agregado en la tanda 16 para que la orden dijera a qué factura
   // respalda. Gabriel, viendo el PDF de la OC-008-2026 del CONSORCIO DEL INCA:

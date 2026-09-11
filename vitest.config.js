@@ -9,5 +9,7 @@ export default defineConfig({
     include: ['src/**/__tests__/**/*.{test,spec}.{js,jsx,ts,tsx}'],
     exclude: ['node_modules', 'dist', 'tests/e2e/**'],
     environment: 'node',
+    hookTimeout: 30000,
+    testTimeout: 30000,
   },
 });

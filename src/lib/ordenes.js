@@ -638,6 +638,7 @@ export function borradorDesdeMovimiento(mov, { company, proveedor, obra } = {}) 
     // que ya de por sí dice a qué comprobante respalda. Gabriel: «cuando se
     // emite, en observaciones no debería salir nada si no se coloca».
     observaciones: '',
+    condicion_pago: '',
     incluir: true,
   };
 }
@@ -817,6 +818,8 @@ export function fusionarBorradores(borradores) {
     valorVenta: t.valorVenta,
     igv: t.igv,
     total: t.total,
+    condicion_pago: bs.map(b => (b.condicion_pago || '').trim()).filter(Boolean)[0] || '',
+    observaciones: bs.map(b => (b.observaciones || '').trim()).filter(Boolean).join(' · '),
     fusionada: bs.length,
     incluir: true,
   };

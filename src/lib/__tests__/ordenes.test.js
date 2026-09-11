@@ -948,10 +948,11 @@ describe('las líneas que se emiten', () => {
   });
 });
 
-describe('el borrador nace sin observaciones', () => {
+describe('el borrador nace sin observaciones y con condicion_pago editable', () => {
   it('en blanco, no con el texto automático de antes', () => {
     const b = borradorDesdeMovimiento(mov({ amount: 5000 }), { company: INCA });
     expect(b.observaciones).toBe('');
+    expect(b.condicion_pago).toBe('');
   });
 });
 
@@ -1042,6 +1043,14 @@ describe('fusionar — una sola orden para varias facturas del mismo pedido', ()
     expect(puedeFusionar([e2, { ...e3, tipo: 'servicio' }]).motivo).toMatch(/servicio/);
     expect(puedeFusionar([e2, { ...e3, obra_id: 'ob2' }]).motivo).toMatch(/obras/);
     expect(puedeFusionar([e2, e3, e4]).ok).toBe(true);
+  });
+
+  it('conserva condicion_pago y combina observaciones al fusionar', () => {
+    const f1 = { ...e2, condicion_pago: 'Crédito 30 días', observaciones: 'Entregar en almacén' };
+    const f2 = { ...e3, condicion_pago: '', observaciones: 'Atención Ing. Pérez' };
+    const u = fusionarBorradores([f1, f2]);
+    expect(u.condicion_pago).toBe('Crédito 30 días');
+    expect(u.observaciones).toBe('Entregar en almacén · Atención Ing. Pérez');
   });
 });
 
