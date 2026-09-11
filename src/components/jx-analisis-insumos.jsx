@@ -124,12 +124,32 @@ function AnalisisInsumosPage({ showToast }) {
   const empresaFija = useEmpresaBloqueada();
   const [empresaSelRaw, setEmpresaSel] = uS(() => filtroInicialEmpresa(''));
   const empresaVista = empresaFija || empresaSelRaw || null;
-  const [tab, setTab] = uS('comparador');
+  const [tab, setTab] = uS(() => {
+    const t = typeof window !== 'undefined' && window.__analisisInsumosIntent?.tab;
+    if (t) {
+      delete window.__analisisInsumosIntent.tab;
+      return t;
+    }
+    return 'comparador';
+  });
   const [busca, setBusca] = uS('');
   const [sel, setSel] = uS(null);
   // Anti doble-click (regla crítica 2): ref SÍNCRONO — un doble tap en "Mismo
   // insumo" no debe crear el par dos veces.
   const decidiendoRef = uR(false);
+
+  uE(() => {
+    if (typeof window !== 'undefined' && window.__analisisInsumosIntent) {
+      if (window.__analisisInsumosIntent.tab) {
+        setTab(window.__analisisInsumosIntent.tab);
+        delete window.__analisisInsumosIntent.tab;
+      }
+      if (window.__analisisInsumosIntent.companyId) {
+        setEmpresaSel(window.__analisisInsumosIntent.companyId);
+        delete window.__analisisInsumosIntent.companyId;
+      }
+    }
+  }, []);
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   // El filtro por empresa se aplica ACÁ, una sola vez: de estas `compras` viven

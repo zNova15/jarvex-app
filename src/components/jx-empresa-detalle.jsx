@@ -120,6 +120,13 @@ const irAFactura = (companyId, movId, doc) => {
   window.__navTo?.('movimientos-contables', 'general');
 };
 
+// Navegar a Análisis de Insumos -> pestaña Correlaciones fijando la empresa activa.
+const irACorrelacionesInsumos = (companyId) => {
+  if (companyId) setEmpresaActivaId(companyId);
+  window.__analisisInsumosIntent = { tab: 'correlaciones', companyId: companyId || null };
+  window.__navTo?.('analisis-insumos', 'general');
+};
+
 const TIPO_BADGE = {
   material: 'b-blue', servicio: 'b-gray', epp: 'b-green',
   herramienta: 'b-amber', maquinaria: 'b-red',
@@ -246,6 +253,22 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
     return soloNegativos ? porTipo.filter(tieneSaldoNegativo) : porTipo;
   }, [inv, busca, tipoFiltro, soloNegativos]);
+
+  const verNegativos = () => {
+    setBusca('');
+    setTipoFiltro('');
+    setSoloNegativos(true);
+    setTope(Math.max(PASO_LISTA, negativos.total));
+  };
+
+  const toggleNegativos = () => {
+    if (soloNegativos) {
+      setSoloNegativos(false);
+      setTope(PASO_LISTA);
+    } else {
+      verNegativos();
+    }
+  };
 
   if (!company) return null;
 
@@ -515,11 +538,19 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               devuelve cero es ruido. */}
           {negativos.total > 0 && (
             <button className={`btn btn-xs ${soloNegativos ? 'btn-red' : 'btn-ghost'}`}
-              onClick={() => { setSoloNegativos(v => !v); setTope(PASO_LISTA); }}
+              onClick={toggleNegativos}
               title="Vendió más de lo que compró: puede ser que la compra todavía no esté cargada, que esté en otra empresa del grupo, o que esté escrita con otro nombre">
               {soloNegativos ? 'ver todos' : `${negativos.total} en rojo`}
             </button>
           )}
+          <button
+            className="btn btn-xs btn-ghost"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            onClick={() => irACorrelacionesInsumos(company?.id)}
+            title="Abrir Análisis de Insumos para resolver nombres duplicados o equivalencias"
+          >
+            🤝 Correlaciones
+          </button>
           <span style={{ fontSize: 11, color: 'var(--tm)' }}>{filtrados.length} insumo(s)</span>
         </div>
 
@@ -527,12 +558,56 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
             ver. Tres causas, todas reales — se facturó lo que no se compró
             todavía, la compra está en otra empresa del grupo, o está escrita con
             otro nombre y sin mapear. Redondear a cero taparía las tres. */}
-        {negativos.total > 0 && !soloNegativos && (
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.5, background: 'var(--tint-neutral)' }}>
-            <b style={{ color: 'var(--red)' }}>{negativos.total} insumo(s) con saldo negativo</b> — esta empresa
-            facturó más de lo que tiene comprado. Suele pasar cuando se emite una factura contra una orden
-            sin tener el stock: la compra que la respalda todavía no está cargada, está en otra empresa del
-            grupo, o está escrita con otro nombre y sin mapear.
+        {negativos.total > 0 && (
+          <div
+            style={{
+              padding: '10px 14px',
+              borderBottom: '1px solid var(--border)',
+              fontSize: 11.5,
+              color: 'var(--ts)',
+              lineHeight: 1.5,
+              background: soloNegativos ? 'rgba(231, 76, 60, 0.08)' : 'var(--tint-neutral)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div
+              onClick={toggleNegativos}
+              style={{ cursor: 'pointer', flex: 1, minWidth: 260 }}
+              title="Clic para filtrar u ocultar los insumos con saldo negativo"
+            >
+              <b style={{ color: 'var(--red)' }}>
+                {negativos.total} insumo(s) con saldo negativo
+              </b>
+              {soloNegativos ? (
+                <span> — <strong>Filtrando en página 1</strong> (clic aquí para ver todo el inventario).</span>
+              ) : (
+                <span>
+                  {' '}— esta empresa facturó más de lo que tiene comprado. Suele pasar cuando se emite una factura contra una orden sin tener el stock: la compra que la respalda todavía no está cargada, está en otra empresa del grupo, o está escrita con otro nombre y sin mapear.{' '}
+                  <span style={{ color: 'var(--blue)', textDecoration: 'underline', fontWeight: 600, marginLeft: 4 }}>
+                    👉 Clic aquí para verlos de inmediato
+                  </span>
+                </span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button
+                className={`btn btn-xs ${soloNegativos ? 'btn-ghost' : 'btn-red'}`}
+                onClick={toggleNegativos}
+              >
+                {soloNegativos ? 'Ver todos' : `Ver los ${negativos.total} negativos`}
+              </button>
+              <button
+                className="btn btn-xs btn-amber"
+                onClick={() => irACorrelacionesInsumos(company?.id)}
+                title="Abrir el análisis de correlaciones de insumos para corregir nombres duplicados o equivalencias"
+              >
+                🤝 Correlaciones de insumos
+              </button>
+            </div>
           </div>
         )}
 
