@@ -147,6 +147,7 @@ function useEvidencias(ids) {
 export function ComparativaSunat({ company, companies, movs, anio, mes, showToast, userId }) {
   const periodo = periodoDe(anio, mes);
   const [filtro, setFiltro] = uS('pendientes');
+  const [filtroLibro, setFiltroLibro] = uS('todos');
   const [busy, setBusy] = uS(false);
   const enCursoRef = uR(false);              // guard SÍNCRONO (regla 2)
   const inputRef = uR(null);
@@ -207,6 +208,15 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     [resultados],
   );
 
+  const nCompras = uM(() => todas.filter(f => f.libro === 'compras').length, [todas]);
+  const nVentas = uM(() => todas.filter(f => f.libro === 'ventas').length, [todas]);
+
+  const basePorLibro = uM(() => {
+    if (filtroLibro === 'compras') return todas.filter(f => f.libro === 'compras');
+    if (filtroLibro === 'ventas') return todas.filter(f => f.libro === 'ventas');
+    return todas;
+  }, [todas, filtroLibro]);
+
   // El archivo de cada comprobante que SÍ está en JARVEX (los `solo_sunat` no
   // tienen movimiento, así que tampoco tienen papel que mirar acá).
   const evidencias = useEvidencias(uM(() => todas.map(f => f.movimientoId), [todas]));
@@ -218,11 +228,11 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   };
 
   const visibles = uM(() => {
-    if (filtro === 'todas') return todas;
-    if (filtro === 'pendientes') return filasPendientes(todas);
-    if (filtro === 'decididas') return todas.filter(f => f.decision);
-    return todas.filter(f => f.estado === filtro);
-  }, [todas, filtro]);
+    if (filtro === 'todas') return basePorLibro;
+    if (filtro === 'pendientes') return filasPendientes(basePorLibro);
+    if (filtro === 'decididas') return basePorLibro.filter(f => f.decision);
+    return basePorLibro.filter(f => f.estado === filtro);
+  }, [basePorLibro, filtro]);
 
   const global = uM(() => {
     const pend = filasPendientes(todas);
@@ -246,7 +256,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       const r = parseCsvSunat(texto);
 
       if (!r.libro) {
-        showToast?.('Ese archivo no parece un CSV de SUNAT (no se reconoce el encabezado).', 'red');
+        showToast?.('Ese archivo no parece un CSV de SUNAT (no se reconoce si es Compras o Ventas por el encabezado).', 'red');
         return;
       }
       // El archivo dice de quién y de cuándo es: se VERIFICA, no se pregunta.
@@ -275,7 +285,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       const aviso = r.avisos.length
         ? ` ⚠️ ${r.avisos.length} línea(s) no se pudieron leer.`
         : '';
-      showToast?.(`${r.libro === 'compras' ? 'Compras' : 'Ventas'}: ${r.filas.length} comprobantes de SUNAT, guardados.${aviso}`, r.avisos.length ? 'amber' : 'green');
+      showToast?.(`${r.libro === 'compras' ? '🛒 Compras' : '💵 Ventas'}: ${r.filas.length} comprobantes de SUNAT, guardados.${aviso}`, r.avisos.length ? 'amber' : 'green');
     } catch (e) {
       console.error('[cotejo-sunat]', e);
       showToast?.('No se pudo leer el archivo: ' + e.message, 'red');
@@ -378,30 +388,83 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
             for (const f of files) await cargarArchivo(f);
           }}
         />
-        <div style={{ display: 'grid', gap: 8, marginTop: 12, fontSize: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, marginTop: 14 }}>
           {['compras', 'ventas'].map(l => {
             const c = cortes[l];
-            const nombre = l === 'compras' ? 'Compras' : 'Ventas';
-            if (!c) return (
-              <div key={l} style={{ color: 'var(--tm)' }}>○ {nombre} · sin cargar</div>
-            );
+            const esComp = l === 'compras';
+            const nombre = esComp ? 'Compras (RCE)' : 'Ventas (RVIE)';
+            const icono = esComp ? '🛒' : '💵';
+            const colorTema = esComp ? '#2563eb' : '#16a34a';
+            const bgTema = esComp ? 'rgba(37, 99, 235, 0.05)' : 'rgba(22, 163, 74, 0.05)';
+            const borderTema = esComp ? 'rgba(37, 99, 235, 0.25)' : 'rgba(22, 163, 74, 0.25)';
+
             return (
-              <div key={l} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <span style={{ color: c.filas.length ? 'var(--green)' : 'var(--orange)' }}>
-                  {c.filas.length ? '✓' : '⚠'} {nombre}
-                  {c.filas.length
-                    ? ` · ${c.filas.length} comprobantes`
-                    : ' · guardado sin el detalle (versión anterior): volvé a cargar el CSV'}
-                </span>
-                {c.archivo ? <span style={{ color: 'var(--tm)' }}>· {c.archivo}</span> : null}
-                {c.cargadoAt ? <span style={{ color: 'var(--tm)' }}>· cargado {fmtFechaHora(c.cargadoAt)}</span> : null}
-                {c.avisosN ? (
-                  <span style={{ color: '#d33' }}>· ⚠️ {c.avisosN} línea(s) ilegibles</span>
-                ) : null}
-                {c.filas.length ? (
-                  <button className="btn btn-sm" disabled={busy} onClick={() => recotejar(l)}>Volver a cotejar</button>
-                ) : null}
-                <button className="btn btn-sm" disabled={busy} onClick={() => quitarCorte(l)}>Quitar</button>
+              <div
+                key={l}
+                style={{
+                  padding: 12,
+                  borderRadius: 8,
+                  border: `1px solid ${borderTema}`,
+                  backgroundColor: bgTema,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: colorTema, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span>{icono}</span>
+                    <span>{nombre}</span>
+                  </div>
+                  {c ? (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: c.filas.length ? 'var(--green)' : 'var(--orange)' }}>
+                      {c.filas.length ? '✓ Cargado' : '⚠ Sin detalle'}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 11, color: 'var(--tm)' }}>○ sin cargar</span>
+                  )}
+                </div>
+
+                {!c ? (
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+                    {esComp
+                      ? 'Propuesta del RCE (archivo termina en -propuesta.csv)'
+                      : 'Export del RVIE (archivo empieza con «LE…»)'}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>
+                      {c.filas.length
+                        ? `${c.filas.length} comprobantes detectados`
+                        : 'guardado sin el detalle (versión anterior): volvé a cargar el CSV'}
+                    </div>
+                    {c.archivo && (
+                      <div style={{ fontSize: 11, color: 'var(--tm)', wordBreak: 'break-all' }}>
+                        Archivo: <strong>{c.archivo}</strong>
+                      </div>
+                    )}
+                    {c.cargadoAt && (
+                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+                        Cargado: {fmtFechaHora(c.cargadoAt)}
+                      </div>
+                    )}
+                    {c.avisosN > 0 && (
+                      <div style={{ fontSize: 11, color: '#d33', fontWeight: 500 }}>
+                        ⚠️ {c.avisosN} línea(s) no se pudieron leer
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      {c.filas.length > 0 && (
+                        <button className="btn btn-sm" disabled={busy} onClick={() => recotejar(l)}>
+                          Volver a cotejar
+                        </button>
+                      )}
+                      <button className="btn btn-sm" disabled={busy} onClick={() => quitarCorte(l)}>
+                        Quitar
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             );
           })}
@@ -435,6 +498,9 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
             <div className="card card-p" style={{ padding: 12, textAlign: 'center' }}>
               <div style={{ color: 'var(--tm)', fontSize: 11 }}>Comprobantes cotejados</div>
               <div style={{ fontWeight: 700, fontSize: 20 }}>{global.total}</div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+                🛒 {nCompras} compras · 💵 {nVentas} ventas
+              </div>
             </div>
             <div className="card card-p" style={{ padding: 12, textAlign: 'center' }}>
               <div style={{ color: 'var(--tm)', fontSize: 11 }}>Cuadran</div>
@@ -460,14 +526,68 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
           </div>
 
           {/* Filtros */}
-          <div className="card card-p" style={{ padding: 12, marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div className="card card-p" style={{ padding: 12, marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* Selector de libro: Todos, Compras, Ventas */}
+            <div style={{ display: 'inline-flex', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{
+                  backgroundColor: filtroLibro === 'todos' ? 'var(--bg-c2)' : 'transparent',
+                  color: filtroLibro === 'todos' ? 'var(--tp)' : 'var(--tm)',
+                  border: 'none',
+                  borderRadius: 0,
+                  padding: '4px 10px',
+                  fontWeight: filtroLibro === 'todos' ? 700 : 400,
+                  cursor: 'pointer',
+                }}
+                onClick={() => setFiltroLibro('todos')}
+              >
+                Todos ({todas.length})
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{
+                  backgroundColor: filtroLibro === 'compras' ? 'var(--blue-l)' : 'transparent',
+                  color: filtroLibro === 'compras' ? 'var(--blue)' : 'var(--tm)',
+                  border: 'none',
+                  borderLeft: '1px solid var(--border)',
+                  borderRadius: 0,
+                  padding: '4px 10px',
+                  fontWeight: filtroLibro === 'compras' ? 700 : 400,
+                  cursor: 'pointer',
+                }}
+                onClick={() => setFiltroLibro('compras')}
+              >
+                🛒 Solo Compras ({nCompras})
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{
+                  backgroundColor: filtroLibro === 'ventas' ? 'var(--green-l)' : 'transparent',
+                  color: filtroLibro === 'ventas' ? 'var(--green)' : 'var(--tm)',
+                  border: 'none',
+                  borderLeft: '1px solid var(--border)',
+                  borderRadius: 0,
+                  padding: '4px 10px',
+                  fontWeight: filtroLibro === 'ventas' ? 700 : 400,
+                  cursor: 'pointer',
+                }}
+                onClick={() => setFiltroLibro('ventas')}
+              >
+                💵 Solo Ventas ({nVentas})
+              </button>
+            </div>
+
             <select className="fi" style={{ maxWidth: 260 }} value={filtro} onChange={e => setFiltro(e.target.value)}>
-              <option value="pendientes">Por revisar ({filasPendientes(todas).length})</option>
-              <option value="todas">Todas ({todas.length})</option>
-              <option value="decididas">Ya decididas ({todas.filter(f => f.decision).length})</option>
-              <option value="cuadra">Las que cuadran ({todas.filter(f => f.estado === 'cuadra').length})</option>
+              <option value="pendientes">Por revisar ({filasPendientes(basePorLibro).length})</option>
+              <option value="todas">Todas ({basePorLibro.length})</option>
+              <option value="decididas">Ya decididas ({basePorLibro.filter(f => f.decision).length})</option>
+              <option value="cuadra">Las que cuadran ({basePorLibro.filter(f => f.estado === 'cuadra').length})</option>
               {ESTADOS_PENDIENTES.map(e => {
-                const n = todas.filter(f => f.estado === e).length;
+                const n = basePorLibro.filter(f => f.estado === e).length;
                 return n ? <option key={e} value={e}>{ETIQUETA_ESTADO[e]} ({n})</option> : null;
               })}
             </select>
@@ -521,13 +641,29 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       )}
                     </td>
                     <td>
-                      <div style={{ fontWeight: 600 }}>{f.documento || f.appDocumento || '—'}</div>
-                      <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-                        {f.libro === 'compras' ? 'compra' : 'venta'} · {f.tipoNombre?.replace('_', ' ')}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            backgroundColor: f.libro === 'compras' ? 'rgba(37, 99, 235, 0.12)' : 'rgba(22, 163, 74, 0.12)',
+                            color: f.libro === 'compras' ? '#2563eb' : '#16a34a',
+                            border: `1px solid ${f.libro === 'compras' ? 'rgba(37, 99, 235, 0.28)' : 'rgba(22, 163, 74, 0.28)'}`,
+                          }}
+                        >
+                          {f.libro === 'compras' ? '🛒 COMPRA' : '💵 VENTA'}
+                        </span>
+                        <span style={{ fontWeight: 600 }}>{f.documento || f.appDocumento || '—'}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+                        {f.tipoNombre?.replace('_', ' ')}
                         {f.modifica ? ` · anula ${f.modifica}` : ''}
                       </div>
                       {f.estado === 'serie_distinta' && (
-                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)' }}>
+                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)', marginTop: 2 }}>
                           en JARVEX está como {f.appDocumento} — mirá la factura para decidir
                         </div>
                       )}

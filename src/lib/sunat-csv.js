@@ -72,7 +72,7 @@ export const nombreTipoCp = (t) => TIPO_CP[String(t || '').padStart(2, '0')] || 
 // ── Partir una línea ──────────────────────────────────────────────
 // Se respetan las comillas por si SUNAT algún día las escribe bien; hoy no las
 // usa, y de ahí todo el trabajo de reparación de más abajo.
-export function dividirLineaCsv(linea) {
+export function dividirLineaCsv(linea, separador = ',') {
   const out = [];
   let campo = '', dentro = false;
   const s = String(linea ?? '');
@@ -85,7 +85,7 @@ export function dividirLineaCsv(linea) {
       } else campo += c;
     } else if (c === '"') {
       dentro = true;
-    } else if (c === ',') {
+    } else if (c === separador) {
       out.push(campo); campo = '';
     } else campo += c;
   }
@@ -93,8 +93,31 @@ export function dividirLineaCsv(linea) {
   return out;
 }
 
+/**
+ * Detecta el delimitador más probable de una serie de líneas CSV.
+ * Compara ',', ';', '|', '\t'.
+ */
+export function detectarDelimitador(lineas = []) {
+  const muestra = lineas.slice(0, 10).join('\n');
+  const counts = {
+    ',': (muestra.match(/,/g) || []).length,
+    ';': (muestra.match(/;/g) || []).length,
+    '|': (muestra.match(/\|/g) || []).length,
+    '\t': (muestra.match(/\t/g) || []).length,
+  };
+  let mejor = ',';
+  let max = counts[','];
+  for (const sep of [';', '|', '\t']) {
+    if (counts[sep] > max) {
+      max = counts[sep];
+      mejor = sep;
+    }
+  }
+  return mejor;
+}
+
 const ES_NUMERO = /^-?\d+(\.\d+)?$/;
-const ES_PERIODO = /^\d{6}$/;
+const ES_PERIODO = /^\d{6}(\d{2})?$/;
 
 const limpio = (x) => String(x ?? '').trim();
 
@@ -107,19 +130,20 @@ export function aNumero(x) {
 }
 
 /**
- * '06/07/2026' → '2026-07-06'.
+ * '06/07/2026' o '06-07-2026' → '2026-07-06'.
  * Por STRING, nunca con `new Date()`: 'YYYY-MM-DD' se parsea como medianoche
  * UTC y en Perú una factura del 01/07 se declaraba en JUNIO (la misma lección
  * que dejó `src/lib/fecha.js`). Devuelve '' si no tiene esa forma.
  */
 export function aFechaIso(x) {
-  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(limpio(x));
+  const s = limpio(x);
+  const m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(s);
   if (!m) return '';
   const [, d, mes, a] = m;
   return `${a}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
-/** '202607' → { anio: 2026, mes: 7 }. */
+/** '202607' o '20230700' → { anio: 2026, mes: 7 }. */
 export function partirPeriodo(p) {
   const s = limpio(p);
   if (!ES_PERIODO.test(s)) return null;
@@ -136,11 +160,16 @@ const clave = (s) => limpio(s)
   .replace(/[^a-z0-9]+/g, ' ')
   .trim();
 
-/** Índice de una columna por nombre, o -1. */
+/** Índice de una columna por nombre o lista de sinónimos, o -1. */
 function col(headers, nombre) {
-  const k = clave(nombre);
-  if (!k) return -1;                       // columna que este libro no tiene
-  return headers.findIndex(h => clave(h) === k);
+  const nombres = Array.isArray(nombre) ? nombre : [nombre];
+  for (const n of nombres) {
+    const k = clave(n);
+    if (!k) continue;
+    const idx = headers.findIndex(h => clave(h) === k);
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 /**
@@ -148,30 +177,44 @@ function col(headers, nombre) {
  * Se decide por una columna que solo existe en uno: compras desglosa la base
  * en tres destinos («BI Gravado DG» = destinado a operaciones gravadas) y
  * ventas no; ventas trae «Valor Facturado Exportación» y compras no.
+ * Soporta sinónimos de 2023 a 2026.
  */
 export function detectarLibro(headers = []) {
-  if (col(headers, 'BI Gravado DG') >= 0) return 'compras';
-  if (col(headers, 'BI Gravada') >= 0 || col(headers, 'Valor Facturado Exportación') >= 0) return 'ventas';
+  const esCompras = col(headers, [
+    'BI Gravado DG', 'BI Gravada DG', 'BI Grav DG',
+    'Base Imponible DG', 'Adquisiciones Gravadas DG',
+    'Valor Adq. NG', 'Valor Adq NG', 'Destino Ventas Gravadas',
+  ]) >= 0;
+  if (esCompras) return 'compras';
+
+  const esVentas = col(headers, [
+    'BI Gravada', 'Valor Facturado Exportación', 'Valor Facturado Exportacion',
+    'Valor Facturado de la Exportación', 'Valor Facturado de la Exportacion',
+    'Exportación', 'Exportacion', 'Total Valor Facturado de la Exportacion',
+  ]) >= 0;
+  if (esVentas) return 'ventas';
+
   return null;
 }
 
 /**
  * Realinea una fila desalineada por las comas sin comillas.
  *
- * @param campos  la fila cruda ya partida por comas
- * @param iNombre índice (en el ENCABEZADO) de la razón social de la contraparte
+ * @param campos    la fila cruda ya partida por el separador
+ * @param iNombre   índice (en el ENCABEZADO) de la razón social de la contraparte
+ * @param separador el delimitador usado (por defecto ',')
  * @returns { campos, titular, contraparte } o null si no se pudo anclar.
  */
-export function repararFila(campos, iNombre) {
+export function repararFila(campos, iNombre, separador = ',') {
   if (!Array.isArray(campos) || campos.length < 3) return null;
 
-  // ── Ancla 1: el periodo, primer campo de 6 dígitos después del RUC.
+  // ── Ancla 1: el periodo, primer campo de 6 u 8 dígitos después del RUC.
   let kPeriodo = -1;
   for (let i = 1; i < campos.length; i++) {
     if (ES_PERIODO.test(limpio(campos[i]))) { kPeriodo = i; break; }
   }
   if (kPeriodo < 2) return null;               // sin razón social en el medio no hay archivo válido
-  const titular = campos.slice(1, kPeriodo).join(',').trim();
+  const titular = campos.slice(1, kPeriodo).join(separador === ',' ? ',' : ' ').trim();
   // El titular ocupa 1 sola columna en el encabezado, esté partido en las que esté.
   let fila = [campos[0], titular, ...campos.slice(kPeriodo)];
 
@@ -181,7 +224,7 @@ export function repararFila(campos, iNombre) {
     while (j < fila.length && !ES_NUMERO.test(limpio(fila[j]))) j++;
     // `j` quedó en el primer numérico. Si el nombre ocupó más de una columna,
     // se vuelve a pegar. Si el nombre venía vacío, j === iNombre y no se toca.
-    const contraparte = fila.slice(iNombre, j).join(',').trim();
+    const contraparte = fila.slice(iNombre, j).join(separador === ',' ? ',' : ' ').trim();
     if (j > iNombre) fila = [...fila.slice(0, iNombre), contraparte, ...fila.slice(j)];
     return { campos: fila, titular, contraparte };
   }
@@ -190,13 +233,13 @@ export function repararFila(campos, iNombre) {
 
 /**
  * Lee el CSV entero.
+ * Soporta archivos con delimitador ',', ';', '|', '\t', filas de encabezado con preámbulo,
+ * formatos de fecha y sinónimos de columnas desde 2023.
  *
  * @returns {{
  *   libro: 'ventas'|'compras'|null, ruc, razonSocial, periodo, anio, mes,
  *   filas: Array, avisos: Array<{linea:number, motivo:string, texto:string}>
  * }}
- * `avisos` nunca se traga nada: una línea que no se pudo leer sale ahí con su
- * número, porque un total al que le falta una factura miente peor que un error.
  */
 export function parseCsvSunat(texto) {
   const vacio = { libro: null, ruc: '', razonSocial: '', periodo: '', anio: null, mes: null, filas: [], avisos: [] };
@@ -204,9 +247,40 @@ export function parseCsvSunat(texto) {
   const lineas = bruto.split(/\r?\n/).filter(l => l.trim() !== '');
   if (lineas.length < 1) return vacio;
 
-  const headers = dividirLineaCsv(lineas[0]).map(limpio);
-  const libro = detectarLibro(headers);
-  if (!libro) return { ...vacio, avisos: [{ linea: 1, motivo: 'encabezado_desconocido', texto: lineas[0].slice(0, 200) }] };
+  const candidatos = [',', ';', '|', '\t'];
+  let headerIndex = -1;
+  let sepElegido = ',';
+  let libro = null;
+  let headers = [];
+
+  // Buscar el encabezado en las primeras 10 líneas probando cada delimitador
+  for (let i = 0; i < Math.min(10, lineas.length); i++) {
+    for (const sep of candidatos) {
+      const h = dividirLineaCsv(lineas[i], sep).map(limpio);
+      if (h.length >= 5) {
+        const lib = detectarLibro(h);
+        if (lib) {
+          headerIndex = i;
+          sepElegido = sep;
+          libro = lib;
+          headers = h;
+          break;
+        }
+      }
+    }
+    if (libro) break;
+  }
+
+  // Si no se encontró por columnas específicas, detectar por delimitador más común en lineas[0]
+  if (!libro) {
+    sepElegido = detectarDelimitador(lineas);
+    headers = dividirLineaCsv(lineas[0], sepElegido).map(limpio);
+    libro = detectarLibro(headers);
+    if (!libro) {
+      return { ...vacio, avisos: [{ linea: 1, motivo: 'encabezado_desconocido', texto: lineas[0].slice(0, 200) }] };
+    }
+    headerIndex = 0;
+  }
 
   const L = libro === 'compras' ? LAYOUT_COMPRAS : LAYOUT_VENTAS;
   const idx = {};
@@ -216,9 +290,9 @@ export function parseCsvSunat(texto) {
   const filas = [], avisos = [];
   let ruc = '', razonSocial = '', periodo = '';
 
-  for (let n = 1; n < lineas.length; n++) {
-    const crudos = dividirLineaCsv(lineas[n]);
-    const rep = repararFila(crudos, iNombre);
+  for (let n = headerIndex + 1; n < lineas.length; n++) {
+    const crudos = dividirLineaCsv(lineas[n], sepElegido);
+    const rep = repararFila(crudos, iNombre, sepElegido);
     if (!rep) {
       avisos.push({ linea: n + 1, motivo: 'no_se_pudo_alinear', texto: lineas[n].slice(0, 200) });
       continue;
@@ -241,11 +315,12 @@ export function parseCsvSunat(texto) {
     const base = L.base(v);
     const igv = L.igv(v);
     const noGravado = L.noGravado(v);
+    const perFila = v('periodo').slice(0, 6) || (periodo ? periodo.slice(0, 6) : '');
 
     filas.push({
       libro,
       linea: n + 1,                       // para poder señalar el archivo
-      periodo: v('periodo'),
+      periodo: perFila,
       carSunat: v('carSunat'),
       fecha: aFechaIso(v('fecha')),
       fechaVcto: aFechaIso(v('fechaVcto')),
@@ -277,8 +352,9 @@ export function parseCsvSunat(texto) {
   }
 
   const p = partirPeriodo(periodo);
+  const periodoLimpio = periodo ? periodo.slice(0, 6) : '';
   return {
-    libro, ruc, razonSocial, periodo,
+    libro, ruc, razonSocial, periodo: periodoLimpio,
     anio: p?.anio ?? null, mes: p?.mes ?? null,
     filas, avisos,
   };
@@ -291,36 +367,36 @@ export function parseCsvSunat(texto) {
 
 const LAYOUT_VENTAS = {
   columnas: {
-    ruc: 'Ruc',
-    periodo: 'Periodo',
-    carSunat: 'CAR SUNAT',
-    fecha: 'Fecha de emisión',
-    fechaVcto: 'Fecha Vcto/Pago',
-    tipoCp: 'Tipo CP/Doc.',
-    serie: 'Serie del CDP',
-    numero: 'Nro CP o Doc. Nro Inicial (Rango)',
-    contraparteTipoDoc: 'Tipo Doc Identidad',
-    contraparteRuc: 'Nro Doc Identidad',
-    contraparteNombre: 'Apellidos Nombres/ Razón Social',
-    biGravada: 'BI Gravada',
-    dsctoBi: 'Dscto BI',
-    igvIpm: 'IGV / IPM',
-    dsctoIgv: 'Dscto IGV / IPM',
-    exonerado: 'Mto Exonerado',
-    inafecto: 'Mto Inafecto',
-    isc: 'ISC',
-    icbper: 'ICBPER',
-    otrosTributos: 'Otros Tributos',
-    total: 'Total CP',
-    moneda: 'Moneda',
-    tipoCambio: 'Tipo Cambio',
-    modificaFecha: 'Fecha Emisión Doc Modificado',
-    modificaTipo: 'Tipo CP Modificado',
-    modificaSerie: 'Serie CP Modificado',
-    modificaNumero: 'Nro CP Modificado',
-    tipoNota: 'Tipo de Nota',
-    estado: 'Est. Comp',
-    detraccion: '',
+    ruc: ['Ruc', 'RUC', 'Num RUC', 'Numero RUC', 'RUC Emisor'],
+    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
+    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
+    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
+    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
+    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
+    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
+    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
+    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Cliente', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
+    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Cliente', 'Num Doc Identidad', 'RUC Cliente', 'Doc Identidad', 'Numero Documento'],
+    contraparteNombre: ['Apellidos Nombres/ Razón Social', 'Apellidos Nombres/ Razón  Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Cliente', 'Cliente'],
+    biGravada: ['BI Gravada', 'BI Gravado', 'Base Imponible', 'Operaciones Gravadas', 'Monto Gravado', 'Valor Facturado Exportación', 'Valor Facturado Exportacion'],
+    dsctoBi: ['Dscto BI', 'Descuento BI', 'Descuento Base Imponible', 'Dscto Base Imponible'],
+    igvIpm: ['IGV / IPM', 'IGV/IPM', 'IGV', 'Monto IGV', 'IGV e IPM'],
+    dsctoIgv: ['Dscto IGV / IPM', 'Dscto IGV', 'Descuento IGV', 'Dscto IGV/IPM'],
+    exonerado: ['Mto Exonerado', 'Exonerado', 'Monto Exonerado', 'Operaciones Exoneradas'],
+    inafecto: ['Mto Inafecto', 'Inafecto', 'Monto Inafecto', 'Operaciones Inafectas'],
+    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
+    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
+    otrosTributos: ['Otros Tributos', 'Otros Trib/ Cargos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
+    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
+    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
+    tipoCambio: ['Tipo Cambio', 'Tipo de Cambio', 'TC', 'Tipo de Cambio Oficial'],
+    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
+    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
+    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
+    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
+    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
+    estado: ['Est. Comp', 'Est. Comp.', 'Estado Comprobante', 'Estado'],
+    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
   },
   // En ventas el descuento va en su propia columna y RESTA de la base.
   base: (v) => aNumero(v('biGravada')) - aNumero(v('dsctoBi')),
@@ -330,37 +406,37 @@ const LAYOUT_VENTAS = {
 
 const LAYOUT_COMPRAS = {
   columnas: {
-    ruc: 'RUC',
-    periodo: 'Periodo',
-    carSunat: 'CAR SUNAT',
-    fecha: 'Fecha de emisión',
-    fechaVcto: 'Fecha Vcto/Pago',
-    tipoCp: 'Tipo CP/Doc.',
-    serie: 'Serie del CDP',
-    numero: 'Nro CP o Doc. Nro Inicial (Rango)',
-    contraparteTipoDoc: 'Tipo Doc Identidad',
-    contraparteRuc: 'Nro Doc Identidad',
-    contraparteNombre: 'Apellidos Nombres/ Razón  Social',
-    biDg: 'BI Gravado DG',
-    igvDg: 'IGV / IPM DG',
-    biDgng: 'BI Gravado DGNG',
-    igvDgng: 'IGV / IPM DGNG',
-    biDng: 'BI Gravado DNG',
-    igvDng: 'IGV / IPM DNG',
-    valorNg: 'Valor Adq. NG',
-    isc: 'ISC',
-    icbper: 'ICBPER',
-    otrosTributos: 'Otros Trib/ Cargos',
-    total: 'Total CP',
-    moneda: 'Moneda',
-    tipoCambio: 'Tipo de Cambio',
-    modificaFecha: 'Fecha Emisión Doc Modificado',
-    modificaTipo: 'Tipo CP Modificado',
-    modificaSerie: 'Serie CP Modificado',
-    modificaNumero: 'Nro CP Modificado',
-    tipoNota: 'Tipo de Nota',
-    estado: 'Est. Comp.',
-    detraccion: 'Detracción',
+    ruc: ['RUC', 'Ruc', 'Num RUC', 'Numero RUC', 'RUC Adquiriente'],
+    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
+    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
+    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
+    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
+    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
+    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
+    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
+    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Emisor', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
+    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Emisor', 'Num Doc Identidad', 'RUC Proveedor', 'Doc Identidad', 'Numero Documento'],
+    contraparteNombre: ['Apellidos Nombres/ Razón  Social', 'Apellidos Nombres/ Razón Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Proveedor', 'Proveedor'],
+    biDg: ['BI Gravado DG', 'BI Gravada DG', 'BI Grav DG', 'Base Imponible DG', 'Adquisiciones Gravadas DG', 'BI Operaciones Gravadas'],
+    igvDg: ['IGV / IPM DG', 'IGV/IPM DG', 'IGV DG', 'Monto IGV DG', 'IGV e IPM DG'],
+    biDgng: ['BI Gravado DGNG', 'BI Gravada DGNG', 'Base Imponible DGNG', 'Adquisiciones Gravadas DGNG'],
+    igvDgng: ['IGV / IPM DGNG', 'IGV/IPM DGNG', 'IGV DGNG'],
+    biDng: ['BI Gravado DNG', 'BI Gravada DNG', 'Base Imponible DNG', 'Adquisiciones Gravadas DNG'],
+    igvDng: ['IGV / IPM DNG', 'IGV/IPM DNG', 'IGV DNG'],
+    valorNg: ['Valor Adq. NG', 'Valor Adq NG', 'Valor Adquisiciones No Gravadas', 'No Gravadas', 'Mto No Gravado', 'Valor No Gravado'],
+    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
+    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
+    otrosTributos: ['Otros Trib/ Cargos', 'Otros Tributos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
+    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
+    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
+    tipoCambio: ['Tipo de Cambio', 'Tipo Cambio', 'TC', 'Tipo de Cambio Oficial'],
+    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
+    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
+    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
+    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
+    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
+    estado: ['Est. Comp.', 'Est. Comp', 'Estado Comprobante', 'Estado'],
+    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
   },
   // 🔴 La base de una compra viene partida en TRES según a qué se destina
   // (gravadas / gravadas y no gravadas / no gravadas). Leer solo «DG» perdería

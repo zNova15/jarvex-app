@@ -329,3 +329,52 @@ describe('las filas que se guardan con el corte', () => {
       .toEqual(completo.filas.map(f => `${f.llave}|${f.estado}|${f.diferencia}`));
   });
 });
+
+describe('archivos históricos (2023) y variaciones de formato', () => {
+  it('detecta y parsea CSV delimitado por punto y coma (;)', () => {
+    const hSemi = H_COMPRAS.replace(/,/g, ';');
+    const fSemi = C_CON_COMA.replace(/,/g, ';');
+    const r = parseCsvSunat(`${hSemi}\n${fSemi}`);
+    expect(r.libro).toBe('compras');
+    expect(r.filas).toHaveLength(1);
+    expect(r.filas[0].documento).toBe('F001-163254');
+    expect(r.filas[0].total).toBe(12956.40);
+  });
+
+  it('detecta y parsea CSV delimitado por pleca (|) común en PLE', () => {
+    const hPipe = H_VENTAS.replace(/,/g, '|');
+    const fPipe = V_FACTURA.replace(/,/g, '|');
+    const r = parseCsvSunat(`${hPipe}\n${fPipe}`);
+    expect(r.libro).toBe('ventas');
+    expect(r.filas).toHaveLength(1);
+    expect(r.filas[0].documento).toBe('E001-1');
+  });
+
+  it('detecta el encabezado cuando vienen líneas de preámbulo antes', () => {
+    const preambulo = 'REPORTE DE PROPUESTA DE COMPRAS - SUNAT\nRUC: 20615646505 - PERIODO: 202307\n';
+    const r = parseCsvSunat(preambulo + csv(H_COMPRAS, C_CON_COMA));
+    expect(r.libro).toBe('compras');
+    expect(r.filas).toHaveLength(1);
+    expect(r.filas[0].documento).toBe('F001-163254');
+  });
+
+  it('soporta periodos de 8 dígitos de PLE (ej. 20230700) normalizándolos a 6 dígitos', () => {
+    const fila2023 = C_CON_COMA.replace('202607', '20230700');
+    const r = parseCsvSunat(csv(H_COMPRAS, fila2023));
+    expect(r.libro).toBe('compras');
+    expect(r.periodo).toBe('202307');
+    expect(r.anio).toBe(2023);
+    expect(r.mes).toBe(7);
+    expect(r.filas[0].periodo).toBe('202307');
+  });
+
+  it('soporta sinónimos de columnas del SIRE 2023 (Base Imponible DG, etc.)', () => {
+    const h2023 = H_COMPRAS
+      .replace('BI Gravado DG', 'Base Imponible DG')
+      .replace('Total CP', 'Importe Total');
+    const r = parseCsvSunat(csv(h2023, C_CON_COMA));
+    expect(r.libro).toBe('compras');
+    expect(r.filas[0].base).toBe(10980);
+    expect(r.filas[0].total).toBe(12956.40);
+  });
+});
