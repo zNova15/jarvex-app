@@ -2462,53 +2462,58 @@ function MaterialesPage({ showToast }) {
               </select>
             </div>
 
-            {/* Lista detallada de pendientes con progreso + botón "Marcar completa" */}
-            <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
-              {facturasPendientes.map(f => {
-                const prog = progresoPorFactura.get(f.id) || { items: 0, qty: 0 };
-                let itemsFactura = [];
-                try {
-                  const j = JSON.parse(f.notas || '{}');
-                  itemsFactura = Array.isArray(j.items_factura) ? j.items_factura : [];
-                } catch {}
-                const totalItems = itemsFactura.length;
-                const totalQty = itemsFactura.reduce((s, it) => s + Number(it.cantidad || 0), 0);
-                const pctItems = totalItems > 0 ? Math.min(100, Math.round(prog.items / totalItems * 100)) : 0;
-                const pctQty = totalQty > 0 ? Math.min(100, Math.round(prog.qty / totalQty * 100)) : 0;
-                const pct = Math.max(pctItems, pctQty);
-                return (
-                  <div key={f.id} style={{ background:'var(--bg-c2)', borderRadius:6, padding:'8px 10px', fontSize:11.5 }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginBottom:6 }}>
-                      <div>
-                        <span style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin nº'}</span>
-                        <span style={{ color:'var(--tm)', marginLeft:6 }}>· {f.third_party_name || '—'}</span>
-                        {f.recepcion_status === 'parcial' && (
-                          <span className="b-amber" style={{ marginLeft:6, fontSize:10 }}>⏳ Parcial</span>
-                        )}
+            {/* Lista detallada de pendientes con progreso + botón "Marcar completa" (plegable para no empujar el formulario) */}
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--amber)', userSelect: 'none', fontWeight: 600, padding: '3px 0' }}>
+                ▸ Ver detalle y avance de las {facturasPendientes.length} facturas pendientes
+              </summary>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {facturasPendientes.map(f => {
+                  const prog = progresoPorFactura.get(f.id) || { items: 0, qty: 0 };
+                  let itemsFactura = [];
+                  try {
+                    const j = JSON.parse(f.notas || '{}');
+                    itemsFactura = Array.isArray(j.items_factura) ? j.items_factura : [];
+                  } catch {}
+                  const totalItems = itemsFactura.length;
+                  const totalQty = itemsFactura.reduce((s, it) => s + Number(it.cantidad || 0), 0);
+                  const pctItems = totalItems > 0 ? Math.min(100, Math.round(prog.items / totalItems * 100)) : 0;
+                  const pctQty = totalQty > 0 ? Math.min(100, Math.round(prog.qty / totalQty * 100)) : 0;
+                  const pct = Math.max(pctItems, pctQty);
+                  return (
+                    <div key={f.id} style={{ background:'var(--bg-c2)', borderRadius:6, padding:'8px 10px', fontSize:11.5 }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, marginBottom:6 }}>
+                        <div>
+                          <span style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin nº'}</span>
+                          <span style={{ color:'var(--tm)', marginLeft:6 }}>· {f.third_party_name || '—'}</span>
+                          {f.recepcion_status === 'parcial' && (
+                            <span className="b-amber" style={{ marginLeft:6, fontSize:10 }}>⏳ Parcial</span>
+                          )}
+                        </div>
+                        <button
+                          className="btn btn-amber btn-sm"
+                          disabled={prog.items === 0}
+                          onClick={()=>setCerrarRecepcionFactura(f)}
+                          title={prog.items === 0 ? 'Registrá al menos 1 ingreso antes de cerrar' : 'Marcar la entrega como completa (con observación)'}>
+                          <JxIcon name="check" size={11}/> Marcar completa
+                        </button>
                       </div>
-                      <button
-                        className="btn btn-amber btn-sm"
-                        disabled={prog.items === 0}
-                        onClick={()=>setCerrarRecepcionFactura(f)}
-                        title={prog.items === 0 ? 'Registrá al menos 1 ingreso antes de cerrar' : 'Marcar la entrega como completa (con observación)'}>
-                        <JxIcon name="check" size={11}/> Marcar completa
-                      </button>
+                      {totalItems > 0 && (
+                        <>
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:10.5, color:'var(--tm)', marginBottom:3 }}>
+                            <span>{prog.items} de {totalItems} items · {prog.qty.toLocaleString()} de {totalQty.toLocaleString()} cantidad</span>
+                            <span style={{ color: pct >= 100 ? 'var(--green)' : 'var(--amber)' }}>{pct}%</span>
+                          </div>
+                          <div style={{ height:4, background:'var(--track-bg)', borderRadius:2, overflow:'hidden' }}>
+                            <div style={{ width:`${pct}%`, height:'100%', background: pct >= 100 ? 'var(--green)' : 'var(--amber)', transition:'width 0.3s' }}/>
+                          </div>
+                        </>
+                      )}
                     </div>
-                    {totalItems > 0 && (
-                      <>
-                        <div style={{ display:'flex', justifyContent:'space-between', fontSize:10.5, color:'var(--tm)', marginBottom:3 }}>
-                          <span>{prog.items} de {totalItems} items · {prog.qty.toLocaleString()} de {totalQty.toLocaleString()} cantidad</span>
-                          <span style={{ color: pct >= 100 ? 'var(--green)' : 'var(--amber)' }}>{pct}%</span>
-                        </div>
-                        <div style={{ height:4, background:'var(--track-bg)', borderRadius:2, overflow:'hidden' }}>
-                          <div style={{ width:`${pct}%`, height:'100%', background: pct >= 100 ? 'var(--green)' : 'var(--amber)', transition:'width 0.3s' }}/>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </details>
           </div>
         )}
 

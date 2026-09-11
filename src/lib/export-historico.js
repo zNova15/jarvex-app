@@ -302,17 +302,34 @@ export const DATASETS = [
   { id: 'inventario_general', label: 'Inventario general (todos los insumos)', icon: 'package', color: '#2980B9', grupo: 'Inventario', filtrable: false,
     build: (c, f) => {
       const q = (f?.q || '').toLowerCase();
-      const fila = (cat, nombre, unidad, stock, min, alerta, estado, ubic, precio) => [cat, nombre, unidad || '', n2(stock), n2(min), alerta || '', estado || '', ubic || '', n2(precio)];
+      const fila = (cat, nombre, unidad, stock, min, alerta, estado, ubic, precio, obs) => [cat, nombre, unidad || '', n2(stock), n2(min), alerta || '', estado || '', ubic || '', n2(precio), obs || ''];
       let rows = [
-        ...c.mats.map((x) => fila('Material', x.nombre_material, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, c.ubicById.get(x.ubicacion_id)?.nombre, x.precio_unitario_estimado)),
-        ...c.herrs.map((x) => fila('Herramienta', x.nombre_herramienta, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado_actual, c.ubicById.get(x.ubicacion_id)?.nombre, '')),
-        ...c.epps.map((x) => fila('EPP', x.nombre_epp, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, c.ubicById.get(x.ubicacion_id)?.nombre, '')),
-        ...c.activos.map((x) => fila('Maquinaria', x.nombre || x.placa, x.unidad, x.stock_actual, '', '', x.estado, '', '')),
-        ...c.insEmer.map((x) => fila('Insumo emergencia', x.nombre, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, '', '')),
+        ...c.mats.map((x) => fila('Material', x.nombre_material, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, c.ubicById.get(x.ubicacion_id)?.nombre, x.precio_unitario_estimado, x.observaciones)),
+        ...c.herrs.map((x) => fila('Herramienta', x.nombre_herramienta, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado_actual, c.ubicById.get(x.ubicacion_id)?.nombre, '', x.observaciones)),
+        ...c.epps.map((x) => fila('EPP', x.nombre_epp, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, c.ubicById.get(x.ubicacion_id)?.nombre, x.precio_unitario_estimado, x.observaciones)),
+        ...c.activos.map((x) => fila('Maquinaria', x.nombre || x.placa, x.unidad, x.stock_actual, '', '', x.estado, '', '', x.observaciones)),
+        ...c.insEmer.map((x) => fila('Insumo emergencia', x.nombre, x.unidad, x.stock_actual, x.stock_minimo, x.alerta, x.estado, '', '', x.observaciones)),
       ];
       if (q) rows = rows.filter((r) => String(r[1] || '').toLowerCase().includes(q));
       rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])) || String(a[1]).localeCompare(String(b[1])));
-      return { headers: ['Categoría', 'Insumo', 'Unidad', 'Stock Actual', 'Stock Mínimo', 'Alerta', 'Estado', 'Ubicación', 'Precio Unit. (S/)'], rows };
+      return { headers: ['Categoría', 'Insumo', 'Unidad', 'Stock Actual', 'Stock Mínimo', 'Alerta', 'Estado', 'Ubicación', 'Precio Unit. (S/)', 'Observaciones'], rows };
+    } },
+  { id: 'epps', label: 'Inventario de EPPs', icon: 'shield', color: '#2ECC71', grupo: 'Inventario', filtrable: false,
+    build: (c, f) => {
+      const q = (f?.q || '').toLowerCase();
+      let list = (c.epps || []).filter((e) => !e.deleted_at);
+      if (q) list = list.filter((e) => `${e.nombre_epp} ${e.tipo_epp || ''} ${e.marca || ''} ${e.modelo || ''}`.toLowerCase().includes(q));
+      list.sort((a, b) => String(a.nombre_epp || '').localeCompare(String(b.nombre_epp || '')));
+      const rows = list.map((x, i) => [
+        i + 1, x.nombre_epp || '', x.tipo_epp || '', x.marca || '', x.modelo || '', x.talla || '',
+        x.unidad || 'Und', n2(x.stock_actual), n2(x.stock_minimo), n2(x.vida_util_dias),
+        n2(x.precio_unitario_estimado), c.ubicById.get(x.ubicacion_id)?.nombre || '', x.alerta || '',
+        x.estado || 'activo', x.observaciones || '',
+      ]);
+      return {
+        headers: ['ID', 'EPP', 'Tipo', 'Marca', 'Modelo', 'Talla', 'Unidad', 'Stock Actual', 'Stock Mínimo', 'Vida Útil (días)', 'Precio Estimado (S/)', 'Ubicación', 'Alerta', 'Estado', 'Observaciones'],
+        rows,
+      };
     } },
   { id: 'personal', label: 'Personal (trabajadores)', icon: 'users', color: '#27AE60', grupo: 'RRHH', filtrable: false,
     build: (c, f) => {

@@ -345,6 +345,7 @@ function EppsInventarioPage({ showToast }) {
             <div>
               <span>{e.nombre_epp}</span>
               {e.marca && <div style={{ fontSize:10.5, color:'var(--tm)' }}>{e.marca} {e.modelo || ''}</div>}
+              {e.observaciones && <div style={{ fontSize:10, color:'var(--tm)', fontStyle:'italic' }} title={e.observaciones}>📝 {e.observaciones}</div>}
             </div>
           </div>
         </td>
@@ -624,6 +625,7 @@ function EppsInventarioPage({ showToast }) {
           proveedor_principal_id: form.proveedor_principal_id || null,
           ubicacion_id: form.ubicacion_id || null,
           padre_id: form.padre_id || null,
+          observaciones: (form.observaciones || '').trim() || null,
         };
         // Super Admin: corregir fecha de registro (created_at)
         if (superAdmin && form.fecha_registro && form.fecha_registro !== (oldData?.created_at || '').slice(0, 10)) {
@@ -687,6 +689,7 @@ function EppsInventarioPage({ showToast }) {
           proveedor_principal_id: form.proveedor_principal_id || null,
           ubicacion_id: form.ubicacion_id || null,
           padre_id: form.padre_id || null,
+          observaciones: (form.observaciones || '').trim() || null,
           alerta: calcAlerta(stockInicial, stockMinimo),
           estado: 'activo',
         });
@@ -955,7 +958,18 @@ function EppsInventarioPage({ showToast }) {
           <div className="pg-sub">{epps.length} EPPs registrados · {epps.filter(e => ['critico','reponer','agotado','sin_stock'].includes(alertaDe(e))).length} alertas</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-          <button className="btn btn-ghost btn-sm" title="Descargar el Excel de los movimientos de EPP (solo exporta — no modifica nada)"
+          <button className="btn btn-ghost btn-sm" title="Descargar el Excel del inventario de EPPs (con stock, marcas y observaciones)"
+            onClick={async () => {
+              if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
+              try {
+                const obra = await window.__db.obras.get(obraId);
+                const r = await exportarDataset('epps', obraId, obra?.nombre_obra || obra?.nombre || 'obra', {}, { porModo: true });
+                showToast?.(`Exportado: ${r.filas} EPPs → ${r.archivo}`, 'green');
+              } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
+            }}>
+            <JxIcon name="download" size={13}/> Exportar Inventario
+          </button>
+          <button className="btn btn-ghost btn-sm" title="Descargar el Excel de los movimientos de EPP (con observaciones)"
             onClick={async () => {
               if (!obraId) { showToast?.('No hay obra activa', 'red'); return; }
               try {
@@ -964,7 +978,7 @@ function EppsInventarioPage({ showToast }) {
                 showToast?.(`Exportado: ${r.filas} movimientos de EPP → ${r.archivo}`, 'green');
               } catch (e) { showToast?.('Error al exportar: ' + (e.message || e), 'red'); }
             }}>
-            <JxIcon name="download" size={13}/> Exportar Excel
+            <JxIcon name="download" size={13}/> Exportar Movimientos
           </button>
           <button className="btn btn-ghost btn-sm" title="Ver, filtrar y organizar los EPPs entregados a cada trabajador"
             onClick={() => setPorTrabajadorOpen(true)}>
@@ -1207,6 +1221,12 @@ function EppsInventarioPage({ showToast }) {
             <div>
               <label className="flabel">Precio estimado (S/)</label>
               <input className="fi" type="number" step="0.01" value={form.precio_unitario_estimado || ''} onChange={ev => setForm({ ...form, precio_unitario_estimado: ev.target.value })}/>
+            </div>
+            <div style={{ gridColumn: '1/-1' }}>
+              <label className="flabel">Observaciones</label>
+              <input className="fi" placeholder="Observaciones / especificaciones adicionales del EPP"
+                value={form.observaciones || ''}
+                onChange={ev => setForm({ ...form, observaciones: ev.target.value })}/>
             </div>
             {/* Foto del EPP — sube como evidencia foto_epp */}
             {(() => {
@@ -1848,7 +1868,7 @@ function MovEppPage({ showToast }) {
     if (filtroTipo !== 'todos' && m.tipo_movimiento !== filtroTipo) return false;
     if (!q.trim()) return true;
     const epp = eppById.get(m.epp_id);
-    const hay = `${epp?.nombre_epp || ''} ${epp?.talla || ''} ${destinoDe(m)} ${m.motivo || ''} ${m.documento_asociado || ''} ${ubicById.get(m.ubicacion_id)?.nombre || ''} ${frenteById.get(m.frente_id)?.nombre || ''}`;
+    const hay = `${epp?.nombre_epp || ''} ${epp?.talla || ''} ${destinoDe(m)} ${m.motivo || ''} ${m.documento_asociado || ''} ${m.observaciones || ''} ${ubicById.get(m.ubicacion_id)?.nombre || ''} ${frenteById.get(m.frente_id)?.nombre || ''}`;
     return coincideTokens(hay, q);
   }), [sorted, q, filtroTipo, eppById, persById, subById, ubicById, frenteById]);
 
@@ -1939,7 +1959,7 @@ function MovEppPage({ showToast }) {
               <thead><tr>
                 <th>Fecha / Hora</th><th>Tipo</th><th>EPP</th>
                 <th style={{ textAlign:'right' }}>Cantidad</th>
-                <th>Trabajador / Destino</th><th>Almacén</th><th>Frente</th><th>Motivo</th><th>Doc.</th>
+                <th>Trabajador / Destino</th><th>Almacén</th><th>Frente</th><th>Motivo</th><th>Doc.</th><th>Observaciones</th>
                 {puedePedirCambio && <th style={{ textAlign:'center' }}>Acción</th>}
               </tr></thead>
               <tbody>
@@ -1957,6 +1977,9 @@ function MovEppPage({ showToast }) {
                       <td style={{ fontSize:11 }}>{frenteById.get(m.frente_id)?.nombre ? <span className="badge b-amber" style={{ fontSize:10 }}>{frenteById.get(m.frente_id).nombre}</span> : <span style={{ color:'var(--tm)' }}>—</span>}</td>
                       <td style={{ fontSize:11, color:'var(--ts)' }}>{m.motivo || '—'}</td>
                       <td style={{ fontSize:11, color:'var(--tm)' }}>{m.documento_asociado || '—'}</td>
+                      <td style={{ fontSize:11, color:'var(--ts)', maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }} title={m.observaciones || ''}>
+                        {m.observaciones || <span style={{ color:'var(--tm)' }}>—</span>}
+                      </td>
                       {puedePedirCambio && (
                         <td style={{ textAlign:'center' }}>
                           <button className="btn btn-ghost btn-xs" title="Solicitar cambio o eliminación de este movimiento (lo aprueba el admin)"
