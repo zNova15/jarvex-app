@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hoyLocal, horaLocal, getTZ, setTZ, etiquetaTZ, ZONAS_HORARIAS, TZ_DEFAULT } from '../fecha.js';
+import { hoyLocal, horaLocal, getTZ, setTZ, etiquetaTZ, ZONAS_HORARIAS, TZ_DEFAULT, fmtFechaLarga, ymdDe } from '../fecha.js';
 
 describe('fecha (zona horaria)', () => {
   it('hoyLocal devuelve formato YYYY-MM-DD', () => {
@@ -28,4 +28,26 @@ describe('fecha (zona horaria)', () => {
     const du = new Date(utc + 'T00:00:00Z').getTime();
     expect(Math.abs(dl - du)).toBeLessThanOrEqual(24 * 3600 * 1000);
   });
+
+  it('fmtFechaLarga formatea YYYY-MM-DD a DD/MM/YYYY sin corrimiento de zona horaria', () => {
+    expect(fmtFechaLarga('2026-09-11')).toBe('11/09/2026');
+    expect(fmtFechaLarga('2026-09-11T00:00:00.000Z')).toBe('11/09/2026');
+    expect(fmtFechaLarga('2026-01-01')).toBe('01/01/2026');
+    expect(fmtFechaLarga('2026-12-31')).toBe('31/12/2026');
+    expect(fmtFechaLarga(null)).toBe('');
+    expect(fmtFechaLarga('')).toBe('');
+  });
+
+  it('ymdDe extrae YYYY-MM-DD sin corrimiento de zona horaria', () => {
+    expect(ymdDe('2026-09-11')).toBe('2026-09-11');
+    expect(ymdDe('2026-09-11T00:00:00Z')).toBe('2026-09-11');
+    expect(ymdDe('2026-05-05T01:00:00Z')).toBe('2026-05-04');
+    expect(ymdDe(null)).toBe('');
+  });
+
+  it('fmtFechaLarga con ISO UTC de noche resuelve al día local de Perú (America/Lima)', () => {
+    // 2026-05-05T01:00:00Z es 2026-05-04 20:00 en Perú (UTC-5)
+    expect(fmtFechaLarga('2026-05-05T01:00:00.000Z')).toBe('04/05/2026');
+  });
 });
+

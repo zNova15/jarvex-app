@@ -125,40 +125,145 @@ export function nombreDeArchivo(parte, sufijo = '.docx') {
  * Esto lo agrupa por sobre, en el orden en que se presentan, y deja al final
  * los que la lectura no supo ubicar, que son trabajo pendiente y no basura.
  */
+/**
+ * Extrae la clave canónica de un sobre para que:
+ * «Sobre Nº 1: CREDENCIALES», «Sobre Nº 1 - CREDENCIALES», «Sobre Nº 1»
+ * caigan todos en el MISMO grupo canónico y en orden oficial.
+ */
+export function canonicalizarSobre(sobreRaw, docTitulo = '') {
+  const s = String(sobreRaw || '').trim();
+  const d = String(docTitulo || '').trim();
+  const sNorm = normalizar(s);
+  const dNorm = normalizar(d);
+
+  // 1. Mapeo por número explícito de sobre
+  const mNum = /\b(?:SOBRE\s*(?:N\s*)?0?([1-9])|SOBRE\s*([A-Z]))\b/.exec(sNorm);
+  if (mNum) {
+    const num = mNum[1] ? Number(mNum[1]) : (mNum[2].charCodeAt(0) - 64);
+    const nombre = s.length > 10 ? s : `Sobre N° ${num}`;
+    return {
+      clave: `SOBRE_${num}`,
+      sobre: nombre,
+      orden: num,
+    };
+  }
+
+  // Por nombre funcional explícito en el sobre
+  if (/CREDENCIALES/.test(sNorm)) {
+    return { clave: 'SOBRE_1', sobre: s || 'Sobre N° 1: Credenciales', orden: 1 };
+  }
+  if (/PROPUESTA\s+ECONOMICA|OFERTA\s+ECONOMICA/.test(sNorm)) {
+    return { clave: 'SOBRE_2', sobre: s || 'Sobre N° 2: Propuesta Económica', orden: 2 };
+  }
+  if (/PROPUESTA\s+TECNICA|OFERTA\s+TECNICA/.test(sNorm)) {
+    return { clave: 'SOBRE_3', sobre: s || 'Sobre N° 3: Propuesta Técnica', orden: 3 };
+  }
+  if (/SUSCRIPCION|PERFECCIONAMIENTO|CONVENIO DE INVERSION|FIRMA DE CONVENIO|FIRMA DE CONTRATO/.test(sNorm)) {
+    return { clave: 'SUSCRIPCION', sobre: s || 'Documentos para Suscripción del Convenio / Contrato', orden: 4 };
+  }
+  if (/GARANTIA DE APELACION|APELACION/.test(sNorm)) {
+    return { clave: 'APELACION', sobre: s || 'Garantía de Apelación', orden: 5 };
+  }
+  if (/FIEL CUMPLIMIENTO/.test(sNorm)) {
+    return { clave: 'SUSCRIPCION', sobre: s || 'Documentos para Suscripción del Convenio / Contrato', orden: 4 };
+  }
+  if (/SOBRES?\s*(?:N\s*)?0?1.*SOBRES?\s*(?:N\s*)?0?2/.test(sNorm) || /TRES SOBRES/.test(sNorm)) {
+    return { clave: 'GENERAL', sobre: s || 'Disposiciones Generales de Presentación (Sobres 1, 2 y 3)', orden: 0 };
+  }
+
+  // 2. Si el sobre viene vacío o genérico ("Sin sobre", "No especificado"), inferir por anexo/contenido
+  if (!s || /NO ESPECIFICADO|SIN SOBRE/i.test(s)) {
+    if (/ANEXO\s*(?:N\s*)?0?4-?[A-DGK]\b|DATOS DEL POSTOR|CARTA DE ACREDITACION|EXPRESION DE INTERES|PROMESA.*CONSORCIO|FICHA REGISTRAL|FACULTADES|REPRESENTANTE LEGAL|PATRIMONIO NETO|ESTADOS FINANCIEROS/.test(dNorm)) {
+      return { clave: 'SOBRE_1', sobre: 'Sobre Nº 1: Credenciales y Requisitos Legales', orden: 1, inferido: true };
+    }
+    if (/ANEXO\s*(?:N\s*)?0?4-?[EF]\b|PROPUESTA ECONOMICA|CARTA DE PRESENTACION DE PROPUESTA ECONOMICA|COSTOS DE GESTION/.test(dNorm)) {
+      return { clave: 'SOBRE_2', sobre: 'Sobre Nº 2: Propuesta Económica', orden: 2, inferido: true };
+    }
+    if (/ANEXO\s*(?:N\s*)?0?4-?[HIJLM]\b|EXPERIENCIA DEL PERSONAL|PERSONAL PROFESIONAL|EMPRESA EJECUTORA|EJECUCION DE PROYECTO|MAQUINARIA|EQUIPAMIENTO|CURRICULUM|HABILITADO|CARTA DE COMPROMISO DEL PERSONAL/.test(dNorm)) {
+      return { clave: 'SOBRE_3', sobre: 'Sobre Nº 3: Propuesta Técnica', orden: 3, inferido: true };
+    }
+    if (/ANEXO\s*(?:N\s*)?0?5-?[B]\b|FIEL CUMPLIMIENTO|CONTRATO DE CONSORCIO|SUSCRIPCION|PERFECCIONAMIENTO|ANEXO\s*(?:N\s*)?0?6\b|FORMATO DE CONVENIO/.test(dNorm)) {
+      return { clave: 'SUSCRIPCION', sobre: 'Documentos para Suscripción del Convenio / Contrato', orden: 4, inferido: true };
+    }
+    if (/ANEXO\s*(?:N\s*)?0?5-?[A]\b|GARANTIA DE APELACION/.test(dNorm)) {
+      return { clave: 'APELACION', sobre: 'Garantías y Recursos', orden: 5, inferido: true };
+    }
+    return { clave: 'SIN_SOBRE', sobre: 'Sin sobre indicado', orden: 99, sinUbicar: true };
+  }
+
+  // Conservar sobre legible desconocido en su orden de aparición
+  return { clave: normalizar(s), sobre: s, orden: ordenDeSobre(normalizar(s)) };
+}
+
+/**
+ * Los SOBRES: qué documento va en cada uno.
+ * Agrupa por sobre canónico y deduplica anexos repetidos.
+ */
 export function agruparPorSobre(documentos) {
   const grupos = new Map();
   const sinSobre = [];
   let aparicion = 0;
+
   for (const d of (documentos || [])) {
     const s = String(d?.sobre || '').trim();
-    if (!s) { sinSobre.push(d); continue; }
-    const clave = normalizar(s);
-    if (!grupos.has(clave)) {
-      grupos.set(clave, { sobre: s, orden: ordenDeSobre(clave), aparicion: aparicion++, documentos: [] });
+    const info = canonicalizarSobre(s, d?.documento);
+
+    if (info.sinUbicar) {
+      sinSobre.push(d);
+      continue;
     }
-    grupos.get(clave).documentos.push(d);
+
+    if (!grupos.has(info.clave)) {
+      grupos.set(info.clave, {
+        sobre: info.sobre,
+        orden: info.orden,
+        aparicion: aparicion++,
+        documentos: [],
+        vistosDocs: new Set(),
+      });
+    }
+
+    const g = grupos.get(info.clave);
+    // Si este documento trae una etiqueta de sobre más completa, adoptarla para el grupo
+    if (info.sobre.length > g.sobre.length && !info.inferido) {
+      g.sobre = info.sobre;
+    }
+
+    // Deduplicación de documentos dentro del mismo sobre por código de anexo o título normalizado
+    const docTxt = String(d?.documento || '').trim();
+    const docNorm = normalizar(docTxt);
+    const mAnexo = /(ANEXO\s*(?:N\s*)?[0-9]{1,3}\s*-?\s*[A-Z]?|FORMATO\s*(?:N\s*)?[0-9]{1,3})/i.exec(docNorm);
+    const kDoc = mAnexo ? mAnexo[1] : docNorm.slice(0, 65);
+
+    if (!g.vistosDocs.has(kDoc)) {
+      g.vistosDocs.add(kDoc);
+      g.documentos.push(d);
+    }
   }
-  // Los numerados por su número; los demás, en el orden en que el documento
-  // los nombró, que es el único orden que no inventa nada.
-  const lista = [...grupos.values()].sort((a, b) => a.orden - b.orden || a.aparicion - b.aparicion);
-  if (sinSobre.length) lista.push({ sobre: 'Sin sobre indicado', orden: 99, documentos: sinSobre, sinUbicar: true });
+
+  // Deduplicación también en los que quedaron sin sobre
+  const sinSobreDedup = [];
+  const vistosSinSobre = new Set();
+  for (const d of sinSobre) {
+    const docNorm = normalizar(d?.documento || '');
+    const mAnexo = /(ANEXO\s*(?:N\s*)?[0-9]{1,3}\s*-?\s*[A-Z]?|FORMATO\s*(?:N\s*)?[0-9]{1,3})/i.exec(docNorm);
+    const kDoc = mAnexo ? mAnexo[1] : docNorm.slice(0, 65);
+    if (!vistosSinSobre.has(kDoc)) {
+      vistosSinSobre.add(kDoc);
+      sinSobreDedup.push(d);
+    }
+  }
+
+  const lista = [...grupos.values()]
+    .map(({ vistosDocs, ...resto }) => resto)
+    .sort((a, b) => a.orden - b.orden || a.aparicion - b.aparicion);
+
+  if (sinSobreDedup.length) {
+    lista.push({ sobre: 'Sin sobre indicado', orden: 99, documentos: sinSobreDedup, sinUbicar: true });
+  }
   return lista;
 }
 
-/**
- * «Sobre N° 2» → 2. El NÚMERO manda siempre.
- *
- * 🔴 Y no se puede adivinar por el contenido, que era lo que hacía antes.
- * Investigado el 8-set-2026 sobre bases reales: en Obras por Impuestos con
- * Empresa Privada el **sobre 2 es la propuesta ECONÓMICA y el 3 la TÉCNICA**,
- * porque el procedimiento abre primero la económica, elige la más favorable y
- * recién ahí evalúa la técnica de ESE postor. En las bases de la Entidad
- * Privada Supervisora, en cambio, el sobre 1 es la técnica y el 2 la
- * económica. Dos convenciones opuestas dentro del MISMO mecanismo.
- *
- * Por eso, sin número, se conserva el orden en que aparecen en el documento en
- * vez de imponer una lógica que sería falsa la mitad de las veces.
- */
 function ordenDeSobre(clave) {
   const m = /(\d+)/.exec(clave);
   return m ? Number(m[1]) : 50;

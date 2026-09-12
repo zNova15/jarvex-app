@@ -570,28 +570,51 @@ export async function analizar(bloques, { apiFetch, apiParse, onProgreso = null,
       ? fusionarRangos([...rangosDeFamilia(rangos, resumen, 'proceso'), ...rangosDeFamilia(rangos, resumen, 'cronograma')])
       : rangosDeFamilia(rangos, resumen, familia),
   ]));
-  let pasadasPrevistas = 0;
-  if (porAnexo) for (const parte of anexos) pasadasPrevistas += familiasDeAnexo(parte.titulo).length;
-  for (const trozos of trozosPorFamilia.values()) pasadasPrevistas += trozos.length;
-  prog.plan('extraer', pasadasPrevistas);
-
+  const tareasExtraccion = [];
   if (porAnexo) {
-    prog.paso('anexos', { total: anexos.length });
     for (const parte of anexos) {
       const familias = familiasDeAnexo(parte.titulo);
       for (const familia of familias) {
         leidosPorAnexo.add(familia);
-        await extraerTrozo(familia, parte.pagina ?? 1, parte.pagina ?? 1, 0,
-          `<!-- página ${parte.pagina ?? 1} -->\n${parte.texto}`, parte.titulo.slice(0, 60));
+        tareasExtraccion.push({
+          familia,
+          desde: parte.pagina ?? 1,
+          hasta: parte.pagina ?? 1,
+          nivel: 0,
+          textoDado: `<!-- página ${parte.pagina ?? 1} -->\n${parte.texto}`,
+          etiquetaDada: parte.titulo.slice(0, 60),
+        });
       }
     }
   }
 
   for (const familia of FAMILIAS_EXTRAIBLES) {
     for (const trozo of trozosPorFamilia.get(familia)) {
-      await extraerTrozo(familia, trozo.desde, trozo.hasta, 0);
+      tareasExtraccion.push({
+        familia,
+        desde: trozo.desde,
+        hasta: trozo.hasta,
+        nivel: 0,
+        textoDado: null,
+        etiquetaDada: null,
+      });
     }
   }
+
+  prog.plan('extraer', tareasExtraccion.length);
+  if (porAnexo) prog.paso('anexos', { total: anexos.length });
+
+  // Concurrencia moderada (2 workers simultáneos): reduce el tiempo de espera
+  // a la mitad sin saturar los límites de OpenRouter ni el rate limit de la app.
+  const CONCURRENCIA = 2;
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(CONCURRENCIA, tareasExtraccion.length) }, async () => {
+    while (idx < tareasExtraccion.length) {
+      const t = tareasExtraccion[idx++];
+      await extraerTrozo(t.familia, t.desde, t.hasta, t.nivel, t.textoDado, t.etiquetaDada);
+    }
+  });
+  await Promise.all(workers);
   prog.cerrar('extraer');
   cerrarTiempo('extraer');
 

@@ -652,6 +652,17 @@ const contiene = (heno, aguja) => normalizar(heno).includes(normalizar(aguja));
  */
 export const RX_CAMPO_SIN_LLENAR = /\[\s*(CONSIGNAR|INDICAR|COMPLETAR|SEÑALAR|SENALAR|PRECISAR|INCLUIR|DE SER EL CASO|\.{2,}|…)/i;
 
+/**
+ * Patrones que corresponden a campos de llenado del postor en anexos/modelos
+ * (ej. nombres, DNI, RUC, ciudad y fecha, cargo a desempeñar, cuenta bancaria).
+ * NO son omisiones de la entidad en las bases: son los formularios en blanco para ofertar.
+ */
+export const RX_CAMPO_POSTOR = /\[\s*(?:CONSIGNAR|INDICAR|COMPLETAR|SEÑALAR|SENALAR|PRECISAR)\s*(?:(?:EL\s+|LA\s+|LOS\s+|LAS\s+)?(?:NOMBRES?|APELLIDOS?|RAZON\s+SOCIAL|DENOMINACION|POSTOR|EMPRESA(?:\s+PRIVADA|\s+EJECUTORA)?|INTEGRANTES?|CONSORCIO|REPRESENTANTES?|DNI|RUC|DOMICILIO|DIRECCION|CORREO|TELEFONO|FIRMA|SELLO|BANCO|CUENTA|(?:CIUDAD|LUGAR)(?:\s+Y\s+FECHA)?|FECHA\s+DE\s+(?:FIRMA|SUSCRIPCION|EMISION|DECLARACION)|CARGO\s+A\s+DESEMPEÑAR|PROFESIONAL\s+PROPUESTO|MONTO\s+OFERTADO|MONTO\s+DE\s+LA\s+OFERTA|PROPUESTA\s+ECONOMICA|VALOR\s+OFERTADO|TIEMPO\s+DE\s+EXPERIENCIA|DISPONIBILIDAD|DE\s+SER\s+EL\s+CASO)\b)/i;
+
+export function esCampoDePostor(marcador) {
+  return RX_CAMPO_POSTOR.test(String(marcador || ''));
+}
+
 /** ¿La cita es un campo que la entidad dejó sin llenar? */
 export function citaEsPlantilla(cita) {
   return RX_CAMPO_SIN_LLENAR.test(String(cita || ''));
@@ -661,6 +672,7 @@ export function citaEsPlantilla(cita) {
  * Cuántos campos sin llenar quedaron en el documento. Se cuenta y se avisa:
  * unas bases con marcadores adentro son unas bases a medio publicar, y eso
  * cambia si conviene presentarse o pedir una consulta a la entidad.
+ * 🔴 Se omiten los campos de llenado del postor en anexos (nombres, DNI, firmas).
  */
 export function camposSinLlenar(markdown) {
   const m = String(markdown || '').match(/\[\s*(?:CONSIGNAR|INDICAR|COMPLETAR|SEÑALAR|SENALAR|PRECISAR)[^\]]{0,120}\]/gi);
@@ -668,6 +680,7 @@ export function camposSinLlenar(markdown) {
   const vistos = new Set();
   const out = [];
   for (const x of m) {
+    if (esCampoDePostor(x)) continue;
     const k = normalizar(x).slice(0, 80);
     if (vistos.has(k)) continue;
     vistos.add(k);
@@ -1235,6 +1248,67 @@ export function clasificarAlertas(alertas) {
   return { accionables, deTramo };
 }
 
+/**
+ * Subdivide las alertas en 5 categorías semánticas claras y ordenadas:
+ * 1. Discrepancias entre lecturas (doble pasada)
+ * 2. Para consultas a la Entidad (vacíos sustantivos en las bases)
+ * 3. Advertencias y anomalías críticas del documento
+ * 4. Requisitos y condiciones en observación
+ * 5. Notas de tramos y modelos de anexo
+ */
+export function subdividirAlertas(alertas) {
+  const grupos = [
+    { k: 'discrepancias', titulo: 'Discrepancias entre lecturas', icono: '🔄', items: [], badge: 'b-amber' },
+    { k: 'consultas', titulo: 'Para consultas a la Entidad (vacíos de bases)', icono: '✏️', items: [], badge: 'b-blue' },
+    { k: 'anomalias', titulo: 'Advertencias y anomalías del documento', icono: '⚠️', items: [], badge: 'b-red' },
+    { k: 'requisitos', titulo: 'Requisitos y condiciones en observación', icono: '📌', items: [], badge: 'b-purple' },
+    { k: 'notas', titulo: 'Notas de tramos y modelos de anexo', icono: 'ℹ️', items: [], badge: 'b-gray' },
+  ];
+  const mapa = Object.fromEntries(grupos.map(g => [g.k, g]));
+
+  const vistos = new Set();
+  for (const a of (alertas || [])) {
+    const t = String(a || '').trim();
+    if (!t) continue;
+    const k = normalizar(t).slice(0, 100);
+    if (vistos.has(k)) continue;
+    vistos.add(k);
+
+    const tNorm = normalizar(t);
+
+    // 1. Discrepancias entre corridas
+    if (/LECTURAS NO COINCIDEN|HALLAZGOS SALIERON EN SOLO UNA|SE LEYO EL DOCUMENTO \d+ VECES/.test(tNorm)) {
+      mapa.discrepancias.items.push(t);
+      continue;
+    }
+
+    // 2. Ruido de tramos o modelos de postor (anexos en blanco para llenar)
+    if (RX_ALERTA_DE_TRAMO.test(tNorm)
+      || /CAMPOS PERSONALES DEL ANEXO|SON MARCADORES DE LA PLANTILLA|FORMULARIO SOLICITA DATOS DE|ESTE TEXTO CORRESPONDE UNICAMENTE AL ANEXO|TRAMO PROPORCIONADO.*ANEXO/i.test(t)) {
+      mapa.notas.items.push(t);
+      continue;
+    }
+
+    // 3. Vacíos sustantivos de la entidad (etapa de consultas)
+    if (/SIN LLENAR POR LA ENTIDAD|MARCADOR SIN LLENAR|DEJO SIN LLENAR MONTOS|DEJO CAMPOS SIN LLENAR|CAMPO.*NO FUE LLENADO POR LA ENTIDAD|PLANTILLA OFICIAL/i.test(t)) {
+      mapa.consultas.items.push(t);
+      continue;
+    }
+
+    // 4. Anomalías del documento (italiano, errores de OCR, normas viejas, errores tipográficos)
+    if (/ITALIANO|OCR|TIPOGRAFICO|AMARCA|ARTICULO 113|CRONOGRAMA.*TENTATIVO|NO IDENTIFICA EXPLICITAMENTE EL NOMBRE NI RUC|NO ESPECIFICA EN CUAL DE LOS TRES SOBRES/i.test(t)) {
+      mapa.anomalias.items.push(t);
+      continue;
+    }
+
+    // 5. Requisitos y condiciones
+    mapa.requisitos.items.push(t);
+  }
+
+  // Devolver solo los grupos que tienen items (o todos los grupos con items > 0)
+  return grupos.filter(g => g.items.length > 0);
+}
+
 // ── EL ORDEN EN QUE HAY QUE MIRARLOS (9-set-2026) ─────────────────
 //
 // Gabriel: «sigo viendo todo muy desordenado, tal vez por ejemplo los
@@ -1337,6 +1411,7 @@ export default {
   aCabeceraLicitacion, aCronograma, fechaPresentacionDe, fechaISO, sugerenciasDe,
   aFactoresEvaluacion, aGarantias, aPenalidades, aDocumentosPresentacion,
   aCondiciones, aExtrasProceso, extrasNoVerificados, sinRepetidos, clasificarAlertas,
+  subdividirAlertas,
   topeDelIndice, elegirAciertos, agruparRequisitos, tipoDeFilaEmpresa,
   pareceRequisitoDeEmpresa, comoRequisitoDeEmpresa, CARGOS_QUE_SON_LA_EMPRESA,
   TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL,

@@ -85,12 +85,22 @@ export function fmtFechaCorta(iso) {
 export function fmtFechaLarga(valor) {
   if (!valor) return '';
   if (typeof valor === 'string') {
-    const soloDia = valor.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const soloDia = valor.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]00:00:00(?:\.000)?(?:Z|[+-]00:?00)?)?$/);
     if (soloDia) return `${soloDia[3]}/${soloDia[2]}/${soloDia[1]}`;
+    const loc = fechaLocalDe(valor);
+    if (loc && /^\d{4}-\d{2}-\d{2}$/.test(loc)) {
+      const [y, m, d] = loc.split('-');
+      return `${d}/${m}/${y}`;
+    }
   }
   try {
     const d = (valor instanceof Date) ? valor : new Date(valor);
     if (isNaN(d.getTime())) return String(valor);
+    const loc = fechaLocalDe(d.toISOString());
+    if (loc && /^\d{4}-\d{2}-\d{2}$/.test(loc)) {
+      const [y, m, d] = loc.split('-');
+      return `${d}/${m}/${y}`;
+    }
     const dd = String(d.getDate()).padStart(2, '0');
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     return `${dd}/${mm}/${d.getFullYear()}`;
@@ -104,12 +114,16 @@ export function fmtFechaLarga(valor) {
 export function ymdDe(valor) {
   if (!valor) return '';
   if (typeof valor === 'string') {
-    const soloDia = valor.trim().match(/^(\d{4}-\d{2}-\d{2})$/);
+    const soloDia = valor.trim().match(/^(\d{4}-\d{2}-\d{2})(?:[T\s]00:00:00(?:\.000)?(?:Z|[+-]00:?00)?)?$/);
     if (soloDia) return soloDia[1];
+    const loc = fechaLocalDe(valor);
+    if (loc && /^\d{4}-\d{2}-\d{2}$/.test(loc)) return loc;
   }
   try {
     const d = (valor instanceof Date) ? valor : new Date(valor);
     if (isNaN(d.getTime())) return '';
+    const loc = fechaLocalDe(d.toISOString());
+    if (loc && /^\d{4}-\d{2}-\d{2}$/.test(loc)) return loc;
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     return `${d.getFullYear()}-${mm}-${dd}`;

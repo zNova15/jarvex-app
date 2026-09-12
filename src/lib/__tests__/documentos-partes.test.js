@@ -150,4 +150,41 @@ describe('agruparPorSobre — lo que Gabriel pidió desglosado', () => {
   it('sin documentos devuelve lista vacía', () => {
     expect(agruparPorSobre([])).toEqual([]);
   });
+
+  it('unifica variantes del mismo sobre y adopta el título más descriptivo', () => {
+    const docs = [
+      { sobre: 'Sobre N° 1', documento: 'Documento base' },
+      { sobre: 'Sobre Nº 1: CREDENCIALES', documento: 'Credenciales del postor' },
+      { sobre: 'Sobre Nº 1 - CREDENCIALES', documento: 'Acreditación del representante' },
+    ];
+    const g = agruparPorSobre(docs);
+    expect(g).toHaveLength(1);
+    expect(g[0].sobre).toMatch(/^Sobre N[°º] 1[:\s-]+CREDENCIALES$/);
+    expect(g[0].documentos).toHaveLength(3);
+  });
+
+  it('deduplica anexos idénticos reportados en múltiples pasadas', () => {
+    const docs = [
+      { sobre: 'Sobre N° 1', documento: 'ANEXO N° 04-B: CARTA DE DATOS DEL POSTOR' },
+      { sobre: 'Sobre N° 1', documento: 'ANEXO N° 4-B: CARTA DE DATOS DEL POSTOR' },
+    ];
+    const g = agruparPorSobre(docs);
+    expect(g[0].documentos).toHaveLength(1);
+  });
+
+  it('infiere el sobre para anexos sin sobre según la estructura de Obras por Impuestos', () => {
+    const docs = [
+      { sobre: '', documento: 'ANEXO N° 04-B: CARTA DE DATOS DEL POSTOR' },
+      { sobre: '', documento: 'ANEXO N° 04-E: PROPUESTA ECONÓMICA' },
+      { sobre: '', documento: 'ANEXO N° 04-H: EXPERIENCIA DEL PERSONAL CLAVE' },
+      { sobre: '', documento: 'ANEXO N° 05-B: CARTA FIANZA DE FIEL CUMPLIMIENTO' },
+    ];
+    const g = agruparPorSobre(docs);
+    expect(g.map(x => x.orden)).toEqual([1, 2, 3, 4]);
+    expect(g[0].sobre).toMatch(/Sobre Nº 1/i);
+    expect(g[1].sobre).toMatch(/Sobre Nº 2/i);
+    expect(g[2].sobre).toMatch(/Sobre Nº 3/i);
+    expect(g[3].sobre).toMatch(/Suscripción/i);
+  });
 });
+

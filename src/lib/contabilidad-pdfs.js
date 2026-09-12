@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { textosDeTipo, totalesDesdeItems, nombreArchivoOrden, tituloImprimible } from './ordenes.js';
+import { fmtFechaLarga, fechaLocalDe } from './fecha.js';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -39,17 +40,7 @@ function fmtS(n) {
 }
 
 function fmtDate(d) {
-  if (!d) return '';
-  try {
-    const date = (d instanceof Date) ? d : new Date(d);
-    if (isNaN(date.getTime())) return String(d);
-    const dd = String(date.getDate()).padStart(2, '0');
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const yyyy = date.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  } catch (_) {
-    return String(d);
-  }
+  return fmtFechaLarga(d);
 }
 
 function fmtNum(n, dec = 2) {
@@ -210,7 +201,8 @@ export function generateOCPdf(oc, items, proveedor, obra, company) {
   doc.setFont('helvetica', 'bold');
   doc.text('Fecha:', 110, y);
   doc.setFont('helvetica', 'normal');
-  doc.text(fmtDate(oc.fecha || oc.created_at), 125, y);
+  const fechaOC = oc.fecha || (oc.created_at ? fechaLocalDe(oc.created_at) : '');
+  doc.text(fmtDate(fechaOC), 125, y);
 
   y += 5;
   doc.setFont('helvetica', 'bold');
@@ -1102,7 +1094,8 @@ export function generateOrdenPdf(orden, items, ctx = {}, { download = true } = {
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
   doc.text('Fecha de emisión:', 16.5, y + 3.6);
   doc.setFont('helvetica', 'normal');
-  doc.text(fmtDate(orden.fecha || orden.created_at), 55, y + 3.6);
+  const fechaEmision = orden.fecha || (orden.created_at ? fechaLocalDe(orden.created_at) : '');
+  doc.text(fmtDate(fechaEmision), 55, y + 3.6);
   doc.setFont('helvetica', 'bold');
   doc.text('Moneda:', 120, y + 3.6);
   doc.setFont('helvetica', 'normal');

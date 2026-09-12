@@ -43,6 +43,7 @@ import {
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
+import { hoyLocal, fechaLocalDe } from "../lib/fecha.js";
 import { itemsDeFactura } from "../lib/cruce-recepcion.js";
 // El desglose que se lee del otro lado (tanda 15): un espejo intercompany no
 // guarda los ítems —para que el almacén del comprador no los cuente dos veces—
@@ -1023,7 +1024,7 @@ function OrdenesPage({ showToast }) {
     if (faltaNueva.length) { toast('Falta ' + faltaNueva.join(', '), 'amber'); return; }
 
     const company = lookupCompany(emisoraId);
-    const hoy = nueva.fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+    const hoy = nueva.fecha || window.__fecha?.hoyLocal?.() || hoyLocal();
     const anio = Number(String(hoy).slice(0, 4));
     // 🔴 Lo que se GUARDA es siempre VALOR DE VENTA, escriba la persona con IGV
     // o sin él (tanda 9). Guardar unas líneas con IGV y otras sin haría que
@@ -1337,7 +1338,8 @@ function OrdenesPage({ showToast }) {
       for (const b of porFecha) {
         try {
           const company = lookupCompany(b.company_id);
-          const anio = b.fecha ? Number(String(b.fecha).slice(0, 4)) : new Date().getFullYear();
+          const fechaDefecto = b.fecha || window.__fecha?.hoyLocal?.() || hoyLocal();
+          const anio = Number(String(fechaDefecto).slice(0, 4)) || new Date().getFullYear();
           const { correlativo, codigo } = proximoCodigo(emitidasAhora, { company, tipo: b.tipo, anio });
           const ocId = window.__newId();
           const now = new Date().toISOString();
@@ -1355,7 +1357,7 @@ function OrdenesPage({ showToast }) {
             proveedor_nombre: b.proveedor_nombre || null,
             proveedor_ruc: b.proveedor_ruc || null,
             proveedor_direccion: b.proveedor_direccion || null,
-            fecha: b.fecha || now.slice(0, 10),
+            fecha: fechaDefecto,
             fecha_entrega: null,
             // La del comprobante que respalda. Con la vista abierta a moneda
             // extranjera (tanda 14) emitir todo en soles habría puesto un
@@ -1700,7 +1702,7 @@ function OrdenesPage({ showToast }) {
       const sig = siguienteComprobante(movs || [], { companyId: o.proveedor_company_id, company: vendedora });
       setAtBorrador({
         ...borradorDeFacturaDesdeOrden({ orden: o, items, cruce }),
-        fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
+        fecha: window.__fecha?.hoyLocal?.() || hoyLocal(),
         documento: sig.documento,
         serieSugerida: sig,
         igvIncluido: false,

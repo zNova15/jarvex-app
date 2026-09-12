@@ -2,6 +2,7 @@ import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
 import { proximoCodigo, TIPO_ORDEN_LABEL } from "../lib/ordenes.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
+import { hoyLocal } from "../lib/fecha.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -775,7 +776,7 @@ function OrdenesCompraPage({ showToast }) {
 
   const openNueva = () => {
     if (!proveedores.length) { showToast('Creá proveedores primero', 'red'); return; }
-    setForm({ codigo: nextCodigo, tipo: 'compra', proveedor_id: proveedores[0].id, fecha: new Date().toISOString().slice(0,10), fecha_entrega: '', moneda: 'PEN', condicion_pago: 'contado', estado: 'aceptada', observaciones: '' });
+    setForm({ codigo: nextCodigo, tipo: 'compra', proveedor_id: proveedores[0].id, fecha: window.__fecha?.hoyLocal?.() || hoyLocal(), fecha_entrega: '', moneda: 'PEN', condicion_pago: 'contado', estado: 'aceptada', observaciones: '' });
     setItems([{ material_id:'', nombre:'', unidad:'', cantidad:'', precio_unitario:'', tipo_insumo:'material' }]);
     setEditing(null); setModal(true);
   };

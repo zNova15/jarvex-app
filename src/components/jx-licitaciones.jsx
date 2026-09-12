@@ -39,7 +39,7 @@ import {
   urgencia, prefillObraDesde, puedePasarATrabajos, destinoAlGanar,
 } from "../lib/licitaciones.js";
 import { buscarPlantel, formatearMeses } from "../lib/experiencia-profesional.js";
-import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES, agruparRequisitos } from "../lib/bases-extraccion.js";
+import { TIPO_GARANTIA_LBL, TIPO_CONDICION_LBL, REGIMENES, agruparRequisitos, subdividirAlertas } from "../lib/bases-extraccion.js";
 import { agruparPorSobre, separarAnexos } from "../lib/documentos-partes.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 
@@ -1043,6 +1043,17 @@ function BloqueVacio({ que, canWrite }) {
 function LecturasYAvisos({ lic }) {
   const analisis = Array.isArray(lic.analisis) ? lic.analisis : [];
   const alertas = Array.isArray(lic.alertas) ? lic.alertas : [];
+  const grupos = uM(() => subdividirAlertas(alertas), [alertas]);
+  const [expandidos, setExpandidos] = uS(() => ({
+    discrepancias: true,
+    consultas: true,
+    anomalias: true,
+    requisitos: true,
+    notas: false, // Las notas de tramo y formularios en blanco arrancan plegadas
+  }));
+
+  const toggleGrupo = (k) => setExpandidos(prev => ({ ...prev, [k]: !prev[k] }));
+
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="card card-p">
@@ -1072,17 +1083,64 @@ function LecturasYAvisos({ lic }) {
       </div>
 
       <div className="card card-p">
-        <b style={{ fontSize: 12.5, color: alertas.length ? 'var(--amber)' : 'inherit' }}>
-          {alertas.length ? `⚠ Por revisar a mano (${alertas.length})` : 'Nada pendiente de revisar'}
-        </b>
-        {alertas.length > 0 && (
-          <>
-            <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '4px 0 6px' }}>
-              Lo que el lector no pudo confirmar. Vale la pena mirarlo en el documento antes de armar la propuesta.
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
+          <b style={{ fontSize: 12.5, color: alertas.length ? 'var(--amber)' : 'inherit' }}>
+            {alertas.length ? `⚠ Observaciones del análisis (${alertas.length})` : 'Nada pendiente de revisar'}
+          </b>
+          {alertas.length > 0 && (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {grupos.map(g => (
+                <span key={g.k} className={`badge ${g.badge || 'b-gray'}`} style={{ fontSize: 9.5 }}>
+                  {g.icono} {g.items.length}
+                </span>
+              ))}
             </div>
-            <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, lineHeight: 1.55 }}>
-              {alertas.map((a, i) => <li key={i}>{a}</li>)}
-            </ul>
+          )}
+        </div>
+
+        {alertas.length === 0 ? (
+          <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+            No se detectaron discrepancias ni observaciones pendientes en la última lectura.
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', margin: '0 0 10px' }}>
+              Subdividido en categorías para revisar ordenadamente antes de armar la propuesta.
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {grupos.map(g => {
+                const abierto = expandidos[g.k] !== false;
+                return (
+                  <div key={g.k} style={{ borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
+                    <button
+                      onClick={() => toggleGrupo(g.k)}
+                      type="button"
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '7px 10px', background: 'var(--bg-c2)', border: 'none', cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, fontWeight: 600 }}>
+                        <span>{g.icono}</span>
+                        <span>{g.titulo}</span>
+                        <span className={`badge ${g.badge || 'b-gray'}`} style={{ fontSize: 9 }}>{g.items.length}</span>
+                      </div>
+                      <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{abierto ? '▲ plegar' : '▼ desplegar'}</span>
+                    </button>
+
+                    {abierto && (
+                      <div style={{ padding: '8px 12px', fontSize: 11, lineHeight: 1.55 }}>
+                        <ul style={{ margin: 0, paddingLeft: 16 }}>
+                          {g.items.map((item, idx) => (
+                            <li key={idx} style={{ marginBottom: 4 }}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
       </div>
@@ -1987,6 +2045,17 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
         catch { /* sin caché se sigue igual */ }
       }
       setSalida(r);
+      // Guardar el análisis COMPLETO en la caché local para que jamás se pierda
+      // si se cierra el modal o la pestaña accidentalmente (tanda 19).
+      if (huella) {
+        try {
+          await guardarCache(huella, {
+            analisis: r,
+            nombre: archivo?.name || null,
+            unidad,
+          });
+        } catch { /* si falla la caché se sigue */ }
+      }
       // Arrancan tildados SOLO los que pasaron la verificación de cita. Lo que
       // no se pudo comprobar se ve, pero no se guarda sin que alguien lo mire.
       setMarcados(new Set((r.filas || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
@@ -2027,6 +2096,54 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
     } finally {
       liberar();
     }
+  };
+
+  /** Restaurar el análisis que ya estaba completado en la caché */
+  const restaurarAnalisis = (analisisPrevio) => {
+    if (!analisisPrevio) return;
+    setSalida(analisisPrevio);
+    setMarcados(new Set((analisisPrevio.filas || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
+    setMarcadosEmp(new Set((analisisPrevio.filasEmpresa || []).map((f, i) => (f.verificada ? i : -1)).filter(i => i >= 0)));
+    if (creando) {
+      const c = analisisPrevio.cabecera || {};
+      setForm({
+        objeto: c.objeto || c.nombre_inversion || '',
+        nomenclatura: c.nomenclatura || '',
+        entidad_convocante: c.entidad_convocante || '',
+        entidad_ruc: c.entidad_ruc || '',
+        nombre_inversion: c.nombre_inversion || '',
+        cui: c.cui || '',
+        mecanismo: c.mecanismo || '',
+        tipo_trabajo: analisisPrevio.sugerencias?.tipo_trabajo || TIPO_PROCESO_DEFAULT,
+        tipoSugerido: analisisPrevio.sugerencias?.tipo_trabajo || null,
+        origen: c.mecanismo === 'privado' ? 'privado' : 'publico',
+        rubro_id: '',
+        valor_referencial: c.valor_referencial ?? '',
+        moneda: c.moneda || 'PEN',
+        monto_ejecucion: c.monto_ejecucion ?? '',
+        monto_supervision: c.monto_supervision ?? '',
+        plazo_ejecucion_dias: c.plazo_ejecucion_dias ?? '',
+        lugar: c.lugar || '',
+        sistema_contratacion: c.sistema_contratacion || '',
+        fecha_presentacion: c.fecha_presentacion || '',
+        definicion_obras_similares: c.definicion_obras_similares || '',
+        consorcio_permitido: c.consorcio_permitido,
+        consorcio_reglas: c.consorcio_reglas || '',
+        postulante_company_id: '',
+      });
+    }
+    setFase('revisar');
+    toast('Análisis previo recuperado al instante desde la memoria local', 'green');
+  };
+
+  /** Protección contra cierres accidentales */
+  const intentarCerrar = () => {
+    if (fase === 'corriendo') {
+      if (!window.confirm('La lectura está en curso en tu navegador. Si sales ahora se interrumpirá el proceso. ¿Seguro que deseas cerrar?')) return;
+    } else if (fase === 'revisar' && salida && !guardando) {
+      if (!window.confirm('Tienes un análisis completado sin guardar en la postulación. Quedará en la memoria local, pero ¿seguro que deseas salir ahora?')) return;
+    }
+    onClose();
   };
 
   /** Reintentar la extracción SIN volver a escanear. */
@@ -2144,7 +2261,12 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
   const puedeGuardar = creando ? (form && form.objeto.trim().length >= 3) : (aGuardar > 0 || (aplicarCabecera && cabecera) || (aplicarCronograma && !licTieneCalendario && cronograma.length));
 
   return (
-    <Modal title={creando ? 'Nueva postulación desde las bases o la convocatoria' : `Analizar las bases · ${lic.objeto || 'postulación'}`} onClose={onClose} size="xl">
+    <Modal
+      title={creando ? 'Nueva postulación desde las bases o la convocatoria' : `Analizar las bases · ${lic.objeto || 'postulación'}`}
+      onClose={intentarCerrar}
+      closeOnOverlay={fase !== 'corriendo' && fase !== 'revisar'}
+      size="xl"
+    >
 
       {/* ── Elegir el archivo ── */}
       {fase === 'elegir' && (
@@ -2167,6 +2289,23 @@ function AnalisisBasesModal({ lic, rubros = [], companies = [], onClose, onAplic
       {/* ── El presupuesto, antes de gastar ── */}
       {fase === 'presupuesto' && presupuesto && (
         <div style={{ padding: '10px 4px' }}>
+          {/* Si ya hay un análisis previo completo en la caché, permitir recuperarlo al instante */}
+          {cacheado?.analisis && (
+            <div className="card card-p" style={{ marginBottom: 12, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.3)', display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 16 }}>⚡</span>
+                  <b style={{ color: 'var(--blue)', fontSize: 12.5 }}>Este documento ya cuenta con un análisis completo en este equipo</b>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 3 }}>
+                  Contiene {cacheado.analisis.filas?.length || 0} puestos, {cacheado.analisis.filasEmpresa?.length || 0} requisitos de empresa y {cacheado.analisis.cronograma?.length || 0} fechas detectadas previamente.
+                </div>
+              </div>
+              <button type="button" className="btn btn-blue btn-sm" onClick={() => restaurarAnalisis(cacheado.analisis)}>
+                ⚡ Restaurar análisis previo (0 s)
+              </button>
+            </div>
+          )}
           {/* ── CON QUÉ SE VA A LEER ──
               Se muestra ANTES de gastar y con su precio. La corrida del 8-set
               terminó atendida en parte por un modelo afinado en SALUD leyendo

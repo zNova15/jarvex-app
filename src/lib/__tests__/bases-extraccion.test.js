@@ -15,6 +15,7 @@ import {
   clave, contarClave, clasificarRegimen, esRenglonDeIndice,
   citaEsPlantilla, camposSinLlenar, SECCIONES,
   agruparRequisitos, aExtrasProceso, extrasNoVerificados, elegirAciertos,
+  esCampoDePostor, subdividirAlertas,
 } from '../bases-extraccion.js';
 import { anexoSePresenta, separarAnexos } from '../documentos-partes.js';
 import { rangosDeFamilia } from '../bases-analisis.js';
@@ -820,3 +821,61 @@ describe('anexoSePresenta — solo los que se llenan y se meten en un sobre', ()
     expect(soloLectura).toHaveLength(1);
   });
 });
+
+describe('camposSinLlenar vs modelos de postor', () => {
+  it('identifica campos a llenar del postor en anexos como no omisiones', () => {
+    expect(esCampoDePostor('[CONSIGNAR NOMBRES Y APELLIDOS]')).toBe(true);
+    expect(esCampoDePostor('[CONSIGNAR DNI]')).toBe(true);
+    expect(esCampoDePostor('[CONSIGNAR CIUDAD Y FECHA]')).toBe(true);
+    expect(esCampoDePostor('[CONSIGNAR FIRMA Y SELLO]')).toBe(true);
+    expect(esCampoDePostor('[CONSIGNAR MONTO DE LA OFERTA]')).toBe(true);
+  });
+
+  it('detecta omisiones reales de la entidad en las bases', () => {
+    expect(esCampoDePostor('[CONSIGNAR VALOR REFERENCIAL]')).toBe(false);
+    expect(esCampoDePostor('[CONSIGNAR PLAZO DE EJECUCION]')).toBe(false);
+    expect(esCampoDePostor('[CONSIGNAR SISTEMA DE CONTRATACION]')).toBe(false);
+  });
+
+  it('camposSinLlenar excluye los modelos de anexo del postor', () => {
+    const md = `
+      El valor referencial es [CONSIGNAR VALOR REFERENCIAL].
+      El plazo es [CONSIGNAR EL PLAZO].
+      Anexo 4: Yo, [CONSIGNAR NOMBRES Y APELLIDOS], con DNI [CONSIGNAR DNI], declaro bajo juramento...
+    `;
+    const vacios = camposSinLlenar(md);
+    expect(vacios).toHaveLength(2);
+    expect(vacios).toContain('[CONSIGNAR VALOR REFERENCIAL]');
+    expect(vacios).toContain('[CONSIGNAR EL PLAZO]');
+    expect(vacios.some(v => v.includes('DNI') || v.includes('APELLIDOS'))).toBe(false);
+  });
+});
+
+describe('subdividirAlertas — clasifica las observaciones en 5 grupos accionables', () => {
+  it('agrupa por discrepancias, consultas, anomalias, requisitos y notas', () => {
+    const alertas = [
+      'Lecturas no coinciden en el valor referencial (PEN 1,200,000 vs PEN 1,500,000)',
+      'La entidad dejo campos sin llenar en la proforma de contrato',
+      'El documento presenta texto en italiano y signos tipográficos rotos',
+      'El requisito de Jefe de Supervisión exige 48 meses de experiencia',
+      'El tramo proporcionado corresponde a un formulario con campos personales del anexo',
+    ];
+    const grupos = subdividirAlertas(alertas);
+    expect(grupos.map(g => g.k)).toEqual(['discrepancias', 'consultas', 'anomalias', 'requisitos', 'notas']);
+    expect(grupos.find(g => g.k === 'discrepancias').items).toHaveLength(1);
+    expect(grupos.find(g => g.k === 'consultas').items).toHaveLength(1);
+    expect(grupos.find(g => g.k === 'anomalias').items).toHaveLength(1);
+    expect(grupos.find(g => g.k === 'requisitos').items).toHaveLength(1);
+    expect(grupos.find(g => g.k === 'notas').items).toHaveLength(1);
+  });
+
+  it('omite categorías vacías', () => {
+    const alertas = [
+      'Lecturas no coinciden en el calendario',
+    ];
+    const grupos = subdividirAlertas(alertas);
+    expect(grupos).toHaveLength(1);
+    expect(grupos[0].k).toBe('discrepancias');
+  });
+});
+

@@ -1141,6 +1141,7 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroMes, setFiltroMes] = uSC('todos');   // 'todos' | 'YYYY-MM' | 'custom'
   const [filtroDesde, setFiltroDesde] = uSC('');
   const [filtroHasta, setFiltroHasta] = uSC('');
+  const [ordenFecha, setOrdenFecha] = uSC('desc'); // 'desc' (más reciente a más antigua) | 'asc' (más antigua a más reciente)
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
@@ -2031,15 +2032,19 @@ function MovimientosContablesPage({ showToast }) {
     } else if (filtroMes !== 'todos') {
       f = f.filter(m => String(m.date || '').slice(0, 7) === filtroMes);
     }
-    // Orden ESTABLE: por fecha desc, y dentro de la misma fecha por número de
+    // Orden ESTABLE: por fecha (ascendente o descendente según ordenFecha), y dentro de la misma fecha por número de
     // comprobante (natural) y luego created_at. Sin el desempate, las facturas de
     // un mismo día quedaban en orden de `id` (aleatorio tras un resync) → la
     // contadora las veía "desordenadas".
-    return f.sort((a,b) =>
-      (b.date||'').localeCompare(a.date||'')
-      || cmpComprobante(a.document_number, b.document_number)
-      || (a.created_at||'').localeCompare(b.created_at||''));
-  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion, hayDosLibros, libroObra, librosObra, empresaBloqueadaPorLibro]);
+    return f.sort((a,b) => {
+      const cmpFecha = ordenFecha === 'asc'
+        ? (a.date||'').localeCompare(b.date||'')
+        : (b.date||'').localeCompare(a.date||'');
+      return cmpFecha
+        || cmpComprobante(a.document_number, b.document_number)
+        || (a.created_at||'').localeCompare(b.created_at||'');
+    });
+  }, [movs, filtroObraSel, filtroEmpresaSel, filtroClase, filtroTipo, filtroEstado, filtroEmisor, filtroReceptor, nombreCompanyDe, busqueda, filtroBanc, filtroTipoDoc, guiasPorMov, filtroMes, filtroDesde, filtroHasta, ordenFecha, bancarizacionPorMov, partesPorMov, depositosById, enObra, incluirTitularSinObra, titularObraId, reflejoActual, verOtroLado, soloCruces, cruceImputacion, hayDosLibros, libroObra, librosObra, empresaBloqueadaPorLibro]);
 
   // Paginación: tabla puede tener miles de movimientos contables.
   const movPg = usePagination(filtered, 100);
@@ -2053,7 +2058,7 @@ function MovimientosContablesPage({ showToast }) {
     || (!empresaFija && filtroEmpresaSel !== 'todas')
     || filtroClase !== 'todos' || filtroTipo !== 'todos' || filtroEstado !== 'todos'
     || filtroEmisor !== 'todos' || filtroReceptor !== 'todos' || filtroMes !== 'todos'
-    || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos' || soloCruces;
+    || filtroTipoDoc !== 'todos' || filtroBanc !== 'todos' || soloCruces || ordenFecha !== 'desc';
   const limpiarFiltros = () => {
     setBusqueda(''); setFiltroEmpresaSel('todas');
     if (!enObra) setFiltroObraSel('todas');   // dentro de una obra, la obra es el ámbito, no un filtro
@@ -2061,6 +2066,7 @@ function MovimientosContablesPage({ showToast }) {
     setFiltroEmisor('todos'); setFiltroReceptor('todos');
     setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
     setFiltroTipoDoc('todos'); setFiltroBanc('todos'); setSoloCruces(false);
+    setOrdenFecha('desc');
   };
   // Los MISMOS labels del modal "Tipo documento" (no inventar tipos: el CHECK
   // de la mig 021 define el universo; null se muestra/filtra como 'otro').
@@ -3119,6 +3125,14 @@ function MovimientosContablesPage({ showToast }) {
             )}
           </div>
           <div>
+            <label className="flabel">Orden de fecha</label>
+            <select className="fi" value={ordenFecha} onChange={e=>setOrdenFecha(e.target.value)} style={{ width:'100%' }}
+              title="Ordenar por fecha del comprobante">
+              <option value="desc">⬇ Más reciente a más antigua</option>
+              <option value="asc">⬆ Más antigua a más reciente</option>
+            </select>
+          </div>
+          <div>
             <label className="flabel">Compra / Venta</label>
             <select className="fi" value={filtroClase} onChange={e=>setFiltroClase(e.target.value)} style={{ width:'100%' }} title="Compras (a proveedoras) vs Ventas (emitidas a la ejecutora)">
               <option value="todos">Compras y ventas</option>
@@ -3337,7 +3351,11 @@ function MovimientosContablesPage({ showToast }) {
           <div style={{ overflowX:'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Fecha</th><th>Empresa</th><th>Tipo</th>
+                <th style={{ cursor:'pointer', userSelect:'none', whiteSpace:'nowrap' }}
+                  onClick={() => setOrdenFecha(o => o === 'asc' ? 'desc' : 'asc')}
+                  title={`Click para ordenar: ${ordenFecha === 'asc' ? 'cambiar a más reciente' : 'cambiar a más antigua'}`}>
+                  Fecha {ordenFecha === 'asc' ? '▲' : '▼'}
+                </th><th>Empresa</th><th>Tipo</th>
                 <th>Descripción</th><th>Cliente / Proveedor</th><th>Doc.</th>
                 <th style={{ textAlign:'right' }}>Monto</th><th>Estado</th>
                 <th style={{ textAlign:'center' }}>Acciones</th>

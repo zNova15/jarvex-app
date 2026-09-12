@@ -84,7 +84,15 @@ export async function guardarCache(huella, datos) {
     const db = await abrir();
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put({ huella, guardadoEn: Date.now(), ...datos });
+      const store = tx.objectStore(STORE);
+      const getReq = store.get(huella);
+      getReq.onsuccess = () => {
+        const previo = getReq.result || {};
+        store.put({ huella, ...previo, guardadoEn: Date.now(), ...datos });
+      };
+      getReq.onerror = () => {
+        store.put({ huella, guardadoEn: Date.now(), ...datos });
+      };
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
