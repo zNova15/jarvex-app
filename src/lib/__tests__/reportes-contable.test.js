@@ -23,11 +23,12 @@ const pagos = [
 const base = { movimientos, bancarizadoSet, pagos, companiesById, obrasById, from: '2026-07-06', to: '2026-07-12', topN: 10 };
 
 describe('faltaBancarizacion', () => {
-  it('solo PEN > 2000 sin evidencia', () => {
+  it('PEN >= 2000 o USD >= 500 sin evidencia (D.L. 1529)', () => {
     expect(faltaBancarizacion({ id: 'f3', currency: 'PEN', amount: 3000 }, bancarizadoSet)).toBe(true);
     expect(faltaBancarizacion({ id: 'f1', currency: 'PEN', amount: 5000 }, bancarizadoSet)).toBe(false); // ya bancarizado
-    expect(faltaBancarizacion({ id: 'x', currency: 'PEN', amount: 1500 }, bancarizadoSet)).toBe(false); // ≤2000
-    expect(faltaBancarizacion({ id: 'x', currency: 'USD', amount: 9000 }, bancarizadoSet)).toBe(false); // no PEN
+    expect(faltaBancarizacion({ id: 'x', currency: 'PEN', amount: 1500 }, bancarizadoSet)).toBe(false); // <2000
+    expect(faltaBancarizacion({ id: 'u1', currency: 'USD', amount: 9000 }, bancarizadoSet)).toBe(true); // USD >= 500
+    expect(faltaBancarizacion({ id: 'u2', currency: 'USD', amount: 300 }, bancarizadoSet)).toBe(false); // USD < 500
   });
 });
 

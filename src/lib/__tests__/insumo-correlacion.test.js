@@ -90,4 +90,10 @@ describe('sugerirPares', () => {
     expect(s.map(p => parClave(p.nombre_a, p.nombre_b)))
       .not.toContain(parClave('cemento sol tipo i', 'cemento sol tipo i x 42 5kg'));
   });
+  it('sugiere pares cruzados entre insumos de compra y de venta con descripciones similares', () => {
+    const listaCruzada = ['Fierro Corrugado 1/2 pulg', 'Fierro Corrugado de 1/2'];
+    const s = sugerirPares(listaCruzada, new Map(), new Map());
+    expect(s.length).toBe(1);
+    expect(s[0].nombre_a).toBe(normInsumo(listaCruzada[0]));
+  });
 });

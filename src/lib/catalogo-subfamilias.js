@@ -51,21 +51,25 @@ import { normMapeo, familiaDe, FAMILIAS } from './mapeo-insumos.js';
 export const SUBFAMILIAS = [
   // ── Servicios ────────────────────────────────────────────────────
   { slug: 'servicio_salud', label: 'Exámenes y salud ocupacional', familias: ['servicios'],
-    re: /\b(examen(es)? medicos?|medicos? ocupacional(es)?|preocupacional(es)?|primeros auxilios)\b/ },
+    re: /\b(examen(es)? medicos?|medicos? ocupacional(es)?|preocupacional(es)?|primeros auxilios|ssoma|salud ocupacional|seguridad ocupacional|prevencionista)\b/ },
   { slug: 'servicio_capacitacion', label: 'Capacitación y simulacros', familias: ['servicios'],
     re: /\b(capacitaci(on|ones)|charlas?|simulacros?|induccion|entrenamiento|manuales|publicaciones)\b/ },
   { slug: 'servicio_monitoreo', label: 'Monitoreos, ensayos y planes', familias: ['servicios'],
     re: /\b(monitoreos?|muestreos?|ensayos?|certificad|plan de (monitoreo|seguridad|manejo)|estudios?)\b/ },
-  { slug: 'servicio_alquiler', label: 'Alquileres', familias: ['servicios'],
+  { slug: 'servicio_asesoria', label: 'Asesorías, consultorías y peritajes', familias: ['servicios'],
+    re: /\b(asesori(a|as)|consultori(a|as)|consultor(es)?|peritaje(s)?|expediente(s)? tecnicos?|auditori(a|as)|estudios? tecnicos?)\b/ },
+  { slug: 'servicio_subcontrato', label: 'Subcontratos y servicios especializados', familias: ['servicios'],
+    re: /\b(subcontrat(o|os)|servicio especializado|encofrado|vaciado|movimiento de tierras?|instalacion(es)? especializadas?)\b/ },
+  { slug: 'servicio_alquiler', label: 'Alquiler de maquinaria y equipos', familias: ['servicios', 'equipos_herramientas'],
     re: /\b(alquiler(es)?|arrendamiento)\b/ },
-  { slug: 'servicio_transporte', label: 'Transporte y fletes', familias: ['servicios'],
-    re: /\b(transportes?|fletes?|acarreos?|pasajes?)\b/ },
+  { slug: 'servicio_transporte', label: 'Transporte, fletes y acarreos', familias: ['servicios'],
+    re: /\b(transportes?|fletes?|acarreos?|pasajes?|traslados?)\b/ },
   { slug: 'servicio_personal', label: 'Personal y honorarios', familias: ['servicios'],
     re: /\b(chofer(es)?|operarios?|peon(es)?|capataz|topografos?|arqueolog|especialistas?|honorarios?|jornal(es)?|licenciado|gastos operativos)\b/ },
   { slug: 'servicio_mantenimiento', label: 'Mantenimiento y limpieza', familias: ['servicios'],
     re: /\b(mantenimientos?|reparacion(es)?|limpieza|acondicionamiento)\b/ },
-  { slug: 'servicio_alimentacion', label: 'Alimentación del personal', familias: ['servicios', 'administrativos'],
-    re: /\b(alimentacion|refrigerios?|almuerzos?|desayunos?)\b/ },
+  { slug: 'servicio_alimentacion', label: 'Alimentación y hospedaje', familias: ['servicios', 'administrativos'],
+    re: /\b(alimentacion|refrigerios?|almuerzos?|desayunos?|hospedaje(s)?|alojamiento(s)?)\b/ },
 
   // ── Seguridad: primero lo médico/emergencia, después el EPP ──────
   { slug: 'seguridad_emergencia', label: 'Emergencia y primeros auxilios', familias: ['seguridad'],
@@ -187,6 +191,16 @@ function subfamiliaPorTexto(norm, permitidas = null) {
 }
 
 /**
+ * Limpia prefijos comerciales típicos de comprobantes de servicios:
+ * «Por la compra del servicio de...», «Por el servicio de...», etc.
+ */
+export function limpiarPrefijoServicio(txt) {
+  return String(txt || '')
+    .replace(/^(\s*(por\s+(la\s+compra\s+del?|la\s+contratacion\s+del?|el\s+servicio\s+de|concepto\s+de|servicio\s+de|servicio\s+por)|servicio\s+de)\s+)+/i, '')
+    .trim();
+}
+
+/**
  * Propone la subfamilia de un insumo y, si corresponde, moverlo de familia.
  *
  * 🔴 EL ORDEN ES LA REGLA QUE EVITA EL RUIDO:
@@ -203,7 +217,8 @@ function subfamiliaPorTexto(norm, permitidas = null) {
  * @returns {{ subfamilia, label, familiaSugerida, motivo }|null}
  */
 export function sugerirSubfamilia(nombre, familia) {
-  const norm = normMapeo(nombre);
+  const limpio = limpiarPrefijoServicio(nombre);
+  const norm = normMapeo(limpio) || normMapeo(nombre);
   if (!norm) return null;
   const permitidas = new Set(subfamiliasDe(familia));
 

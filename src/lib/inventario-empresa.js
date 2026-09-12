@@ -21,6 +21,7 @@
 //    viven en almacén por obra. La UI tiene que decirlo.
 // ═══════════════════════════════════════════════════════════════════
 import { claveGrupoDe, normInsumo } from './insumo-correlacion.js';
+import { convertirMoneda } from './tipo-cambio.js';
 
 // ── Clasificador de línea por texto (Tanda 3) ─────────────────────────
 // Capa determinista de override: si la descripción del ítem coincide con
@@ -221,8 +222,10 @@ export function resumenFinancieroEmpresa(movs, opts = {}) {
 // ── Inventario comprado (y revendido) por insumo ─────────────────────
 const nuevoLado = () => ({
   veces: 0, interco: 0,
+  anticiposCount: 0,
   porUnidad: new Map(),      // unidad canónica → cantidad
   porMoneda: new Map(),      // moneda → monto
+  anticiposPorMoneda: new Map(),
   proveedores: new Map(),    // clave → {id, nombre, veces}
   ultimaFecha: '', ultimoPrecio: null, ultimaMoneda: null, ultimoProveedor: null,
 });
@@ -230,10 +233,17 @@ const nuevoLado = () => ({
 const acumular = (lado, l) => {
   lado.veces++;
   if (l.interco) lado.interco++;
+  const esAnticipo = l.tipoInsumo === 'anticipo' || clasificarLineaPorTexto(l.nombre) === 'anticipo';
+  if (esAnticipo) lado.anticiposCount++;
   const u = normUnidad(l.unidad) || 'und';
   lado.porUnidad.set(u, (lado.porUnidad.get(u) || 0) + l.cantidad);
   const monto = l.precio * l.cantidad;
-  if (monto) lado.porMoneda.set(l.moneda, (lado.porMoneda.get(l.moneda) || 0) + monto);
+  if (monto) {
+    lado.porMoneda.set(l.moneda, (lado.porMoneda.get(l.moneda) || 0) + monto);
+    if (esAnticipo) {
+      lado.anticiposPorMoneda.set(l.moneda, (lado.anticiposPorMoneda.get(l.moneda) || 0) + monto);
+    }
+  }
   const pk = l.proveedorId || `s/n:${l.proveedorNombre || '¿?'}`;
   if (!lado.proveedores.has(pk)) {
     lado.proveedores.set(pk, { id: l.proveedorId, nombre: l.proveedorNombre || '(sin nombre)', veces: 0 });
@@ -250,6 +260,10 @@ const acumular = (lado, l) => {
 const cerrarLado = (lado) => ({
   veces: lado.veces,
   interco: lado.interco,
+  anticiposCount: lado.anticiposCount || 0,
+  anticiposMontos: [...(lado.anticiposPorMoneda?.entries() || [])]
+    .map(([moneda, monto]) => ({ moneda, monto }))
+    .sort((a, b) => b.monto - a.monto),
   cantidades: [...lado.porUnidad.entries()]
     .map(([unidad, cantidad]) => ({ unidad, label: labelUnidad(unidad), cantidad }))
     .sort((a, b) => b.cantidad - a.cantidad),
@@ -278,7 +292,8 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   const porInsumo = new Map();
   const totales = {
     insumos: 0, lineasCompra: 0, lineasVenta: 0, lineasSinPrecio: 0,
-    lineasNota: 0, gastos: new Map(), ingresos: new Map(),
+    lineasNota: 0, lineasAnticipo: 0, gastos: new Map(), ingresos: new Map(),
+    anticipos: new Map(),
   };
 
   for (const l of (lineas || [])) {
@@ -315,6 +330,11 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     // tipo original del ítem (asignado en Captura Mágica).
     const tipoEfectivo = clasificarLineaPorTexto(l.nombre) || l.tipoInsumo;
     if (tipoEfectivo) ins.tipos.add(tipoEfectivo);
+    if (tipoEfectivo === 'anticipo') {
+      totales.lineasAnticipo++;
+      const mAnt = l.precio * l.cantidad;
+      if (mAnt) totales.anticipos.set(l.moneda, (totales.anticipos.get(l.moneda) || 0) + mAnt);
+    }
     ins.lineas.push(l);
     if (l.precio <= 0) totales.lineasSinPrecio++;
 
@@ -353,14 +373,37 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       const v = venta.cantidades.find(x => x.unidad === unidad);
       return { unidad, label: labelUnidad(unidad), cantidad: (c ? c.cantidad : 0) - (v ? v.cantidad : 0) };
     });
+
+    // Total comprado en PEN (equivalente)
+    const totalCompraPen = compra.montos.reduce((tot, m) => {
+      return tot + (m.moneda === 'PEN' ? m.monto : convertirMoneda({ monto: m.monto, monedaOrigen: m.moneda, monedaDestino: 'PEN' }));
+    }, 0);
+    // Total vendido en PEN (equivalente)
+    const totalVentaPen = venta.montos.reduce((tot, m) => {
+      return tot + (m.moneda === 'PEN' ? m.monto : convertirMoneda({ monto: m.monto, monedaOrigen: m.moneda, monedaDestino: 'PEN' }));
+    }, 0);
+
+    const tieneVentas = venta.veces > 0;
+    const tieneCompras = compra.veces > 0;
+    // Margen económico: solo cuando hubo compras y ventas, para no falsear margen
+    const margenEconomicoPen = tieneVentas && tieneCompras ? totalVentaPen - totalCompraPen : null;
+    const margenPct = tieneVentas && totalVentaPen > 0 && tieneCompras
+      ? ((totalVentaPen - totalCompraPen) / totalVentaPen) * 100
+      : null;
+
     return {
       clave: ins.clave,
       display: ins.display,
       variantes: [...ins.variantes].sort(),
       tipos: [...ins.tipos].sort(),
+      esAnticipo: ins.tipos.has('anticipo'),
       comprado: compra,
       vendido: venta,
       saldo,
+      totalCompraPen,
+      totalVentaPen,
+      margenEconomicoPen,
+      margenPct,
       recepcion: ins.recepcion,
       lineas: ins.lineas.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)),
       // Solo para ORDENAR: el mayor gasto en UNA moneda (no se suman monedas).
@@ -375,8 +418,30 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       ...totales,
       gastos: [...totales.gastos.entries()].map(([moneda, monto]) => ({ moneda, monto })).sort((a, b) => b.monto - a.monto),
       ingresos: [...totales.ingresos.entries()].map(([moneda, monto]) => ({ moneda, monto })).sort((a, b) => b.monto - a.monto),
+      anticipos: [...totales.anticipos.entries()].map(([moneda, monto]) => ({ moneda, monto })).sort((a, b) => b.monto - a.monto),
     },
   };
+}
+
+/**
+ * Filtra insumos según su flujo de movimiento:
+ *  - 'todos': todos
+ *  - 'solo_compras': tienen compras registradas pero ninguna venta
+ *  - 'solo_ventas': tienen ventas registradas pero ninguna compra
+ *  - 'ambos': tienen tanto compras como ventas registradas
+ */
+export function filtrarPorFlujo(insumos = [], flujo = 'todos') {
+  if (!flujo || flujo === 'todos') return insumos || [];
+  if (flujo === 'solo_compras') {
+    return (insumos || []).filter(i => (i.comprado?.veces > 0) && (!i.vendido || i.vendido.veces === 0));
+  }
+  if (flujo === 'solo_ventas') {
+    return (insumos || []).filter(i => (i.vendido?.veces > 0) && (!i.comprado || i.comprado.veces === 0));
+  }
+  if (flujo === 'ambos') {
+    return (insumos || []).filter(i => (i.comprado?.veces > 0) && (i.vendido?.veces > 0));
+  }
+  return insumos || [];
 }
 
 /**

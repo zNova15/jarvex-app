@@ -23,7 +23,7 @@ import { getCurrentMode } from './app-mode-core.js';
 
 export const CATEGORIAS_ITEM = [
   'materiales', 'herramientas', 'maquinaria', 'epp',
-  'insumos_emergencia', 'gastos_generales', 'otros',
+  'insumos_emergencia', 'gastos_generales', 'servicios', 'anticipo', 'otros',
 ];
 export const CATEGORIA_ITEM_LABEL = {
   materiales: 'Materiales',
@@ -32,6 +32,8 @@ export const CATEGORIA_ITEM_LABEL = {
   epp: 'EPP',
   insumos_emergencia: 'Emergencia',
   gastos_generales: 'Gastos generales',
+  servicios: 'Servicios',
+  anticipo: 'Anticipos',
   otros: 'Otros',
 };
 

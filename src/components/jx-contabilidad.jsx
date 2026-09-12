@@ -38,6 +38,7 @@ import { notasPorFactura } from "../lib/notas-credito.js";
 import { ventasSinEspejo, datosDelEspejo } from "../lib/interco-espejo.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { requiereBancarizacion } from "../lib/tipo-cambio.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
@@ -1837,7 +1838,7 @@ function MovimientosContablesPage({ showToast }) {
   };
   const faltaBancarizacion = (m) => {
     if (!puedeVerBanc) return false;
-    if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
+    if (!requiereBancarizacion(m.amount, m.currency, m.tipo_cambio, m.date)) return false;
     if (bancarizadoDirecto(m)) return false;
     // La contraparte interco ya la tiene → esta pata está cubierta.
     return !parIntercoBancarizado(m);
@@ -3346,7 +3347,7 @@ function MovimientosContablesPage({ showToast }) {
             {pend.length ? (
               <>
                 <span style={{ fontSize:13, color:'var(--amber)', fontWeight:600 }}>
-                  {pend.length} movimiento{pend.length>1?'s':''} de más de S/2000 sin bancarización
+                  {pend.length} movimiento{pend.length>1?'s':''} de más de S/ 2,000 o US$ 500 sin bancarización
                 </span>
                 <span style={{ fontSize:11, color:'var(--tm)' }}>Subí el voucher/constancia desde el botón “Subir” de cada fila — no hace falta editar.</span>
               </>

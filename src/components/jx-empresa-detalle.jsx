@@ -43,12 +43,15 @@ import {
 } from "../lib/desglose-empresa.js";
 import { setEmpresaActivaId, limpiarEmpresaActiva } from "../lib/empresa-activa.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { db } from "../db/jarvex.db";
 import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
-import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
+import { resolverPares, construirGrupos, normInsumo } from "../lib/insumo-correlacion.js";
 import {
-  inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario,
+  inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario, filtrarPorFlujo,
   saldosNegativos, tieneSaldoNegativo, aniosDeLineas,
 } from "../lib/inventario-empresa.js";
+import { aprenderClasificacion } from "../lib/clasificar-items.js";
+import { decidir } from "../lib/bandeja-categorizacion-db.js";
 import { sociosDeObra } from "../lib/consorcio.js";
 import { TIPO_LBL as TRABAJO_TIPO_LBL, ESTADO_LBL as TRABAJO_ESTADO_LBL, ESTADO_BADGE as TRABAJO_ESTADO_BADGE, esAbierto as trabajoAbierto } from "../lib/trabajos.js";
 import { TIPOS_TRABAJO, TIPO_TRABAJO_DEFAULT, normalizarEstadoObra, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE } from "../lib/tipos-trabajo.js";
@@ -278,11 +281,71 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // scrolleando.
   const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
   const [soloNegativos, setSoloNegativos] = uSD(false);
+  const [flujoFiltro, setFlujoFiltro] = uSD('todos');
+  const [modalCategorizar, setModalCategorizar] = uSD(null);
+
   const filtrados = uMD(() => {
     const porTexto = filtrarInventario(inv.insumos, busca);
     const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
-    return soloNegativos ? porTipo.filter(tieneSaldoNegativo) : porTipo;
-  }, [inv, busca, tipoFiltro, soloNegativos]);
+    const porFlujo = filtrarPorFlujo(porTipo, flujoFiltro);
+    return soloNegativos ? porFlujo.filter(tieneSaldoNegativo) : porFlujo;
+  }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos]);
+
+  const guardarRecategorizacion = async (insumo, cat, subcat) => {
+    const showToast = window.__showToast || (() => {});
+    try {
+      const database = window.__db || db;
+      if (database?.accounting_movements && Array.isArray(insumo.lineas)) {
+        for (const l of insumo.lineas) {
+          if (!l.movId) continue;
+          try {
+            const mv = await database.accounting_movements.get(l.movId);
+            if (mv) {
+              let notas = mv.notas;
+              if (typeof notas === 'string') {
+                try { notas = JSON.parse(notas); } catch { notas = {}; }
+              }
+              if (notas && Array.isArray(notas.items_factura) && notas.items_factura[l.itemIdx]) {
+                notas.items_factura[l.itemIdx].tipo_insumo = cat;
+                notas.items_factura[l.itemIdx].categoria = cat;
+                if (subcat) notas.items_factura[l.itemIdx].subcategoria = subcat;
+                await database.accounting_movements.update(mv.id, {
+                  notas: JSON.stringify(notas),
+                  updated_at: new Date().toISOString(),
+                });
+              }
+            }
+          } catch (e) {
+            console.warn('Error actualizando comprobante:', e);
+          }
+        }
+      }
+      try {
+        await aprenderClasificacion({
+          descripcion: insumo.display,
+          categoria: cat,
+          subcategoria: subcat,
+          fuente: 'manual',
+          userId: window.__currentUser?.id,
+        });
+        await decidir({
+          norm: normInsumo(insumo.display),
+          muestra: insumo.display,
+          decision: 'catalogo',
+          familia: cat,
+          subfamilia: subcat || null,
+          company_id: company?.id || null,
+          fuente: 'manual',
+        });
+      } catch (e) {
+        console.warn('Error aprendiendo clasificación:', e);
+      }
+      showToast('✓ Categoría actualizada y recordada en el catálogo', 'green');
+    } catch (err) {
+      console.error(err);
+      showToast('Error al guardar categoría', 'red');
+    }
+  };
 
   const verNegativos = () => {
     setBusca('');
@@ -599,6 +662,24 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
             className="fi" style={{ flex: 1, minWidth: 180 }}
             placeholder="Buscar insumo (sin tildes, busca también las variantes de nombre)"
             value={busca} onChange={e => { setBusca(e.target.value); setTope(PASO_LISTA); }} />
+          <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--tm)', marginRight: 2 }}>Flujo:</span>
+            {[
+              { id: 'todos', lbl: 'Todos' },
+              { id: 'solo_compras', lbl: 'Solo compras' },
+              { id: 'solo_ventas', lbl: 'Solo ventas' },
+              { id: 'ambos', lbl: 'Compra y venta' },
+            ].map(f => (
+              <button
+                key={f.id}
+                type="button"
+                className={`btn btn-xs ${flujoFiltro === f.id ? 'btn-blue' : 'btn-ghost'}`}
+                onClick={() => { setFlujoFiltro(f.id); setTope(PASO_LISTA); }}
+              >
+                {f.lbl}
+              </button>
+            ))}
+          </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             <button className={`btn btn-xs ${tipoFiltro === '' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTipoFiltro('')}>Todos</button>
             {tiposPresentes.map(t => (
@@ -697,12 +778,12 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <div style={{ overflowX: 'auto' }}>
             <table className="tbl">
               <thead><tr>
-                <th>Insumo</th>
-                <th style={{ textAlign: 'right' }}>Comprado</th>
-                <th style={{ textAlign: 'right' }}>Gasto</th>
-                <th style={{ textAlign: 'right' }}>Vendido</th>
-                <th style={{ textAlign: 'right' }}>Saldo</th>
-                <th>Última compra</th>
+                <th>Insumo / Categoría</th>
+                <th style={{ textAlign: 'right' }}>Compras</th>
+                <th style={{ textAlign: 'right' }}>Ventas</th>
+                <th style={{ textAlign: 'right' }}>Saldo físico</th>
+                <th style={{ textAlign: 'right' }}>Margen econ.</th>
+                <th>Última operación</th>
                 <th style={{ textAlign: 'center' }}>Facturas</th>
               </tr></thead>
               <tbody>
@@ -712,14 +793,35 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                     <React.Fragment key={ins.clave}>
                       <tr>
                         <td className="col-p">
-                          <strong>{ins.display}</strong>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                            <strong>{ins.display}</strong>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs"
+                              style={{ fontSize: 10, padding: '1px 5px', color: 'var(--blue)', whiteSpace: 'nowrap' }}
+                              title="Re-categorizar este insumo y guardar en catálogo"
+                              onClick={() => setModalCategorizar({
+                                insumo: ins,
+                                categoria: (ins.tipos && ins.tipos[0]) || 'materiales',
+                                subcategoria: '',
+                                guardando: false,
+                              })}
+                            >
+                              🏷 Categorizar
+                            </button>
+                          </div>
                           <div style={{ marginTop: 2, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                             {ins.tipos.map(t => (
                               <span key={t} className={`badge ${TIPO_BADGE[t] || 'b-gray'}`} style={{ fontSize: 9 }}>{t}</span>
                             ))}
+                            {ins.esAnticipo && (
+                              <span className="badge b-purple" style={{ fontSize: 9 }} title="Este ítem es un anticipo a proveedores / contratistas (activo exigible)">
+                                anticipo
+                              </span>
+                            )}
                             {ins.variantes.length > 1 && (
                               <span style={{ fontSize: 10, color: 'var(--tm)' }} title={ins.variantes.join('\n')}>
-                                {ins.variantes.length} variantes de nombre
+                                {ins.variantes.length} variantes
                               </span>
                             )}
                             {ins.recepcion.conDato > 0 && (
@@ -735,13 +837,13 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                           </div>
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
-                          {/* Un insumo puede aparecer SOLO vendido (lo facturó sin
-                              tener la compra cargada acá): mostrar "0 compras"
-                              confundiría — va un guión. */}
                           {ins.comprado.veces === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : (<>
                             {ins.comprado.cantidades.map(c => (
                               <div key={c.unidad}>{fmtCant(c.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{c.label}</span></div>
                             ))}
+                            <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ts)' }}>
+                              {fmtMonto(ins.totalCompraPen, 'PEN')}
+                            </div>
                             <div style={{ fontSize: 10, color: 'var(--tm)' }}>
                               {ins.comprado.veces} compra{ins.comprado.veces !== 1 ? 's' : ''}
                               {ins.comprado.interco > 0 ? ` · ${ins.comprado.interco} interco` : ''}
@@ -749,37 +851,69 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                           </>)}
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
-                          {ins.comprado.montos.length === 0
-                            ? <span style={{ color: 'var(--tm)' }}>—</span>
-                            : ins.comprado.montos.map(m => <div key={m.moneda}>{fmtMonto(m.monto, m.moneda)}</div>)}
-                        </td>
-                        <td style={{ textAlign: 'right' }} className="col-num">
-                          {ins.vendido.veces === 0
-                            ? <span style={{ color: 'var(--tm)' }}>—</span>
-                            : (<>
-                              {ins.vendido.cantidades.map(c => (
-                                <div key={c.unidad}>{fmtCant(c.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{c.label}</span></div>
-                              ))}
-                              {ins.vendido.montos.map(m => (
-                                <div key={m.moneda} style={{ fontSize: 10, color: 'var(--green)' }}>{fmtMonto(m.monto, m.moneda)}</div>
-                              ))}
-                            </>)}
+                          {ins.vendido.veces === 0 ? <span style={{ color: 'var(--tm)' }}>—</span> : (<>
+                            {ins.vendido.cantidades.map(c => (
+                              <div key={c.unidad}>{fmtCant(c.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{c.label}</span></div>
+                            ))}
+                            <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--green)' }}>
+                              {fmtMonto(ins.totalVentaPen, 'PEN')}
+                            </div>
+                            <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                              {ins.vendido.veces} venta{ins.vendido.veces !== 1 ? 's' : ''}
+                              {ins.vendido.interco > 0 ? ` · ${ins.vendido.interco} interco` : ''}
+                            </div>
+                          </>)}
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
                           {ins.saldo.length === 0
-                            ? <span style={{ color: 'var(--tm)' }} title="Esta empresa no vendió este insumo: el saldo sería la columna Comprado repetida">—</span>
+                            ? <span style={{ color: 'var(--tm)' }} title="Esta empresa no vendió este insumo: el saldo físico coincide con lo comprado">—</span>
                             : ins.saldo.map(s => (
-                              <div key={s.unidad} style={{ color: s.cantidad < 0 ? 'var(--red)' : 'var(--ts)' }}>
+                              <div key={s.unidad} style={{ color: s.cantidad < 0 ? 'var(--red)' : 'var(--ts)', fontWeight: s.cantidad < 0 ? 600 : 400 }}>
                                 {fmtCant(s.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{s.label}</span>
                               </div>
                             ))}
                         </td>
-                        <td style={{ fontSize: 11.5 }}>
-                          <div>{fmtFecha(ins.comprado.ultimaFecha)}</div>
-                          {ins.comprado.ultimoPrecio != null && (
-                            <div style={{ color: 'var(--tm)', fontSize: 10.5 }}>
-                              {fmtMonto(ins.comprado.ultimoPrecio, ins.comprado.ultimaMoneda || 'PEN')} · {ins.comprado.ultimoProveedor || 's/ proveedor'}
+                        <td style={{ textAlign: 'right' }} className="col-num">
+                          {ins.margenEconomicoPen != null ? (
+                            <>
+                              <div style={{ fontWeight: 600, fontSize: 11.5, color: ins.margenEconomicoPen >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                {ins.margenEconomicoPen >= 0 ? '+' : ''}{fmtMonto(ins.margenEconomicoPen, 'PEN')}
+                              </div>
+                              {ins.margenPct != null && (
+                                <div style={{ fontSize: 10, fontWeight: 500, color: ins.margenPct >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                  {ins.margenPct >= 0 ? '+' : ''}{ins.margenPct.toFixed(1)}%
+                                </div>
+                              )}
+                            </>
+                          ) : ins.comprado.veces > 0 && ins.vendido.veces === 0 ? (
+                            <span style={{ fontSize: 10.5, color: 'var(--tm)' }} title="Insumo solo comprado">Solo compra</span>
+                          ) : ins.vendido.veces > 0 && ins.comprado.veces === 0 ? (
+                            <span style={{ fontSize: 10.5, color: 'var(--amber)' }} title="Insumo facturado sin compra registrada">Solo venta</span>
+                          ) : (
+                            <span style={{ color: 'var(--tm)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 11 }}>
+                          {ins.comprado.ultimaFecha ? (
+                            <div>
+                              <div>{fmtFecha(ins.comprado.ultimaFecha)} <span style={{ color: 'var(--tm)', fontSize: 10 }}>compra</span></div>
+                              {ins.comprado.ultimoPrecio != null && (
+                                <div style={{ color: 'var(--tm)', fontSize: 10 }}>
+                                  {fmtMonto(ins.comprado.ultimoPrecio, ins.comprado.ultimaMoneda || 'PEN')} · {ins.comprado.ultimoProveedor || 's/ prov.'}
+                                </div>
+                              )}
                             </div>
+                          ) : ins.vendido.ultimaFecha ? (
+                            <div>
+                              <div>{fmtFecha(ins.vendido.ultimaFecha)} <span style={{ color: 'var(--green)', fontSize: 10 }}>venta</span></div>
+                              {ins.vendido.ultimoPrecio != null && (
+                                <div style={{ color: 'var(--tm)', fontSize: 10 }}>
+                                  {fmtMonto(ins.vendido.ultimoPrecio, ins.vendido.ultimaMoneda || 'PEN')} · {ins.vendido.ultimoCliente || 's/ cliente'}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--tm)' }}>—</span>
                           )}
                         </td>
                         <td style={{ textAlign: 'center' }}>
@@ -839,6 +973,74 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {modalCategorizar && (
+          <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+            <div className="card" style={{ width: '100%', maxWidth: 440, padding: 20, background: 'var(--bg-card, #fff)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Categorizar Insumo</h4>
+                <button className="btn btn-ghost btn-xs" onClick={() => setModalCategorizar(null)}>✕</button>
+              </div>
+              <div style={{ fontSize: 12, marginBottom: 12, padding: 8, background: 'var(--tint-neutral)', borderRadius: 6 }}>
+                <strong>Insumo:</strong> {modalCategorizar.insumo.display}
+                {modalCategorizar.insumo.variantes?.length > 1 && (
+                  <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
+                    Aplica a {modalCategorizar.insumo.variantes.length} variantes de nombre
+                  </div>
+                )}
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Categoría principal:</label>
+                <select
+                  className="fi" style={{ width: '100%' }}
+                  value={modalCategorizar.categoria}
+                  onChange={e => setModalCategorizar({ ...modalCategorizar, categoria: e.target.value })}
+                >
+                  <option value="materiales">Materiales de construcción</option>
+                  <option value="servicios">Servicios (alquiler, fletes, consultoría...)</option>
+                  <option value="herramientas">Herramientas</option>
+                  <option value="maquinaria">Maquinaria y equipos</option>
+                  <option value="epp">EPP e Implementos de Seguridad</option>
+                  <option value="anticipo">Anticipos a proveedores / contratistas</option>
+                  <option value="gastos_generales">Gastos generales</option>
+                  <option value="otros">Otros</option>
+                </select>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Subcategoría / Subfamilia (opcional):</label>
+                <input
+                  className="fi" style={{ width: '100%' }}
+                  placeholder="ej. fierro, cemento, flete de transporte, alquiler..."
+                  value={modalCategorizar.subcategoria}
+                  onChange={e => setModalCategorizar({ ...modalCategorizar, subcategoria: e.target.value })}
+                />
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
+                  El sistema recordará esta categorización para futuras compras y para las demás empresas.
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={modalCategorizar.guardando}
+                  onClick={() => setModalCategorizar(null)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={modalCategorizar.guardando}
+                  onClick={async () => {
+                    setModalCategorizar(prev => ({ ...prev, guardando: true }));
+                    await guardarRecategorizacion(modalCategorizar.insumo, modalCategorizar.categoria, modalCategorizar.subcategoria);
+                    setModalCategorizar(null);
+                  }}
+                >
+                  {modalCategorizar.guardando ? 'Guardando...' : 'Guardar y recordar'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

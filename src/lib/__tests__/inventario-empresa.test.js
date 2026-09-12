@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normUnidad, labelUnidad, resumenFinancieroEmpresa, inventarioDeEmpresa, filtrarInventario,
-  saldosNegativos, tieneSaldoNegativo, clasificarLineaPorTexto, aniosDeLineas,
+  saldosNegativos, tieneSaldoNegativo, clasificarLineaPorTexto, aniosDeLineas, filtrarPorFlujo,
 } from '../inventario-empresa';
 
 import { extraerLineasDeFacturas } from '../analisis-insumos';
@@ -330,6 +330,10 @@ describe('clasificarLineaPorTexto', () => {
     expect(anticipo).toBeTruthy();
     expect(anticipo.tipos).toContain('anticipo');
     expect(anticipo.tipos).not.toContain('material');
+    expect(anticipo.esAnticipo).toBe(true);
+    expect(inv.totales.lineasAnticipo).toBe(1);
+    expect(inv.totales.anticipos.length).toBe(1);
+    expect(inv.totales.anticipos[0].monto).toBe(5000);
   });
 });
 
@@ -411,6 +415,45 @@ describe('inventarioDeEmpresa con filtro temporal', () => {
     expect(inventarioDeEmpresa(lineasConNc, {
       companyId: EMP_A, desde: '2026-01-01', hasta: '2026-12-31',
     }).totales.lineasNota).toBe(0);
+  });
+});
+
+describe('filtrarPorFlujo y margen económico', () => {
+  const lineasFlujo = [
+    // Insumo 1: Comprado a S/ 100 y vendido a S/ 150
+    { nombre: 'Fierro 1/2', clase: 'compra', cantidad: 10, precio: 10, moneda: 'PEN', companyId: EMP_A, fecha: '2026-08-01' },
+    { nombre: 'Fierro 1/2', clase: 'venta', cantidad: 5, precio: 30, moneda: 'PEN', companyId: EMP_A, fecha: '2026-08-02' },
+    // Insumo 2: Solo compra
+    { nombre: 'Arena gruesa', clase: 'compra', cantidad: 20, precio: 50, moneda: 'PEN', companyId: EMP_A, fecha: '2026-08-01' },
+    // Insumo 3: Solo venta
+    { nombre: 'Servicio corte', clase: 'venta', cantidad: 1, precio: 500, moneda: 'PEN', companyId: EMP_A, fecha: '2026-08-01' },
+  ];
+
+  it('calcula margen económico (ventas menos compras) por insumo', () => {
+    const inv = inventarioDeEmpresa(lineasFlujo, { companyId: EMP_A });
+    const fierro = inv.insumos.find(i => i.display === 'Fierro 1/2');
+    expect(fierro).toBeTruthy();
+    expect(fierro.totalCompraPen).toBe(100);
+    expect(fierro.totalVentaPen).toBe(150);
+    expect(fierro.margenEconomicoPen).toBe(50); // 150 - 100 = 50 ganancia
+    expect(fierro.margenPct).toBeCloseTo(33.33, 1);
+  });
+
+  it('filtra correctamente por flujo: solo compras, solo ventas, ambos', () => {
+    const inv = inventarioDeEmpresa(lineasFlujo, { companyId: EMP_A });
+    expect(filtrarPorFlujo(inv.insumos, 'todos')).toHaveLength(3);
+
+    const soloCompras = filtrarPorFlujo(inv.insumos, 'solo_compras');
+    expect(soloCompras).toHaveLength(1);
+    expect(soloCompras[0].display).toBe('Arena gruesa');
+
+    const soloVentas = filtrarPorFlujo(inv.insumos, 'solo_ventas');
+    expect(soloVentas).toHaveLength(1);
+    expect(soloVentas[0].display).toBe('Servicio corte');
+
+    const ambos = filtrarPorFlujo(inv.insumos, 'ambos');
+    expect(ambos).toHaveLength(1);
+    expect(ambos[0].display).toBe('Fierro 1/2');
   });
 });
 

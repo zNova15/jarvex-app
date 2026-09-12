@@ -11,7 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   sugerirSubfamilia, revisarCatalogo, subfamiliasDe, familiasDeSubfamilia,
-  etiquetaSubfamilia, SUBFAMILIAS,
+  etiquetaSubfamilia, SUBFAMILIAS, limpiarPrefijoServicio,
 } from '../catalogo-subfamilias.js';
 
 const sug = (nombre, familia) => sugerirSubfamilia(nombre, familia);
@@ -176,5 +176,29 @@ describe('el vocabulario se sostiene solo', () => {
       expect(etiquetaSubfamilia(s.slug), s.slug).not.toBe(s.slug);
       expect(etiquetaSubfamilia(s.slug).length).toBeGreaterThan(3);
     }
+  });
+});
+
+// ── 5. Servicios y prefijos comerciales (Tanda 5) ──────────────────
+describe('servicios comerciales y limpieza de prefijos', () => {
+  it('limpia prefijos comerciales típicos de facturas de servicios', () => {
+    expect(limpiarPrefijoServicio('POR LA COMPRA DEL SERVICIO DE ALQUILER DE RETROEXCAVADORA')).toBe('ALQUILER DE RETROEXCAVADORA');
+    expect(limpiarPrefijoServicio('Por el servicio de flete de transporte')).toBe('flete de transporte');
+    expect(limpiarPrefijoServicio('Por concepto de asesoria contable')).toBe('asesoria contable');
+    expect(limpiarPrefijoServicio('CEMENTO PORTLAND')).toBe('CEMENTO PORTLAND');
+  });
+
+  it('reconoce subfamilias de servicios incluso con prefijos de factura', () => {
+    expect(sub('POR LA COMPRA DEL SERVICIO DE ALQUILER DE RETROEXCAVADORA 80 HP', 'servicios')).toBe('servicio_alquiler');
+    expect(sub('POR EL SERVICIO DE FLETE DE TRANSPORTE DE TUBERIAS', 'servicios')).toBe('servicio_transporte');
+    expect(sub('ASESORIA TECNICA PARA EXPEDIENTE DE OBRA', 'servicios')).toBe('servicio_asesoria');
+    expect(sub('SUBCONTRATO DE ENCOFRADO Y VACIADO', 'servicios')).toBe('servicio_subcontrato');
+    expect(sub('SERVICIO DE SALUD OCUPACIONAL Y SSOMA', 'servicios')).toBe('servicio_salud');
+    expect(sub('SERVICIO DE HOSPEDAJE Y ALIMENTACION', 'servicios')).toBe('servicio_alimentacion');
+  });
+
+  it('propone mover a servicios un alquiler que vino cargado en otra familia', () => {
+    expect(mueve('POR EL SERVICIO DE ALQUILER DE CAMIONETA 4X4', 'otros')).toBe('servicios');
+    expect(mueve('FLETE DE TRANSPORTE DE MATERIALES', 'otros')).toBe('servicios');
   });
 });

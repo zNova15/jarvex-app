@@ -208,6 +208,23 @@ describe('las decisiones ya tomadas', () => {
     expect(m.get('a').catalogo_insumo_id).toBe('suyo');
   });
 
+  it('una empresa nueva hereda las categorizaciones aprendidas de otra empresa si no tiene propias', () => {
+    const filas = [
+      { norm: 'cemento', fuente: 'manual', company_id: 'emp_a', catalogo_insumo_id: 'cat_cemento', updated_at: '2026-09-01' },
+    ];
+    // Para emp_b, hereda la decisión aprendida en emp_a
+    const m = resolverCategorias(filas, { companyId: 'emp_b' });
+    expect(m.get('cemento')?.catalogo_insumo_id).toBe('cat_cemento');
+
+    // Pero si emp_b decide algo propio, su propia decisión gana
+    const filasConPropia = [
+      ...filas,
+      { norm: 'cemento', fuente: 'manual', company_id: 'emp_b', catalogo_insumo_id: 'cat_cemento_especial', updated_at: '2026-09-02' },
+    ];
+    const mPropia = resolverCategorias(filasConPropia, { companyId: 'emp_b' });
+    expect(mPropia.get('cemento')?.catalogo_insumo_id).toBe('cat_cemento_especial');
+  });
+
   it('no mezcla el modo prueba con el real', () => {
     const filas = [{ norm: 'a', fuente: 'manual', demo: true, catalogo_insumo_id: 'd' }];
     expect(resolverCategorias(filas, { demo: false }).size).toBe(0);

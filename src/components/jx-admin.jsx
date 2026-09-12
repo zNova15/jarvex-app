@@ -1415,9 +1415,9 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // propósito: ve la ficha profesional (es dato de personal) pero a qué
   // procesos se postula el grupo es información comercial.
   if (itemId === 'licitaciones') return ['admin', 'gerente', 'licitaciones'].includes(rol);
-  // Análisis de Insumos: costos por proveedor — solo admin/gerente (el gate
-  // duro del componente lo repite; esto evita el ítem muerto en otros menús).
-  if (itemId === 'analisis-insumos') return ['admin', 'gerente'].includes(rol);
+  // Análisis de Insumos: base de insumos, costos por proveedor, correlaciones y catálogo.
+  // Visible para admin, gerente y contabilidad (jefa de contabilidad).
+  if (itemId === 'analisis-insumos') return ['admin', 'gerente', 'contador'].includes(rol);
   // REPORTES: la página muestra familias (Movimientos/Avance/Contable) gateadas
   // cada una por su módulo. Sin acceso a NINGUNA familia, la página queda vacía
   // → gateamos la entrada por tener al menos una (evita el item/tile que lleva a

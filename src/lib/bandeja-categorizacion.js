@@ -120,12 +120,21 @@ export function indiceDePropuestas(filasCatalogo) {
  */
 export function resolverCategorias(rows, { companyId = null, demo = false } = {}) {
   const porNorm = new Map();
-  const rank = (r) => ((r?.company_id ? 4 : 0) + (r?.fuente === 'manual' ? 2 : 1));
+  // Jerarquía:
+  // 1. Decisión de la propia empresa (scope 6) > global (scope 3) > otra empresa (scope 1)
+  // 2. Dentro de cada nivel, manual (+2) pisa a automático/regla (+0)
+  // 3. A igual rango, la fecha más reciente gana
+  const rank = (r) => {
+    const scope = (r?.company_id || null) === companyId ? 6
+      : (!r?.company_id ? 3 : 1);
+    const fuente = r?.fuente === 'manual' ? 2 : 0;
+    return scope + fuente;
+  };
   for (const r of rows || []) {
     if (!r || r.deleted_at || !r.norm) continue;
     if (!!r.demo !== !!demo) continue;
-    const propia = r.company_id || null;
-    if (propia && propia !== companyId) continue;
+    // Aprendizaje global: una empresa hereda categorizaciones aprendidas de otras
+    // entidades o de decisiones globales, a menos que tenga su propia decisión.
     const prev = porNorm.get(r.norm);
     if (!prev) { porNorm.set(r.norm, r); continue; }
     const mejor = rank(r) !== rank(prev)

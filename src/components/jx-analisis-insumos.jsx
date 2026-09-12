@@ -51,7 +51,7 @@ import {
   resolverPares, construirGrupos, sugerirPares, normInsumo,
 } from "../lib/insumo-correlacion.js";
 import {
-  extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
+  extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
@@ -134,6 +134,8 @@ function AnalisisInsumosPage({ showToast }) {
   });
   const [busca, setBusca] = uS('');
   const [sel, setSel] = uS(null);
+  const [manualA, setManualA] = uS('');
+  const [manualB, setManualB] = uS('');
   // Anti doble-click (regla crítica 2): ref SÍNCRONO — un doble tap en "Mismo
   // insumo" no debe crear el par dos veces.
   const decidiendoRef = uR(false);
@@ -152,13 +154,17 @@ function AnalisisInsumosPage({ showToast }) {
   }, []);
 
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
-  // El filtro por empresa se aplica ACÁ, una sola vez: de estas `compras` viven
-  // el comparador, las correlaciones, el mapeo y la bandeja. Un solo selector
-  // arriba gobierna las cuatro pestañas.
-  const comprasTodas = uM(() => extraerComprasDeFacturas(movsHook.data || [], { demo: esPrueba }), [movsHook.data, esPrueba]);
+  // TODAS las líneas de factura (compras y ventas) de la entidad o grupo:
+  // alimentan las correlaciones (para cruzar compras con ventas), el catálogo y la bandeja.
+  const lineasTodas = uM(() => extraerLineasDeFacturas(movsHook.data || [], { demo: esPrueba }), [movsHook.data, esPrueba]);
+  const lineasEntidad = uM(
+    () => (empresaVista ? lineasTodas.filter(c => c.companyId === empresaVista) : lineasTodas),
+    [lineasTodas, empresaVista]
+  );
+  // Solo compras con precio (para el comparador de precios y proveedores):
   const compras = uM(
-    () => (empresaVista ? comprasTodas.filter(c => c.companyId === empresaVista) : comprasTodas),
-    [comprasTodas, empresaVista]
+    () => lineasEntidad.filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0),
+    [lineasEntidad]
   );
   // Las que pueden tener base propia: del grupo y consorcios ejecutores. La
   // que esté FIJADA entra siempre, aunque sea de otra clase: si no, entrar al
@@ -173,14 +179,21 @@ function AnalisisInsumosPage({ showToast }) {
   const resueltos = uM(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uM(() => construirGrupos(resueltos), [resueltos]);
   const porInsumo = uM(() => agruparComprasPorInsumo(compras, grupoDe, grupos), [compras, grupoDe, grupos]);
+  // Sugerir pares cruzando tanto compras como ventas registradas:
   const sugerencias = uM(
-    () => sugerirPares(compras.map(c => c.nombre), resueltos, grupoDe),
-    [compras, resueltos, grupoDe]
+    () => sugerirPares(lineasEntidad.map(c => c.nombre), resueltos, grupoDe),
+    [lineasEntidad, resueltos, grupoDe]
   );
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
     [resueltos]
   );
+  // Lista única de nombres para correlación manual:
+  const nombresDisponibles = uM(() => {
+    const s = new Set();
+    lineasEntidad.forEach(l => { if (l.nombre) s.add(l.nombre); });
+    return [...s].sort((a, b) => a.localeCompare(b, 'es'));
+  }, [lineasEntidad]);
   const listaInsumos = uM(() => {
     const toks = normInsumo(busca).split(' ').filter(Boolean);
     return [...porInsumo.values()]
@@ -189,12 +202,12 @@ function AnalisisInsumosPage({ showToast }) {
       .sort((a, b) => b.compras.length - a.compras.length)
       .slice(0, 40);
   }, [porInsumo, busca]);
-  // Muestra de contexto para cada nombre de una sugerencia (dónde se vio).
+  // Muestra de contexto para cada nombre de una sugerencia (dónde se vio, compra o venta).
   const muestraDe = uM(() => {
     const m = new Map();
-    for (const c of compras) if (!m.has(c.nombreNorm)) m.set(c.nombreNorm, c);
+    for (const c of lineasEntidad) if (!m.has(c.nombreNorm)) m.set(c.nombreNorm, c);
     return m;
-  }, [compras]);
+  }, [lineasEntidad]);
   // Serie del gráfico memoizada (identidad estable: sin ella, cada re-render
   // del padre destruía y recreaba el Chart completo). ANTES del early return
   // del gate — regla de hooks.
@@ -203,8 +216,8 @@ function AnalisisInsumosPage({ showToast }) {
     return ins ? seriePrecios(ins) : [];
   }, [sel, porInsumo]);
 
-  if (rol !== 'admin' && rol !== 'gerente') {
-    return <div className="card card-p" style={{ color: 'var(--tm)' }}>Panel exclusivo de administración y gerencia (muestra costos por proveedor).</div>;
+  if (rol !== 'admin' && rol !== 'gerente' && rol !== 'contador') {
+    return <div className="card card-p" style={{ color: 'var(--tm)' }}>Panel exclusivo de administración, gerencia y contabilidad.</div>;
   }
 
   const decidir = async (par, relacion) => {
@@ -229,8 +242,8 @@ function AnalisisInsumosPage({ showToast }) {
       }
       // Canónico con el nombre CRUDO de la factura (los normalizados en
       // minúsculas quedarían feos como display permanente del grupo).
-      const crudoA = muestraDe.get(par.nombre_a)?.nombre || par.nombre_a;
-      const crudoB = muestraDe.get(par.nombre_b)?.nombre || par.nombre_b;
+      const crudoA = par.crudoA || muestraDe.get(par.nombre_a)?.nombre || par.nombre_a;
+      const crudoB = par.crudoB || muestraDe.get(par.nombre_b)?.nombre || par.nombre_b;
       const canonico = relacion === 'mismo'
         ? (crudoA.length >= crudoB.length ? crudoA : crudoB)
         : null;
@@ -286,7 +299,42 @@ function AnalisisInsumosPage({ showToast }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div className="card card-p" style={{ background: 'var(--tint-neutral)', borderLeft: '4px solid var(--blue)', fontSize: 12, lineHeight: 1.5 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <strong style={{ fontSize: 13, color: 'var(--blue)' }}>
+            💡 Guía de Insumos y Servicios en JARVEX
+          </strong>
+          <span style={{ fontSize: 11, color: 'var(--tm)' }}>Base de datos central con aprendizaje global entre entidades</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 8 }}>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📚 1. Catálogo</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Base de datos maestra central de insumos y servicios de toda la empresa y el aplicativo.
+            </div>
+          </div>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📥 2. Categorizar</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Homologa descripciones libres de comprobantes al catálogo. Lo aprendido aquí se comparte con todas las entidades.
+            </div>
+          </div>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 3. Correlaciones</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Une variantes de nombres del mismo insumo y cruza compras con ventas para cuadrar inventarios y saldos.
+            </div>
+          </div>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🎯 4. Mapeo de Presupuesto</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Vincula compras o insumos reales con las partidas del presupuesto de una obra o trabajo específico.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
           🤝 Correlaciones{sugerencias.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{sugerencias.length}</span> : null}
@@ -413,9 +461,89 @@ function AnalisisInsumosPage({ showToast }) {
       {tab === 'correlaciones' && (
         <>
           <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
-            El sistema propone nombres que PARECEN el mismo insumo facturado distinto por cada proveedor.
-            Tu decisión queda grabada y <strong>no se vuelve a preguntar</strong>: "mismo" los une en el comparador; "distintos" descarta la sugerencia para siempre.
+            El sistema propone nombres que PARECEN el mismo insumo facturado distinto por cada proveedor (cruzando compras y ventas).
+            Tu decisión queda grabada y <strong>no se vuelve a preguntar</strong>: "mismo" los une en el comparador y en el inventario; "distintos" descarta la sugerencia para siempre.
           </div>
+
+          {/* Unir dos insumos manualmente */}
+          <div className="card card-p" style={{ border: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>🔗</span> Unir dos insumos manualmente (compras o ventas)
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 10 }}>
+              Si dos comprobantes registraron el mismo insumo con nombres distintos (o querés correlacionar lo que compraste con lo que vendiste para que cuadre en tu inventario), seleccionalos acá y hacé clic en "Unir como mismo insumo".
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <label style={{ fontSize: 10.5, color: 'var(--tm)', display: 'block', marginBottom: 3 }}>Primer insumo (compra o venta)</label>
+                <input
+                  className="fi"
+                  list="insumos-lista-a"
+                  placeholder="Escribí o seleccioná un nombre..."
+                  value={manualA}
+                  onChange={e => setManualA(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+                <datalist id="insumos-lista-a">
+                  {nombresDisponibles.map(n => <option key={`a-${n}`} value={n} />)}
+                </datalist>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', paddingBottom: 6, color: 'var(--tm)', fontWeight: 700, fontSize: 15 }}>
+                ↔
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <label style={{ fontSize: 10.5, color: 'var(--tm)', display: 'block', marginBottom: 3 }}>Segundo insumo equivalente</label>
+                <input
+                  className="fi"
+                  list="insumos-lista-b"
+                  placeholder="Escribí o seleccioná el equivalente..."
+                  value={manualB}
+                  onChange={e => setManualB(e.target.value)}
+                  style={{ width: '100%' }}
+                />
+                <datalist id="insumos-lista-b">
+                  {nombresDisponibles.map(n => <option key={`b-${n}`} value={n} />)}
+                </datalist>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-green btn-sm"
+                  disabled={!manualA.trim() || !manualB.trim() || normInsumo(manualA) === normInsumo(manualB)}
+                  onClick={async () => {
+                    await decidir({
+                      nombre_a: normInsumo(manualA),
+                      nombre_b: normInsumo(manualB),
+                      crudoA: manualA.trim(),
+                      crudoB: manualB.trim(),
+                    }, 'mismo');
+                    setManualA('');
+                    setManualB('');
+                  }}
+                >
+                  ✓ Unir como mismo insumo
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={!manualA.trim() || !manualB.trim() || normInsumo(manualA) === normInsumo(manualB)}
+                  onClick={async () => {
+                    await decidir({
+                      nombre_a: normInsumo(manualA),
+                      nombre_b: normInsumo(manualB),
+                      crudoA: manualA.trim(),
+                      crudoB: manualB.trim(),
+                    }, 'distinto');
+                    setManualA('');
+                    setManualB('');
+                  }}
+                >
+                  ✗ Marcar como distintos
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div className="card card-p">
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Sugerencias pendientes ({sugerencias.length})</div>
             {sugerencias.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay pares nuevos para revisar — al registrar más facturas aparecerán acá.</div>}

@@ -15,6 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { consumoPorObraModeloB } from './costo-obra.js';
+import { requiereBancarizacion } from './tipo-cambio.js';
 
 /** Set de ids de movimientos bancarizados: con evidencia directa (no fallida)
  * O cubiertos al 100% por partes cuyos depósitos multi-factura siguen vivos
@@ -65,7 +66,7 @@ const inRango = (f, from, to) => (!from || (f && f >= from)) && (!to || (f && f 
  * externo NO aplica: ahí la bancarización es propia de ese movimiento.
  */
 export function faltaBancarizacion(m, bancarizadoSet) {
-  if (!(m.currency === 'PEN' && Number(m.amount) > 2000)) return false;
+  if (!requiereBancarizacion(m.amount, m.currency, m.tipo_cambio, m.date)) return false;
   if (bancarizadoSet.has(m.id)) return false;
   if (m.is_intercompany && m.related_movement_id && bancarizadoSet.has(m.related_movement_id)) return false;
   return true;
