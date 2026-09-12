@@ -32,7 +32,7 @@ import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
 import { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion } from "../lib/reclasificar-entidad.js";
-import { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion } from "../lib/reimputacion.js";
+import { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion, puedeCambiarObraDeMovimiento } from "../lib/reimputacion.js";
 import { librosDeObra, filtroEmpresaSegunLibro, LIBRO_CONSORCIO, LIBRO_GRUPO, LIBRO_TODOS } from "../lib/libros-de-obra.js";
 import { resumenPorEntidad } from "../lib/contabilidad-entidades.js";
 import { consolidar, MOTIVO_LABEL } from "../lib/consolidado.js";
@@ -1128,14 +1128,30 @@ function MovimientosContablesPage({ showToast }) {
   // ── ESCÁNER DE INCOHERENCIAS (tanda 7) ──────────────────────────
   const [showRevision, setShowRevision] = uSC(false);
   const { data: revDescartes } = window.__hooks.useRevisionDescartes?.() || { data: [] };
+  // Movimientos acotados para el escáner de revisión: si estamos parados en
+  // una empresa/entidad puntual, se revisa SOLO esa empresa (pedido de Gabriel: al entrar
+  // a los movimientos de una entidad no deben saltar facturas de todo el sistema).
+  // Si estamos en el plano de una obra puntual sin empresa fija, acota a esa obra.
+  const enObraActualRev = window.__plano === 'obra';
+  const movsParaRevision = uMC(() => {
+    if (!movs) return [];
+    if (filtroEmpresaSel !== 'todas') {
+      return movs.filter(m => m && !m.deleted_at && m.company_id === filtroEmpresaSel);
+    }
+    if (enObraActualRev && filtroObraSel !== 'todas') {
+      return movs.filter(m => m && !m.deleted_at && m.obra_id === filtroObraSel);
+    }
+    return movs.filter(m => m && !m.deleted_at);
+  }, [movs, filtroEmpresaSel, enObraActualRev, filtroObraSel]);
+
   const revisionResumen = uMC(() => {
     try {
       const hoy = window.__fecha?.hoyLocal?.() || null;
       const fuera = new Set((revDescartes || []).filter(d => !d.deleted_at)
         .map(d => claveDescarteRev(d.movimiento_id, d.regla)));
-      return resumenRevisionLib(revisarLoteLib(movs || [], { hoy, descartados: fuera }));
+      return resumenRevisionLib(revisarLoteLib(movsParaRevision || [], { hoy, descartados: fuera }));
     } catch { return { total: 0, contradicciones: 0, revisar: 0, porRegla: {} }; }
-  }, [movs, revDescartes]);
+  }, [movsParaRevision, revDescartes]);
   // Período: un MES puntual ("¿puedo ver solo los comprobantes de Junio?") o un
   // rango personalizado desde/hasta. 'todos' = sin filtro de fecha.
   const [filtroMes, setFiltroMes] = uSC('todos');   // 'todos' | 'YYYY-MM' | 'custom'
@@ -1674,6 +1690,8 @@ function MovimientosContablesPage({ showToast }) {
   const guardarReimputacion = async () => {
     if (!reimputando) return;
     const { mov } = reimputando;
+    const gateObra = puedeCambiarObraDeMovimiento(mov, { titularObraId, companies, consorcios: consorciosMov });
+    if (!gateObra.puede) { showToast(gateObra.motivo, 'amber'); return; }
     const err = validarReimputacion(reimputando);
     if (err) { showToast(err, 'amber'); return; }
     const patch = cambiosDeReimputacion(mov, reimputando);
@@ -3399,7 +3417,40 @@ function MovimientosContablesPage({ showToast }) {
                       <td>
                         {m.description || '—'}
                         {m.category && <div style={{ fontSize:10, color:'var(--tm)' }}>{m.category}</div>}
-                        {m.obra_id && <div style={{ fontSize:10, color:'var(--blue)' }}>🏗 {obraNombre(m.obra_id) || 'obra'}</div>}
+                        {m.obra_id && (
+                          <div style={{ fontSize:10, color:'var(--blue)', display:'flex', alignItems:'center', gap:4, flexWrap:'wrap', marginTop:2 }}>
+                            <span>🏗 {obraNombre(m.obra_id) || 'obra'}</span>
+                            {canEditExisting && (isAdmin || myRol === 'contador') && !cruceImputacion.has(m.id) && (() => {
+                              const gateObra = puedeCambiarObraDeMovimiento(m, { titularObraId, companies, consorcios: consorciosMov });
+                              if (!gateObra.puede) {
+                                return (
+                                  <span
+                                    className="badge b-gray"
+                                    style={{ fontSize:8.5, padding:'0 4px', cursor:'help' }}
+                                    title={gateObra.motivo}
+                                  >
+                                    🔒 Fijo a la obra
+                                  </span>
+                                );
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs"
+                                  style={{ padding:'0 4px', fontSize:9, color:'var(--blue)', border:'1px solid rgba(52,152,219,0.35)' }}
+                                  title="Cambiar a qué obra pertenece, o desvincular de la obra (Gastos Generales, Contabilidad Neta, etc.)"
+                                  onClick={() => setReimputando({
+                                    mov: m,
+                                    destino_contable: m.destino_contable || (m.obra_id ? 'obra' : 'sin_clasificar'),
+                                    obra_id: m.obra_id || '',
+                                  })}
+                                >
+                                  ⇄ Cambiar obra
+                                </button>
+                              );
+                            })()}
+                          </div>
+                        )}
                         {cruceImputacion.has(m.id) && (() => {
                           const { contraparte } = cruceImputacion.get(m.id);
                           return (
@@ -3713,7 +3764,8 @@ function MovimientosContablesPage({ showToast }) {
 
       {showRevision && (
         <RevisionFacturasModal
-          movs={movs || []} descartes={revDescartes || []} companies={companies || []}
+          movs={movsParaRevision || []} descartes={revDescartes || []} companies={companies || []}
+          entidadNombre={filtroEmpresaSel !== 'todas' ? lookupCompany(filtroEmpresaSel)?.name : (enObraActualRev && filtroObraSel !== 'todas' ? obraNombre(filtroObraSel) : null)}
           canWrite={canWrite} showToast={showToast}
           onClose={()=>setShowRevision(false)}
           onAbrirMov={(m)=>{ setShowRevision(false); setFocoMovId(m.id); setBusqueda(m.document_number || ''); }}/>

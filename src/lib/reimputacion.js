@@ -105,4 +105,40 @@ export function explicarReimputacion(mov, { destino_contable, obra_id } = {}, no
   return partes.join(' ');
 }
 
-export default { DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion, DESTINO_A_TYPE };
+/**
+ * ¿Se puede cambiar la vinculación de obra de este comprobante?
+ *
+ * REGLA ESTRICTA (Gabriel, 11-sep-2026):
+ * Consorcio El Inca (y los consorcios ejecutores constituidos para una obra)
+ * existen literalmente para la obra. Sus facturas no pueden desvincularse
+ * ni reasignarse a otra obra o contabilidad neta.
+ * En cambio, compras cargadas por otras empresas del grupo (GASOMI, JARVEX, etc.)
+ * erróneamente vinculadas a la obra sí pueden ser corregidas con facilidad.
+ */
+export function puedeCambiarObraDeMovimiento(mov, { titularObraId = null, companies = [], consorcios = [] } = {}) {
+  if (!mov) return { puede: false, motivo: 'Comprobante no válido.' };
+
+  const comp = (companies || []).find(c => c.id === mov.company_id);
+  const nombreComp = String(comp?.name || '').toUpperCase();
+
+  // Consorcio El Inca por nombre
+  const esInca = nombreComp.includes('CONSORCIO EL INCA') || nombreComp.includes('CONSORCIO DEL INCA');
+
+  // O si la empresa titular del comprobante es un consorcio de la obra
+  const esConsorcioDeObra = (titularObraId && mov.company_id === titularObraId && comp?.tipo_entidad === 'consorcio')
+    || (consorcios || []).some(c => c.company_id === mov.company_id && (!mov.obra_id || c.obra_id === mov.obra_id));
+
+  if (esInca || esConsorcioDeObra) {
+    return {
+      puede: false,
+      motivo: 'Consorcio El Inca está constituido exclusivamente para la ejecución de esta obra. Sus comprobantes no pueden desvincularse ni reasignarse.',
+    };
+  }
+
+  return { puede: true, motivo: null };
+}
+
+export default {
+  DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion,
+  explicarReimputacion, puedeCambiarObraDeMovimiento, DESTINO_A_TYPE,
+};

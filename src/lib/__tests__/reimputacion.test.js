@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DESTINOS_REIMPUTACION, validarReimputacion, cambiosDeReimputacion, explicarReimputacion,
+  puedeCambiarObraDeMovimiento,
 } from '../reimputacion.js';
 
 // El caso real que lo destapó (Gabriel, 5-sep-2026): E001-40, una VENTA de
@@ -112,5 +113,38 @@ describe('explicarReimputacion — la contadora ve el efecto ANTES de guardar', 
   it('sin cambios lo dice en vez de prometer algo', () => {
     expect(explicarReimputacion(compraDeObra, { destino_contable: 'obra', obra_id: 'obra-miraflores' }, nombreObra))
       .toMatch(/ya está así/i);
+  });
+});
+
+describe('puedeCambiarObraDeMovimiento — regla estricta Consorcio El Inca', () => {
+  const compInca = { id: 'c-inca', name: 'CONSORCIO EL INCA', tipo_entidad: 'consorcio' };
+  const compGasomi = { id: 'c-gasomi', name: 'GASOMI SAC', tipo_entidad: 'empresa' };
+  const compJarvex = { id: 'c-jarvex', name: 'JARVEX SRL', tipo_entidad: 'empresa' };
+  const companies = [compInca, compGasomi, compJarvex];
+  const consorcios = [{ id: 'cons-1', obra_id: 'obra-miraflores', company_id: 'c-inca' }];
+
+  it('bloquea la reimputación si la empresa es CONSORCIO EL INCA', () => {
+    const movInca = { id: 'm1', company_id: 'c-inca', obra_id: 'obra-miraflores', clase: 'compra' };
+    const res = puedeCambiarObraDeMovimiento(movInca, { titularObraId: 'c-inca', companies, consorcios });
+    expect(res.puede).toBe(false);
+    expect(res.motivo).toMatch(/Consorcio El Inca/i);
+  });
+
+  it('permite cambiar la obra si la compra fue cargada por GASOMI o JARVEX', () => {
+    const movGasomi = { id: 'm2', company_id: 'c-gasomi', obra_id: 'obra-miraflores', clase: 'compra' };
+    const res = puedeCambiarObraDeMovimiento(movGasomi, { titularObraId: 'c-inca', companies, consorcios });
+    expect(res.puede).toBe(true);
+    expect(res.motivo).toBe(null);
+  });
+
+  it('bloquea si la empresa es el consorcio titular de la obra', () => {
+    const compOtroCons = { id: 'c-otro-cons', name: 'CONSORCIO EJECUTOR NORTE', tipo_entidad: 'consorcio' };
+    const movCons = { id: 'm3', company_id: 'c-otro-cons', obra_id: 'obra-norte', clase: 'compra' };
+    const res = puedeCambiarObraDeMovimiento(movCons, {
+      titularObraId: 'c-otro-cons',
+      companies: [...companies, compOtroCons],
+      consorcios: [{ id: 'cons-2', obra_id: 'obra-norte', company_id: 'c-otro-cons' }],
+    });
+    expect(res.puede).toBe(false);
   });
 });

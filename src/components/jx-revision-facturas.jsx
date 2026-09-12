@@ -29,7 +29,7 @@ const fmt = (n, mon = 'PEN') =>
  * @param onAbrirMov  (movimiento) => void — lleva al comprobante y cierra esto
  * @param canWrite    si puede marcar «está bien»
  */
-function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov, canWrite, showToast }) {
+function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov, canWrite, showToast, entidadNombre = null }) {
   const [verNivel, setVerNivel] = useState(NIVEL.CONTRADICCION);
   const [guardando, setGuardando] = useState(null);
 
@@ -86,9 +86,9 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
   );
 
   return (
-    <Modal title="Revisión de facturas" icon="search" size="xl" onClose={onClose}>
+    <Modal title={entidadNombre ? `Revisión de facturas · ${entidadNombre}` : "Revisión de facturas"} icon="search" size="xl" onClose={onClose}>
       <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 12 }}>
-        Se revisan los {(movs || []).length} comprobantes cada vez que abrís esta pantalla: no hay
+        Se revisan los {(movs || []).length} comprobantes{entidadNombre ? ` de ${entidadNombre}` : ''} cada vez que abrís esta pantalla: no hay
         nada guardado que pueda quedar viejo. Lo único que se recuerda es lo que marques como revisado.
       </div>
 
