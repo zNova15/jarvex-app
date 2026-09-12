@@ -12,6 +12,7 @@ import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { ComparativaSunat, EscanerIncoherencias } from './jx-cotejo-sunat.jsx';
+import { ReemplazoPropuestaSire } from './jx-reemplazo-sire.jsx';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -278,10 +279,11 @@ function LibrosElectronicosPage({ showToast }) {
         </div>
       </div>
 
-      {/* Las tres caras de esta pantalla */}
+      {/* Las caras de esta pantalla */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {[
-          ['ple', '📄 Generar libros'],
+          ['ple', '📄 Generar libros (PLE)'],
+          ['sire', '📦 Reemplazo SIRE (.zip)'],
           ['sunat', '🔍 SUNAT vs JARVEX'],
           ['escaner', '🩺 Escáner de incoherencias'],
         ].map(([k, label]) => (
@@ -294,6 +296,18 @@ function LibrosElectronicosPage({ showToast }) {
           </button>
         ))}
       </div>
+
+      {tab === 'sire' && (
+        <ReemplazoPropuestaSire
+          company={company}
+          companies={companies}
+          movs={movs}
+          anio={anio}
+          mes={mes}
+          showToast={showToast}
+          userId={userId}
+        />
+      )}
 
       {tab === 'sunat' && (
         <ComparativaSunat

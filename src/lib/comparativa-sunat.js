@@ -116,6 +116,29 @@ export const mesDePeriodo = (periodo) => {
   return /^\d{6}$/.test(s) ? `${s.slice(0, 4)}-${s.slice(4, 6)}` : '';
 };
 
+const NOMBRES_MES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
+
+export function formatoPeriodoHumano(periodoOFecha) {
+  if (!periodoOFecha) return '';
+  const s = String(periodoOFecha).trim();
+  const mYmd = s.match(/^(\d{4})[-/](\d{2})/);
+  if (mYmd) {
+    const y = mYmd[1];
+    const m = parseInt(mYmd[2], 10);
+    if (m >= 1 && m <= 12) return `${NOMBRES_MES[m - 1]} ${y}`;
+  }
+  const mYm = s.match(/^(\d{4})(\d{2})$/);
+  if (mYm) {
+    const y = mYm[1];
+    const m = parseInt(mYm[2], 10);
+    if (m >= 1 && m <= 12) return `${NOMBRES_MES[m - 1]} ${y}`;
+  }
+  return s;
+}
+
 /**
  * El importe con el que se compara: el TOTAL del comprobante.
  *
@@ -135,12 +158,29 @@ const importeDe = (x) => Math.abs(r2(x));
  * @param movs   TODOS los movimientos vivos (no solo los del mes: hace falta
  *               ver los de otros periodos y otras empresas para poder decir
  *               «está, pero en otro lado» en vez de «falta»)
- * @param opts   { companyId, libro, periodo, companies }
+ * @param opts   { companyId, libro, periodo, companies, otrosCortes }
  * @returns { filas: Array<diferencia>, resumen }
  */
-export function compararLibro(filas = [], movs = [], { companyId, libro, periodo, companies = [] } = {}) {
+export function compararLibro(filas = [], movs = [], { companyId, libro, periodo, companies = [], otrosCortes = [] } = {}) {
   const mes = mesDePeriodo(periodo);
   const nombreEmpresa = new Map(vivos(companies).map(c => [c.id, c.name]));
+
+  // Filas de SUNAT en OTROS períodos cargados para esta empresa y libro (para detectar si
+  // lo que JARVEX tiene en este mes ya vino o fue presentado en otro corte).
+  const sunatOtrosPeriodosPorLlave = new Map();
+  for (const c of vivos(otrosCortes)) {
+    if (c.company_id && c.company_id !== companyId) continue;
+    if (c.libro && c.libro !== libro) continue;
+    if (String(c.periodo) === String(periodo)) continue;
+    const perStr = mesDePeriodo(c.periodo) || String(c.periodo || '');
+    for (const sf of (c.filas || [])) {
+      const k = llaveDeFilaSunat(sf);
+      if (!k) continue;
+      if (!sunatOtrosPeriodosPorLlave.has(k)) {
+        sunatOtrosPeriodosPorLlave.set(k, { ...sf, periodoCorte: perStr, archivoCorte: c.archivo || '' });
+      }
+    }
+  }
 
   // Los candidatos de ESTA empresa y este sentido, indexados por llave.
   const propios = movimientosDelLibro(movs, { companyId, libro });
@@ -161,7 +201,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     if (!ajenos.has(k)) ajenos.set(k, m);
   }
 
-  // Para el rescate de la serie mal escrita: RUC + importe + fecha.
+  // Para el rescate de la serie mal escrita: RUC + importe.
   const porRucImporte = new Map();
   for (const m of propios) {
     const k = `${rucLimpio(m.third_party_ruc)}|${importeDe(m.amount)}`;
@@ -177,6 +217,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     const base = {
       llave,
       libro,
+      companyId,
       linea: f.linea,
       tipoCp: f.tipoCp,
       tipoNombre: f.tipoNombre,
@@ -205,17 +246,26 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         && Math.sign(r2(m.amount)) !== 0
         && Math.sign(r2(f.total)) !== Math.sign(r2(m.amount));
       let estado = 'cuadra';
+      let motivoPeriodo = '';
+      let periodoDetectado = '';
       if (Math.abs(dif) > TOLERANCIA) estado = 'importe_distinto';
       else if (signoDistinto) estado = 'signo_distinto';
-      else if (mes && mesDe(m.date) !== mes) estado = 'otro_periodo';
+      else if (mes && mesDe(m.date) !== mes) {
+        estado = 'otro_periodo';
+        periodoDetectado = mesDe(m.date);
+        motivoPeriodo = `Registrado en JARVEX en ${formatoPeriodoHumano(periodoDetectado)} (${m.date}) - diferido`;
+      }
       else if (f.fecha && m.date !== f.fecha) estado = 'fecha_distinta';
       salida.push({
         ...base, estado,
         movimientoId: m.id,
+        companyId: m.company_id || companyId,
         appDocumento: m.document_number,
         appFecha: m.date,
         appTotal: r2(m.amount),
         appNombre: m.third_party_name || '',
+        periodoDetectado,
+        motivoPeriodo,
         diferencia: dif,
       });
       continue;
@@ -227,6 +277,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       salida.push({
         ...base, estado: 'otra_empresa',
         movimientoId: enOtra.id,
+        empresaAjenaId: enOtra.company_id,
         appDocumento: enOtra.document_number,
         appFecha: enOtra.date,
         appTotal: r2(enOtra.amount),
@@ -240,17 +291,39 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     // ¿Y con la serie escrita distinta? Mismo RUC, mismo importe, misma fecha.
     // Sin esto, CHIFA MONTEORO salía como DOS errores (una que falta y una que
     // sobra) cuando en realidad es uno solo: la serie mal tipeada.
-    const gemelo = (porRucImporte.get(`${rucLimpio(f.contraparteRuc)}|${importeDe(f.total)}`) || [])
-      .find(x => !usados.has(x.id) && x.date === f.fecha);
+    const candidatosRucImporte = porRucImporte.get(`${rucLimpio(f.contraparteRuc)}|${importeDe(f.total)}`) || [];
+    const gemelo = candidatosRucImporte.find(x => !usados.has(x.id) && x.date === f.fecha);
     if (gemelo) {
       usados.add(gemelo.id);
       salida.push({
         ...base, estado: 'serie_distinta',
         movimientoId: gemelo.id,
+        companyId: gemelo.company_id || companyId,
         appDocumento: gemelo.document_number,
         appFecha: gemelo.date,
         appTotal: r2(gemelo.amount),
         appNombre: gemelo.third_party_name || '',
+        diferencia: 0,
+      });
+      continue;
+    }
+
+    // ¿O con serie distinta Y registrado en otro período? Mismo RUC, mismo importe, en otro mes.
+    const gemeloOtroPeriodo = candidatosRucImporte.find(x => !usados.has(x.id));
+    if (gemeloOtroPeriodo) {
+      usados.add(gemeloOtroPeriodo.id);
+      const perGemelo = mesDe(gemeloOtroPeriodo.date);
+      salida.push({
+        ...base,
+        estado: 'otro_periodo',
+        movimientoId: gemeloOtroPeriodo.id,
+        companyId: gemeloOtroPeriodo.company_id || companyId,
+        appDocumento: gemeloOtroPeriodo.document_number,
+        appFecha: gemeloOtroPeriodo.date,
+        appTotal: r2(gemeloOtroPeriodo.amount),
+        appNombre: gemeloOtroPeriodo.third_party_name || '',
+        periodoDetectado: perGemelo,
+        motivoPeriodo: `Registrado en JARVEX en ${formatoPeriodoHumano(perGemelo)} (${gemeloOtroPeriodo.document_number})`,
         diferencia: 0,
       });
       continue;
@@ -264,9 +337,44 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     if (usados.has(m.id)) continue;
     if (mes && mesDe(m.date) !== mes) continue;      // de otro mes: no es de este corte
     const p = partirDocumento(m.document_number);
+    const k = llaveDeMovimiento(m);
+    const enOtroSunat = k ? sunatOtrosPeriodosPorLlave.get(k) : null;
+    if (enOtroSunat) {
+      salida.push({
+        llave: k,
+        libro,
+        companyId: m.company_id || companyId,
+        linea: enOtroSunat.linea || null,
+        tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
+        tipoNombre: m.document_type || 'factura',
+        documento: enOtroSunat.documento || m.document_number || '',
+        serie: p?.serie || '',
+        numero: p?.correlativo || 0,
+        fecha: m.date,
+        contraparteRuc: rucLimpio(m.third_party_ruc),
+        contraparteNombre: enOtroSunat.contraparteNombre || m.third_party_name || '',
+        sunatBase: r2(enOtroSunat.base),
+        sunatIgv: r2(enOtroSunat.igv),
+        sunatNoGravado: r2(enOtroSunat.noGravado),
+        sunatTotal: r2(enOtroSunat.total),
+        moneda: m.currency || 'PEN',
+        modifica: '',
+        estado: 'sunat_otro_periodo',
+        periodoDetectado: enOtroSunat.periodoCorte,
+        motivoPeriodo: `SUNAT lo incluye en el período ${formatoPeriodoHumano(enOtroSunat.periodoCorte)}${enOtroSunat.archivoCorte ? ' (' + enOtroSunat.archivoCorte + ')' : ''}`,
+        movimientoId: m.id,
+        appDocumento: m.document_number,
+        appFecha: m.date,
+        appTotal: r2(m.amount),
+        appNombre: m.third_party_name || '',
+        diferencia: 0,
+      });
+      continue;
+    }
     salida.push({
       llave: llaveDeMovimiento(m),
       libro,
+      companyId: m.company_id || companyId,
       linea: null,
       tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
       tipoNombre: m.document_type || 'factura',
@@ -295,7 +403,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
 /** Los estados que la contadora tiene que mirar (todo lo que no cuadra). */
 export const ESTADOS_PENDIENTES = [
   'solo_sunat', 'solo_jarvex', 'importe_distinto', 'signo_distinto',
-  'serie_distinta', 'otra_empresa', 'otro_periodo', 'fecha_distinta',
+  'serie_distinta', 'otra_empresa', 'otro_periodo', 'sunat_otro_periodo', 'fecha_distinta',
 ];
 
 export const ETIQUETA_ESTADO = {
@@ -307,6 +415,7 @@ export const ETIQUETA_ESTADO = {
   serie_distinta: 'Serie distinta',
   otra_empresa: 'Cargado en otra empresa',
   otro_periodo: 'Cargado en otro mes',
+  sunat_otro_periodo: 'En SUNAT en otro mes',
   fecha_distinta: 'Fecha distinta',
 };
 
@@ -409,6 +518,8 @@ export function exportarComparativaCsv(filas = [], { periodo = '', empresa = '' 
     ['Total SUNAT', f => f.sunatTotal],
     ['Total JARVEX', f => (f.appTotal ?? '')],
     ['Diferencia', f => f.diferencia],
+    ['Periodo Detectado', f => f.periodoDetectado || ''],
+    ['Detalle Periodo', f => f.motivoPeriodo || ''],
     ['Moneda', f => f.moneda],
     ['Decisión', f => f.decision || ''],
     ['Nota', f => f.decisionNota || ''],

@@ -50,8 +50,21 @@ import { ventasSinEspejo, datosDelEspejo } from '../lib/interco-espejo.js';
 import { candidatasDeNota } from '../lib/notas-credito.js';
 import { esVentaMov } from '../lib/costo-obra.js';
 import { getCurrentMode } from '../lib/app-mode-core.js';
+import { setEmpresaActivaId } from '../lib/empresa-activa.js';
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
+
+/**
+ * Abre el comprobante en Movimientos Contables con foco en la fila y el modal
+ * de edición directamente abierto para reparar la serie u otro dato.
+ */
+const irAEditarMovimiento = (companyId, movId, doc) => {
+  if (companyId) {
+    try { setEmpresaActivaId(companyId); } catch {}
+  }
+  window.__movFocoIntent = { id: movId || null, doc: doc || null, autoEdit: true };
+  window.__navTo?.('movimientos-contables', 'general');
+};
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const periodoDe = (anio, mes) => `${anio}${String(mes).padStart(2, '0')}`;
@@ -74,6 +87,7 @@ const COLOR_ESTADO = {
   serie_distinta: 'var(--amber, #d97706)',
   otra_empresa: 'var(--blue)',
   otro_periodo: 'var(--blue)',
+  sunat_otro_periodo: 'var(--purple, #8b5cf6)',
   fecha_distinta: 'var(--tm)',
 };
 const COLOR_GRAVEDAD = { alta: '#d33', media: 'var(--orange)', baja: 'var(--tm)' };
@@ -187,6 +201,13 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     return out;
   }, [cortesHook.data, company?.id, periodo]);
 
+  // Cortes de OTROS períodos cargados para esta empresa (para cotejo inteligente multi-período).
+  const otrosCortes = uM(() => {
+    return (cortesHook.data || []).filter(c =>
+      c && !c.deleted_at && c.company_id === company?.id && String(c.periodo) !== periodo && Array.isArray(c.filas) && c.filas.length > 0
+    );
+  }, [cortesHook.data, company?.id, periodo]);
+
   // El cruce se recalcula solo: las filas ya están en memoria y los movimientos
   // vienen del hook, así que si alguien carga una factura que faltaba, la
   // pantalla lo refleja sin volver a subir el archivo.
@@ -196,12 +217,12 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       const c = cortes[libro];
       if (!c || !c.filas.length) continue;
       const { filas, resumen } = compararLibro(c.filas, movs, {
-        companyId: company?.id, libro, periodo, companies,
+        companyId: company?.id, libro, periodo, companies, otrosCortes,
       });
       out[libro] = { ...c, filas: aplicarDecisiones(filas, decisiones), resumen };
     }
     return out;
-  }, [cortes, movs, company?.id, periodo, companies, decisiones]);
+  }, [cortes, movs, company?.id, periodo, companies, decisiones, otrosCortes]);
 
   const todas = uM(
     () => [...(resultados.compras?.filas || []), ...(resultados.ventas?.filas || [])],
@@ -271,7 +292,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       }
 
       const { resumen } = compararLibro(r.filas, movs, {
-        companyId: company?.id, libro: r.libro, periodo, companies,
+        companyId: company?.id, libro: r.libro, periodo, companies, otrosCortes,
       });
       // Las FILAS van adentro del corte: es lo único que la app no puede
       // recalcular sola (mig 202). Guardar esto es lo que hace que la pestaña
@@ -307,7 +328,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     setBusy(true);
     try {
       const { resumen } = compararLibro(c.filas, movs, {
-        companyId: company?.id, libro, periodo, companies,
+        companyId: company?.id, libro, periodo, companies, otrosCortes,
       });
       await guardarCorte({
         companyId: company?.id, periodo, libro, archivo: c.archivo,
@@ -656,15 +677,69 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                         >
                           {f.libro === 'compras' ? '🛒 COMPRA' : '💵 VENTA'}
                         </span>
-                        <span style={{ fontWeight: 600 }}>{f.documento || f.appDocumento || '—'}</span>
+                        {f.movimientoId ? (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs"
+                            style={{
+                              padding: '0 4px',
+                              fontWeight: 600,
+                              fontSize: 13,
+                              color: 'inherit',
+                              textDecoration: 'underline',
+                              textDecorationStyle: 'dotted',
+                              cursor: 'pointer',
+                            }}
+                            title={`Abrir comprobante ${f.appDocumento || f.documento} en Movimientos Contables`}
+                            onClick={() => irAEditarMovimiento(f.empresaAjenaId || f.companyId || company?.id, f.movimientoId, f.appDocumento || f.documento)}
+                          >
+                            {f.documento || f.appDocumento || '—'}
+                          </button>
+                        ) : (
+                          <span style={{ fontWeight: 600 }}>{f.documento || f.appDocumento || '—'}</span>
+                        )}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
                         {f.tipoNombre?.replace('_', ' ')}
                         {f.modifica ? ` · anula ${f.modifica}` : ''}
                       </div>
                       {f.estado === 'serie_distinta' && (
-                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)', marginTop: 2 }}>
-                          en JARVEX está como {f.appDocumento} — mirá la factura para decidir
+                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>en JARVEX está como <strong>{f.appDocumento}</strong></span>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-amber"
+                            style={{ padding: '1px 8px', fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                            title={`Abrir y corregir la factura ${f.appDocumento} en Movimientos Contables`}
+                            onClick={() => irAEditarMovimiento(f.companyId || company?.id, f.movimientoId, f.appDocumento)}
+                          >
+                            <span>✏️</span>
+                            <span>Reparar en Movimientos</span>
+                          </button>
+                        </div>
+                      )}
+                      {f.estado === 'otra_empresa' && (
+                        <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>en {f.empresaAjena}</span>
+                          <button
+                            type="button"
+                            className="btn btn-xs"
+                            style={{ padding: '1px 6px', fontSize: 10, cursor: 'pointer' }}
+                            title={`Ir a ${f.empresaAjena} y ver la factura ${f.appDocumento}`}
+                            onClick={() => irAEditarMovimiento(f.empresaAjenaId, f.movimientoId, f.appDocumento)}
+                          >
+                            Ir a {f.empresaAjena}
+                          </button>
+                        </div>
+                      )}
+                      {f.estado === 'otro_periodo' && (
+                        <div style={{ fontSize: 11, color: 'var(--blue)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <span>📅 {f.motivoPeriodo || `Registrado en JARVEX en ${f.appFecha || 'otro mes'}`}</span>
+                        </div>
+                      )}
+                      {f.estado === 'sunat_otro_periodo' && (
+                        <div style={{ fontSize: 11, color: 'var(--purple, #8b5cf6)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                          <span>📌 {f.motivoPeriodo || `En SUNAT en período ${f.periodoDetectado}`}</span>
                         </div>
                       )}
                     </td>
@@ -672,6 +747,8 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       {f.fecha || f.appFecha || '—'}
                       {f.estado === 'fecha_distinta' || f.estado === 'otro_periodo' ? (
                         <div style={{ fontSize: 11, color: 'var(--blue)' }}>JARVEX: {f.appFecha}</div>
+                      ) : f.estado === 'sunat_otro_periodo' && f.periodoDetectado ? (
+                        <div style={{ fontSize: 11, color: 'var(--purple, #8b5cf6)' }}>Período SUNAT: {f.periodoDetectado}</div>
                       ) : null}
                     </td>
                     <td style={{ maxWidth: 260 }}>
@@ -680,7 +757,11 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       {f.estado === 'solo_jarvex' ? '—' : fmtS(f.sunatTotal)}
-                      {f.sunatIgv ? <div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV {fmtS(f.sunatIgv)}</div> : null}
+                      {f.estado === 'sunat_otro_periodo' && f.periodoDetectado ? (
+                        <div style={{ fontSize: 10, color: 'var(--purple, #8b5cf6)' }}>en SUNAT {f.periodoDetectado}</div>
+                      ) : f.sunatIgv ? (
+                        <div style={{ fontSize: 11, color: 'var(--tm)' }}>IGV {fmtS(f.sunatIgv)}</div>
+                      ) : null}
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       {f.movimientoId ? fmtS(f.appTotal) : <span style={{ color: '#d33' }}>no está</span>}
@@ -692,6 +773,19 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       {/* El papel, antes que cualquier botón: casi siempre es lo
                           que decide si la diferencia existe o no aplica. */}
                       <OjoComprobante entry={evidencias.get(f.movimientoId)} onAbrir={abrir} />
+                      {f.movimientoId ? (
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          style={{ marginLeft: 4, padding: '2px 8px' }}
+                          title={`Editar ${f.appDocumento || 'comprobante'} en Movimientos Contables`}
+                          onClick={() => irAEditarMovimiento(f.empresaAjenaId || f.companyId || company?.id, f.movimientoId, f.appDocumento || f.documento)}
+                        >
+                          {typeof window !== 'undefined' && window.JxIcon
+                            ? React.createElement(window.JxIcon, { name: 'edit', size: 12 })
+                            : '✏️'}
+                        </button>
+                      ) : null}
                       {f.estado === 'cuadra' ? null : f.decision ? (
                         <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={() => decidir(f, null)}>Deshacer</button>
                       ) : (

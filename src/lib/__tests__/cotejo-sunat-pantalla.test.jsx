@@ -187,6 +187,30 @@ describe('SUNAT vs JARVEX — el corte sobrevive a cambiar de pestaña', () => {
     expect(html).toContain('Volver a cotejar');
     expect(html).toContain('Quitar');
   });
+
+  it('cuando una factura tiene la serie distinta ofrece botón para reparar en Movimientos Contables', () => {
+    const filaSerieDistinta = {
+      linea: 4, fecha: '2026-07-20', tipoCp: '01', tipoNombre: 'factura',
+      serie: 'FA01', numero: 5101, documento: 'FA01-5101',
+      contraparteRuc: '20501234567', contraparteNombre: 'CHIFA MONTEORO',
+      base: 113.56, igv: 20.44, noGravado: 0, total: 134.00, moneda: 'PEN',
+    };
+    const movConSerieMal = {
+      id: 'm-chifa', company_id: JARVEX, clase: 'compra', type: 'cost',
+      document_type: 'factura', document_number: 'F001-5101',
+      third_party_ruc: '20501234567', third_party_name: 'CHIFA MONTEORO',
+      amount: 134.00, date: '2026-07-20',
+    };
+    globalThis.__CORTES = [{
+      ...CORTE,
+      filas: [filaSerieDistinta],
+      resumen: { total: 1, cuadran: 0, brecha: 0 },
+    }];
+    const html = renderComparativa([movConSerieMal]);
+    expect(html).toContain('Serie distinta');
+    expect(html).toContain('F001-5101');
+    expect(html).toContain('Reparar en Movimientos');
+  });
 });
 
 describe('El escáner propone soluciones', () => {

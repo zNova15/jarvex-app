@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   llaveComprobante, llaveDeFilaSunat, llaveDeMovimiento, movimientosDelLibro,
   compararLibro, resumirComparativa, aplicarDecisiones, filasPendientes,
-  exportarComparativaCsv, mesDePeriodo, ETIQUETA_ESTADO,
+  exportarComparativaCsv, mesDePeriodo, formatoPeriodoHumano, ETIQUETA_ESTADO,
 } from '../comparativa-sunat.js';
 
 const JARVEX = 'jarvex-id';
@@ -320,6 +320,76 @@ describe('utilidades del corte', () => {
     expect(lineas[0]).toContain('"Estado"');
     // El nombre con coma queda entre comillas y no parte la fila.
     expect(lineas[1]).toContain('"GRUPO, DE INVERSIONES FRONTIER"');
-    expect(lineas[1].split('","')).toHaveLength(20);
+    expect(lineas[1].split('","')).toHaveLength(22);
+  });
+});
+
+describe('Cotejo inteligente multi-período (cross-period matching)', () => {
+  it('formatoPeriodoHumano convierte períodos numéricos y fechas a texto legible', () => {
+    expect(formatoPeriodoHumano('2026-06')).toBe('Junio 2026');
+    expect(formatoPeriodoHumano('202607')).toBe('Julio 2026');
+    expect(formatoPeriodoHumano('2024-08-15')).toBe('Agosto 2024');
+    expect(formatoPeriodoHumano('')).toBe('');
+  });
+
+  it('factura de SUNAT en Junio registrada en JARVEX en Agosto se reporta como diferida en otro mes', () => {
+    // SUNAT propone la compra en Junio 2026
+    const fSunat = sunat('01', 'F001', 1234, '20601234567', 1180, '2026-06-15');
+    // En JARVEX se cargó en Agosto 2026 (por ejemplo porque faltaba la guía de remisión)
+    const mJarvex = mov('m-ago', 'F001-1234', '20601234567', 1180, '2026-08-10');
+
+    const { filas, resumen } = compararLibro([fSunat], [mJarvex], {
+      companyId: JARVEX, libro: 'compras', periodo: '202606', companies: COMPANIES,
+    });
+
+    expect(filas).toHaveLength(1);
+    expect(filas[0].estado).toBe('otro_periodo');
+    expect(filas[0].periodoDetectado).toBe('2026-08');
+    expect(filas[0].motivoPeriodo).toContain('Agosto 2026');
+    expect(filas[0].movimientoId).toBe('m-ago');
+  });
+
+  it('rescata factura con serie distinta registrada en otro período por RUC + Importe', () => {
+    // SUNAT tiene FA01-888 en Junio
+    const fSunat = sunat('01', 'FA01', 888, '20601234567', 590, '2026-06-20');
+    // En JARVEX se digitó F001-888 y con fecha de Agosto
+    const mJarvex = mov('m-dif', 'F001-888', '20601234567', 590, '2026-08-05');
+
+    const { filas } = compararLibro([fSunat], [mJarvex], {
+      companyId: JARVEX, libro: 'compras', periodo: '202606', companies: COMPANIES,
+    });
+
+    expect(filas).toHaveLength(1);
+    expect(filas[0].estado).toBe('otro_periodo');
+    expect(filas[0].periodoDetectado).toBe('2026-08');
+    expect(filas[0].appDocumento).toBe('F001-888');
+    expect(filas[0].motivoPeriodo).toContain('Agosto 2026');
+  });
+
+  it('comprobante en JARVEX en Agosto que SUNAT trajo en corte previo de Junio se marca como sunat_otro_periodo', () => {
+    // En JARVEX tenemos una factura registrada en Agosto 2026
+    const mAgosto = mov('m-ago2', 'F002-999', '20609999999', 2360, '2026-08-15');
+
+    // En Agosto, el CSV de SUNAT NO la trae
+    const filasAgostoSunat = [];
+
+    // Pero tenemos el corte histórico de Junio 2026 cargado en sunat_cortes
+    const fJunio = sunat('01', 'F002', 999, '20609999999', 2360, '2026-06-10');
+    const otrosCortes = [{
+      id: 'corte-junio', company_id: JARVEX, periodo: '202606', libro: 'compras',
+      archivo: 'propuesta-junio.csv', filas: [fJunio],
+    }];
+
+    const { filas, resumen } = compararLibro(filasAgostoSunat, [mAgosto], {
+      companyId: JARVEX, libro: 'compras', periodo: '202608', companies: COMPANIES, otrosCortes,
+    });
+
+    expect(filas).toHaveLength(1);
+    expect(filas[0].estado).toBe('sunat_otro_periodo');
+    expect(filas[0].periodoDetectado).toBe('2026-06');
+    expect(filas[0].motivoPeriodo).toContain('Junio 2026');
+    expect(filas[0].motivoPeriodo).toContain('propuesta-junio.csv');
+    // No genera brecha negativa falsa
+    expect(resumen.brecha).toBe(0);
   });
 });

@@ -1192,6 +1192,7 @@ function MovimientosContablesPage({ showToast }) {
   const [filtroBanc, setFiltroBanc] = uSC('todos');
   // Tipo de comprobante (factura/boleta/NC/recibo/…); '_con_guia' = con guía vinculada.
   const [filtroTipoDoc, setFiltroTipoDoc] = uSC('todos');
+  const [pendingAutoEditId, setPendingAutoEditId] = uSC(null);
   uEC(() => {
     const intent = window.__movFocoIntent;
     if (!intent) return;
@@ -1200,6 +1201,9 @@ function MovimientosContablesPage({ showToast }) {
     // para marcar la fila exacta cuando dos empresas comparten el número.
     if (intent.doc) setBusqueda(String(intent.doc));
     setFocoMovId(intent.id || null);
+    if (intent.autoEdit && intent.id) {
+      setPendingAutoEditId(intent.id);
+    }
     // Los filtros que podrían esconderla se sueltan: llegar a una factura y
     // no verla porque el período estaba en otro mes es peor que no llegar.
     setFiltroMes('todos'); setFiltroDesde(''); setFiltroHasta('');
@@ -2167,6 +2171,20 @@ function MovimientosContablesPage({ showToast }) {
     setEditingId(m.id);
     setModal('editar');
   };
+
+  // Auto-apertura de edición cuando se navega con intención autoEdit (ej. desde Cotejo SUNAT
+  // para reparar una factura con serie distinta o discrepancia sin buscar el botón de editar).
+  uEC(() => {
+    if (!pendingAutoEditId || !(movs || []).length) return;
+    const target = movs.find(m => m && !m.deleted_at && m.id === pendingAutoEditId);
+    if (!target) return;
+    setPendingAutoEditId(null);
+    if (canEditExisting) {
+      openEditar(target);
+    } else if (esAyudante) {
+      setSolicitarTarget(target);
+    }
+  }, [pendingAutoEditId, movs, canEditExisting, esAyudante]);
 
   const guardar = async () => {
     if (!form.company_id || !form.amount || !form.date) {
