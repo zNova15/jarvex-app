@@ -22,6 +22,65 @@
 // ═══════════════════════════════════════════════════════════════════
 import { claveGrupoDe, normInsumo } from './insumo-correlacion.js';
 
+// ── Clasificador de línea por texto (Tanda 3) ─────────────────────────
+// Capa determinista de override: si la descripción del ítem coincide con
+// patrones contractuales o financieros conocidos, devuelve el tipo correcto
+// ANTES de que el tipo de la IA entre en juego. Esto evita que "ANTICIPO DE
+// CLIENTE" o "OBRA: REHABILITACION DEL LOCAL..." aparezcan como 'material'.
+// Función PURA: sin efectos secundarios, sin DB, sin IA. Siempre estable.
+
+const normTxt = (s) =>
+  String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .trim();
+
+const RX_ANTICIPO        = /\b(ANTICIPO|ADELANTO|A CUENTA)\b/;
+const RX_SERVICIO_OBRA   = /OBRA:|VALORIZACI[OO]N|POR EL SALDO DE|EJECUCION DE OBRA|CONTRATO DE OBRA|SUBCONTRATO DE OBRA|AVANCE DE OBRA|PARTIDAS? DE OBRA|EJECUCION DE PARTIDAS/;
+const RX_LIQUIDACION     = /\bLIQUIDACI[OO]N\b/;
+const RX_ALQUILER_TXT    = /\b(ALQUILER|ARRENDAMIENTO)\b/;
+const RX_TRANSPORTE_SVC  = /\bTRANSPORTE\b|\bFLETE\b|\bTRASLADO\b/;
+const RX_MANTENIM_SVC    = /\bMANTENIMIENTO\b|\bREPARACI[OO]N\b/;
+const RX_HONORARIOS_TXT  = /\b(GASTOS NOTARIALES|HONORARIOS|CONSULTORIA|ASESORIA TECNICA|ASESORIA)\b/;
+
+/**
+ * Override de tipo de insumo basado en el texto de la descripción.
+ * Devuelve el tipo correcto ('anticipo' | 'servicio_obra' | 'servicio') o
+ * `null` si no hay regla aplicable (en cuyo caso se usa el tipo de la IA).
+ * @param {string} nombre  texto del ítem tal como viene de la factura
+ * @returns {string|null}
+ */
+export function clasificarLineaPorTexto(nombre) {
+  const n = normTxt(nombre);
+  if (!n) return null;
+  if (RX_ANTICIPO.test(n))       return 'anticipo';
+  if (RX_SERVICIO_OBRA.test(n))  return 'servicio_obra';
+  if (RX_LIQUIDACION.test(n))    return 'servicio';
+  if (RX_ALQUILER_TXT.test(n))   return 'servicio';
+  if (RX_TRANSPORTE_SVC.test(n)) return 'servicio';
+  if (RX_MANTENIM_SVC.test(n))   return 'servicio';
+  if (RX_HONORARIOS_TXT.test(n)) return 'servicio';
+  return null;
+}
+
+/**
+ * Años presentes en una lista de líneas de factura (derivados de `l.fecha`).
+ * Se usan para construir el selector "Por año" del inventario — así los años
+ * los pone la data de la empresa, no un hardcode.
+ * @param {Array} lineas  salida de extraerLineasDeFacturas (ya filtrada por empresa)
+ * @returns {number[]}    años en orden DESCENDENTE (el más reciente primero)
+ */
+export function aniosDeLineas(lineas = []) {
+  const anios = new Set();
+  for (const l of lineas) {
+    const y = String(l?.fecha || '').slice(0, 4);
+    if (/^\d{4}$/.test(y)) anios.add(Number(y));
+  }
+  return [...anios].sort((a, b) => b - a);
+}
+
+
 // ── Unidades ─────────────────────────────────────────────────────────
 // El OCR copia la unidad tal cual sale del comprobante: en producción conviven
 // "unidad" (1249 líneas) y "und" (841) para lo MISMO, más los códigos SUNAT en
@@ -215,7 +274,7 @@ const cerrarLado = (lado) => ({
  * @returns { insumos:[...], totales:{...} }
  */
 export function inventarioDeEmpresa(lineas, opts = {}) {
-  const { companyId = null, grupoDe = null, grupos = null } = opts;
+  const { companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null } = opts;
   const porInsumo = new Map();
   const totales = {
     insumos: 0, lineasCompra: 0, lineasVenta: 0, lineasSinPrecio: 0,
@@ -226,6 +285,11 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     if (!l) continue;
     if (companyId && l.companyId !== companyId) continue;
     if (l.cancelado) continue;
+    // ── Filtro temporal (Tanda 3) ─────────────────────────────────────
+    // Se aplica ANTES de contar lineasNota: si el período no incluye la
+    // nota de crédito tampoco debe restar. Coherencia del período.
+    if (desde && l.fecha && l.fecha < desde) continue;
+    if (hasta && l.fecha && l.fecha > hasta) continue;
     if (l.esNota) { totales.lineasNota++; continue; }
 
     const clave = claveGrupoDe(l.nombre, grupoDe);
@@ -244,7 +308,13 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     }
     const ins = porInsumo.get(clave);
     ins.variantes.add(l.nombre);
-    if (l.tipoInsumo) ins.tipos.add(l.tipoInsumo);
+    // ── Override de tipo por texto (Tanda 3) ──────────────────────────
+    // 'clasificarLineaPorTexto' detecta anticipos, valorizaciones de obra,
+    // liquidaciones, alquileres, etc. y les asigna el tipo correcto antes
+    // de que el tipo de la IA entre en juego. Si no hay override, cae al
+    // tipo original del ítem (asignado en Captura Mágica).
+    const tipoEfectivo = clasificarLineaPorTexto(l.nombre) || l.tipoInsumo;
+    if (tipoEfectivo) ins.tipos.add(tipoEfectivo);
     ins.lineas.push(l);
     if (l.precio <= 0) totales.lineasSinPrecio++;
 

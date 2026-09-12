@@ -47,7 +47,7 @@ import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
 import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
 import {
   inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario,
-  saldosNegativos, tieneSaldoNegativo,
+  saldosNegativos, tieneSaldoNegativo, aniosDeLineas,
 } from "../lib/inventario-empresa.js";
 import { sociosDeObra } from "../lib/consorcio.js";
 import { TIPO_LBL as TRABAJO_TIPO_LBL, ESTADO_LBL as TRABAJO_ESTADO_LBL, ESTADO_BADGE as TRABAJO_ESTADO_BADGE, esAbierto as trabajoAbierto } from "../lib/trabajos.js";
@@ -130,6 +130,7 @@ const irACorrelacionesInsumos = (companyId) => {
 const TIPO_BADGE = {
   material: 'b-blue', servicio: 'b-gray', epp: 'b-green',
   herramienta: 'b-amber', maquinaria: 'b-red',
+  anticipo: 'b-purple', servicio_obra: 'b-indigo',
 };
 
 const PASO_LISTA = 50;   // insumos por tanda (GASOMI tiene cientos)
@@ -232,8 +233,8 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const resueltos = uMD(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uMD(() => construirGrupos(resueltos), [resueltos]);
   const inv = uMD(
-    () => inventarioDeEmpresa(lineas, { companyId: company?.id, grupoDe, grupos }),
-    [lineas, company?.id, grupoDe, grupos]
+    () => inventarioDeEmpresa(lineas, { companyId: company?.id, grupoDe, grupos, desde: desdePeriodo, hasta: hastaPeriodo }),
+    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo]
   );
   const tiposPresentes = uMD(() => {
     const s = new Set();
@@ -248,6 +249,34 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // scrolleando.
   const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
   const [soloNegativos, setSoloNegativos] = uSD(false);
+  // ── Bloques temporales (Tanda 3) ─────────────────────────────────────
+  // 'historico' = sin filtro | 'anio' = año completo | 'mes' = mes puntual
+  const [periodoInv, setPeriodoInv] = uSD('historico');
+  const [anioSel, setAnioSel] = uSD(() => new Date().getFullYear());
+  const [mesSel, setMesSel] = uSD(() => new Date().getMonth() + 1); // 1-12
+
+  // Años con facturas de ESTA empresa (excluye cancelados y demo como la lib)
+  const aniosDisponibles = uMD(
+    () => aniosDeLineas((lineas || []).filter(l => !l.cancelado && l.companyId === company?.id)),
+    [lineas, company?.id]
+  );
+
+  // Rango ISO derivado del selector de período
+  const { desde: desdePeriodo, hasta: hastaPeriodo } = uMD(() => {
+    if (periodoInv === 'historico') return { desde: null, hasta: null };
+    const anio = anioSel;
+    if (periodoInv === 'anio') {
+      return { desde: `${anio}-01-01`, hasta: `${anio}-12-31` };
+    }
+    // 'mes'
+    // new Date(year, month, 0) devuelve el último día del mes anterior;
+    // usando month = mesSel (1-12) obtenemos el último día de mesSel.
+    const ultimoDia = new Date(anio, mesSel, 0).toISOString().slice(0, 10);
+    const mm = String(mesSel).padStart(2, '0');
+    return { desde: `${anio}-${mm}-01`, hasta: ultimoDia };
+  }, [periodoInv, anioSel, mesSel]);
+
+  const hayFiltroTemporal = periodoInv !== 'historico';
   const filtrados = uMD(() => {
     const porTexto = filtrarInventario(inv.insumos, busca);
     const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
@@ -522,7 +551,49 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
+        {/* ── Selector de período (Tanda 3) ─────────────────────────────
+            Permite ver el inventario comprado en un período específico: el año
+            completo, un mes puntual, o desde siempre (histórico). Los años que
+            aparecen en el selector se derivan de las fechas de las facturas de
+            esta empresa — nunca se hardcodean. */}
+        <div style={{ display: 'flex', gap: 6, padding: '8px 10px', borderBottom: '1px solid var(--border)', background: 'var(--bg-s)', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: 'var(--tm)', fontWeight: 600 }}>Período:</span>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            <button
+              className={`btn btn-xs ${periodoInv === 'historico' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => { setPeriodoInv('historico'); setTope(PASO_LISTA); }}
+            >Desde siempre</button>
+            <button
+              className={`btn btn-xs ${periodoInv === 'anio' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => { setPeriodoInv('anio'); setTope(PASO_LISTA); }}
+            >Por año</button>
+            <button
+              className={`btn btn-xs ${periodoInv === 'mes' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => { setPeriodoInv('mes'); setTope(PASO_LISTA); }}
+            >Por mes</button>
+          </div>
+          {(periodoInv === 'anio' || periodoInv === 'mes') && (
+            <select className="fi" style={{ width: 80 }} value={anioSel} onChange={e => { setAnioSel(Number(e.target.value)); setTope(PASO_LISTA); }}>
+              {(aniosDisponibles.length > 0 ? aniosDisponibles : [new Date().getFullYear()]).map(a => (
+                <option key={a} value={a}>{a}</option>
+              ))}
+            </select>
+          )}
+          {periodoInv === 'mes' && (
+            <select className="fi" style={{ width: 110 }} value={mesSel} onChange={e => { setMesSel(Number(e.target.value)); setTope(PASO_LISTA); }}>
+              {['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'].map((nm, i) => (
+                <option key={i + 1} value={i + 1}>{nm}</option>
+              ))}
+            </select>
+          )}
+          {hayFiltroTemporal && (
+            <span style={{ fontSize: 10.5, color: 'var(--blue)', fontWeight: 600 }}>
+              {periodoInv === 'anio' ? `Mostrando ${anioSel}` : `Mostrando ${['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][mesSel - 1]} ${anioSel}`}
+            </span>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: 10, borderBottom: '1px solid var(--border)' }}>
+
           <input
             className="fi" style={{ flex: 1, minWidth: 180 }}
             placeholder="Buscar insumo (sin tildes, busca también las variantes de nombre)"
@@ -586,7 +657,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                 <span> — <strong>Filtrando en página 1</strong> (clic aquí para ver todo el inventario).</span>
               ) : (
                 <span>
-                  {' '}— esta empresa facturó más de lo que tiene comprado. Suele pasar cuando se emite una factura contra una orden sin tener el stock: la compra que la respalda todavía no está cargada, está en otra empresa del grupo, o está escrita con otro nombre y sin mapear.{' '}
+                  {' '}— esta empresa facturó más de lo que tiene comprado.{hayFiltroTemporal ? (
+                    <> <strong style={{ color: 'var(--amber)' }}>⚠ Estás viendo un período acotado</strong>: si la compra que respalda la venta está en otro mes o año, va a aparecer como negativo aquí aunque en el histórico esté cuadrado. Revisá en «Desde siempre» para confirmar si es un real descuadre o solo un desfase de período.</>
+                  ) : (
+                    <> Suele pasar cuando se emite una factura contra una orden sin tener el stock: la compra que la respalda todavía no está cargada, está en otra empresa del grupo, o está escrita con otro nombre y sin mapear.</>
+                  )}{' '}
                   <span style={{ color: 'var(--blue)', textDecoration: 'underline', fontWeight: 600, marginLeft: 4 }}>
                     👉 Clic aquí para verlos de inmediato
                   </span>

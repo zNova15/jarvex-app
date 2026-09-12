@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   normUnidad, labelUnidad, resumenFinancieroEmpresa, inventarioDeEmpresa, filtrarInventario,
-  saldosNegativos, tieneSaldoNegativo,
+  saldosNegativos, tieneSaldoNegativo, clasificarLineaPorTexto, aniosDeLineas,
 } from '../inventario-empresa';
+
 import { extraerLineasDeFacturas } from '../analisis-insumos';
 import { resolverPares, construirGrupos } from '../insumo-correlacion';
 
@@ -261,3 +262,155 @@ describe('saldosNegativos', () => {
     expect(saldosNegativos().total).toBe(0);
   });
 });
+
+// ── TANDA 3: clasificación por texto ──────────────────────────────────
+describe('clasificarLineaPorTexto', () => {
+  it('detecta anticipos', () => {
+    expect(clasificarLineaPorTexto('Anticipo de cliente')).toBe('anticipo');
+    expect(clasificarLineaPorTexto('ADELANTO DE OBRA - PRIMER DESEMBOLSO')).toBe('anticipo');
+    expect(clasificarLineaPorTexto('PAGO A CUENTA POR LA OBRA')).toBe('anticipo');
+  });
+
+  it('detecta servicios de obra (valorizaciones, contratos, saldo de tarrajeo)', () => {
+    expect(clasificarLineaPorTexto('OBRA: REHABILITACION DEL LOCAL ESCOLAR N 88389')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('POR EL SALDO DE TARRAJEO DE LA OBRA: SALDO DE LA I.E.')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('VALORIZACION 03 DEL CONTRATO DE OBRA')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('EJECUCION DE OBRA MIRAFLORES')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('CONTRATO DE OBRA Nro 004-2026')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('PARTIDAS DE OBRA: ENCOFRADO Y DESENCOFRADO')).toBe('servicio_obra');
+    expect(clasificarLineaPorTexto('EJECUCION DE PARTIDAS DE PAVIMENTACION')).toBe('servicio_obra');
+  });
+
+  it('detecta liquidaciones', () => {
+    expect(clasificarLineaPorTexto('ELABORACION DE LIQUIDACION DE SALDO DE OBRA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('LIQUIDACION FINAL DEL CONTRATO')).toBe('servicio');
+  });
+
+  it('detecta alquiler y arrendamiento', () => {
+    expect(clasificarLineaPorTexto('ALQUILER DE RETROEXCAVADORA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('ARRENDAMIENTO DE MAQUINARIA PESADA')).toBe('servicio');
+  });
+
+  it('detecta transporte y flete', () => {
+    expect(clasificarLineaPorTexto('SERVICIO DE TRANSPORTE DE MATERIALES')).toBe('servicio');
+    expect(clasificarLineaPorTexto('FLETE POR ENVÍO DE EQUIPOS A OBRA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('TRASLADO DE MATERIAL EXCEDENTE')).toBe('servicio');
+  });
+
+  it('detecta mantenimiento y reparación', () => {
+    expect(clasificarLineaPorTexto('MANTENIMIENTO DE VOLQUETE SCANIA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('REPARACION DE MOTOR DEL CAMION')).toBe('servicio');
+  });
+
+  it('detecta honorarios y consultoría', () => {
+    expect(clasificarLineaPorTexto('HONORARIOS POR SUPERVISION DE OBRA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('GASTOS NOTARIALES DE ESCRITURA')).toBe('servicio');
+    expect(clasificarLineaPorTexto('CONSULTORIA EN GESTION DE PROYECTOS')).toBe('servicio');
+  });
+
+  it('devuelve null para materiales normales (no inventa nada)', () => {
+    expect(clasificarLineaPorTexto('CEMENTO PORTLAND TIPO I')).toBeNull();
+    expect(clasificarLineaPorTexto('VARILLA DE ACERO CORRUGADO')).toBeNull();
+    expect(clasificarLineaPorTexto('CLAVOS DE ACERO')).toBeNull();
+    expect(clasificarLineaPorTexto('')).toBeNull();
+    expect(clasificarLineaPorTexto(null)).toBeNull();
+    expect(clasificarLineaPorTexto(undefined)).toBeNull();
+  });
+
+  it('los overrides se aplican en inventarioDeEmpresa (anticipo no aparece como material)', () => {
+    const movsConAnticipo = [
+      {
+        id: 'a1', company_id: EMP_A, date: '2026-08-01', type: 'cost', clase: 'compra',
+        currency: 'PEN', amount: 5000, third_party_name: 'EMPRESA X',
+        notas: { items_factura: [{ descripcion: 'Anticipo de cliente', unidad: 'und', cantidad: 1, precio_unitario: 5000, tipo_insumo: 'material' }] },
+      },
+    ];
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(movsConAnticipo), { companyId: EMP_A });
+    const anticipo = inv.insumos.find(i => i.display.toLowerCase().includes('anticipo'));
+    expect(anticipo).toBeTruthy();
+    expect(anticipo.tipos).toContain('anticipo');
+    expect(anticipo.tipos).not.toContain('material');
+  });
+});
+
+// ── TANDA 3: años derivados de líneas ────────────────────────────────
+describe('aniosDeLineas', () => {
+  it('extrae los años únicos de las fechas, sin duplicar, en orden descendente', () => {
+    const lineas = [
+      { fecha: '2024-03-01' }, { fecha: '2026-07-15' },
+      { fecha: '2025-12-31' }, { fecha: '2026-01-10' },
+    ];
+    expect(aniosDeLineas(lineas)).toEqual([2026, 2025, 2024]);
+  });
+
+  it('ignora fechas vacías o malformadas', () => {
+    const lineas = [{ fecha: '' }, { fecha: null }, { fecha: '2026-05-01' }, { fecha: 'abcd' }];
+    expect(aniosDeLineas(lineas)).toEqual([2026]);
+  });
+
+  it('con array vacío o sin argumento devuelve array vacío', () => {
+    expect(aniosDeLineas([])).toEqual([]);
+    expect(aniosDeLineas()).toEqual([]);
+  });
+});
+
+// ── TANDA 3: filtro temporal en inventarioDeEmpresa ──────────────────
+describe('inventarioDeEmpresa con filtro temporal', () => {
+  // 3 compras del mismo ítem en meses distintos
+  const MOVS_TEMPORAL = [
+    {
+      id: 't1', company_id: EMP_A, date: '2026-01-15', type: 'cost', clase: 'compra',
+      currency: 'PEN', amount: 300, third_party_name: 'PROV A',
+      notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 10, precio_unitario: 30 }] },
+    },
+    {
+      id: 't2', company_id: EMP_A, date: '2026-06-20', type: 'cost', clase: 'compra',
+      currency: 'PEN', amount: 600, third_party_name: 'PROV A',
+      notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 20, precio_unitario: 30 }] },
+    },
+    {
+      id: 't3', company_id: EMP_A, date: '2026-12-01', type: 'cost', clase: 'compra',
+      currency: 'PEN', amount: 150, third_party_name: 'PROV A',
+      notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 5, precio_unitario: 30 }] },
+    },
+  ];
+  const lineasT = () => extraerLineasDeFacturas(MOVS_TEMPORAL);
+
+  it('sin filtro devuelve todo (30 und)', () => {
+    const inv = inventarioDeEmpresa(lineasT(), { companyId: EMP_A });
+    const cemento = inv.insumos[0];
+    expect(cemento.comprado.cantidades[0].cantidad).toBe(35);
+  });
+
+  it('filtro por año 2026 primer semestre devuelve solo enero + junio = 30', () => {
+    const inv = inventarioDeEmpresa(lineasT(), { companyId: EMP_A, desde: '2026-01-01', hasta: '2026-06-30' });
+    expect(inv.insumos[0].comprado.cantidades[0].cantidad).toBe(30);
+  });
+
+  it('filtro por mes enero devuelve solo 10 und', () => {
+    const inv = inventarioDeEmpresa(lineasT(), { companyId: EMP_A, desde: '2026-01-01', hasta: '2026-01-31' });
+    expect(inv.insumos[0].comprado.cantidades[0].cantidad).toBe(10);
+  });
+
+  it('filtro fuera de rango devuelve inventario vacío', () => {
+    const inv = inventarioDeEmpresa(lineasT(), { companyId: EMP_A, desde: '2025-01-01', hasta: '2025-12-31' });
+    expect(inv.insumos).toHaveLength(0);
+    expect(inv.totales.lineasCompra).toBe(0);
+  });
+
+  it('las notas de crédito también quedan fuera si están fuera del período', () => {
+    const movsConNc = [...MOVS_TEMPORAL, {
+      id: 'tnc', company_id: EMP_A, date: '2025-11-01', type: 'cost', clase: 'compra',
+      document_type: 'nota_credito', currency: 'PEN', amount: 90, third_party_name: 'PROV A',
+      notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 3, precio_unitario: 30 }] },
+    }];
+    const lineasConNc = extraerLineasDeFacturas(movsConNc);
+    // Sin filtro: la NC de 2025 cuenta (lineasNota = 1)
+    expect(inventarioDeEmpresa(lineasConNc, { companyId: EMP_A }).totales.lineasNota).toBe(1);
+    // Con filtro solo 2026: la NC de 2025 queda fuera (lineasNota = 0)
+    expect(inventarioDeEmpresa(lineasConNc, {
+      companyId: EMP_A, desde: '2026-01-01', hasta: '2026-12-31',
+    }).totales.lineasNota).toBe(0);
+  });
+});
+
