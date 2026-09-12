@@ -11,11 +11,6 @@ import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimi
 import { notaHumana, fusionarNota, resumenEstructurado } from "../lib/notas-movimiento.js";
 import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
 import { CATALOGO_SPOT, etiquetaCodigoSpot, tasaOficialSpot } from "../lib/codigos-spot.js";
-
-// Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
-// Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
-// de detracción cargada. Se usa para avisar, nunca para borrar el dato solo.
-const UMBRAL_DETRACCION = 700;
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
 import { resumenRecepcion, rankearIngresosParaItem, rankearFacturasParaIngreso, itemsDeFactura, estadoRecepcionDeItems, parseNotas, referenciaSinCostos, reporteRecepcion } from "../lib/cruce-recepcion.js";
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
@@ -44,6 +39,11 @@ import { ventasSinEspejo, datosDelEspejo } from "../lib/interco-espejo.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
+
+// Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
+// Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
+// de detracción cargada. Se usa para avisar, nunca para borrar el dato solo.
+const UMBRAL_DETRACCION = 700;
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
 const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];

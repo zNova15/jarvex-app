@@ -1,15 +1,15 @@
-// ═══════════════════════════════════════════════════════════════════
-// REEMPLAZO DE PROPUESTA SIRE — RVIE (140400) y RCE (080400) EN ZIP
+﻿// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// REEMPLAZO DE PROPUESTA SIRE â€” RVIE (140400) y RCE (080400) EN ZIP
 //
 // Permite a la contadora y asistentes:
-// 1. Seleccionar qué facturas/comprobantes de JARVEX incluir en el reemplazo.
-// 2. Cruzar automáticamente con presentaciones o propuestas previas de SUNAT
-//    (ej. cortes históricos o propuesta descargada de Julio 2024 / Junio 2026)
-//    para ver qué ya está presentado y qué falta presentar.
-// 3. Seleccionar rápidamente "Solo los que faltan" o "Reemplazar propuesta completa".
+// 1. Seleccionar quÃ© facturas/comprobantes de JARVEX incluir en el reemplazo.
+// 2. Cruzar automÃ¡ticamente con presentaciones o propuestas previas de SUNAT
+//    (ej. cortes histÃ³ricos o propuesta descargada de Julio 2024 / Junio 2026)
+//    para ver quÃ© ya estÃ¡ presentado y quÃ© falta presentar.
+// 3. Seleccionar rÃ¡pidamente "Solo los que faltan" o "Reemplazar propuesta completa".
 // 4. Generar y descargar el archivo .ZIP reglamentario con la nomenclatura oficial
 //    de 33 caracteres de SUNAT SIRE.
-// ═══════════════════════════════════════════════════════════════════
+// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 import React from 'react';
 import {
@@ -61,16 +61,16 @@ export function ReemplazoPropuestaSire({
     );
   }, [cortesHook.data, company?.id]);
 
-  // Encontrar corte sugerido para el período y libro actual
+  // Encontrar corte sugerido para el perÃ­odo y libro actual
   const corteSugerido = useMemo(() => {
     if (corteElegidoId === 'ninguno') return null;
     if (corteElegidoId !== 'auto') {
       return cortesDisponibles.find(c => c.id === corteElegidoId) || null;
     }
-    // Auto: busca primero del mismo período y libro
+    // Auto: busca primero del mismo perÃ­odo y libro
     const exacto = cortesDisponibles.find(c => String(c.periodo) === periodoCod && c.libro === libro);
     if (exacto) return exacto;
-    // O el más reciente del mismo libro
+    // O el mÃ¡s reciente del mismo libro
     const delLibro = cortesDisponibles
       .filter(c => c.libro === libro)
       .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0];
@@ -88,7 +88,7 @@ export function ReemplazoPropuestaSire({
     return [];
   }, [archivoExtraFilas, corteSugerido]);
 
-  // Movimientos de la empresa en el período
+  // Movimientos de la empresa en el perÃ­odo
   const movsDelPeriodo = useMemo(() => {
     return (movs || []).filter(m => {
       if (!m || m.deleted_at) return false;
@@ -98,7 +98,7 @@ export function ReemplazoPropuestaSire({
     });
   }, [movs, company?.id, anio, mes]);
 
-  // Análisis y Cruce con comprobantes presentados
+  // AnÃ¡lisis y Cruce con comprobantes presentados
   const analisis = useMemo(() => {
     return analizarComprobantesParaSire(movsDelPeriodo, libro, {
       periodo: periodoObj,
@@ -106,7 +106,7 @@ export function ReemplazoPropuestaSire({
     });
   }, [movsDelPeriodo, libro, periodoObj, filasSunatReferencia]);
 
-  // Al cambiar período o libro, por defecto seleccionar todos
+  // Al cambiar perÃ­odo o libro, por defecto seleccionar todos
   useEffect(() => {
     if (analisis.items && analisis.items.length > 0) {
       setSeleccionadosIds(new Set(analisis.items.map(i => i.id)));
@@ -115,7 +115,7 @@ export function ReemplazoPropuestaSire({
     }
   }, [periodoCod, libro, analisis.totalMovs]);
 
-  // Selección rápida
+  // SelecciÃ³n rÃ¡pida
   const handleSeleccionarFaltantes = () => {
     const pendientes = analisis.items.filter(i => !i.yaPresentado).map(i => i.id);
     setSeleccionadosIds(new Set(pendientes));
@@ -165,7 +165,7 @@ export function ReemplazoPropuestaSire({
     }
   };
 
-  // Comprobantes filtrados para visualización en tabla
+  // Comprobantes filtrados para visualizaciÃ³n en tabla
   const itemsFiltrados = useMemo(() => {
     let list = analisis.items || [];
     if (filtroEstado === 'pendientes') {
@@ -184,7 +184,7 @@ export function ReemplazoPropuestaSire({
     return list;
   }, [analisis.items, filtroEstado, filtroTexto]);
 
-  // Métricas de los seleccionados
+  // MÃ©tricas de los seleccionados
   const metricasSeleccion = useMemo(() => {
     const elegidos = (analisis.items || []).filter(i => seleccionadosIds.has(i.id));
     const totalMonto = elegidos.reduce((sum, i) => sum + i.monto, 0);
@@ -201,10 +201,10 @@ export function ReemplazoPropuestaSire({
   // Descarga del paquete ZIP reglamentario SIRE
   const handleDescargarZip = async () => {
     if (!rucValid) {
-      return showToast?.('La empresa no tiene RUC válido de 11 dígitos', 'red');
+      return showToast?.('La empresa no tiene RUC vÃ¡lido de 11 dÃ­gitos', 'red');
     }
     if (metricasSeleccion.cantidad === 0) {
-      const ok = window.confirm('No has seleccionado comprobantes. ¿Deseas generar el reemplazo SIN operaciones (vacío)?');
+      const ok = window.confirm('No has seleccionado comprobantes. Â¿Deseas generar el reemplazo SIN operaciones (vacÃ­o)?');
       if (!ok) return;
     }
 
@@ -229,9 +229,9 @@ export function ReemplazoPropuestaSire({
     }
   };
 
-  // Descarga de comprobación en TXT
+  // Descarga de comprobaciÃ³n en TXT
   const handleDescargarTxt = () => {
-    if (!rucValid) return showToast?.('Empresa sin RUC válido', 'red');
+    if (!rucValid) return showToast?.('Empresa sin RUC vÃ¡lido', 'red');
     const opts = { seleccionadosIds: Array.from(seleccionadosIds) };
     const res = libro === 'compras'
       ? generateReemplazoPropuestaRCE(movsDelPeriodo, periodoObj, ruc, razonSocial, opts)
@@ -248,11 +248,11 @@ export function ReemplazoPropuestaSire({
 
   return (
     <div className="card card-p" style={{ padding: 20 }}>
-      {/* Cabecera de la sección SIRE */}
+      {/* Cabecera de la secciÃ³n SIRE */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 18, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>📦 Reemplazo de Propuesta SIRE SUNAT (.ZIP)</span>
+            <span>ðŸ“¦ Reemplazo de Propuesta SIRE SUNAT (.ZIP)</span>
             <span style={{ fontSize: 11, background: 'var(--blue)', color: '#fff', padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>
               Oficial R.S. 112-2021
             </span>
@@ -263,14 +263,14 @@ export function ReemplazoPropuestaSire({
         </div>
 
         {/* Sub-selector de Registro: Compras vs Ventas */}
-        <div style={{ display: 'flex', background: 'var(--bg-card, #202634)', borderRadius: 8, padding: 3, border: '1px solid var(--b-dim)' }}>
+        <div style={{ display: 'flex', background: 'var(--bg-c)', borderRadius: 8, padding: 3, border: '1px solid var(--border)' }}>
           <button
             type="button"
             className={`btn btn-sm ${libro === 'compras' ? 'btn-amber' : ''}`}
             style={{ borderRadius: 6, fontWeight: libro === 'compras' ? 700 : 400 }}
             onClick={() => setLibro('compras')}
           >
-            🛒 Compras (RCE - 080400)
+            ðŸ›’ Compras (RCE - 080400)
           </button>
           <button
             type="button"
@@ -278,23 +278,23 @@ export function ReemplazoPropuestaSire({
             style={{ borderRadius: 6, fontWeight: libro === 'ventas' ? 700 : 400 }}
             onClick={() => setLibro('ventas')}
           >
-            💰 Ventas (RVIE - 140400)
+            ðŸ’° Ventas (RVIE - 140400)
           </button>
         </div>
       </div>
 
-      {/* Banner de Cruce con Presentación / Propuesta de SUNAT */}
+      {/* Banner de Cruce con PresentaciÃ³n / Propuesta de SUNAT */}
       <div style={{
-        background: 'var(--bg-sub, rgba(255,255,255,0.03))',
-        border: '1px solid var(--b-dim)',
+        background: 'var(--bg-s)',
+        border: '1px solid var(--border)',
         borderRadius: 8,
         padding: 14,
         marginBottom: 16,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 16 }}>🔍</span>
-            <strong style={{ fontSize: 13 }}>Cotejo con Presentación / Propuesta SUNAT:</strong>
+            <span style={{ fontSize: 16 }}>ðŸ”</span>
+            <strong style={{ fontSize: 13 }}>Cotejo con PresentaciÃ³n / Propuesta SUNAT:</strong>
             <select
               className="fi"
               style={{ width: 'auto', minWidth: 260, height: 32, fontSize: 12 }}
@@ -306,19 +306,19 @@ export function ReemplazoPropuestaSire({
               }}
             >
               <option value="auto">
-                {corteSugerido ? `📌 Sugerido: ${corteSugerido.archivo} (${corteSugerido.periodo})` : '🔍 Autodetectar corte disponible'}
+                {corteSugerido ? `ðŸ“Œ Sugerido: ${corteSugerido.archivo} (${corteSugerido.periodo})` : 'ðŸ” Autodetectar corte disponible'}
               </option>
               {cortesDisponibles.map(c => (
                 <option key={c.id} value={c.id}>
-                  {c.archivo || `Corte ${c.periodo}`} · {c.periodo} ({c.libro}) [{c.filas?.length || 0} cps]
+                  {c.archivo || `Corte ${c.periodo}`} Â· {c.periodo} ({c.libro}) [{c.filas?.length || 0} cps]
                 </option>
               ))}
-              <option value="ninguno">— Sin comparar con SUNAT (solo contabilidad JARVEX) —</option>
+              <option value="ninguno">â€” Sin comparar con SUNAT (solo contabilidad JARVEX) â€”</option>
             </select>
           </div>
 
           <label className="btn btn-sm" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>📂 Subir otro CSV / TXT SUNAT</span>
+            <span>ðŸ“‚ Subir otro CSV / TXT SUNAT</span>
             <input
               type="file"
               accept=".csv,.txt"
@@ -337,7 +337,7 @@ export function ReemplazoPropuestaSire({
         {/* Resumen de estado de comprobantes */}
         <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ fontSize: 12 }}>
-            <span style={{ color: 'var(--tm)' }}>Comprobantes JARVEX en período: </span>
+            <span style={{ color: 'var(--tm)' }}>Comprobantes JARVEX en perÃ­odo: </span>
             <strong style={{ fontSize: 14 }}>{analisis.totalMovs}</strong>
           </div>
           <div style={{ fontSize: 12 }}>
@@ -356,7 +356,7 @@ export function ReemplazoPropuestaSire({
                 onClick={handleSeleccionarFaltantes}
                 title="Desmarca los ya presentados y selecciona los que faltan"
               >
-                ⚡ Seleccionar solo pendientes ({analisis.faltantesCount})
+                âš¡ Seleccionar solo pendientes ({analisis.faltantesCount})
               </button>
             </div>
           )}
@@ -371,17 +371,17 @@ export function ReemplazoPropuestaSire({
             className="btn btn-sm"
             onClick={handleSeleccionarTodos}
           >
-            ☑️ Seleccionar todos
+            â˜‘ï¸ Seleccionar todos
           </button>
           <button
             type="button"
             className="btn btn-sm"
             onClick={handleDesmarcarTodos}
           >
-            ⬜ Desmarcar todos
+            â¬œ Desmarcar todos
           </button>
 
-          <div style={{ display: 'inline-flex', border: '1px solid var(--b-dim)', borderRadius: 6, overflow: 'hidden' }}>
+          <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
             <button
               type="button"
               className={`btn btn-sm ${filtroEstado === 'todos' ? 'btn-amber' : ''}`}
@@ -413,7 +413,7 @@ export function ReemplazoPropuestaSire({
           <input
             type="text"
             className="fi"
-            placeholder="Buscar por serie, número o RUC..."
+            placeholder="Buscar por serie, nÃºmero o RUC..."
             value={filtroTexto}
             onChange={e => setFiltroTexto(e.target.value)}
             style={{ width: 220, height: 32, fontSize: 12 }}
@@ -422,10 +422,10 @@ export function ReemplazoPropuestaSire({
       </div>
 
       {/* Tabla de comprobantes */}
-      <div style={{ overflowX: 'auto', maxHeight: 420, border: '1px solid var(--b-dim)', borderRadius: 6, marginBottom: 16 }}>
+      <div style={{ overflowX: 'auto', maxHeight: 420, border: '1px solid var(--border)', borderRadius: 6, marginBottom: 16 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead style={{ background: 'var(--bg-sub, #1e2430)', position: 'sticky', top: 0, zIndex: 2 }}>
-            <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--b-dim)' }}>
+          <thead style={{ background: 'var(--bg-s)', position: 'sticky', top: 0, zIndex: 2 }}>
+            <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)' }}>
               <th style={{ padding: '8px 10px', width: 36, textAlign: 'center' }}>
                 <input
                   type="checkbox"
@@ -451,7 +451,7 @@ export function ReemplazoPropuestaSire({
               <th style={{ padding: '8px 10px' }}>Fecha</th>
               <th style={{ padding: '8px 10px' }}>Tipo</th>
               <th style={{ padding: '8px 10px' }}>Documento</th>
-              <th style={{ padding: '8px 10px' }}>Tercero (RUC / Razón Social)</th>
+              <th style={{ padding: '8px 10px' }}>Tercero (RUC / RazÃ³n Social)</th>
               <th style={{ padding: '8px 10px', textAlign: 'right' }}>Total</th>
             </tr>
           </thead>
@@ -459,7 +459,7 @@ export function ReemplazoPropuestaSire({
             {itemsFiltrados.length === 0 ? (
               <tr>
                 <td colSpan={7} style={{ padding: 24, textAlign: 'center', color: 'var(--tm)' }}>
-                  No hay comprobantes que coincidan con los filtros en este período.
+                  No hay comprobantes que coincidan con los filtros en este perÃ­odo.
                 </td>
               </tr>
             ) : (
@@ -469,7 +469,7 @@ export function ReemplazoPropuestaSire({
                   <tr
                     key={item.id}
                     style={{
-                      borderBottom: '1px solid var(--b-dim, rgba(255,255,255,0.05))',
+                      borderBottom: '1px solid var(--border)',
                       background: checked ? 'rgba(245, 158, 11, 0.05)' : undefined,
                       cursor: 'pointer',
                     }}
@@ -493,7 +493,7 @@ export function ReemplazoPropuestaSire({
                           fontWeight: 600,
                           border: '1px solid rgba(16, 185, 129, 0.3)',
                         }}>
-                          ✅ Ya en SUNAT
+                          âœ… Ya en SUNAT
                         </span>
                       ) : (
                         <span style={{
@@ -505,7 +505,7 @@ export function ReemplazoPropuestaSire({
                           fontWeight: 600,
                           border: '1px solid rgba(245, 158, 11, 0.3)',
                         }}>
-                          ⭐ Pendiente
+                          â­ Pendiente
                         </span>
                       )}
                     </td>
@@ -514,10 +514,10 @@ export function ReemplazoPropuestaSire({
                       {item.tipoDocumento || 'Factura'}
                     </td>
                     <td style={{ padding: '8px 10px', fontWeight: 600 }}>
-                      {item.documento || '—'}
+                      {item.documento || 'â€”'}
                     </td>
                     <td style={{ padding: '8px 10px' }}>
-                      <div>{item.terceroNombre || '—'}</div>
+                      <div>{item.terceroNombre || 'â€”'}</div>
                       <div style={{ fontSize: 10, color: 'var(--tm)' }}>{item.terceroRuc}</div>
                     </td>
                     <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600 }}>
@@ -532,10 +532,10 @@ export function ReemplazoPropuestaSire({
         </table>
       </div>
 
-      {/* Card de Resumen de Selección y Descarga Reglamentaria */}
+      {/* Card de Resumen de SelecciÃ³n y Descarga Reglamentaria */}
       <div style={{
-        background: 'var(--bg-sub, #1e2430)',
-        border: '1px solid var(--b-dim)',
+        background: 'var(--bg-s)',
+        border: '1px solid var(--border)',
         borderRadius: 8,
         padding: 16,
         display: 'flex',
@@ -567,9 +567,9 @@ export function ReemplazoPropuestaSire({
             className="btn"
             onClick={handleDescargarTxt}
             disabled={busy || !rucValid}
-            title="Descargar solo el archivo .txt de 40/42 campos para revisión previa"
+            title="Descargar solo el archivo .txt de 40/42 campos para revisiÃ³n previa"
           >
-            📄 Ver / Bajar .txt
+            ðŸ“„ Ver / Bajar .txt
           </button>
           <button
             type="button"
@@ -578,7 +578,7 @@ export function ReemplazoPropuestaSire({
             onClick={handleDescargarZip}
             disabled={busy || !rucValid}
           >
-            📦 Descargar Reemplazo Propuesta (.ZIP)
+            ðŸ“¦ Descargar Reemplazo Propuesta (.ZIP)
           </button>
         </div>
       </div>
@@ -587,3 +587,4 @@ export function ReemplazoPropuestaSire({
 }
 
 export default ReemplazoPropuestaSire;
+
