@@ -190,6 +190,133 @@ const TRANSACTIONAL_TABLES = [
   'app_config',
 ];
 
+// Mapeo tabla Dexie → nombre legible de módulo para UI y logs.
+const TABLA_TO_MODULO = {
+  obras: 'Obras',
+  personal: 'Personal',
+  personal_historial: 'Personal',
+  // Datos bancarios del personal: módulo PROPIO — el almacenero ganó Personal 'w'
+  // (scope obrero) pero NO debe poder tocar cuentas bancarias (contador/tesorero sí).
+  personal_cuentas_bancarias: 'Cuentas Bancarias',
+  // frentes_obra: sin mapear a propósito → canPushTabla deja pasar (no existe
+  // módulo 'Frentes' en la matriz de permisos; el CRUD ya gatea por rol).
+  materiales: 'Materiales',
+  herramientas: 'Herramientas',
+  epps: 'EPP',
+  proveedores: 'Proveedores',
+  partidas: 'Partidas',
+  insumos_partida: 'Insumos',
+  partidas_versionadas: 'Versiones presupuesto',
+  insumos_partida_versionadas: 'Versiones presupuesto',
+  presupuestos_versiones: 'Versiones presupuesto',
+  cronograma: 'Cronograma',
+  movimientos_materiales: 'Mov. Materiales',
+  movimientos_herramientas: 'Mov. Herramientas',
+  movimientos_epp: 'EPP',
+  movimientos_maquinaria: 'Mov. Maquinaria',
+  caja_chica_movimientos: 'Caja Chica',
+  // OJO: el módulo canónico en la matriz de permisos es 'Insumos de Emergencia'
+  // (con "de"). Antes apuntaba a 'Insumos Emergencia' / 'Mov. Insumos Emergencia',
+  // módulos que NO existen → __hasPerm devolvía false y el push quedaba
+  // bloqueado para todo rol no-admin (prevencionista, y ahora almacenero).
+  insumos_emergencia: 'Insumos de Emergencia',
+  movimientos_insumos_emergencia: 'Insumos de Emergencia',
+  asistencia: 'Asistencia',
+  avance_obra: 'Avance',
+  solicitudes_reporte: 'Avance',
+  solicitudes_frente: 'Avance',
+  incidencias: 'Incidencias',
+  evidencias: 'Evidencias',
+  ubicaciones_obra: 'Ubicaciones',
+  reportes_especialidad: 'Reporte Especialidad',
+  charlas_plan: 'Charlas Seguridad',
+  inducciones: 'Charlas Seguridad',
+  ambiental_registros: 'Gestión Ambiental',
+  calidad_requisitos: 'Gestión Calidad',
+  calidad_certificados: 'Gestión Calidad',
+  social_actores: 'Gestión Social',
+  social_compromisos: 'Gestión Social',
+  social_quejas: 'Gestión Social',
+  insumos_pendientes: 'Requisiciones',
+  requisiciones: 'Requisiciones',
+  requisicion_items: 'Requisiciones',
+  cotizaciones: 'Cotizaciones',
+  cotizacion_items: 'Cotizaciones',
+  ordenes_compra: 'Órdenes de Compra',
+  oc_items: 'Órdenes de Compra',
+  recepciones: 'Recepciones',
+  recepcion_items: 'Recepciones',
+  valorizaciones: 'Valorizaciones',
+  valorizacion_partidas: 'Valorizaciones',
+  valorizacion_adicionales: 'Valorizaciones',
+  cuentas_bancarias: 'Cuentas Bancarias',
+  movimientos_bancarios: 'Cuentas Bancarias',
+  cronograma_pagos: 'Cuentas Bancarias',
+  activos_pesados: 'Activos Pesados',
+  horas_maquina: 'Horas Máquina',
+  consumos_combustible: 'Horas Máquina',
+  mantenimientos_maquinaria: 'Mantenimiento',
+  charlas_seguridad: 'Charlas Seguridad',
+  charla_asistentes: 'Charlas Seguridad',
+  iperc: 'IPERC',
+  epp_entregas: 'EPP',
+  inspecciones_seguridad: 'Inspecciones SSOMA',
+  capacitaciones: 'Capacitaciones',
+  subcontratistas: 'Subcontratistas',
+  subcontratos: 'Subcontratos',
+  subcontrato_valorizaciones: 'Valor. Subcontrato',
+  personal_contrato: 'Contratos Laborales',
+  planillas: 'Planillas',
+  planilla_boletas: 'Planillas',
+  companies: 'Empresas',
+  // Constituir un consorcio y fijar los % es un acto societario, no una
+  // edición de obra: se agrupa con Empresas. El set de roles que puede
+  // escribirlo está en ROLES_ESCRIBEN_CONSORCIO (src/lib/consorcio.js) y debe
+  // seguir siendo espejo de la policy de la mig 172.
+  consorcios: 'Empresas',
+  consorcio_socios: 'Empresas',
+  trabajos: 'Bienes y Servicios',
+  trabajo_cotizaciones: 'Bienes y Servicios',
+  accounting_movements: 'Movs. Contables',
+  revision_descartes: 'Movs. Contables',   // el escáner vive dentro de Movimientos
+  // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
+  // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
+  clasificacion_catalogo: 'Movs. Contables',
+  // Reglas de emisión: designación entre empresas del grupo → solo quien tiene
+  // Intercompany 'w' (contadora jefe/admin; el ayudante NO).
+  emision_reglas: 'Intercompany',
+  // Órdenes intercompany: las escriben jefe/admin (aprobación admin en UI).
+  // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
+  reportes_dia: 'Avance',
+  // Pagos de personal/subcontratos: área contable. Con 'Planillas' el push del
+  // AYUDANTE quedaba bloqueado (tiene Planillas 'x' pero Movs. Contables 'w') —
+  // desde el 20-jul el ayudante también registra pagos y sube recibos, así que
+  // se gatea igual que pagos_partes. El RLS del server sigue siendo el guard real.
+  pagos: 'Movs. Contables',
+  depositos_bancarizacion: 'Movs. Contables',
+  // Las PARTES también las registra el ayudante al bancarizar facturas
+  // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push
+  // quedaba bloqueado client-side y la parte en pending eterno).
+  pagos_partes: 'Movs. Contables',
+  // Guías de remisión: las sube Captura (contador/ayudante/admin con Captura-w).
+  guias_remision: 'Movs. Contables',
+  // Mismo módulo que su tabla madre: quien puede subir la guía puede vincularla.
+  guia_factura: 'Movs. Contables',
+  // Registro profesional (mig 171). Los rubros quedan FUERA a propósito: es un
+  // catálogo que la RLS ya restringe a admin, y mapearlo obligaría a darle el
+  // módulo a cualquiera que solo lo lee.
+  personal_profesional: 'Registro Profesional',
+  personal_experiencia: 'Registro Profesional',
+  // Postulaciones (mig 197). Módulo propio y no 'Registro Profesional': el
+  // padrón de profesionales lo escribe también RR.HH., y a qué procesos se
+  // postula el grupo es información comercial que RR.HH. no tiene por qué
+  // tocar. La RLS de la mig 197 dice lo mismo del lado del servidor.
+  licitaciones: 'Licitaciones',
+  licitacion_requisitos: 'Licitaciones',
+  intercompany_transactions: 'Intercompany',
+  trazabilidad_cadenas: 'Trazabilidad',
+};
+
 // Tablas maestras que se descargan del servidor en cada sync.
 const MASTER_TABLES = [
   { tabla: 'obras',                  query: () => supabase.from('obras').select('*').is('deleted_at', null) },
@@ -978,132 +1105,6 @@ const PUSH_PARALLELISM = 5;
 // partidas en su Dexie (importados por el admin) marcados como
 // pending_create por algún edge case del pull. El push falla 79 veces
 // con RLS porque almacenero no tiene 'w' en Insumos/Partidas.
-const TABLA_TO_MODULO = {
-  obras: 'Obras',
-  personal: 'Personal',
-  personal_historial: 'Personal',
-  // Datos bancarios del personal: módulo PROPIO — el almacenero ganó Personal 'w'
-  // (scope obrero) pero NO debe poder tocar cuentas bancarias (contador/tesorero sí).
-  personal_cuentas_bancarias: 'Cuentas Bancarias',
-  // frentes_obra: sin mapear a propósito → canPushTabla deja pasar (no existe
-  // módulo 'Frentes' en la matriz de permisos; el CRUD ya gatea por rol).
-  materiales: 'Materiales',
-  herramientas: 'Herramientas',
-  epps: 'EPP',
-  proveedores: 'Proveedores',
-  partidas: 'Partidas',
-  insumos_partida: 'Insumos',
-  partidas_versionadas: 'Versiones presupuesto',
-  insumos_partida_versionadas: 'Versiones presupuesto',
-  presupuestos_versiones: 'Versiones presupuesto',
-  cronograma: 'Cronograma',
-  movimientos_materiales: 'Mov. Materiales',
-  movimientos_herramientas: 'Mov. Herramientas',
-  movimientos_epp: 'EPP',
-  movimientos_maquinaria: 'Mov. Maquinaria',
-  caja_chica_movimientos: 'Caja Chica',
-  // OJO: el módulo canónico en la matriz de permisos es 'Insumos de Emergencia'
-  // (con "de"). Antes apuntaba a 'Insumos Emergencia' / 'Mov. Insumos Emergencia',
-  // módulos que NO existen → __hasPerm devolvía false y el push quedaba
-  // bloqueado para todo rol no-admin (prevencionista, y ahora almacenero).
-  insumos_emergencia: 'Insumos de Emergencia',
-  movimientos_insumos_emergencia: 'Insumos de Emergencia',
-  asistencia: 'Asistencia',
-  avance_obra: 'Avance',
-  solicitudes_reporte: 'Avance',
-  solicitudes_frente: 'Avance',
-  incidencias: 'Incidencias',
-  evidencias: 'Evidencias',
-  ubicaciones_obra: 'Ubicaciones',
-  reportes_especialidad: 'Reporte Especialidad',
-  charlas_plan: 'Charlas Seguridad',
-  inducciones: 'Charlas Seguridad',
-  ambiental_registros: 'Gestión Ambiental',
-  calidad_requisitos: 'Gestión Calidad',
-  calidad_certificados: 'Gestión Calidad',
-  social_actores: 'Gestión Social',
-  social_compromisos: 'Gestión Social',
-  social_quejas: 'Gestión Social',
-  insumos_pendientes: 'Requisiciones',
-  requisiciones: 'Requisiciones',
-  requisicion_items: 'Requisiciones',
-  cotizaciones: 'Cotizaciones',
-  cotizacion_items: 'Cotizaciones',
-  ordenes_compra: 'Órdenes de Compra',
-  oc_items: 'Órdenes de Compra',
-  recepciones: 'Recepciones',
-  recepcion_items: 'Recepciones',
-  valorizaciones: 'Valorizaciones',
-  valorizacion_partidas: 'Valorizaciones',
-  valorizacion_adicionales: 'Valorizaciones',
-  cuentas_bancarias: 'Cuentas Bancarias',
-  movimientos_bancarios: 'Cuentas Bancarias',
-  cronograma_pagos: 'Cuentas Bancarias',
-  activos_pesados: 'Activos Pesados',
-  horas_maquina: 'Horas Máquina',
-  consumos_combustible: 'Horas Máquina',
-  mantenimientos_maquinaria: 'Mantenimiento',
-  charlas_seguridad: 'Charlas Seguridad',
-  charla_asistentes: 'Charlas Seguridad',
-  iperc: 'IPERC',
-  epp_entregas: 'EPP',
-  inspecciones_seguridad: 'Inspecciones SSOMA',
-  capacitaciones: 'Capacitaciones',
-  subcontratistas: 'Subcontratistas',
-  subcontratos: 'Subcontratos',
-  subcontrato_valorizaciones: 'Valor. Subcontrato',
-  personal_contrato: 'Contratos Laborales',
-  planillas: 'Planillas',
-  planilla_boletas: 'Planillas',
-  companies: 'Empresas',
-  // Constituir un consorcio y fijar los % es un acto societario, no una
-  // edición de obra: se agrupa con Empresas. El set de roles que puede
-  // escribirlo está en ROLES_ESCRIBEN_CONSORCIO (src/lib/consorcio.js) y debe
-  // seguir siendo espejo de la policy de la mig 172.
-  consorcios: 'Empresas',
-  consorcio_socios: 'Empresas',
-  trabajos: 'Bienes y Servicios',
-  trabajo_cotizaciones: 'Bienes y Servicios',
-  accounting_movements: 'Movs. Contables',
-  revision_descartes: 'Movs. Contables',   // el escáner vive dentro de Movimientos
-  // Catálogo del clasificador: lo escriben contadora jefe y ayudante (ambos
-  // con Movs. Contables 'w') al clasificar/corregir ítems de factura.
-  clasificacion_catalogo: 'Movs. Contables',
-  // Reglas de emisión: designación entre empresas del grupo → solo quien tiene
-  // Intercompany 'w' (contadora jefe/admin; el ayudante NO).
-  emision_reglas: 'Intercompany',
-  // Órdenes intercompany: las escriben jefe/admin (aprobación admin en UI).
-  // Reporte "día sin avance": lo escribe el ingeniero (mismo módulo que avance_obra).
-  reportes_dia: 'Avance',
-  // Pagos de personal/subcontratos: área contable. Con 'Planillas' el push del
-  // AYUDANTE quedaba bloqueado (tiene Planillas 'x' pero Movs. Contables 'w') —
-  // desde el 20-jul el ayudante también registra pagos y sube recibos, así que
-  // se gatea igual que pagos_partes. El RLS del server sigue siendo el guard real.
-  pagos: 'Movs. Contables',
-  depositos_bancarizacion: 'Movs. Contables',
-  // Las PARTES también las registra el ayudante al bancarizar facturas
-  // (tiene Movs. Contables 'w' pero Planillas 'x' — con 'Planillas' su push
-  // quedaba bloqueado client-side y la parte en pending eterno).
-  pagos_partes: 'Movs. Contables',
-  // Guías de remisión: las sube Captura (contador/ayudante/admin con Captura-w).
-  guias_remision: 'Movs. Contables',
-  // Mismo módulo que su tabla madre: quien puede subir la guía puede vincularla.
-  guia_factura: 'Movs. Contables',
-  // Registro profesional (mig 171). Los rubros quedan FUERA a propósito: es un
-  // catálogo que la RLS ya restringe a admin, y mapearlo obligaría a darle el
-  // módulo a cualquiera que solo lo lee.
-  personal_profesional: 'Registro Profesional',
-  personal_experiencia: 'Registro Profesional',
-  // Postulaciones (mig 197). Módulo propio y no 'Registro Profesional': el
-  // padrón de profesionales lo escribe también RR.HH., y a qué procesos se
-  // postula el grupo es información comercial que RR.HH. no tiene por qué
-  // tocar. La RLS de la mig 197 dice lo mismo del lado del servidor.
-  licitaciones: 'Licitaciones',
-  licitacion_requisitos: 'Licitaciones',
-  intercompany_transactions: 'Intercompany',
-  trazabilidad_cadenas: 'Trazabilidad',
-};
-
 function canPushTabla(tabla) {
   try {
     // IMPORTANTE: leer del espejo `window.__currentRol` (publicado por

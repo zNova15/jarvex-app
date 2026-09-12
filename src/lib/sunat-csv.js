@@ -231,6 +231,93 @@ export function repararFila(campos, iNombre, separador = ',') {
   return { campos: fila, titular, contraparte: '' };
 }
 
+// ── Los layouts, uno por archivo ──────────────────────────────────
+// Los nombres son TEXTUALES de los encabezados de SUNAT de setiembre-2026.
+// Si SUNAT los cambia, `detectarLibro` devuelve null o `col()` da -1 y la
+// pantalla lo dice; nunca se lee una columna equivocada por número.
+
+const LAYOUT_VENTAS = {
+  columnas: {
+    ruc: ['Ruc', 'RUC', 'Num RUC', 'Numero RUC', 'RUC Emisor'],
+    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
+    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
+    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
+    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
+    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
+    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
+    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
+    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Cliente', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
+    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Cliente', 'Num Doc Identidad', 'RUC Cliente', 'Doc Identidad', 'Numero Documento'],
+    contraparteNombre: ['Apellidos Nombres/ Razón Social', 'Apellidos Nombres/ Razón  Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Cliente', 'Cliente'],
+    biGravada: ['BI Gravada', 'BI Gravado', 'Base Imponible', 'Operaciones Gravadas', 'Monto Gravado', 'Valor Facturado Exportación', 'Valor Facturado Exportacion'],
+    dsctoBi: ['Dscto BI', 'Descuento BI', 'Descuento Base Imponible', 'Dscto Base Imponible'],
+    igvIpm: ['IGV / IPM', 'IGV/IPM', 'IGV', 'Monto IGV', 'IGV e IPM'],
+    dsctoIgv: ['Dscto IGV / IPM', 'Dscto IGV', 'Descuento IGV', 'Dscto IGV/IPM'],
+    exonerado: ['Mto Exonerado', 'Exonerado', 'Monto Exonerado', 'Operaciones Exoneradas'],
+    inafecto: ['Mto Inafecto', 'Inafecto', 'Monto Inafecto', 'Operaciones Inafectas'],
+    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
+    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
+    otrosTributos: ['Otros Tributos', 'Otros Trib/ Cargos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
+    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
+    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
+    tipoCambio: ['Tipo Cambio', 'Tipo de Cambio', 'TC', 'Tipo de Cambio Oficial'],
+    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
+    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
+    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
+    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
+    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
+    estado: ['Est. Comp', 'Est. Comp.', 'Estado Comprobante', 'Estado'],
+    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
+  },
+  // En ventas el descuento va en su propia columna y RESTA de la base.
+  base: (v) => aNumero(v('biGravada')) - aNumero(v('dsctoBi')),
+  igv: (v) => aNumero(v('igvIpm')) - aNumero(v('dsctoIgv')),
+  noGravado: (v) => aNumero(v('exonerado')) + aNumero(v('inafecto')),
+};
+
+const LAYOUT_COMPRAS = {
+  columnas: {
+    ruc: ['RUC', 'Ruc', 'Num RUC', 'Numero RUC', 'RUC Adquiriente'],
+    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
+    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
+    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
+    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
+    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
+    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
+    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
+    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Emisor', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
+    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Emisor', 'Num Doc Identidad', 'RUC Proveedor', 'Doc Identidad', 'Numero Documento'],
+    contraparteNombre: ['Apellidos Nombres/ Razón  Social', 'Apellidos Nombres/ Razón Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Proveedor', 'Proveedor'],
+    biDg: ['BI Gravado DG', 'BI Gravada DG', 'BI Grav DG', 'Base Imponible DG', 'Adquisiciones Gravadas DG', 'BI Operaciones Gravadas'],
+    igvDg: ['IGV / IPM DG', 'IGV/IPM DG', 'IGV DG', 'Monto IGV DG', 'IGV e IPM DG'],
+    biDgng: ['BI Gravado DGNG', 'BI Gravada DGNG', 'Base Imponible DGNG', 'Adquisiciones Gravadas DGNG'],
+    igvDgng: ['IGV / IPM DGNG', 'IGV/IPM DGNG', 'IGV DGNG'],
+    biDng: ['BI Gravado DNG', 'BI Gravada DNG', 'Base Imponible DNG', 'Adquisiciones Gravadas DNG'],
+    igvDng: ['IGV / IPM DNG', 'IGV/IPM DNG', 'IGV DNG'],
+    valorNg: ['Valor Adq. NG', 'Valor Adq NG', 'Valor Adquisiciones No Gravadas', 'No Gravadas', 'Mto No Gravado', 'Valor No Gravado'],
+    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
+    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
+    otrosTributos: ['Otros Trib/ Cargos', 'Otros Tributos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
+    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
+    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
+    tipoCambio: ['Tipo de Cambio', 'Tipo Cambio', 'TC', 'Tipo de Cambio Oficial'],
+    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
+    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
+    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
+    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
+    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
+    estado: ['Est. Comp.', 'Est. Comp', 'Estado Comprobante', 'Estado'],
+    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
+  },
+  // 🔴 La base de una compra viene partida en TRES según a qué se destina
+  // (gravadas / gravadas y no gravadas / no gravadas). Leer solo «DG» perdería
+  // las compras de destino mixto y el total no cerraría contra la propia fila.
+  base: (v) => aNumero(v('biDg')) + aNumero(v('biDgng')) + aNumero(v('biDng')),
+  igv: (v) => aNumero(v('igvDg')) + aNumero(v('igvDgng')) + aNumero(v('igvDng')),
+  // Lo no gravado —las comisiones del banco de julio salen justo por acá—.
+  noGravado: (v) => aNumero(v('valorNg')),
+};
+
 /**
  * Lee el CSV entero.
  * Soporta archivos con delimitador ',', ';', '|', '\t', filas de encabezado con preámbulo,
@@ -359,93 +446,6 @@ export function parseCsvSunat(texto) {
     filas, avisos,
   };
 }
-
-// ── Los layouts, uno por archivo ──────────────────────────────────
-// Los nombres son TEXTUALES de los encabezados de SUNAT de setiembre-2026.
-// Si SUNAT los cambia, `detectarLibro` devuelve null o `col()` da -1 y la
-// pantalla lo dice; nunca se lee una columna equivocada por número.
-
-const LAYOUT_VENTAS = {
-  columnas: {
-    ruc: ['Ruc', 'RUC', 'Num RUC', 'Numero RUC', 'RUC Emisor'],
-    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
-    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
-    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
-    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
-    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
-    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
-    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
-    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Cliente', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
-    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Cliente', 'Num Doc Identidad', 'RUC Cliente', 'Doc Identidad', 'Numero Documento'],
-    contraparteNombre: ['Apellidos Nombres/ Razón Social', 'Apellidos Nombres/ Razón  Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Cliente', 'Cliente'],
-    biGravada: ['BI Gravada', 'BI Gravado', 'Base Imponible', 'Operaciones Gravadas', 'Monto Gravado', 'Valor Facturado Exportación', 'Valor Facturado Exportacion'],
-    dsctoBi: ['Dscto BI', 'Descuento BI', 'Descuento Base Imponible', 'Dscto Base Imponible'],
-    igvIpm: ['IGV / IPM', 'IGV/IPM', 'IGV', 'Monto IGV', 'IGV e IPM'],
-    dsctoIgv: ['Dscto IGV / IPM', 'Dscto IGV', 'Descuento IGV', 'Dscto IGV/IPM'],
-    exonerado: ['Mto Exonerado', 'Exonerado', 'Monto Exonerado', 'Operaciones Exoneradas'],
-    inafecto: ['Mto Inafecto', 'Inafecto', 'Monto Inafecto', 'Operaciones Inafectas'],
-    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
-    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
-    otrosTributos: ['Otros Tributos', 'Otros Trib/ Cargos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
-    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
-    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
-    tipoCambio: ['Tipo Cambio', 'Tipo de Cambio', 'TC', 'Tipo de Cambio Oficial'],
-    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
-    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
-    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
-    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
-    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
-    estado: ['Est. Comp', 'Est. Comp.', 'Estado Comprobante', 'Estado'],
-    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
-  },
-  // En ventas el descuento va en su propia columna y RESTA de la base.
-  base: (v) => aNumero(v('biGravada')) - aNumero(v('dsctoBi')),
-  igv: (v) => aNumero(v('igvIpm')) - aNumero(v('dsctoIgv')),
-  noGravado: (v) => aNumero(v('exonerado')) + aNumero(v('inafecto')),
-};
-
-const LAYOUT_COMPRAS = {
-  columnas: {
-    ruc: ['RUC', 'Ruc', 'Num RUC', 'Numero RUC', 'RUC Adquiriente'],
-    periodo: ['Periodo', 'Período', 'Periodo Tributario'],
-    carSunat: ['CAR SUNAT', 'CAR-SUNAT', 'CarSunat', 'CAR CP', 'CAR'],
-    fecha: ['Fecha de emisión', 'Fecha de emision', 'Fecha Emision', 'Fecha Emisión', 'Fec Emision', 'Fec. Emisión', 'Fecha'],
-    fechaVcto: ['Fecha Vcto/Pago', 'Fecha Vencimiento', 'Fecha Vcto', 'Fecha Vcto / Pago', 'Fec Vcto', 'Fecha de Vcto'],
-    tipoCp: ['Tipo CP/Doc.', 'Tipo CP/Doc', 'Tipo de Comprobante', 'Tipo CP', 'Tipo Comprobante', 'Tipo Doc', 'Tipo CDP'],
-    serie: ['Serie del CDP', 'Serie del CP', 'Serie', 'Serie CP', 'Serie CDP'],
-    numero: ['Nro CP o Doc. Nro Inicial (Rango)', 'Nro CP o Doc', 'Numero', 'Número', 'Nro Comprobante', 'Nro CP', 'Numero CP', 'Nro Inicial', 'Nro CDP'],
-    contraparteTipoDoc: ['Tipo Doc Identidad', 'Tipo Doc Identidad Emisor', 'Tipo Doc Id', 'Tipo Doc', 'Tipo Doc. Identidad'],
-    contraparteRuc: ['Nro Doc Identidad', 'Nro Doc Identidad Emisor', 'Num Doc Identidad', 'RUC Proveedor', 'Doc Identidad', 'Numero Documento'],
-    contraparteNombre: ['Apellidos Nombres/ Razón  Social', 'Apellidos Nombres/ Razón Social', 'Apellidos y Nombres / Razon Social', 'Apellidos y Nombres/ Razón Social', 'Razón Social', 'Razon Social', 'Nombre Proveedor', 'Proveedor'],
-    biDg: ['BI Gravado DG', 'BI Gravada DG', 'BI Grav DG', 'Base Imponible DG', 'Adquisiciones Gravadas DG', 'BI Operaciones Gravadas'],
-    igvDg: ['IGV / IPM DG', 'IGV/IPM DG', 'IGV DG', 'Monto IGV DG', 'IGV e IPM DG'],
-    biDgng: ['BI Gravado DGNG', 'BI Gravada DGNG', 'Base Imponible DGNG', 'Adquisiciones Gravadas DGNG'],
-    igvDgng: ['IGV / IPM DGNG', 'IGV/IPM DGNG', 'IGV DGNG'],
-    biDng: ['BI Gravado DNG', 'BI Gravada DNG', 'Base Imponible DNG', 'Adquisiciones Gravadas DNG'],
-    igvDng: ['IGV / IPM DNG', 'IGV/IPM DNG', 'IGV DNG'],
-    valorNg: ['Valor Adq. NG', 'Valor Adq NG', 'Valor Adquisiciones No Gravadas', 'No Gravadas', 'Mto No Gravado', 'Valor No Gravado'],
-    isc: ['ISC', 'Impuesto Selectivo al Consumo', 'Monto ISC'],
-    icbper: ['ICBPER', 'Impuesto Bolsas', 'ICBP'],
-    otrosTributos: ['Otros Trib/ Cargos', 'Otros Tributos', 'Otros Cargos', 'Otros Trib', 'Otros Tributos y Cargos'],
-    total: ['Total CP', 'Importe Total', 'Total', 'Mto Total', 'Total Comprobante', 'Importe Total del CP'],
-    moneda: ['Moneda', 'Cod Moneda', 'Código Moneda', 'Cod. Moneda'],
-    tipoCambio: ['Tipo de Cambio', 'Tipo Cambio', 'TC', 'Tipo de Cambio Oficial'],
-    modificaFecha: ['Fecha Emisión Doc Modificado', 'Fecha Emision Doc Modificado', 'Fecha Doc Modificado', 'Fecha Modificada'],
-    modificaTipo: ['Tipo CP Modificado', 'Tipo Comprobante Modificado', 'Tipo Doc Modificado'],
-    modificaSerie: ['Serie CP Modificado', 'Serie Modificada', 'Serie Doc Modificado'],
-    modificaNumero: ['Nro CP Modificado', 'Numero CP Modificado', 'Nro Doc Modificado'],
-    tipoNota: ['Tipo de Nota', 'Tipo Nota'],
-    estado: ['Est. Comp.', 'Est. Comp', 'Estado Comprobante', 'Estado'],
-    detraccion: ['Detracción', 'Detraccion', 'Mto Detracción', 'Monto Detraccion'],
-  },
-  // 🔴 La base de una compra viene partida en TRES según a qué se destina
-  // (gravadas / gravadas y no gravadas / no gravadas). Leer solo «DG» perdería
-  // las compras de destino mixto y el total no cerraría contra la propia fila.
-  base: (v) => aNumero(v('biDg')) + aNumero(v('biDgng')) + aNumero(v('biDng')),
-  igv: (v) => aNumero(v('igvDg')) + aNumero(v('igvDgng')) + aNumero(v('igvDng')),
-  // Lo no gravado —las comisiones del banco de julio salen justo por acá—.
-  noGravado: (v) => aNumero(v('valorNg')),
-};
 
 // ═══════════════════════════════════════════════════════════════════
 // LO QUE SE GUARDA DEL ARCHIVO (mig 202, tanda 18 entrega B)

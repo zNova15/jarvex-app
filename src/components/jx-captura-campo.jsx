@@ -22,6 +22,9 @@ import {
   identidadDePerfil, armarObservacionCampo, ACEPTA_IMAGEN, ACEPTA_PDF, esPdf,
 } from '../lib/captura-campo.js';
 
+const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
+const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
+
 // ── Configuración del portal (SOLO ADMIN, pedido de Gabriel 31-ago) ──
 // Acceso rápido sin abrir el form completo de cada Empresa ni el dashboard de
 // Supabase: (1) cambiar el PIN de la cuenta campo@ (usa el endpoint admin
@@ -126,8 +129,6 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
   );
 }
 
-const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
-const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const FI16 = { fontSize: 16 };
 const MAX_FOTOS_CAMPO = 3;
 // Actualizar en cada deploy que toque este portal (ver sello en el header).

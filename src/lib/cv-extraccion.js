@@ -317,6 +317,19 @@ const aDia = (iso) => {
   return m ? Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : null;
 };
 
+/** Palabras que aparecen en el nombre de media entidad peruana y no
+ *  identifican a ninguna: instituciones, formas societarias y departamentos. */
+export const GENERICAS_ENTIDAD = new Set([
+  'MUNICIPALIDAD', 'DISTRITAL', 'PROVINCIAL', 'GOBIERNO', 'REGIONAL', 'REGION', 'UNIDAD', 'EJECUTORA',
+  'PROGRAMAS', 'REGIONALES', 'PROYECTO', 'PROYECTOS', 'ESPECIAL', 'GERENCIA', 'SUBGERENCIA', 'DIRECCION',
+  'MINISTERIO', 'INSTITUTO', 'UNIVERSIDAD', 'NACIONAL', 'EMPRESA', 'CONSORCIO', 'CONSTRUCTORA', 'CONSTRUCCIONES',
+  'CONTRATISTAS', 'CONTRATISTA', 'SERVICIOS', 'GENERALES', 'INGENIERIA', 'INGENIEROS', 'INVERSIONES',
+  'ASOCIACION', 'COOPERATIVA', 'SOCIEDAD', 'ANONIMA', 'CERRADA', 'LIMITADA', 'MULTIPLES', 'NEGOCIOS',
+  'PERU', 'CAJAMARCA', 'TRUJILLO', 'PIURA', 'AREQUIPA', 'CUSCO', 'LAMBAYEQUE', 'CHICLAYO', 'ANCASH',
+  'HUARAZ', 'JUNIN', 'HUANCAYO', 'LORETO', 'IQUITOS', 'AMAZONAS', 'HUANUCO', 'TACNA', 'AYACUCHO', 'UCAYALI',
+  'PUCALLPA', 'TUMBES', 'MOQUEGUA', 'APURIMAC', 'HUANCAVELICA', 'CALLAO', 'MARTIN', 'TARAPOTO', 'CHIMBOTE',
+]);
+
 /** ¿Estos dos nombres de entidad hablan del mismo contratante? Tolerante:
  *  «PROREGIÓN» dentro de «Unidad Ejecutora de Programas Regionales -
  *  PROREGIÓN», o el RUC igual. */
@@ -340,19 +353,6 @@ export function mismaEntidad(a, b, rucA = null, rucB = null) {
   if (comunes.length >= 2) return true;
   return comunes.some(w => w.length >= 6 && !GENERICAS_ENTIDAD.has(w));
 }
-
-/** Palabras que aparecen en el nombre de media entidad peruana y no
- *  identifican a ninguna: instituciones, formas societarias y departamentos. */
-export const GENERICAS_ENTIDAD = new Set([
-  'MUNICIPALIDAD', 'DISTRITAL', 'PROVINCIAL', 'GOBIERNO', 'REGIONAL', 'REGION', 'UNIDAD', 'EJECUTORA',
-  'PROGRAMAS', 'REGIONALES', 'PROYECTO', 'PROYECTOS', 'ESPECIAL', 'GERENCIA', 'SUBGERENCIA', 'DIRECCION',
-  'MINISTERIO', 'INSTITUTO', 'UNIVERSIDAD', 'NACIONAL', 'EMPRESA', 'CONSORCIO', 'CONSTRUCTORA', 'CONSTRUCCIONES',
-  'CONTRATISTAS', 'CONTRATISTA', 'SERVICIOS', 'GENERALES', 'INGENIERIA', 'INGENIEROS', 'INVERSIONES',
-  'ASOCIACION', 'COOPERATIVA', 'SOCIEDAD', 'ANONIMA', 'CERRADA', 'LIMITADA', 'MULTIPLES', 'NEGOCIOS',
-  'PERU', 'CAJAMARCA', 'TRUJILLO', 'PIURA', 'AREQUIPA', 'CUSCO', 'LAMBAYEQUE', 'CHICLAYO', 'ANCASH',
-  'HUARAZ', 'JUNIN', 'HUANCAYO', 'LORETO', 'IQUITOS', 'AMAZONAS', 'HUANUCO', 'TACNA', 'AYACUCHO', 'UCAYALI',
-  'PUCALLPA', 'TUMBES', 'MOQUEGUA', 'APURIMAC', 'HUANCAVELICA', 'CALLAO', 'MARTIN', 'TARAPOTO', 'CHIMBOTE',
-]);
 
 /** ¿Los periodos se pisan (con 45 días de tolerancia: las constancias suelen
  *  redondear)? Sin fechas de un lado, se compara por cargo. */

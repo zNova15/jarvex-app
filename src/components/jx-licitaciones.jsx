@@ -1509,9 +1509,9 @@ const PASO_LBL = {
 };
 
 const usd = (n) => `USD ${Number(n || 0).toFixed(3)}`;
-/** Cómo se llama la unidad de referencia de una cita. Un Word no tiene
- *  páginas: se numeran tramos, y decir «página 21» sería un número inventado. */
-const unidadLbl = (u, n) => `${u === 'tramo' ? 'tramo' : 'pág.'} ${n}`;
+function unidadLbl(u, n) {
+  return `${u === 'tramo' ? 'tramo' : 'pág.'} ${n}`;
+}
 
 const CAMPO_CABECERA_LBL = {
   nomenclatura: 'Nomenclatura', objeto: 'Objeto', nombre_inversion: 'Nombre de la inversión', cui: 'CUI',

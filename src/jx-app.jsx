@@ -464,6 +464,7 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
   // Cambio rápido de obra: admin/gerente + los roles contables que trabajan
   // entre varias obras (la contadora salta de una obra a otra para conciliar).
   const canSwitchObra = ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(profile?.rol);
+  const obraDisplay = obraHook.obra || obraActiva;
   const handleSelectObra = (id) => {
     setObraDropdownOpen(false);
     if (!canSwitchObra) return;
@@ -486,7 +487,6 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
     // actual se remonta sola sobre la obra nueva y el usuario no sale de donde está.
     if (window.__setObraActivaId) window.__setObraActivaId(id);
   };
-  const obraDisplay = obraHook.obra || obraActiva;
 
   return (
     <div style={{ height:58, background:'var(--bg-header)', borderBottom:'1px solid var(--border)', display:'flex', alignItems:'center', paddingLeft: isMobile ? 10 : 16, paddingRight: isMobile ? 10 : 20, gap: isMobile ? 8 : 12, flexShrink:0, zIndex:5 }}>

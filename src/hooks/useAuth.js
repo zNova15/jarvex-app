@@ -237,7 +237,7 @@ export function useAuthProvider() {
     // aparecer el resultado que estuvo media hora esperando— sino que el
     // reloj vuelve a empezar entero desde ese momento.
     let hubo = false;
-    const vencer = () => {
+    function vencer() {
       if (hayTrabajoEnCurso()) {
         hubo = true;
         const que = trabajosEnCurso().map(t => t.motivo).join(', ');
@@ -269,12 +269,12 @@ export function useAuthProvider() {
       console.log('[useAuth] Sesión cerrada por inactividad');
       try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
       logout();
-    };
-    const reset = () => {
+    }
+    function reset() {
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
       hubo = false;
       inactivityTimer.current = setTimeout(vencer, getInactivityMin() * 60 * 1000);
-    };
+    }
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
     events.forEach(ev => window.addEventListener(ev, reset, { passive: true }));
     reset();

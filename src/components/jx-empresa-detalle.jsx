@@ -232,23 +232,6 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const lineas = uMD(() => extraerLineasDeFacturas(movs, { demo: esPrueba }), [movs, esPrueba]);
   const resueltos = uMD(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uMD(() => construirGrupos(resueltos), [resueltos]);
-  const inv = uMD(
-    () => inventarioDeEmpresa(lineas, { companyId: company?.id, grupoDe, grupos, desde: desdePeriodo, hasta: hastaPeriodo }),
-    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo]
-  );
-  const tiposPresentes = uMD(() => {
-    const s = new Set();
-    inv.insumos.forEach(i => i.tipos.forEach(t => s.add(t)));
-    return [...s].sort();
-  }, [inv]);
-  // ── LOS INSUMOS EN ROJO (tanda 9) ────────────────────────────────
-  // Gabriel, 7-set-2026: facturar una orden sin tener el stock se puede, «pero
-  // en el inventario de la empresa que emitió la factura se mostrará que tienen
-  // un stock negativo». La columna Saldo ya pintaba el número en rojo; lo que
-  // faltaba era poder VERLOS: entre 400 insumos, tres en rojo no se encuentran
-  // scrolleando.
-  const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
-  const [soloNegativos, setSoloNegativos] = uSD(false);
   // ── Bloques temporales (Tanda 3) ─────────────────────────────────────
   // 'historico' = sin filtro | 'anio' = año completo | 'mes' = mes puntual
   const [periodoInv, setPeriodoInv] = uSD('historico');
@@ -277,6 +260,24 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   }, [periodoInv, anioSel, mesSel]);
 
   const hayFiltroTemporal = periodoInv !== 'historico';
+
+  const inv = uMD(
+    () => inventarioDeEmpresa(lineas, { companyId: company?.id, grupoDe, grupos, desde: desdePeriodo, hasta: hastaPeriodo }),
+    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo]
+  );
+  const tiposPresentes = uMD(() => {
+    const s = new Set();
+    inv.insumos.forEach(i => i.tipos.forEach(t => s.add(t)));
+    return [...s].sort();
+  }, [inv]);
+  // ── LOS INSUMOS EN ROJO (tanda 9) ────────────────────────────────
+  // Gabriel, 7-set-2026: facturar una orden sin tener el stock se puede, «pero
+  // en el inventario de la empresa que emitió la factura se mostrará que tienen
+  // un stock negativo». La columna Saldo ya pintaba el número en rojo; lo que
+  // faltaba era poder VERLOS: entre 400 insumos, tres en rojo no se encuentran
+  // scrolleando.
+  const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
+  const [soloNegativos, setSoloNegativos] = uSD(false);
   const filtrados = uMD(() => {
     const porTexto = filtrarInventario(inv.insumos, busca);
     const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;

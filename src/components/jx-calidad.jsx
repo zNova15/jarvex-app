@@ -108,6 +108,7 @@ function CalidadPage({ showToast }) {
   // ── Requisito: crear / editar / eliminar ──
   const [modalReq, setModalReq] = uS(false);
   const [editReq, setEditReq] = uS(null);
+  const [sel, setSel] = uS(null);
   const [formReq, setFormReq] = uS({});
   const [busy, setBusy] = uS(false);
   const abrirReq = (r = null) => {
@@ -202,7 +203,6 @@ function CalidadPage({ showToast }) {
   };
 
   // ── Detalle de un requisito + certificados ──
-  const [sel, setSel] = uS(null);
   const selReq = uM(() => sel && datos.requisitos.find(r => r.id === sel.id), [sel, datos.requisitos]);
   const certsDeSel = uM(() => !selReq ? [] : datos.certificados
     .filter(c => c.requisito_id === selReq.id)

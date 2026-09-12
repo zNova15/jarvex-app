@@ -1060,6 +1060,7 @@ function MovimientosContablesPage({ showToast }) {
   const canCreate = canWrite;
   const canEditExisting = isAdmin || (canWrite && !esAyudante);
   const { data: companies } = window.__hooks.useCompanies();
+  const lookupCompany = (id) => (companies || []).find(c => c.id === id);
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras();
 
@@ -1673,6 +1674,20 @@ function MovimientosContablesPage({ showToast }) {
   const enObra = window.__plano === 'obra';
   const { data: consorciosMov } = window.__hooks.useConsorcios?.() || { data: [] };
   const { data: sociosMov } = window.__hooks.useConsorcioSocios?.() || { data: [] };
+
+  // Los DOS LIBROS de la obra (tanda 4, A1) — src/lib/libros-de-obra.js.
+  // Arranca en el libro del titular porque es la pregunta que trajo Gabriel
+  // («la contabilidad de la obra debería mostrar los del consorcio ejecutor»),
+  // pero el aporte del grupo NO se esconde: está en la pestaña de al lado, con
+  // su cuenta y su total a la vista. Es el ÁMBITO de la pantalla, no un filtro:
+  // por eso no entra en "Limpiar filtros" (igual que la obra dentro de la obra).
+  const [libroObra, setLibroObra] = uSC(LIBRO_CONSORCIO);
+  const obraDelWorkspace = uMC(
+    () => (enObra && filtroObraSel !== 'todas') ? (obras || []).find(o => o.id === filtroObraSel) || null : null,
+    [enObra, obras, filtroObraSel]);
+  const titularObraId = uMC(() => titularContableDeObra(obraDelWorkspace, consorciosMov),
+    [obraDelWorkspace, consorciosMov]);
+
   // Imputación cruzada (tanda 4, A3): comprobantes cuya contraparte es un
   // consorcio/tercero del catálogo sin relación con la obra a la que están
   // imputados — src/lib/imputacion-cruzada.js. Medido 4-sep-2026: 17 en toda
@@ -1716,18 +1731,6 @@ function MovimientosContablesPage({ showToast }) {
       setReimputando(null);
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
-  // Los DOS LIBROS de la obra (tanda 4, A1) — src/lib/libros-de-obra.js.
-  // Arranca en el libro del titular porque es la pregunta que trajo Gabriel
-  // («la contabilidad de la obra debería mostrar los del consorcio ejecutor»),
-  // pero el aporte del grupo NO se esconde: está en la pestaña de al lado, con
-  // su cuenta y su total a la vista. Es el ÁMBITO de la pantalla, no un filtro:
-  // por eso no entra en "Limpiar filtros" (igual que la obra dentro de la obra).
-  const [libroObra, setLibroObra] = uSC(LIBRO_CONSORCIO);
-  const obraDelWorkspace = uMC(
-    () => (enObra && filtroObraSel !== 'todas') ? (obras || []).find(o => o.id === filtroObraSel) || null : null,
-    [enObra, obras, filtroObraSel]);
-  const titularObraId = uMC(() => titularContableDeObra(obraDelWorkspace, consorciosMov),
-    [obraDelWorkspace, consorciosMov]);
   const empresasDeLaObra = uMC(() => {
     if (!obraDelWorkspace) return companiesActivas;
     const ids = new Set((movs || [])
@@ -2520,8 +2523,6 @@ function MovimientosContablesPage({ showToast }) {
       showToast(`Marcado como ${STATUS_LABEL[nuevoEstado]}`, 'green');
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
   };
-
-  const lookupCompany = (id) => companies?.find(c => c.id === id);
 
   // Partes de pago (pagos_partes) → Σ por movimiento y por depósito, más el
   // catálogo de depósitos multi-factura.
@@ -5621,7 +5622,7 @@ function ContabilidadDashboardPage({ showToast }) {
       vinculandoSustentoRef.current = false;
     }
   };
-  const vincularAFacturaInner = async (mov, accountingMovId, itemIdx = null) => {
+  async function vincularAFacturaInner(mov, accountingMovId, itemIdx = null) {
     try {
       const factura = (movs || []).find(m => m.id === accountingMovId);
       if (!factura) { showToast?.('Factura no encontrada', 'red'); return; }

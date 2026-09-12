@@ -242,6 +242,10 @@ export function diametrosMm(mag, familia) {
 }
 
 // ── 4. PUNTAJE ─────────────────────────────────────────────────────
+// Clave interna del peso por defecto (no puede chocar con un token real:
+// tokensDe() nunca devuelve algo con espacios).
+export const SIN_PESO = ' desconocido ';
+
 /** IDF de cada token sobre el catálogo: «corrugado» pesa más que «acero». */
 export function pesosIdf(catalogo) {
   const doc = new Map();
@@ -262,10 +266,6 @@ export function pesosIdf(catalogo) {
   pesos.set(SIN_PESO, vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 1);
   return pesos;
 }
-
-// Clave interna del peso por defecto (no puede chocar con un token real:
-// tokensDe() nunca devuelve algo con espacios).
-export const SIN_PESO = ' desconocido ';
 
 /** Prepara el catálogo canónico (una vez) con lo que el scorer necesita. */
 export function prepararCatalogo(filas) {

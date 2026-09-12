@@ -405,7 +405,7 @@ export function useRealtimeNotifications() {
     };
   }, [profile?.id, profile?.rol, obraActivaId, resubscribeTick]);
 
-  const addNotif = (n) => {
+  function addNotif(n) {
     const notif = { id: crypto.randomUUID(), ...n, fecha: new Date().toISOString(), leida: false };
     setNotifications(prev => {
       const next = [notif, ...prev].slice(0, 50);

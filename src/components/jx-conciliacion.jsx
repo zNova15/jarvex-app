@@ -400,6 +400,38 @@ function ConciliacionInsumosPage({ showToast }) {
     try { window.dispatchEvent(new Event('online')); } catch {}
   };
 
+  // Vínculos agrupados por ítem (factura|itemIdx) — para la pestaña por-ítem.
+  const vincPorItem = uM(() => {
+    const m = new Map();
+    for (const v of vinculos) {
+      const k = `${v.accounting_movement_id}|${v.item_idx}`;
+      const a = m.get(k) || []; a.push(v); m.set(k, a);
+    }
+    return m;
+  }, [vinculos]);
+
+  // ¿El ítem tiene al menos un vínculo a un insumo presupuestado?
+  const estaVinculado = (it) => (vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || []).length > 0;
+
+  // Base: ítems filtrados por BÚSQUEDA + RANGO DE FECHAS (sin el filtro de vínculo).
+  // La exportación usa esta base → sale filtrada por fecha, con ambos tipos.
+  const itemsBase = uM(() => {
+    const qn = norm(qItems);
+    return items.filter(it =>
+      (!qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn)) &&
+      (!fechaDesde || (it.fecha || '') >= fechaDesde) &&
+      (!fechaHasta || (it.fecha || '') <= fechaHasta) &&
+      (filtroCat === 'todas' || (filtroCat === 'sin_clasificar' ? !it.categoria : it.categoria === filtroCat))
+    );
+  }, [items, qItems, fechaDesde, fechaHasta, filtroCat]);
+
+  // Ítems comprados mostrados en la tabla (base + filtro de vínculo).
+  const itemsComprados = uM(() =>
+    itemsBase
+      .filter(it => filtroVinc === 'todos' || (filtroVinc === 'con' ? estaVinculado(it) : !estaVinculado(it)))
+      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
+  , [itemsBase, filtroVinc, vincPorItem]);
+
   // Botón "Clasificar con IA": clasifica los ítems SIN categoría del filtro actual.
   // Catálogo-first (lo ya aprendido no consulta la IA) → solo lo desconocido va
   // al batch; el resultado se aprende como fuente 'ia'.
@@ -455,38 +487,6 @@ function ConciliacionInsumosPage({ showToast }) {
       setSubcatsSugeridas(await subcategoriasDe(cat));
     } catch { setSubcatsSugeridas([]); }
   };
-
-  // Vínculos agrupados por ítem (factura|itemIdx) — para la pestaña por-ítem.
-  const vincPorItem = uM(() => {
-    const m = new Map();
-    for (const v of vinculos) {
-      const k = `${v.accounting_movement_id}|${v.item_idx}`;
-      const a = m.get(k) || []; a.push(v); m.set(k, a);
-    }
-    return m;
-  }, [vinculos]);
-
-  // ¿El ítem tiene al menos un vínculo a un insumo presupuestado?
-  const estaVinculado = (it) => (vincPorItem.get(`${it.facturaId}|${it.itemIdx}`) || []).length > 0;
-
-  // Base: ítems filtrados por BÚSQUEDA + RANGO DE FECHAS (sin el filtro de vínculo).
-  // La exportación usa esta base → sale filtrada por fecha, con ambos tipos.
-  const itemsBase = uM(() => {
-    const qn = norm(qItems);
-    return items.filter(it =>
-      (!qn || norm(it.descripcion).includes(qn) || norm(it.proveedor).includes(qn)) &&
-      (!fechaDesde || (it.fecha || '') >= fechaDesde) &&
-      (!fechaHasta || (it.fecha || '') <= fechaHasta) &&
-      (filtroCat === 'todas' || (filtroCat === 'sin_clasificar' ? !it.categoria : it.categoria === filtroCat))
-    );
-  }, [items, qItems, fechaDesde, fechaHasta, filtroCat]);
-
-  // Ítems comprados mostrados en la tabla (base + filtro de vínculo).
-  const itemsComprados = uM(() =>
-    itemsBase
-      .filter(it => filtroVinc === 'todos' || (filtroVinc === 'con' ? estaVinculado(it) : !estaVinculado(it)))
-      .sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)))
-  , [itemsBase, filtroVinc, vincPorItem]);
 
   // Conteos para los chips del filtro (sobre la base ya filtrada por fecha/búsqueda).
   const vincCounts = uM(() => {

@@ -40,6 +40,9 @@ export const MAX_PARTICIONES = 3;
 /** Páginas por request de OCR. Debe coincidir con MAX_PAGINAS_TANDA del endpoint. */
 export const PAGINAS_POR_TANDA = 6;
 
+/** Tramos por tanda en el barrido de respaldo. */
+export const TRAMOS_POR_TANDA = 6;
+
 /** A qué escala se rasteriza una página para el OCR.
  *  150 dpi (escala ~2 sobre las 72 dpi del PDF) es el punto donde el OCR deja
  *  de mejorar: más resolución solo engorda el base64 y hace fallar la tanda. */
@@ -799,9 +802,6 @@ export const MAX_VENTANAS_SECUNDARIA = 4;
 const FAMILIAS_SECUNDARIAS = new Set(['contrato', 'evaluacion', 'presentacion']);
 const ventanasDe = (familia) => (familia === 'personal' ? MAX_VENTANAS_PERSONAL
   : (FAMILIAS_SECUNDARIAS.has(familia) ? MAX_VENTANAS_SECUNDARIA : MAX_VENTANAS));
-
-/** Tramos por tanda en el barrido de respaldo. */
-export const TRAMOS_POR_TANDA = 6;
 
 /**
  * Los rangos a leer de una familia: **la unión** de lo que eligió el Pase 1 y

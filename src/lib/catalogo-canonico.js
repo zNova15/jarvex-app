@@ -245,9 +245,9 @@ export function filasDeHoja(hoja) {
   return filas;
 }
 
-/** Limpia un nombre del archivo: sin saltos de línea (los hay: varios
- *  servicios terminan en `\r\n`) ni espacios dobles. */
-export const limpiarNombre = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+export function limpiarNombre(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
 
 const MARCA_DISGREGA = /^se disgrega en$/;
 

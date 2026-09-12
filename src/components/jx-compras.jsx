@@ -765,7 +765,9 @@ function OrdenesCompraPage({ showToast }) {
     return () => { cancelled = true; window.removeEventListener('jx_data_changed', onChange); };
   }, [ocs]);
 
-  const lookupProv = (id) => proveedores.find(p => p.id === id);
+  function lookupProv(id) {
+    return (proveedores || []).find(p => p.id === id);
+  }
 
   // El correlativo es POR EMPRESA, TIPO y AÑO (tanda 5): el mismo cálculo que
   // usa el registro documental, para que las dos puertas no numeren distinto.

@@ -1231,7 +1231,9 @@ export function tieneIntermediario(orden) {
   return !!(orden && (orden.intermediario_company_id || orden.intermediario_externo));
 }
 
-const fmtUmbral = (u) => 'S/ ' + Number(u || 0).toLocaleString('es-PE');
+function fmtUmbral(u) {
+  return 'S/ ' + Number(u || 0).toLocaleString('es-PE');
+}
 
 export default {
   TIPOS_ORDEN, TIPO_ORDEN_LABEL, TIPO_ORDEN_TEXTOS, UMBRAL_POR_DEFECTO,
