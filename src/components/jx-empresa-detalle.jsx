@@ -138,7 +138,7 @@ const TIPO_BADGE = {
 
 const PASO_LISTA = 50;   // insumos por tanda (GASOMI tiene cientos)
 
-function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios = [], consorcioSocios = [], trabajosBS = [], onVolver }) {
+function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios = [], consorcioSocios = [], trabajosBS = [], onVolver, seccionInicial = null }) {
   // ── Hooks: TODOS antes de cualquier return (regla crítica 3) ──────
   const movsHook = window.__hooks.useAccountingMovements(company?.id);
   const corrHook = window.__hooks.useInsumoCorrelaciones();
@@ -154,7 +154,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const [moneda, setMoneda] = uSD('PEN');
   // `seccion` = null → las TARJETAS del desglose (como el Panel del trabajo).
   // Un id de sección → esa vista, con "volver al panel".
-  const [seccion, setSeccion] = uSD(null);
+  const [seccion, setSeccion] = uSD(seccionInicial || null);
   const [vista, setVista] = uSD('acumulado');    // 'acumulado' | 'externo'
   const [busca, setBusca] = uSD('');
   const [tipoFiltro, setTipoFiltro] = uSD('');

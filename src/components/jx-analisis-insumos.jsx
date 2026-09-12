@@ -162,6 +162,10 @@ function AnalisisInsumosPage({ showToast }) {
     [lineasTodas, empresaVista]
   );
   // Solo compras con precio (para el comparador de precios y proveedores):
+  const comprasTodas = uM(
+    () => lineasTodas.filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0),
+    [lineasTodas]
+  );
   const compras = uM(
     () => lineasEntidad.filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0),
     [lineasEntidad]
