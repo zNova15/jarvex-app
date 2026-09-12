@@ -49,8 +49,12 @@
 
 export const CODIGOS_VALIDADOS = {
   '019': { label: 'Arrendamiento de bienes' },
+  '020': { label: 'Mantenimiento y reparación de bienes muebles' },
+  '021': { label: 'Movimiento de carga' },
   '022': { label: 'Otros servicios / servicio profesional o técnico' },
+  '025': { label: 'Fabricación de bienes por encargo' },
   '027': { label: 'Transporte de bienes por vía terrestre' },
+  '037': { label: 'Contratos de construcción' },
 };
 
 const norm = (s) => String(s || '')
@@ -62,6 +66,18 @@ const rx = (palabras) => new RegExp(
 
 const RX_ALQUILER = rx(['alquiler', 'arrendamiento']);
 const RX_TRANSPORTE = rx(['transporte', 'traslado', 'flete']);
+const RX_MANTENIMIENTO = rx(['mantenimiento', 'reparacion', 'reparaciones']);
+const RX_MOV_CARGA = rx(['estiba', 'desestiba', 'movimiento de carga']);
+const RX_CONSTRUCCION_EXPLICITA = rx([
+  'contrato de construccion', 'contratos de construccion',
+  'ejecucion de obra', 'ejecución de obra',
+  'tarrajeo', 'encofrado', 'desencofrado', 'demolicion', 'demolición',
+  'pavimentacion', 'pavimentación', 'asfaltado', 'pistas y veredas',
+  'alcantarillado', 'instalaciones sanitarias', 'instalaciones electricas',
+  'movimiento de tierras', 'partida de obra', 'partidas de obra',
+  'valorizacion de obra', 'valorización de obra', 'subcontrato de obra',
+  'avance de obra', 'mano de obra'
+]);
 const RX_SERVICIO_TXT = rx(['servicio']);
 
 /**
@@ -70,10 +86,8 @@ const RX_SERVICIO_TXT = rx(['servicio']);
  * @param descripcion   texto del ítem o del comprobante
  * @param opts.tipoInsumo  'servicio' | 'material' | … si se conoce
  * @param opts.tasaActual  el `detraccion_pct` ya cargado, si existe. Sirve
- *                         para dos cosas: reforzar el fallback a 022 (los 3
- *                         casos reales están al 12%) y avisar cuando la tasa
- *                         cargada no corresponde a NINGUNA de las conocidas
- *                         para el código que se está sugiriendo.
+ *                         para reforzar el código correspondiente y avisar
+ *                         cuando la tasa no corresponde a la reglamentaria.
  * @returns { codigo, confianza: 'alta'|'media', motivo,
  *            tasaUnica: number|null,           // la única tasa conocida, o null si es ambigua
  *            tasasPosibles: [{tasa,cuando}]|null,
@@ -85,6 +99,7 @@ export function sugerirCodigoSpot(descripcion, { tipoInsumo, tasaActual } = {}) 
   const d = norm(descripcion);
   if (!d) return null;
 
+  // 1) Alquiler / Arrendamiento -> 019
   if (RX_ALQUILER.test(d)) {
     const tasasPosibles = [
       { tasa: 10, cuando: 'alquiler de un bien mueble común' },
@@ -102,6 +117,7 @@ export function sugerirCodigoSpot(descripcion, { tipoInsumo, tasaActual } = {}) 
     };
   }
 
+  // 2) Transporte de bienes -> 027 (4%)
   if (RX_TRANSPORTE.test(d)) {
     const avisoTasaInusual = (tasaActual != null && Number(tasaActual) !== 4)
       ? `La tasa cargada (${tasaActual}%) no es el 4% que usás para transporte. Revisá el código o la tasa con la contadora.`
@@ -113,25 +129,77 @@ export function sugerirCodigoSpot(descripcion, { tipoInsumo, tasaActual } = {}) 
     };
   }
 
-  // Fallback a 022. Necesita UNA de las dos señales: la tasa ya cargada es
-  // 12% (el único valor que este catálogo asocia a 022, validado por los 3
-  // casos reales), o el texto dice "servicio". Ninguna de las dos → no se
-  // inventa nada.
-  //
-  // La señal de la tasa NO dispara si `tipoInsumo` dice explícitamente que es
-  // un BIEN (material, herramienta, maquinaria, EPP): un cemento o un
-  // generador con detracción mal marcada al 12% no debe salir con un código
-  // de servicio solo porque el número coincide.
+  // 3) Contratos de construcción -> 037 (4%)
+  // Casos de obra, partidas, tarrajeo, valorizaciones, etc. (Gabriel, 11-sep-2026).
+  // La tasa de 12% descarta 037 (indica servicio profesional/técnico como liquidación o supervisión).
+  const tasaEs12 = tasaActual != null && Number(tasaActual) === 12;
+  const esConsultoriaTecnica = d.includes('liquidacion') || d.includes('supervis')
+    || d.includes('monitoreo') || d.includes('elaboracion') || d.includes('estudio') || d.includes('diseno');
+
+  const esConstruccion = !tasaEs12 && (
+    RX_CONSTRUCCION_EXPLICITA.test(d)
+    || (/\b(obra|obras|construccion|rehabilitacion)\b/i.test(d) && !esConsultoriaTecnica)
+    || (Number(tasaActual) === 4 && /\b(obra|obras|partida|trabajo|servicio)\b/i.test(d))
+  );
+
+  if (esConstruccion) {
+    const avisoTasaInusual = (tasaActual != null && Number(tasaActual) !== 4)
+      ? `La tasa cargada (${tasaActual}%) no es el 4% reglamentario de contratos de construcción (Anexo 3 SUNAT, código 037). Confirmalo con la contadora.`
+      : null;
+    return {
+      codigo: '037',
+      confianza: 'alta',
+      motivo: 'Es un contrato o servicio de construcción en obra: corresponde al código 037 (Contratos de construcción) al 4% según el Anexo 3 de SUNAT.',
+      tasaUnica: 4,
+      tasasPosibles: null,
+      avisoTasa: null,
+      avisoTasaInusual,
+    };
+  }
+
+  // 4) Mantenimiento y reparación de bienes muebles -> 020 (12%)
+  if (RX_MANTENIMIENTO.test(d) && !d.includes('via') && !d.includes('vial')) {
+    const avisoTasaInusual = (tasaActual != null && Number(tasaActual) !== 12)
+      ? `La tasa cargada (${tasaActual}%) no es el 12% reglamentario de mantenimiento y reparación (Anexo 3 SUNAT, código 020).`
+      : null;
+    return {
+      codigo: '020',
+      confianza: 'alta',
+      motivo: 'Es mantenimiento y reparación de bienes: corresponde al código 020 al 12% según el Anexo 3 de SUNAT.',
+      tasaUnica: 12,
+      tasasPosibles: null,
+      avisoTasa: null,
+      avisoTasaInusual,
+    };
+  }
+
+  // 5) Movimiento de carga -> 021 (10%)
+  if (RX_MOV_CARGA.test(d)) {
+    const avisoTasaInusual = (tasaActual != null && Number(tasaActual) !== 10)
+      ? `La tasa cargada (${tasaActual}%) no es el 10% reglamentario de movimiento de carga (Anexo 3 SUNAT, código 021).`
+      : null;
+    return {
+      codigo: '021',
+      confianza: 'alta',
+      motivo: 'Es movimiento de carga / estiba: corresponde al código 021 al 10% según el Anexo 3 de SUNAT.',
+      tasaUnica: 10,
+      tasasPosibles: null,
+      avisoTasa: null,
+      avisoTasaInusual,
+    };
+  }
+
+  // 6) Fallback a 022 (Otros servicios profesionales o técnicos al 12%)
   const esBienConocido = ['material', 'herramienta', 'maquinaria', 'epp']
     .includes(String(tipoInsumo || '').toLowerCase());
-  const tasaEs12 = !esBienConocido && tasaActual != null && Number(tasaActual) === 12;
+  const tasaEs12Valida = !esBienConocido && tasaEs12;
   const diceServicio = RX_SERVICIO_TXT.test(d) || String(tipoInsumo || '').toLowerCase() === 'servicio';
-  if (tasaEs12 || diceServicio) {
+  if (tasaEs12Valida || diceServicio) {
     return {
       codigo: '022',
-      confianza: tasaEs12 ? 'alta' : 'media',
-      motivo: tasaEs12
-        ? 'No es alquiler ni transporte, y la tasa ya cargada (12%) es la que usás para otros servicios profesionales o técnicos.'
+      confianza: tasaEs12Valida ? 'alta' : 'media',
+      motivo: tasaEs12Valida
+        ? 'No es alquiler, transporte ni obra, y la tasa ya cargada (12%) es la que usás para otros servicios profesionales o técnicos.'
         : 'No es alquiler ni transporte, pero es un servicio. Proponemos el código que usás para otros servicios profesionales o técnicos — confirmalo con la contadora.',
       tasaUnica: 12, tasasPosibles: null, avisoTasa: null, avisoTasaInusual: null,
     };

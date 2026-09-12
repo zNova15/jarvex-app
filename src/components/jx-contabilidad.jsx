@@ -10,6 +10,7 @@ import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL,
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
 import { notaHumana, fusionarNota, resumenEstructurado } from "../lib/notas-movimiento.js";
 import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
+import { CATALOGO_SPOT, etiquetaCodigoSpot, tasaOficialSpot } from "../lib/codigos-spot.js";
 
 // Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
 // Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
@@ -2605,6 +2606,13 @@ function MovimientosContablesPage({ showToast }) {
     setDetrSugerencia(sug);
     // Precarga SOLO si el código venía vacío: nunca pisa lo que ya cargaron.
     setDetrCodigo(codigoActual || (sug ? sug.codigo : ''));
+    if ((m.detraccion_pct == null || m.detraccion_pct === '') && sug?.tasaUnica) {
+      setDetrPct(String(sug.tasaUnica));
+      const tot = Number(m.amount) || 0;
+      if (tot > 0 && (m.detraccion_monto == null || m.detraccion_monto === '')) {
+        setDetrMonto((tot * sug.tasaUnica / 100).toFixed(2));
+      }
+    }
   };
 
   const subirDetraccion = async () => {
@@ -3768,7 +3776,8 @@ function MovimientosContablesPage({ showToast }) {
           entidadNombre={filtroEmpresaSel !== 'todas' ? lookupCompany(filtroEmpresaSel)?.name : (enObraActualRev && filtroObraSel !== 'todas' ? obraNombre(filtroObraSel) : null)}
           canWrite={canWrite} showToast={showToast}
           onClose={()=>setShowRevision(false)}
-          onAbrirMov={(m)=>{ setShowRevision(false); setFocoMovId(m.id); setBusqueda(m.document_number || ''); }}/>
+          onAbrirMov={(m)=>{ setShowRevision(false); setFocoMovId(m.id); setBusqueda(m.document_number || ''); }}
+          onCorregirDetraccion={(m)=>{ setShowRevision(false); openDetraccion(m); }}/>
       )}
 
       {/* Duplicados: comprobantes registrados 2+ veces (fusión admin/contador) */}
@@ -4149,33 +4158,88 @@ function MovimientosContablesPage({ showToast }) {
           </label>
           {detrAplica && (
             <>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
-                <div><label className="flabel">Detracción %</label><input className="fi" type="number" step="0.01" value={detrPct} onChange={e=>setDetrPct(e.target.value)}/></div>
-                <div><label className="flabel">Monto detraído (S/)</label><input className="fi" type="number" step="0.01" value={detrMonto} onChange={e=>setDetrMonto(e.target.value)}/></div>
-                <div><label className="flabel">Código SPOT</label><input className="fi" value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="ej. 037"/></div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1.6fr', gap:8, alignItems:'end' }}>
+                <div>
+                  <label className="flabel">Detracción %</label>
+                  <input className="fi" type="number" step="0.01" value={detrPct} onChange={e => {
+                    const val = e.target.value;
+                    setDetrPct(val);
+                    const num = Number(val);
+                    const tot = Number(detrTarget.amount) || 0;
+                    if (tot > 0 && num > 0) setDetrMonto((tot * num / 100).toFixed(2));
+                  }}/>
+                </div>
+                <div>
+                  <label className="flabel">Monto detraído (S/)</label>
+                  <input className="fi" type="number" step="0.01" value={detrMonto} onChange={e=>setDetrMonto(e.target.value)}/>
+                </div>
+                <div>
+                  <label className="flabel">Código SPOT SUNAT</label>
+                  <div style={{ display:'flex', gap:4 }}>
+                    <input className="fi" style={{ width:75, flexShrink:0 }} value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="037" maxLength={6}/>
+                    <select
+                      className="fi"
+                      style={{ flex:1, minWidth:0, textOverflow:'ellipsis' }}
+                      value={CATALOGO_SPOT.some(c => c.codigo === detrCodigo) ? detrCodigo : ''}
+                      onChange={e => {
+                        const val = e.target.value;
+                        if (val) {
+                          setDetrCodigo(val);
+                          const tasa = tasaOficialSpot(val);
+                          if (tasa != null) {
+                            setDetrPct(String(tasa));
+                            const tot = Number(detrTarget.amount) || 0;
+                            if (tot > 0) setDetrMonto((tot * tasa / 100).toFixed(2));
+                          }
+                        }
+                      }}
+                    >
+                      <option value="">Elegir catálogo…</option>
+                      {CATALOGO_SPOT.map(c => (
+                        <option key={c.codigo} value={c.codigo}>{etiquetaCodigoSpot(c)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
               </div>
-              {/* Sugerencia de código (tanda 7, entrega 3): recomendación leída
-                  de la descripción, nunca autoaplicada por sí sola — se
-                  precargó arriba solo si el campo estaba vacío. */}
+              {/* Sugerencia de código SPOT */}
               {detrSugerencia && (
-                <div className="card card-p" style={{ marginTop:8, borderLeft: `3px solid ${detrSugerencia.confianza === 'alta' ? 'var(--blue)' : 'var(--amber)'}`, fontSize:11.5, color:'var(--ts)' }}>
-                  Sugerencia: código <strong>{detrSugerencia.codigo}</strong>
-                  {detrSugerencia.tasaUnica != null ? <> al <strong>{detrSugerencia.tasaUnica}%</strong></> : null}
-                  {' — '}{detrSugerencia.motivo}
-                  {detrSugerencia.confianza === 'media' && (
-                    <span className="badge b-gray" style={{ marginLeft:5, fontSize:9 }}>confirmá con la contadora</span>
-                  )}
-                  {detrSugerencia.tasasPosibles && (
-                    <div style={{ marginTop:4, color:'var(--tm)' }}>
-                      {detrSugerencia.tasasPosibles.map(t => `${t.tasa}% — ${t.cuando}`).join(' · ')}
-                    </div>
-                  )}
-                  {detrSugerencia.avisoTasa && (
-                    <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasa}</div>
-                  )}
-                  {detrSugerencia.avisoTasaInusual && (
-                    <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasaInusual}</div>
-                  )}
+                <div className="card card-p" style={{ marginTop:8, borderLeft: `3px solid ${detrSugerencia.confianza === 'alta' ? 'var(--blue)' : 'var(--amber)'}`, fontSize:11.5, color:'var(--ts)', display:'flex', justifyContent:'space-between', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                  <div style={{ flex:1, minWidth:220 }}>
+                    Sugerencia: código <strong>{detrSugerencia.codigo}</strong>
+                    {detrSugerencia.tasaUnica != null ? <> al <strong>{detrSugerencia.tasaUnica}%</strong></> : null}
+                    {' — '}{detrSugerencia.motivo}
+                    {detrSugerencia.confianza === 'media' && (
+                      <span className="badge b-gray" style={{ marginLeft:5, fontSize:9 }}>confirmá con la contadora</span>
+                    )}
+                    {detrSugerencia.tasasPosibles && (
+                      <div style={{ marginTop:4, color:'var(--tm)' }}>
+                        {detrSugerencia.tasasPosibles.map(t => `${t.tasa}% — ${t.cuando}`).join(' · ')}
+                      </div>
+                    )}
+                    {detrSugerencia.avisoTasa && (
+                      <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasa}</div>
+                    )}
+                    {detrSugerencia.avisoTasaInusual && (
+                      <div style={{ marginTop:4, color:'var(--amber)' }}>⚠ {detrSugerencia.avisoTasaInusual}</div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-amber"
+                    style={{ flexShrink:0 }}
+                    onClick={() => {
+                      setDetrCodigo(detrSugerencia.codigo);
+                      const tasa = detrSugerencia.tasaUnica || (detrSugerencia.tasasPosibles?.[0]?.tasa);
+                      if (tasa != null) {
+                        setDetrPct(String(tasa));
+                        const tot = Number(detrTarget.amount) || 0;
+                        if (tot > 0) setDetrMonto((tot * tasa / 100).toFixed(2));
+                      }
+                    }}
+                  >
+                    <JxIcon name="check" size={12} /> Aplicar sugerencia ({detrSugerencia.codigo})
+                  </button>
                 </div>
               )}
               <div style={{ marginTop:6, fontSize:11, color:'var(--tm)' }}>

@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { sugerirCodigoSpot, CODIGOS_VALIDADOS } from '../sugerir-codigo-spot.js';
 
 describe('estructura del catálogo', () => {
-  it('solo tiene los 3 códigos validados por uso real, ninguno inventado', () => {
-    expect(Object.keys(CODIGOS_VALIDADOS).sort()).toEqual(['019', '022', '027']);
+  it('contiene los códigos validados del Anexo 3 de SUNAT', () => {
+    expect(Object.keys(CODIGOS_VALIDADOS).sort()).toEqual(['019', '020', '021', '022', '025', '027', '037']);
   });
 });
 
@@ -176,5 +176,52 @@ describe('colisiones de subcadena (misma clase de bug que en recomendador-activo
     // la descripción nombra "arrendamiento" para cualquier parte del contrato,
     // sugiere 019. Es una recomendación, la contadora decide si aplica.
     expect(sugerirCodigoSpot('GASTOS NOTARIALES DEL CONTRATO DE ARRENDAMIENTO').codigo).toBe('019');
+  });
+});
+
+describe('037 — contratos de construcción (tasa 4%)', () => {
+  it('detecta obras de rehabilitación y construcción', () => {
+    const r = sugerirCodigoSpot('OBRA: REHABILITACION DEL LOCAL ESCOLAR N 88389 JUAN VALERSANDOVAL DISTRITO DE NUEVO CHIMBOTE');
+    expect(r).not.toBeNull();
+    expect(r.codigo).toBe('037');
+    expect(r.confianza).toBe('alta');
+    expect(r.tasaUnica).toBe(4);
+  });
+
+  it('detecta tarrajeo, encofrado y partidas de obra', () => {
+    const r1 = sugerirCodigoSpot('POR EL SALDO DE TARRAJEO DE LA OBRA: SALDO DE LA DE LA I.E. 040 NUEVA ESPERANZA');
+    expect(r1.codigo).toBe('037');
+    expect(r1.tasaUnica).toBe(4);
+
+    const r2 = sugerirCodigoSpot('EJECUCION DE OBRA MIRAFLORES VALORIZACION 02');
+    expect(r2.codigo).toBe('037');
+    expect(r2.tasaUnica).toBe(4);
+  });
+
+  it('si ya tiene tasa 4% y menciona obra o trabajo, sugiere 037 con confianza alta', () => {
+    const r = sugerirCodigoSpot('SERVICIO DE PINTADO EN OBRA', { tasaActual: 4 });
+    expect(r.codigo).toBe('037');
+    expect(r.confianza).toBe('alta');
+    expect(r.avisoTasaInusual).toBeNull();
+  });
+
+  it('avisa si la tasa cargada no es 4% para un contrato de construcción', () => {
+    const r = sugerirCodigoSpot('EJECUCION DE PARTIDAS DE PAVIMENTACION', { tasaActual: 10 });
+    expect(r.codigo).toBe('037');
+    expect(r.avisoTasaInusual).toMatch(/no es el 4%/);
+  });
+});
+
+describe('020 y 021 — mantenimiento y movimiento de carga', () => {
+  it('detecta mantenimiento y reparación (020 al 12%)', () => {
+    const r = sugerirCodigoSpot('MANTENIMIENTO Y REPARACION DE CAMION VOLQUETE');
+    expect(r.codigo).toBe('020');
+    expect(r.tasaUnica).toBe(12);
+  });
+
+  it('detecta movimiento de carga y estiba (021 al 10%)', () => {
+    const r = sugerirCodigoSpot('SERVICIO DE ESTIBA Y MOVIMIENTO DE CARGA DE TUBOS');
+    expect(r.codigo).toBe('021');
+    expect(r.tasaUnica).toBe(10);
   });
 });

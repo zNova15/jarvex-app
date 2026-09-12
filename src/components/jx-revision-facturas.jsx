@@ -29,7 +29,7 @@ const fmt = (n, mon = 'PEN') =>
  * @param onAbrirMov  (movimiento) => void — lleva al comprobante y cierra esto
  * @param canWrite    si puede marcar «está bien»
  */
-function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov, canWrite, showToast, entidadNombre = null }) {
+function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov, onCorregirDetraccion, canWrite, showToast, entidadNombre = null }) {
   const [verNivel, setVerNivel] = useState(NIVEL.CONTRADICCION);
   const [guardando, setGuardando] = useState(null);
 
@@ -153,7 +153,13 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
                       {' · '}<strong style={{ color: 'var(--tp)' }}>{fmt(m?.amount, m?.currency)}</strong>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                    {m && h.regla === 'detraccion-sin-codigo' && onCorregirDetraccion && (
+                      <button className="btn btn-amber btn-sm" onClick={() => onCorregirDetraccion(m)}
+                        title="Abrir detracción para asignar código SPOT">
+                        <JxIcon name="zap" size={12} /> Asignar código
+                      </button>
+                    )}
                     {m && (
                       <button className="btn btn-ghost btn-sm" onClick={() => onAbrirMov?.(m)}
                         title="Ir al comprobante para corregirlo">
