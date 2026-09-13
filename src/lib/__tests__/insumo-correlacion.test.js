@@ -125,3 +125,27 @@ describe('sugerirClusters — Correlaciones Multi-Insumo (N a N)', () => {
   });
 });
 
+describe('sacar una variante del grupo antes de aceptarlo', () => {
+  it('con un subconjunto genera solo los enlaces de las que quedan', () => {
+    const todas = ['clavos n3', 'clavos numero 3', 'clavos de 3', 'clavo 3 pulg'];
+    // La tarjeta deja destildar una: al aceptar entran solo las otras tres.
+    const dentro = todas.filter(v => v !== 'clavo 3 pulg');
+    const pares = crearParesDeCluster(dentro, 'clavos numero 3', 'mismo');
+    expect(pares).toHaveLength(3);                       // C(3,2)
+    const nombres = new Set(pares.flatMap(p => [p.nombre_a, p.nombre_b]));
+    expect(nombres.has(normInsumo('clavo 3 pulg'))).toBe(false);
+    // La que se saca NO queda marcada como distinta: no se escribe nada sobre
+    // ella, así que vuelve a proponerse como par suelto.
+    expect(pares.every(p => p.relacion === 'mismo')).toBe(true);
+  });
+
+  it('con menos de dos variantes no hay nada que enlazar', () => {
+    expect(crearParesDeCluster(['clavos n3'], 'clavos n3', 'mismo')).toEqual([]);
+    expect(crearParesDeCluster([], null, 'mismo')).toEqual([]);
+  });
+
+  it('el canónico puede ser el de las que quedan, no el del grupo entero', () => {
+    const pares = crearParesDeCluster(['clavos n3', 'clavos de 3'], 'clavos de 3', 'mismo');
+    expect(pares.every(p => p.canonico === normInsumo('clavos de 3'))).toBe(true);
+  });
+});

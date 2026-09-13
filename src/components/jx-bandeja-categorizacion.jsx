@@ -356,9 +356,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
         <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--tm)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <span>✓ en el catálogo: <strong>{avance.enCatalogo}</strong> ({soles(avance.plataEnCatalogo)})</span>
           <span>✗ no son insumo: <strong>{avance.noInsumo}</strong> ({soles(avance.plataNoInsumo)})</span>
-          <span>· con propuesta: <strong>{avance.propuesto}</strong> ({soles(avance.plataPropuesto)})</span>
-          <span>· dudosas: <strong>{avance.revisar}</strong> ({soles(avance.plataRevisar)})</span>
-          <span>· faltan en el catálogo: <strong>{avance.falta}</strong> ({soles(avance.plataFalta)})</span>
+          <span>· coincidencia alta: <strong>{avance.alta}</strong> ({soles(avance.plataAlta)})</span>
+          <span>· media: <strong>{avance.media}</strong> ({soles(avance.plataMedia)})</span>
+          <span>· para mirar de a una: <strong>{avance.baja + avance.rara + avance.extrema_baja}</strong> ({soles(avance.plataBaja + avance.plataRara + avance.plataExtremaBaja)})</span>
         </div>
       </div>
 
@@ -395,10 +395,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
           {ESTADOS.map(([k, lbl]) => {
             const count = k === 'pendientes' ? avance.total - avance.decididas
               : k === 'decididas' ? avance.decididas
-              : k === 'propuesto' ? avance.propuesto
-              : k === 'revisar' ? avance.revisar
-              : k === 'falta' ? avance.falta
-              : (avance[k] || 0);
+              : (avance[k] || 0);   // las cinco bandas
             return (
               <button key={k} className={`btn btn-sm ${filtro === k ? 'btn-amber' : 'btn-ghost'}`}
                 onClick={() => { setFiltro(k); setCursor(0); }}>

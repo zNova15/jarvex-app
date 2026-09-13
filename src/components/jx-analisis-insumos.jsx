@@ -134,6 +134,9 @@ function AnalisisInsumosPage({ showToast }) {
   });
   const [busca, setBusca] = uS('');
   const [sel, setSel] = uS(null);
+  // Variantes que se sacaron a mano de un grupo sugerido, por id de grupo.
+  // Es estado de pantalla, no una decisión: no se guarda nada hasta aceptar.
+  const [excluidasCluster, setExcluidasCluster] = uS(() => ({}));
   const [manualA, setManualA] = uS('');
   const [manualB, setManualB] = uS('');
   // Anti doble-click (regla crítica 2): ref SÍNCRONO — un doble tap en "Mismo
@@ -279,10 +282,18 @@ function AnalisisInsumosPage({ showToast }) {
     finally { decidiendoRef.current = false; }
   };
 
-  const decidirCluster = async (cluster, relacion = 'mismo') => {
+  const decidirCluster = async (cluster, relacion = 'mismo', soloEstas = null) => {
     if (decidiendoRef.current) return;
     decidiendoRef.current = true;
     try {
+      // `soloEstas` son las variantes que quedaron marcadas en la tarjeta: se
+      // puede sacar alguna del grupo antes de aceptarlo. La que se saca NO se
+      // marca como distinta — simplemente no entra a este grupo, y vuelve a
+      // aparecer como par suelto para decidirla mirándola.
+      const cluster0 = soloEstas && soloEstas.length
+        ? { ...cluster, variantes: soloEstas, canonico: soloEstas.reduce((m, n) => (n.length > m.length ? n : m), soloEstas[0]) }
+        : cluster;
+      cluster = cluster0;
       // 🔴 La firma es (variantes, canonico, relacion, opts). Pasarle el CLUSTER
       // entero como primer argumento tiraba «(variantes || []).map is not a
       // function» y, peor, corría `relacion` al lugar de `canonico`: el botón
@@ -598,33 +609,53 @@ function AnalisisInsumosPage({ showToast }) {
                 <span>📦</span> Grupos de variantes sugeridos ({clustersSugeridos.length} {clustersSugeridos.length === 1 ? 'grupo multi-insumo' : 'grupos multi-insumo'})
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
-                Detección automática de <strong>clusters multi-variantes (N a N)</strong>. En lugar de revisar par por par,
-                podés unificar todas las formas en que distintos proveedores o comprobantes escriben el mismo insumo de un solo golpe.
+                Las distintas formas en que cada proveedor escribe el mismo insumo, agrupadas de una.
+                <strong> Tocá una variante para sacarla del grupo</strong> antes de aceptarlo: la que saques no queda
+                marcada como distinta — vuelve a aparecer abajo, como par suelto, para decidirla mirándola.
+                Al aceptar, el grupo desaparece de acá y el resto se recalcula solo.
               </div>
               <div style={{ display: 'grid', gap: 10 }}>
-                {clustersSugeridos.map(c => (
+                {clustersSugeridos.map(c => {
+                  const fuera = excluidasCluster[c.id] || [];
+                  const dentro = c.variantes.filter(v => !fuera.includes(v));
+                  const canon = dentro.length
+                    ? dentro.reduce((m, n) => (n.length > m.length ? n : m), dentro[0])
+                    : c.canonico;
+                  const togglear = (v) => setExcluidasCluster(p => {
+                    const act = p[c.id] || [];
+                    return { ...p, [c.id]: act.includes(v) ? act.filter(x => x !== v) : [...act, v] };
+                  });
+                  return (
                   <div key={c.id} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg-s)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
                       <div>
-                        <strong style={{ fontSize: 13 }}>{c.canonico}</strong>
+                        <strong style={{ fontSize: 13 }}>{canon}</strong>
                         <span className="badge b-blue" style={{ marginLeft: 8 }}>
-                          {c.variantes.length} variantes
+                          {dentro.length} {dentro.length === 1 ? 'variante' : 'variantes'}
                         </span>
                         <span className="badge b-green" style={{ marginLeft: 6 }}>
                           {Math.round((c.score || 0) * 100)}% similitud
                         </span>
+                        {fuera.length > 0 && (
+                          <span className="badge b-amber" style={{ marginLeft: 6 }}>
+                            {fuera.length} fuera del grupo
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <button
                           className="btn btn-green btn-xs"
                           style={{ fontWeight: 600 }}
-                          onClick={() => decidirCluster(c, 'mismo')}
+                          disabled={dentro.length < 2}
+                          title={dentro.length < 2 ? 'Hacen falta al menos dos variantes para unir' : undefined}
+                          onClick={() => decidirCluster(c, 'mismo', dentro)}
                         >
-                          ✓ Unir las {c.variantes.length} variantes
+                          ✓ Unir {dentro.length === c.variantes.length ? `las ${dentro.length} variantes` : `las ${dentro.length} marcadas`}
                         </button>
                         <button
                           className="btn btn-ghost btn-xs"
-                          onClick={() => decidirCluster(c, 'distinto')}
+                          disabled={dentro.length < 2}
+                          onClick={() => decidirCluster(c, 'distinto', dentro)}
                         >
                           ✗ Son distintos
                         </button>
@@ -633,19 +664,32 @@ function AnalisisInsumosPage({ showToast }) {
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                       {c.variantes.map((v, vi) => {
                         const m = muestraDe.get(normInsumo(v));
+                        const off = fuera.includes(v);
                         return (
-                          <span key={vi} className="badge b-gray" style={{ fontSize: 11, padding: '3px 8px' }} title={m ? `${m.doc} · ${m.proveedorNombre}` : undefined}>
-                            «{v}» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
-                          </span>
+                          <button
+                            key={vi}
+                            className={`badge ${off ? 'b-gray' : 'b-blue'}`}
+                            onClick={() => togglear(v)}
+                            style={{
+                              fontSize: 11, padding: '3px 8px', border: 'none', cursor: 'pointer',
+                              fontFamily: 'inherit', opacity: off ? 0.45 : 1,
+                              textDecoration: off ? 'line-through' : 'none',
+                            }}
+                            title={off
+                              ? 'Fuera del grupo — tocá para volver a incluirla'
+                              : `Tocá para sacarla del grupo${m ? ` · ${m.doc} · ${m.proveedorNombre}` : ''}`}
+                          >
+                            {off ? '＋' : '✓'} «{v}» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
+                          </button>
                         );
                       })}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
-
           <div className="card card-p">
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Sugerencias individuales ({sugerencias.length})</div>
             {sugerencias.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay pares nuevos para revisar — al registrar más facturas aparecerán acá.</div>}

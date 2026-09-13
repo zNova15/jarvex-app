@@ -177,6 +177,17 @@ export function agruparDescripciones(compras) {
   return [...porNorm.values()].sort((a, b) => b.importe - a.importe);
 }
 
+/**
+ * Los filtros de la bandeja. UN SOLO EJE: la confianza de la coincidencia.
+ *
+ * Antes convivían dos ejes que decían lo mismo con otras palabras — el viejo
+ * («Con propuesta» / «Dudosas» / «Falta en el catálogo») y el de bandas. Con
+ * la cobertura al 100% toda fila pendiente tiene coincidencia y cae en alguna
+ * banda, así que el eje viejo pasó a ser una segunda forma de contar lo mismo:
+ * ruido en la barra de filtros. Queda «Por decidir» como vista por defecto
+ * (todo lo pendiente junto), las cinco bandas para ir por partes, y las ya
+ * decididas.
+ */
 export const ESTADOS = [
   ['pendientes', 'Por decidir'],
   ['alta', 'Coincidencia alta (≥70%)'],
@@ -184,9 +195,6 @@ export const ESTADOS = [
   ['baja', 'Coincidencia baja (25-39%)'],
   ['rara', 'Coincidencia rara (10-24%)'],
   ['extrema_baja', 'Coincidencia extremadamente baja (<10%)'],
-  ['propuesto', 'Con propuesta'],
-  ['revisar', 'Dudosas'],
-  ['falta', 'Falta en el catálogo'],
   ['decididas', 'Ya decididas'],
 ];
 
