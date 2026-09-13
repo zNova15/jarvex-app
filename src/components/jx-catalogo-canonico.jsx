@@ -40,7 +40,12 @@ import {
 } from "../lib/catalogo-canonico.js";
 import {
   listarCategoriasDisponibles, etiquetaCategoria, bandaConfianza,
+  terminosDeClasificacion, normIUPC,
 } from "../lib/indices-unificados-iupc.js";
+import {
+  crearClasificacion, editarClasificacion, desactivarClasificacion,
+  agregarTermino, quitarTermino, codigoSugerido, validarClasificacion,
+} from "../lib/clasificaciones-db.js";
 import {
   previsualizarImportacion, aplicarImportacion, corregirFactor,
   corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
@@ -119,7 +124,7 @@ const UNIDADES_SUGERIDAS = ['und', 'm', 'm2', 'm3', 'kg', 'bolsa', 'gal', 'par',
 
 const num = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 3 });
 
-function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
+function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'clasificaciones' }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
@@ -147,6 +152,12 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
   const [leyendo, setLeyendo] = uS(false);
   const [factorEdit, setFactorEdit] = uS({});
   const [eqElegida, setEqElegida] = uS({});    // familia local → slug canónico
+  const clasHook = window.__hooks.useClasificaciones();
+  const terHook = window.__hooks.useClasificacionTerminos();
+  // Catálogo = las CLASIFICACIONES y su diccionario. La lista plana de los 483
+  // insumos queda como segunda vista: con ese volumen, buscar y corregir en
+  // lote sigue siendo la forma más rápida de arreglar muchas filas a la vez.
+  const [vista, setVista] = uS(vistaInicial);
   const [catOverride, setCatOverride] = uS({});// id → codigo categoria sugerida editada
   const [recMarcadas, setRecMarcadas] = uS({});
   // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap no
@@ -184,7 +195,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
 
   // La revisión recommendativa: recomendaciones oficiales IUPC / INEI.
   // 100% de cobertura predictiva con bandas de probabilidad.
-  const revision = uM(() => revisarCategoriasCatalogo(activas), [activas]);
+  const codigosPropios = uM(
+    () => new Set((clasHook.data || []).filter(c => !c.deleted_at).map(c => c.codigo)),
+    [clasHook.data],
+  );
+  const revision = uM(
+    () => revisarCategoriasCatalogo(activas, { terminosCustom: terHook.data || null, codigosPropios }),
+    [activas, terHook.data, codigosPropios],
+  );
   const idsRec = uM(() => Object.keys(recMarcadas).filter(k => recMarcadas[k]), [recMarcadas]);
 
   const visibles = uM(() => {
@@ -472,6 +490,28 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
         </div>
       ) : (
         <>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className={`btn btn-sm ${vista === 'clasificaciones' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('clasificaciones')}>🗂 Clasificaciones y diccionario</button>
+            <button className={`btn btn-sm ${vista === 'lista' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('lista')}>📋 Lista completa ({activas.length})</button>
+          </div>
+
+          {vista === 'clasificaciones' && (
+            <PanelClasificaciones
+              activas={activas}
+              propias={clasHook.data || []}
+              terminos={terHook.data || []}
+              revision={revision}
+              companyId={companyId}
+              userId={userId}
+              equivalencias={equivalencias}
+              showToast={showToast}
+              refrescar={async () => { await Promise.all([refrescar?.(), clasHook.refresh?.(), terHook.refresh?.()]); }}
+            />
+          )}
+
+          {vista === 'lista' && (<>
           {/* ── La revisión: recomendaciones oficiales IUPC / INEI ─ */}
           {revision.recomendaciones.length > 0 && (
             <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
@@ -742,6 +782,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
               </div>
             )}
           </div>
+          </>)}
         </>
       )}
 
@@ -874,6 +915,348 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EL PANEL DE CLASIFICACIONES Y SU DICCIONARIO (pedido de Gabriel, 13-set)
+//
+// «Catálogo debería tener la clasificación que tenemos junto al diccionario de
+//  muestras de enlaces. Aquí podríamos crear nuevas clasificaciones y agregar
+//  un diccionario de qué insumos irían a la nueva clasificación. Además
+//  recuerda que tenemos clasificación de insumos y también quiero una de
+//  servicios.»
+//
+// Los insumos del catálogo NO viven en una lista plana aparte: viven ADENTRO de
+// su clasificación. Y las recomendaciones dejaron de ser un panel gigante
+// arriba de todo —que era lo que no se entendía, y con 389 filas no se
+// resolvía nunca— para ser, dentro de cada clasificación, «estos parecen ser
+// de acá»: doce candidatos sí se despachan.
+// ═══════════════════════════════════════════════════════════════════
+function PanelClasificaciones({ activas, propias, terminos, revision, companyId, userId, equivalencias, showToast, refrescar }) {
+  const [arbol, setArbol] = uS('insumo');
+  const [sel, setSel] = uS(null);
+  const [busca, setBusca] = uS('');
+  const [nuevoTermino, setNuevoTermino] = uS('');
+  const [creando, setCreando] = uS(null);
+  const enCursoRef = uR(false);
+
+  const todasCats = uM(() => listarCategoriasDisponibles(propias), [propias]);
+
+  // Cuántos insumos del catálogo caen hoy en cada clasificación.
+  const porCodigo = uM(() => {
+    const m = new Map();
+    for (const r of activas) {
+      const k = r.familia || 'sin_clasificar';
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    }
+    return m;
+  }, [activas]);
+
+  // El diccionario completo de cada clasificación, calculado UNA vez: la tabla
+  // de la izquierda lo pide para cada fila y son 90+ filas.
+  const diccPorCodigo = uM(() => {
+    const m = new Map();
+    for (const c of todasCats) m.set(c.codigo, terminosDeClasificacion(c.codigo, terminos));
+    return m;
+  }, [todasCats, terminos]);
+
+  // Las recomendaciones, agrupadas por el destino que proponen.
+  const candidatosPorCodigo = uM(() => {
+    const m = new Map();
+    for (const r of (revision?.recomendaciones || [])) {
+      if (!m.has(r.familiaSugerida)) m.set(r.familiaSugerida, []);
+      m.get(r.familiaSugerida).push(r);
+    }
+    return m;
+  }, [revision]);
+
+  const visibles = uM(() => {
+    const q = busca.trim().toLowerCase();
+    return todasCats
+      .filter(c => (c.arbol === arbol) || (arbol === 'insumo' && c.arbol === 'complementaria'))
+      .filter(c => !q || c.label.toLowerCase().includes(q) || String(c.codigo).toLowerCase().includes(q));
+  }, [todasCats, arbol, busca]);
+
+  const cat = uM(() => todasCats.find(c => c.codigo === sel) || null, [todasCats, sel]);
+  const dicc = cat ? (diccPorCodigo.get(cat.codigo) || []) : [];
+  const insumosDe = cat ? (porCodigo.get(cat.codigo) || []) : [];
+  const candidatosDe = cat ? (candidatosPorCodigo.get(cat.codigo) || []) : [];
+
+  // Un término no puede estar en dos clasificaciones a la vez: si ya está, se
+  // dice dónde, en vez de crear un duplicado que después pelea consigo mismo.
+  const yaEnBase = (norm) => {
+    for (const [cod, lista] of diccPorCodigo.entries()) {
+      if (lista.some(t => normIUPC(t.termino) === norm)) return etiquetaCategoria(cod);
+    }
+    return null;
+  };
+
+  const conGuard = (fn) => async (...a) => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    try { await fn(...a); } catch (e) { showToast?.('No se pudo: ' + (e?.message || e), 'error'); }
+    finally { enCursoRef.current = false; }
+  };
+
+  const addTermino = conGuard(async () => {
+    if (!cat || !nuevoTermino.trim()) return;
+    const r = await agregarTermino(
+      { termino: nuevoTermino, clasificacionCodigo: cat.codigo, companyId },
+      { userId, yaEnBase });
+    if (!r.ok) { showToast?.(r.motivo, 'error'); return; }
+    setNuevoTermino('');
+    await refrescar();
+    showToast?.(`✓ «${r.fila.termino}» agregado al diccionario de ${etiquetaCategoria(cat.codigo)}`, 'green');
+  });
+
+  const delTermino = conGuard(async (t) => {
+    if (!t.id) return;
+    await quitarTermino(t.id, { userId });
+    await refrescar();
+    showToast?.(`«${t.termino}» sacado del diccionario`, 'green');
+  });
+
+  const traerAca = conGuard(async (r) => {
+    await corregirEnLote([r.id], { familia: cat.codigo }, { userId });
+    await refrescar();
+    showToast?.(`✓ «${r.nombre}» pasó a ${etiquetaCategoria(cat.codigo)}`, 'green');
+  });
+
+  const guardarNueva = conGuard(async () => {
+    const err = validarClasificacion(creando, propias);
+    if (err) { showToast?.(err, 'error'); return; }
+    const cod = creando.codigo;
+    await crearClasificacion({ ...creando, companyId }, { userId });
+    setCreando(null);
+    await refrescar();
+    setSel(cod);
+    showToast?.(`✓ Clasificación «${cod}» creada. Agregale términos al diccionario.`, 'green');
+  });
+
+  const bajaClasificacion = conGuard(async (codigo) => {
+    const fila = (propias || []).find(c => c.codigo === codigo && !c.deleted_at);
+    if (!fila) return;
+    const n = (porCodigo.get(codigo) || []).length;
+    if (n > 0 && !confirm(`«${codigo}» tiene ${n} insumo${n === 1 ? '' : 's'} adentro. Se desactiva la clasificación pero los insumos NO se mueven solos: quedan apuntando a un código inactivo hasta que los reasignes. ¿Seguir?`)) return;
+    await desactivarClasificacion(fila.id, { userId });
+    if (sel === codigo) setSel(null);
+    await refrescar();
+    showToast?.(`«${codigo}» desactivada.`, 'green');
+  });
+
+  const ORIGEN_BADGE = { inei: ['b-blue', 'INEI'], base: ['b-blue', 'base'], manual: ['b-green', 'tuyo'] };
+  const BADGE_BANDA_CAND = { alta: 'b-green', media: 'b-blue', baja: 'b-amber', rara: 'b-purple' };
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
+        Ésta es <strong>la clasificación</strong> con la que trabaja toda la app, y el <strong>diccionario</strong>{' '}
+        que la alimenta: los términos con los que cada cosa aparece escrita en las facturas. Lo que agregues acá
+        es lo que después usa «Categorizar» para recomendar — y le <strong>gana</strong> a la base oficial, porque
+        es una corrección deliberada sobre ella.
+        <div style={{ marginTop: 4, color: 'var(--tm)' }}>
+          La base oficial (los códigos del IUPC del INEI y el árbol de servicios) viene con la app y no se edita:
+          es la norma. Lo que crees vos se suma encima y queda marcado{' '}
+          <span className="badge b-green" style={{ fontSize: 9 }}>tuyo</span>.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button className={`btn btn-sm ${arbol === 'insumo' ? 'btn-blue' : 'btn-ghost'}`}
+          onClick={() => { setArbol('insumo'); setSel(null); }}>🧱 Insumos</button>
+        <button className={`btn btn-sm ${arbol === 'servicio' ? 'btn-blue' : 'btn-ghost'}`}
+          onClick={() => { setArbol('servicio'); setSel(null); }}>🛠 Servicios</button>
+        <input className="fi" style={{ fontSize: 12, minWidth: 180, flex: 1 }} placeholder="Buscar clasificación…"
+          value={busca} onChange={e => setBusca(e.target.value)} />
+        <button className="btn btn-amber btn-sm"
+          onClick={() => setCreando({ codigo: '', nombre: '', arbol, gasto: '' })}>+ Nueva clasificación</button>
+      </div>
+
+      {creando && (
+        <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)', display: 'grid', gap: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+            Nueva clasificación de {creando.arbol === 'servicio' ? 'servicios' : 'insumos'}
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ flex: 2, minWidth: 190 }}>
+              <label className="flabel" style={{ fontSize: 10.5 }}>Nombre</label>
+              <input className="fi" style={{ width: '100%' }} value={creando.nombre} autoFocus
+                onChange={e => setCreando(p => ({
+                  ...p, nombre: e.target.value,
+                  codigo: p.codigoTocado ? p.codigo : codigoSugerido(e.target.value, p.arbol),
+                }))} />
+            </div>
+            <div style={{ flex: 1, minWidth: 130 }}>
+              <label className="flabel" style={{ fontSize: 10.5 }}>Código</label>
+              <input className="fi" style={{ width: '100%', fontFamily: 'monospace' }} value={creando.codigo}
+                onChange={e => setCreando(p => ({ ...p, codigo: e.target.value.trim(), codigoTocado: true }))} />
+            </div>
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <label className="flabel" style={{ fontSize: 10.5 }}>Cómo lo agrupa contabilidad</label>
+              <select className="fi" style={{ width: '100%' }} value={creando.gasto}
+                onChange={e => setCreando(p => ({ ...p, gasto: e.target.value }))}>
+                <option value="">— según el árbol —</option>
+                {['materiales', 'herramientas', 'maquinaria', 'epp', 'servicios', 'gastos_generales', 'otros']
+                  .map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+            El código es con lo que se guarda cada insumo. No puede pisar uno de la base oficial
+            (01…95 del IUPC, S01…S13 de servicios) — por eso se propone con prefijo.
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setCreando(null)}>Cancelar</button>
+            <button className="btn btn-amber btn-sm" onClick={guardarNueva}>Crear</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div className="card card-p" style={{ flex: '1 1 320px', minWidth: 290, maxHeight: 620, overflowY: 'auto' }}>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>
+            {visibles.length} clasificaciones · {arbol === 'insumo' ? 'IUPC del Estado + complementarias' : 'árbol de servicios'}
+          </div>
+          <table className="tbl" style={{ fontSize: 11.5 }}>
+            <tbody>
+              {visibles.map(c => {
+                const n = (porCodigo.get(c.codigo) || []).length;
+                const nd = (diccPorCodigo.get(c.codigo) || []).length;
+                const nc = (candidatosPorCodigo.get(c.codigo) || []).length;
+                return (
+                  <tr key={c.codigo} onClick={() => setSel(c.codigo)}
+                    style={{ cursor: 'pointer', background: sel === c.codigo ? 'var(--bg-c2)' : undefined }}>
+                    <td style={{ fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{c.codigo}</td>
+                    <td>
+                      {c.nombre}
+                      {c.propia && <span className="badge b-green" style={{ marginLeft: 4, fontSize: 8.5 }}>tuyo</span>}
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
+                      {n > 0 && <span title="insumos del catálogo acá adentro">{n} 📦</span>}
+                      {nd > 0 && <span style={{ marginLeft: 6 }} title="términos en su diccionario">{nd} 📖</span>}
+                      {nc > 0 && (
+                        <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 8.5 }}
+                          title="candidatos que parecen ser de acá">+{nc}</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ flex: '2 1 400px', minWidth: 300, display: 'grid', gap: 10 }}>
+          {!cat ? (
+            <div className="card card-p" style={{ fontSize: 12, color: 'var(--tm)' }}>
+              Elegí una clasificación de la izquierda para ver su diccionario y los insumos que tiene adentro.
+            </div>
+          ) : (
+            <>
+              <div className="card card-p">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{etiquetaCategoria(cat.codigo)}</div>
+                  {cat.propia && (
+                    <button className="btn btn-xs btn-ghost" onClick={() => bajaClasificacion(cat.codigo)}>Desactivar</button>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+                  Va a <strong>{TIPO_DESTINO[cat.tipo] || cat.tipo}</strong> · contabilidad la agrupa
+                  como <strong>{cat.gasto || (cat.arbol === 'servicio' ? 'servicios' : '—')}</strong>
+                </div>
+              </div>
+
+              <div className="card card-p">
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>
+                  📖 Diccionario ({dicc.length} {dicc.length === 1 ? 'término' : 'términos'})
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                  <input className="fi" style={{ flex: 1, fontSize: 12 }}
+                    placeholder="Agregar término: cómo lo escriben en las facturas…"
+                    value={nuevoTermino} onChange={e => setNuevoTermino(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') addTermino(); }} />
+                  <button className="btn btn-amber btn-sm" disabled={!nuevoTermino.trim()} onClick={addTermino}>Agregar</button>
+                </div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {dicc.length === 0 && (
+                    <span style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>
+                      Sin términos todavía. Agregá los nombres con los que aparece en las facturas y
+                      «Categorizar» va a reconocerlo solo.
+                    </span>
+                  )}
+                  {dicc.map((t, i) => {
+                    const par = ORIGEN_BADGE[t.origen] || ['b-gray', t.origen];
+                    return (
+                      <span key={`${t.termino}-${i}`} className="badge b-gray"
+                        style={{ fontSize: 11, padding: '3px 7px', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        {t.termino}
+                        <span className={`badge ${par[0]}`} style={{ fontSize: 8 }}>{par[1]}</span>
+                        {t.origen === 'manual' && (
+                          <button className="btn btn-xs btn-ghost" style={{ padding: '0 3px', minWidth: 0 }}
+                            title="Sacar del diccionario" onClick={() => delTermino(t)}>✕</button>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {candidatosDe.length > 0 && (
+                <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>
+                    {candidatosDe.length} {candidatosDe.length === 1 ? 'insumo parece ser' : 'insumos parecen ser'} de acá
+                  </div>
+                  <table className="tbl" style={{ fontSize: 11.5 }}>
+                    <tbody>
+                      {candidatosDe.slice(0, 40).map(r => (
+                        <tr key={r.id}>
+                          <td>{r.nombre}</td>
+                          <td style={{ color: 'var(--tm)', whiteSpace: 'nowrap' }}>hoy en {etiquetaCategoria(r.familia)}</td>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            <span className={`badge ${BADGE_BANDA_CAND[r.banda] || 'b-gray'}`}>
+                              {Math.round(r.score * 100)}%
+                            </span>
+                          </td>
+                          <td><button className="btn btn-xs btn-green" onClick={() => traerAca(r)}>Traer acá</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="card card-p">
+                <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>
+                  📦 {insumosDe.length} {insumosDe.length === 1 ? 'insumo' : 'insumos'} en esta clasificación
+                </div>
+                {insumosDe.length === 0 ? (
+                  <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>Todavía no hay ninguno acá.</div>
+                ) : (
+                  <table className="tbl" style={{ fontSize: 11.5 }}>
+                    <tbody>
+                      {insumosDe.slice(0, 60).map(r => (
+                        <tr key={r.id}>
+                          <td>{r.nombre}</td>
+                          <td style={{ fontFamily: 'monospace', color: 'var(--tm)' }}>{r.unidad || '—'}</td>
+                          <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {insumosDe.length > 60 && (
+                  <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 6 }}>
+                    …y {insumosDe.length - 60} más. Para verlos todos y editarlos en lote, andá a «Lista completa».
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

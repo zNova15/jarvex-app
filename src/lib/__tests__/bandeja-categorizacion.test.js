@@ -291,7 +291,9 @@ describe('el alta al catálogo desde la bandeja', () => {
   it('un servicio nuevo nace como servicio, no como insumo', () => {
     const f = { norm: 'x', muestra: 'servicio de transporte de tubo de chiclayo a cajamarca', unidades: new Set(['und']) };
     const nueva = filaNuevaDeCatalogo(f);
-    expect(nueva.familia).toBe('servicios');
+    // Ya no cae en el cajón «servicios»: el árbol de servicios lo ubica en
+    // S03 (Flete y transporte), que es lo que la contadora necesita ver.
+    expect(nueva.familia).toBe('S03');
     expect(nueva.tipo).toBe('servicio');
   });
 

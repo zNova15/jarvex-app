@@ -105,7 +105,9 @@ describe('indices-unificados-iupc — R.J. Nº 016-2026-INEI', () => {
     // seguridad aparentaba y la banda no servía para triar nada.
     const fuerte = clasificarConIUPC('ALQUILER DE RETROEXCAVADORA ORUGA');
     const debil = clasificarConIUPC('SERVICIO DE ALGO NO ESPECIFICADO');
-    expect(fuerte.codigo).toBe('servicios');
+    // El fuerte cae en su clasificación del árbol; el débil admite que solo
+    // sabe que es un servicio y se queda en el cajón general.
+    expect(fuerte.codigo).toBe('S02');
     expect(debil.codigo).toBe('servicios');
     expect(fuerte.score).toBeGreaterThan(debil.score);
     expect(fuerte.banda).toBe('alta');

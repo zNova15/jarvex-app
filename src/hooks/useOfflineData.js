@@ -489,6 +489,21 @@ export function useCatalogoFamiliaMapeo() {
   , []);
 }
 
+// Las clasificaciones PROPIAS (mig 205) y el diccionario que se les agrega a
+// mano. La base oficial no está acá: vive en el bundle. Las dos son chicas y
+// globales, así que se traen enteras y se mezclan al leer.
+export function useClasificaciones() {
+  return useOfflineData('clasificaciones', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
+export function useClasificacionTerminos() {
+  return useOfflineData('clasificacion_terminos', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Config global clave→valor (mig 159). Puede haber filas repetidas por clave
 // (dos devices offline) — resolver al leer: updated_at más reciente gana.
 export function useAppConfig() {

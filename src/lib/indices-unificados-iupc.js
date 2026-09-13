@@ -11,6 +11,12 @@
 // 'administrativos' (Consumos administrativos) o categorías especiales.
 // ═══════════════════════════════════════════════════════════════════
 
+import {
+  SERVICIOS_CODIGOS, SERVICIO_POR_CODIGO, esCodigoServicio, DICCIONARIO_SERVICIOS,
+} from './clasificacion-servicios.js';
+
+export { SERVICIOS_CODIGOS, SERVICIO_POR_CODIGO, esCodigoServicio, DICCIONARIO_SERVICIOS };
+
 export const IUPC_CODIGOS = [
   { codigo: '01', nombre: 'Aceite y lubricante', tipo: 'material' },
   { codigo: '02', nombre: 'Acero de construcción liso', tipo: 'material' },
@@ -1095,6 +1101,14 @@ export const normIUPC = (s) => String(s || '')
 const STOPWORDS = new Set([
   'de', 'del', 'la', 'el', 'los', 'las', 'con', 'para', 'por', 'en', 'y', 'a', 'un', 'una', 'x',
   'al', 'su', 'o', 'e', 'tipo', 'clase', 'marca', 'medida', 'diametro', 'd', 'n', 'no',
+  // «servicio» y «alquiler» los dice TODO el árbol de servicios: no distinguen
+  // nada adentro y, contándolos, inflaban por igual a todas las entradas.
+  // Medido: «SERVICIO DE ALGO RARO» pegaba con «Servicio técnico» al 80% y
+  // salía clasificado como Mantenimiento. Sin ellos manda el sustantivo —
+  // almacén → S01, retroexcavadora → S02— que es lo que de verdad decide.
+  // Que ALGO sea un servicio ya lo resuelve `detectarServicio` con regex sobre
+  // el texto entero, no con estos tokens.
+  'servicio', 'servicios', 'alquiler',
 ]);
 
 const tokensDeTexto = (norm) => norm.split(' ').filter(t => t && !STOPWORDS.has(t));
@@ -1109,6 +1123,35 @@ const DICCIONARIO_INDEXADO = ELEMENTOS_DICCIONARIO_INEI.map(item => {
   };
 });
 
+/** Lo mismo para el árbol de servicios (ver `clasificacion-servicios.js`). */
+const DICCIONARIO_SERVICIOS_INDEXADO = DICCIONARIO_SERVICIOS.map(item => {
+  const norm = normIUPC(item.nombre);
+  return { nombre: item.nombre, cod: item.cod, norm, tokens: tokensDeTexto(norm) };
+});
+
+/**
+ * El diccionario COMPLETO de una clasificación: los términos que la disparan.
+ * Junta la base que viaja en el bundle (Anexo 2 del INEI para los insumos, el
+ * de `clasificacion-servicios.js` para los servicios) con los que se hayan
+ * agregado desde la pantalla y llegan por `terminosCustom`.
+ * Es lo que dibuja el Catálogo cuando te parás sobre una clasificación.
+ */
+export function terminosDeClasificacion(codigo, terminosCustom = []) {
+  const c = String(codigo || '').trim();
+  if (!c) return [];
+  const real = REAGRUPACIONES_IUPC[c] || c;
+  const oficiales = esCodigoServicio(c)
+    ? DICCIONARIO_SERVICIOS.filter(x => x.cod === c).map(x => ({ termino: x.nombre, origen: 'base' }))
+    : ELEMENTOS_DICCIONARIO_INEI
+      .filter(x => (REAGRUPACIONES_IUPC[x.iupc] || x.iupc) === real)
+      .map(x => ({ termino: x.nombre, origen: 'inei' }));
+  const propios = (terminosCustom || [])
+    .filter(t => t && !t.deleted_at && String(t.clasificacion_codigo) === c)
+    .map(t => ({ termino: t.termino, origen: 'manual', id: t.id }));
+  return [...oficiales, ...propios]
+    .sort((a, b) => String(a.termino).localeCompare(String(b.termino), 'es'));
+}
+
 /** Devuelve la lista completa de todas las categorías disponibles */
 export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
   const iupc = IUPC_CODIGOS.map(c => ({
@@ -1116,7 +1159,17 @@ export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
     label: `[${c.codigo}] ${c.nombre}`,
     nombre: c.nombre,
     tipo: c.tipo,
-    grupo: 'IUPC - Estado Peruano',
+    arbol: 'insumo',
+    grupo: 'Insumos · IUPC del Estado Peruano',
+  }));
+
+  const servicios = SERVICIOS_CODIGOS.map(c => ({
+    codigo: c.codigo,
+    label: `[${c.codigo}] ${c.nombre}`,
+    nombre: c.nombre,
+    tipo: 'servicio',
+    arbol: 'servicio',
+    grupo: 'Servicios',
   }));
 
   const complementarias = CATEGORIAS_COMPLEMENTARIAS.map(c => ({
@@ -1124,22 +1177,31 @@ export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
     label: c.nombre,
     nombre: c.nombre,
     tipo: c.tipo,
+    arbol: 'complementaria',
     grupo: 'Complementarias',
   }));
 
-  const customs = (categoriasPersonalizadas || []).map(c => {
-    const cod = c.codigo || c.id || `custom:${normIUPC(c.nombre || c)}`;
-    const nom = c.nombre || c.label || c;
-    return {
-      codigo: cod,
-      label: nom,
-      nombre: nom,
-      tipo: c.tipo || 'material',
-      grupo: 'Personalizadas',
-    };
-  });
+  // Las que Gabriel crea desde la pantalla. Viven en la tabla
+  // `clasificaciones` (mig 205) y se mezclan acá con la base del bundle.
+  const customs = (categoriasPersonalizadas || [])
+    .filter(c => c && !c.deleted_at && c.activo !== false)
+    .map(c => {
+      const cod = c.codigo || c.id || `custom:${normIUPC(c.nombre || c)}`;
+      const nom = c.nombre || c.label || c;
+      const arbol = c.arbol === 'servicio' ? 'servicio' : 'insumo';
+      return {
+        codigo: cod,
+        label: `[${cod}] ${nom}`,
+        nombre: nom,
+        tipo: c.tipo || (arbol === 'servicio' ? 'servicio' : 'material'),
+        arbol,
+        propia: true,
+        gasto: c.gasto || null,
+        grupo: arbol === 'servicio' ? 'Servicios · tuyas' : 'Insumos · tuyas',
+      };
+    });
 
-  return [...iupc, ...complementarias, ...customs];
+  return [...iupc, ...servicios, ...complementarias, ...customs];
 }
 
 const LEGACY_LABELS = {
@@ -1161,6 +1223,8 @@ export function etiquetaCategoria(codigo) {
   if (!codigo) return 'Sin categoría';
   const c = String(codigo).trim();
   if (LEGACY_LABELS[c]) return LEGACY_LABELS[c];
+  const serv = SERVICIO_POR_CODIGO.get(c);
+  if (serv) return `[${serv.codigo}] ${serv.nombre}`;
   const real = REAGRUPACIONES_IUPC[c] || c;
   const encontradoIupc = IUPC_POR_CODIGO.get(real);
   if (encontradoIupc) {
@@ -1332,10 +1396,131 @@ function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelac
   };
 }
 
+/**
+ * Similitud por tokens entre una descripción y una entrada de diccionario.
+ * El prefijo compartido tiene que ser la MAYOR PARTE de la palabra larga: sin
+ * esa condición «conocida» pegaba con «cono» (cono de seguridad, IUPC 83) y una
+ * descripción sin ninguna relación terminaba clasificada como EPP. 0,6 deja
+ * pasar plurales y variantes («tuberia»/«tuberias») y corta el resto.
+ */
+function simTokens(toks, itoks) {
+  if (!itoks.length || !toks.length) return 0;
+  let comun = 0;
+  for (const t of toks) {
+    if (itoks.includes(t)) {
+      comun += (t === toks[0] && t === itoks[0]) ? 2 : 1;
+    } else {
+      const pref = itoks.some(u => {
+        const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
+        return corto.length >= 4 && largo.startsWith(corto)
+          && (corto.length / largo.length) >= 0.6;
+      });
+      if (pref) comun += 0.8;
+    }
+  }
+  return (2 * comun) / (toks.length + itoks.length);
+}
+
+/** El mejor candidato de un diccionario indexado, con su score. */
+function mejorDe(toks, indexado) {
+  let mejor = null, max = 0;
+  for (const item of indexado) {
+    const sim = simTokens(toks, item.tokens);
+    if (sim > max) { max = sim; mejor = item; }
+  }
+  return { item: mejor, score: max };
+}
+
 /** Índice O(1) de coincidencias exactas del diccionario oficial. */
 const DICCIONARIO_EXACTO = new Map();
 for (const item of DICCIONARIO_INDEXADO) {
   if (!DICCIONARIO_EXACTO.has(item.norm)) DICCIONARIO_EXACTO.set(item.norm, item);
+}
+
+const DICCIONARIO_SERVICIOS_EXACTO = new Map();
+for (const item of DICCIONARIO_SERVICIOS_INDEXADO) {
+  if (!DICCIONARIO_SERVICIOS_EXACTO.has(item.norm)) DICCIONARIO_SERVICIOS_EXACTO.set(item.norm, item);
+}
+
+/**
+ * ¿El código pertenece a la base oficial que viaja en el bundle?
+ * Es lo que una clasificación propia NO puede pisar: si lo hiciera, una fila
+ * del catálogo apuntaría a dos clasificaciones distintas según qué capa gane.
+ */
+export function esCodigoOficial(codigo) {
+  const c = String(codigo || '').trim();
+  if (!c) return false;
+  return IUPC_POR_CODIGO.has(c)
+    || Object.prototype.hasOwnProperty.call(REAGRUPACIONES_IUPC, c)
+    || esCodigoServicio(c)
+    || CATEGORIAS_COMPLEMENTARIAS.some(k => k.codigo === c);
+}
+
+/**
+ * El código que se le propone a una clasificación nueva, a partir del nombre.
+ * Va prefijado con la letra del árbol para que NUNCA choque con el espacio de
+ * la base oficial: el IUPC usa '01'..'95' y los servicios 'S01'..'S13'. Si un
+ * código propio pisara uno de esos, la fila del catálogo quedaría apuntando a
+ * dos cosas distintas según qué capa gane al resolver.
+ */
+export function codigoSugerido(nombre, arbol = 'insumo') {
+  const base = normIUPC(nombre).split(' ').filter(Boolean).slice(0, 2)
+    .map(w => w.slice(0, 4)).join('-').toUpperCase();
+  const pre = arbol === 'servicio' ? 'PS' : 'PI';   // Propia-Insumo / Propia-Servicio
+  return `${pre}-${base || 'NUEVA'}`;
+}
+
+/** Qué está mal en una clasificación nueva, o null si está bien. */
+export function validarClasificacion({ codigo, nombre }, existentes = []) {
+  const cod = String(codigo || '').trim();
+  const nom = String(nombre || '').trim();
+  if (!nom) return 'Ponele un nombre.';
+  if (!cod) return 'Ponele un código.';
+  if (/\s/.test(cod)) return 'El código no puede llevar espacios.';
+  // No pisar la base oficial: si el código ya existe ahí, la fila del catálogo
+  // quedaría apuntando a dos clasificaciones distintas.
+  if (esCodigoOficial(cod)) return `El código «${cod}» ya es de la base oficial. Elegí otro.`;
+  if ((existentes || []).some(c => !c.deleted_at && c.codigo === cod)) {
+    return `Ya existe una clasificación con el código «${cod}».`;
+  }
+  return null;
+}
+
+/** La respuesta para un código del árbol de servicios. */
+function recServicio({ cod, score, motivos, inclinacion = null }) {
+  const info = SERVICIO_POR_CODIGO.get(cod);
+  return recIUPC({
+    codigo: cod,
+    nombre: info?.nombre || 'Servicio',
+    score,
+    motivos,
+    inclinacion,
+    iupcRelacionado: info?.iupcRelacionado || null,
+  });
+}
+
+// El diccionario propio (tabla `clasificacion_terminos`) se indexa una vez por
+// array: `filasDeBandeja` clasifica cientos de descripciones seguidas con la
+// MISMA lista, y re-tokenizarla en cada una sería tirar el trabajo a la basura.
+// WeakMap para que se libere sola cuando el hook devuelve un array nuevo.
+const _cacheCustom = new WeakMap();
+function indexarCustom(terminos) {
+  if (!Array.isArray(terminos) || !terminos.length) return { exacto: new Map(), lista: [] };
+  const hit = _cacheCustom.get(terminos);
+  if (hit) return hit;
+  const lista = [];
+  const exacto = new Map();
+  for (const t of terminos) {
+    if (!t || t.deleted_at || !t.termino || !t.clasificacion_codigo) continue;
+    const norm = t.norm || normIUPC(t.termino);
+    if (!norm) continue;
+    const item = { nombre: t.termino, cod: String(t.clasificacion_codigo), norm, tokens: tokensDeTexto(norm) };
+    lista.push(item);
+    if (!exacto.has(norm)) exacto.set(norm, item);
+  }
+  const idx = { exacto, lista };
+  _cacheCustom.set(terminos, idx);
+  return idx;
 }
 
 /**
@@ -1348,12 +1533,27 @@ for (const item of DICCIONARIO_INDEXADO) {
  * exacta del Anexo 2 de la norma — o sea, la heurística de la casa le ganaba
  * al texto de la R.J. 016-2026-INEI. Al revés es lo correcto.
  */
-export function clasificarConIUPC(texto) {
+export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
   const norm = normIUPC(texto);
   if (!norm) {
     return recIUPC({
       codigo: 'servicios', nombre: 'Servicios en general', score: 0.05,
       motivos: ['Sin texto suficiente, asignado preventivo a servicios'],
+    });
+  }
+
+  // 0. EL DICCIONARIO QUE AGREGÓ LA CASA MANDA SOBRE TODO LO DEMÁS.
+  //    Si alguien se tomó el trabajo de decir «‹cemento cabezón› es el IUPC
+  //    21», esa decisión no la puede pisar una heurística. Va antes incluso
+  //    que el Anexo 2, porque es una corrección deliberada sobre él.
+  const custom = indexarCustom(terminosCustom);
+  const exactoCustom = custom.exacto.get(norm);
+  if (exactoCustom) {
+    return recIUPC({
+      codigo: exactoCustom.cod,
+      nombre: etiquetaCategoria(exactoCustom.cod),
+      score: 0.99,
+      motivos: [`«${exactoCustom.nombre}» está en el diccionario que agregaste`],
     });
   }
 
@@ -1370,11 +1570,50 @@ export function clasificarConIUPC(texto) {
     });
   }
 
-  // 2. Servicio, con su inclinación y el score propio de cada rama
+  // 2. Exacto en el diccionario del árbol de SERVICIOS
+  const exactoServ = DICCIONARIO_SERVICIOS_EXACTO.get(norm);
+  if (exactoServ) {
+    return recServicio({
+      cod: exactoServ.cod,
+      score: 0.98,
+      motivos: [`Coincidencia exacta con «${exactoServ.nombre}» en el diccionario de servicios`],
+    });
+  }
+
+  const toks = tokensDeTexto(norm);
+
+  // 2b. Parecido fuerte a un término propio: también gana, con el mismo
+  //     criterio — es vocabulario que alguien cargó a mano para esta obra.
+  if (custom.lista.length) {
+    const mc = mejorDe(toks, custom.lista);
+    if (mc.item && mc.score >= 0.55) {
+      return recIUPC({
+        codigo: mc.item.cod,
+        nombre: etiquetaCategoria(mc.item.cod),
+        score: Math.min(0.97, Math.round(mc.score * 100) / 100),
+        motivos: [`Similar a «${mc.item.nombre}», del diccionario que agregaste`],
+      });
+    }
+  }
+
+  // 3. ¿Tiene FORMA de servicio? Si sí, se refina con el diccionario de
+  //    servicios para decir CUÁL, en vez de tirarlo al cajón «Servicios en
+  //    general» — que es lo que hacía antes y perdía justo lo que la contadora
+  //    necesita distinguir.
   const servicio = detectarServicio(norm);
   if (servicio) {
+    const m = mejorDe(toks, DICCIONARIO_SERVICIOS_INDEXADO);
+    if (m.item && m.score >= 0.30) {
+      return recServicio({
+        cod: m.item.cod,
+        score: Math.min(0.95, Math.max(servicio.score, Math.round(m.score * 100) / 100)),
+        motivos: [`${servicio.motivo}; similar a «${m.item.nombre}»`],
+        inclinacion: servicio.inclinacion,
+      });
+    }
+    // Es un servicio pero no se sabe de qué tipo: se dice así.
     return recIUPC({
-      codigo: servicio.categoriaRecomendada,
+      codigo: 'servicios',
       nombre: 'Servicios en general',
       score: servicio.score,
       motivos: [servicio.motivo],
@@ -1383,47 +1622,31 @@ export function clasificarConIUPC(texto) {
     });
   }
 
-  // 3. Búsqueda por tokens en el Diccionario Oficial INEI
-  const toks = tokensDeTexto(norm);
+  // 4. Un servicio que NO tiene forma de tal pero está en el diccionario.
+  //    «EXAMENES MEDICOS OCUPACIONALES» no dice «servicio» ni «alquiler» en
+  //    ninguna parte: sin este paso caía en el diccionario de materiales.
+  const mServ = mejorDe(toks, DICCIONARIO_SERVICIOS_INDEXADO);
+  if (mServ.item && mServ.score >= 0.55) {
+    return recServicio({
+      cod: mServ.item.cod,
+      score: Math.min(0.95, Math.round(mServ.score * 100) / 100),
+      motivos: [`Similar a «${mServ.item.nombre}» en el diccionario de servicios`],
+    });
+  }
+
+  // 5. Búsqueda por tokens en el Diccionario Oficial INEI
   let mejorMatch = null;
   let maxScore = 0;
   let mejorMotivo = '';
 
-  for (const item of DICCIONARIO_INDEXADO) {
-    // Coincidencia por tokens
-    const itoks = item.tokens;
-    if (!itoks.length || !toks.length) continue;
-
-    let comun = 0;
-    for (const t of toks) {
-      if (itoks.includes(t)) {
-        comun += (t === toks[0] && t === itoks[0]) ? 2 : 1;
-      } else {
-        // Prefijo compartido. Además de los 4 caracteres, el prefijo tiene que
-        // ser la MAYOR PARTE de la palabra larga: sin esa segunda condición
-        // «conocida» pegaba con «cono» (cono de seguridad, IUPC 83) y una
-        // descripción sin ninguna relación terminaba clasificada como EPP.
-        // 0,6 deja pasar los plurales y las variantes ortográficas
-        // («tuberia»/«tuberias», «cemento»/«cementos») y corta el resto.
-        const pref = itoks.some(u => {
-          const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
-          return corto.length >= 4 && largo.startsWith(corto)
-            && (corto.length / largo.length) >= 0.6;
-        });
-        if (pref) comun += 0.8;
-      }
-    }
-
-    const sim = (2 * comun) / (toks.length + itoks.length);
-    if (sim > maxScore) {
-      maxScore = sim;
-      const real = REAGRUPACIONES_IUPC[item.iupc] || item.iupc;
-      mejorMatch = { ...item, iupc: real };
-      mejorMotivo = `Similar a «${item.nombre}» en Diccionario Oficial INEI`;
-    }
+  const mIupc = mejorDe(toks, DICCIONARIO_INDEXADO);
+  if (mIupc.item) {
+    maxScore = mIupc.score;
+    mejorMatch = { ...mIupc.item, iupc: REAGRUPACIONES_IUPC[mIupc.item.iupc] || mIupc.item.iupc };
+    mejorMotivo = `Similar a «${mIupc.item.nombre}» en Diccionario Oficial INEI`;
   }
 
-  // 4. Si hubo buen match en Diccionario INEI
+  // 6. Si hubo buen match en Diccionario INEI
   if (mejorMatch && maxScore >= 0.35) {
     const info = IUPC_POR_CODIGO.get(mejorMatch.iupc);
     const scoreAjustado = Math.min(0.95, Math.round(maxScore * 100) / 100);
@@ -1435,7 +1658,7 @@ export function clasificarConIUPC(texto) {
     });
   }
 
-  // 5. Búsqueda contra los nombres directos de los Códigos IUPC
+  // 7. Búsqueda contra los nombres directos de los Códigos IUPC
   for (const c of IUPC_CODIGOS) {
     const cNorm = normIUPC(c.nombre);
     const cToks = tokensDeTexto(cNorm);
@@ -1535,6 +1758,7 @@ const GASTO_POR_TIPO = {
 export function tipoDeCategoria(codigo) {
   if (!codigo) return 'material';
   const c = String(codigo).trim();
+  if (esCodigoServicio(c)) return 'servicio';
   const real = REAGRUPACIONES_IUPC[c] || c;
   const iupc = IUPC_POR_CODIGO.get(real);
   if (iupc) return iupc.tipo || 'material';
@@ -1548,6 +1772,8 @@ export function gastoDeCategoria(codigo) {
   const c = String(codigo || '').trim();
   // Las complementarias tienen destino propio: «administrativos» es gasto
   // general aunque su `tipo` sea material (papel, tóner, sillas).
+  const serv = SERVICIO_POR_CODIGO.get(c);
+  if (serv) return serv.gasto || 'servicios';
   if (c === 'administrativos') return 'gastos_generales';
   if (c === 'servicios') return 'servicios';
   // Sin clasificar no es «materiales»: es «otros», que es la verdad y además

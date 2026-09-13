@@ -80,12 +80,22 @@ beforeAll(async () => {
   ({ CatalogoCanonicoTab } = await import('../../components/jx-catalogo-canonico.jsx'));
 }, 30000);
 
-const pintar = () => renderToString(React.createElement(CatalogoCanonicoTab, { showToast: () => {} }));
+// La pestaña abre en «Clasificaciones y diccionario», que es lo que pidió
+// Gabriel. La lista plana sigue existiendo como segunda vista; para pintarla
+// en un test —renderToString no corre eventos, así que no se puede clickear el
+// switch— se le pasa la vista inicial.
+const pintar = (vistaInicial) => renderToString(
+  React.createElement(CatalogoCanonicoTab, { showToast: () => {}, ...(vistaInicial ? { vistaInicial } : {}) }));
 
-const conDatos = (cat = CATALOGO, disg = DISGREGACION, eq = []) => {
+const conVista = (vistaInicial, cat = CATALOGO, disg = DISGREGACION, eq = []) => {
   globalThis.__CATALOGO = cat; globalThis.__DISGREGACION = disg; globalThis.__EQUIVALENCIAS = eq;
-  try { return pintar(); } finally { globalThis.__CATALOGO = []; globalThis.__DISGREGACION = []; globalThis.__EQUIVALENCIAS = []; }
+  try { return pintar(vistaInicial); } finally { globalThis.__CATALOGO = []; globalThis.__DISGREGACION = []; globalThis.__EQUIVALENCIAS = []; }
 };
+
+/** La vista por defecto: clasificaciones + diccionario. */
+const conDatosClas = (cat = CATALOGO, disg = DISGREGACION, eq = []) => conVista(undefined, cat, disg, eq);
+/** La lista completa de los 483, con su tabla y sus lotes. */
+const conDatos = (cat = CATALOGO, disg = DISGREGACION, eq = []) => conVista('lista', cat, disg, eq);
 
 describe('la pestaña del catálogo abre', () => {
   it('sin catálogo cargado explica qué hacer, no muestra una tabla vacía', () => {
@@ -224,7 +234,7 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
     // desplegable inservible. Esto lo agarra si vuelve a pasar.
     const h = conDatos(MAL, []);
     expect(h).toContain('Acero de construcción corrugado');
-    expect(h).toMatch(/<optgroup[^>]*label="IUPC - Estado Peruano"/);
+    expect(h).toMatch(/<optgroup[^>]*label="[^"]*IUPC del Estado Peruano"/);
     expect(h).not.toMatch(/<option value="[^"]+"><\/option>/);
   });
 
@@ -251,5 +261,44 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
     const h = conDatos(MAL, []);
     expect(h).not.toContain('Subfamilia');
     expect(h).toContain('Categoría (IUPC / Estándar)');
+  });
+});
+
+describe('el Catálogo abre en las clasificaciones y su diccionario', () => {
+  it('la vista por defecto son las clasificaciones, no la lista plana', () => {
+    const h = conDatosClas();
+    expect(h).toContain('Clasificaciones y diccionario');
+    expect(h).toContain('Lista completa');
+    // El diccionario es el punto de la pantalla; la tabla de 483 filas no.
+    expect(h).toContain('diccionario');
+  });
+
+  it('tiene los DOS árboles: insumos y servicios', () => {
+    const h = conDatosClas();
+    expect(h).toContain('Insumos');
+    expect(h).toContain('Servicios');
+    expect(h).toContain('Nueva clasificación');
+  });
+
+  it('lista las clasificaciones del árbol de insumos con su código', () => {
+    const h = conDatosClas();
+    expect(h).toContain('Acero de construcción corrugado');
+    expect(h).toContain('Agregado fino');
+  });
+
+  it('no revienta ni imprime undefined/NaN en la vista nueva', () => {
+    const h = conDatosClas();
+    const i = h.indexOf('undefined'); const j = h.indexOf('NaN');
+    const ctx = i >= 0 ? h.slice(Math.max(0, i - 300), i + 80) : (j >= 0 ? h.slice(Math.max(0, j - 300), j + 80) : '');
+    expect(i, `undefined en: ${ctx}`).toBe(-1);
+    expect(j, `NaN en: ${ctx}`).toBe(-1);
+  });
+
+  it('cuenta, por clasificación, cuántos insumos y cuántos términos tiene', () => {
+    // Los contadores son lo que convierte la lista en algo navegable: se ve de
+    // un vistazo dónde hay trabajo y dónde no.
+    const h = conDatosClas();
+    expect(h).toContain('📦');
+    expect(h).toContain('📖');
   });
 });

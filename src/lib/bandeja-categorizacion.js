@@ -205,7 +205,7 @@ export const ESTADOS = [
  * 100% de cobertura predictiva garantizada: Todo insumo cuenta con una
  * recomendación oficial IUPC / complementaria y su banda de probabilidad.
  */
-export function filasDeBandeja(descripciones, { prep, porId, decisiones }) {
+export function filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom = null }) {
   return (descripciones || []).map(d => {
     const ya = decisiones?.get(d.norm) || null;
     if (ya) {
@@ -217,8 +217,8 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones }) {
       : { estado: 'sin_candidato', candidatos: [] };
     const estado = (sug.estado === 'propuesto' || sug.estado === 'revisar') ? sug.estado : 'falta';
 
-    // Clasificación predictiva oficial IUPC INEI
-    const recIUPC = clasificarConIUPC(d.muestra);
+    // Clasificación predictiva: diccionario propio primero, después el oficial.
+    const recIUPC = clasificarConIUPC(d.muestra, { terminosCustom });
     const cand = sug.candidatos?.[0] || null;
     const scoreEfectivo = cand ? cand.score : recIUPC.score;
     const b = bandaConfianza(scoreEfectivo);

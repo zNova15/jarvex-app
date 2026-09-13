@@ -175,11 +175,32 @@ timeout):
    permisos → para darle una sección nueva a esos roles hay que agregarla **a su lista**.
 7. **Zona horaria:** usar `window.__fecha.hoyLocal()` (`src/lib/fecha.js`, default
    `America/Lima`), nunca `new Date().toISOString().slice(0,10)` (da UTC).
-8. **UNA sola clasificación de insumos (13-sep-2026).** Se abandonaron las familias
-   comerciales y las subfamilias. La taxonomía es el **estándar IUPC del INEI**
-   (R.J. Nº 016-2026, códigos `01`…`95`) más las **complementarias** de
-   `src/lib/indices-unificados-iupc.js` (`servicios`, `administrativos`,
-   `sin_clasificar`) y las personalizadas que se agreguen. Reglas:
+8. **UNA sola clasificación, en DOS árboles (13-sep-2026).** Se abandonaron las
+   familias comerciales y las subfamilias. La taxonomía es:
+   - **Insumos:** el estándar **IUPC del INEI** (R.J. Nº 016-2026, `01`…`95`) en
+     `src/lib/indices-unificados-iupc.js`.
+   - **Servicios:** 13 clasificaciones (`S01`…`S13`) en
+     `src/lib/clasificacion-servicios.js`, derivadas de los servicios reales del
+     catálogo del grupo.
+   - **Complementarias:** `servicios` (el cajón «no sé cuál»), `administrativos`,
+     `sin_clasificar`.
+   - **Propias:** las que se crean desde el Catálogo → tabla `clasificaciones`
+     (mig 205). Su código NO puede pisar el espacio oficial: lo valida
+     `validarClasificacion()`.
+
+   **El diseño es de DOS CAPAS y no se mezcla:** la base oficial (82 códigos +
+   938 términos del Anexo 2 + el árbol de servicios) viaja en el **bundle**;
+   solo lo que crea Gabriel va a la **base** (`clasificaciones` y
+   `clasificacion_terminos`). Meter las ~1.030 filas oficiales en tablas
+   sincronizadas sería tráfico permanente para guardar algo que no cambia —
+   justo la lección del corte por egress del 9-sep. Ver el encabezado de la
+   mig 205.
+
+   **El diccionario propio LE GANA a la base** al clasificar: es una corrección
+   deliberada sobre la norma. Se pasa por `clasificarConIUPC(texto,
+   { terminosCustom })`.
+
+   Reglas:
    - Los desplegables ofrecen **solo** `FAMILIAS_CATALOGO`. `FAMILIAS_LEGACY` existe
      únicamente para LEER las filas que todavía no se reclasificaron, y se borra
      cuando el catálogo esté migrado.

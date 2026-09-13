@@ -210,7 +210,7 @@ export const esFamiliaLegacy = (f) => FAMILIAS_LEGACY.some(x => x.slug === f);
  *    familia del vocabulario viejo se proponen siempre — esas son las que
  *    falta migrar.
  */
-export function revisarCategoriasCatalogo(activas = []) {
+export function revisarCategoriasCatalogo(activas = [], { terminosCustom = null, codigosPropios = null } = {}) {
   const recomendaciones = [];
   let yaClasificadas = 0;
   let pendientesLegacy = 0;
@@ -219,10 +219,13 @@ export function revisarCategoriasCatalogo(activas = []) {
   for (const r of activas) {
     if (!r || r.activo === false || r.revisado) continue;
     const catActual = r.familia || r.categoria || 'otros';
-    const legacy = esFamiliaLegacy(catActual) || !esFamiliaCanonica(catActual);
+    // Una clasificación PROPIA (mig 205) es tan válida como una oficial: no
+    // se cuenta como pendiente de migrar ni se le propone cambio flojo.
+    const esPropia = !!(codigosPropios && codigosPropios.has(catActual));
+    const legacy = !esPropia && (esFamiliaLegacy(catActual) || !esFamiliaCanonica(catActual));
     if (legacy) pendientesLegacy += 1; else yaClasificadas += 1;
 
-    const rec = clasificarConIUPC(r.nombre);
+    const rec = clasificarConIUPC(r.nombre, { terminosCustom });
     if (catActual === rec.codigo) continue;
 
     // 🔴 REGLA 3: nunca proponer un DOWNGRADE.

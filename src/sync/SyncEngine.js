@@ -174,6 +174,8 @@ const TRANSACTIONAL_TABLES = [
   // Mapeo de categorías entre entidades (mig 193): la familia local de una
   // empresa contra la familia canónica del grupo.
   'catalogo_familia_mapeo',
+  'clasificaciones',
+  'clasificacion_terminos',
   // Qué insumo del catálogo es cada descripción de factura (mig 195). Mismo
   // criterio que el catálogo: todos la LEEN (es lo que hace que la propuesta
   // aparezca en Almacén y en las órdenes), y el gate de escritura lo pone RLS.
@@ -373,6 +375,8 @@ const MASTER_TABLES = [
   { tabla: 'catalogo_insumos',             query: () => supabase.from('catalogo_insumos').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
+  { tabla: 'clasificaciones',              query: () => supabase.from('clasificaciones').select('*').is('deleted_at', null) },
+  { tabla: 'clasificacion_terminos',       query: () => supabase.from('clasificacion_terminos').select('*').is('deleted_at', null) },
   { tabla: 'insumo_categoria',             query: () => supabase.from('insumo_categoria').select('*').is('deleted_at', null) },
   { tabla: 'sunat_cortes',                 query: () => supabase.from('sunat_cortes').select('*').is('deleted_at', null) },
   { tabla: 'cotejo_decisiones',            query: () => supabase.from('cotejo_decisiones').select('*').is('deleted_at', null) },
@@ -1189,6 +1193,8 @@ const FK_DEPS = {
   catalogo_insumos:          [{ campo: 'company_id', tabla: 'companies' }],
   catalogo_disgregacion:     [{ campo: 'company_id', tabla: 'companies' }],
   catalogo_familia_mapeo:    [{ campo: 'company_id', tabla: 'companies' }],
+  clasificaciones:           [{ campo: 'company_id', tabla: 'companies' }],
+  clasificacion_terminos:    [{ campo: 'company_id', tabla: 'companies' }],
   insumo_categoria:          [{ campo: 'company_id', tabla: 'companies' }],
   sunat_cortes:              [{ campo: 'company_id', tabla: 'companies' }],
   cotejo_decisiones:         [{ campo: 'company_id', tabla: 'companies' }],
