@@ -216,3 +216,109 @@ export function sugerirPares(nombres, paresResueltos, grupoDe, opts = {}) {
   out.sort((p, q) => q.score - p.score);
   return out.slice(0, max);
 }
+
+// ── Sugeridor de Clusters Multi-Insumo (N a N) ──────────────────────
+// Conecta transitivamente N variantes (3 o más) que representan el mismo insumo
+// (ej. "Clavos N3", "Clavos numero 3", "Clavos de 3", "Clavos 3 pulg").
+export function sugerirClusters(nombres, paresResueltos, grupoDe, opts = {}) {
+  const { umbral = 0.52, maxClusters = 30, maxPares = 250 } = opts;
+  const pares = sugerirPares(nombres, paresResueltos, grupoDe, { ...opts, umbral, max: maxPares });
+  if (!pares.length) return [];
+
+  const parent = new Map();
+  const find = (x) => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r);
+    let c = x;
+    while (parent.get(c) !== c) { const n = parent.get(c); parent.set(c, r); c = n; }
+    return r;
+  };
+  const union = (a, b) => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(rb, ra);
+  };
+
+  for (const p of pares) {
+    const k = parClave(p.nombre_a, p.nombre_b);
+    if (paresResueltos && paresResueltos.get(k)?.relacion === 'distinto') continue;
+    union(p.nombre_a, p.nombre_b);
+  }
+
+  const grupos = new Map();
+  for (const nombre of parent.keys()) {
+    const root = find(nombre);
+    if (!grupos.has(root)) grupos.set(root, { miembros: [], pares: [] });
+    grupos.get(root).miembros.push(nombre);
+  }
+
+  for (const p of pares) {
+    if (parent.has(p.nombre_a)) {
+      const root = find(p.nombre_a);
+      const g = grupos.get(root);
+      if (g) g.pares.push(p);
+    }
+  }
+
+  const out = [];
+  for (const [root, g] of grupos.entries()) {
+    if (g.miembros.length < 2) continue;
+
+    let tieneConflicto = false;
+    for (let i = 0; i < g.miembros.length; i++) {
+      for (let j = i + 1; j < g.miembros.length; j++) {
+        const k = parClave(g.miembros[i], g.miembros[j]);
+        if (paresResueltos && paresResueltos.get(k)?.relacion === 'distinto') {
+          tieneConflicto = true;
+          break;
+        }
+      }
+      if (tieneConflicto) break;
+    }
+    if (tieneConflicto) continue;
+
+    const totalScore = g.pares.reduce((acc, p) => acc + p.score, 0);
+    const scorePromedio = g.pares.length ? Math.round((totalScore / g.pares.length) * 100) / 100 : 0.70;
+    const canonico = g.miembros.reduce((m, n) => (n.length > m.length ? n : m), g.miembros[0]);
+
+    out.push({
+      id: `cluster:${root}`,
+      canonico,
+      variantes: g.miembros.sort(),
+      pares: g.pares,
+      score: scorePromedio,
+      totalVariantes: g.miembros.length,
+    });
+  }
+
+  // Primero los clusters de mayor cantidad de variantes (3 o más), luego por score
+  out.sort((a, b) => b.totalVariantes - a.totalVariantes || b.score - a.score);
+  return out.slice(0, maxClusters);
+}
+
+// Genera los pares de correlación correspondientes a un cluster completo de N variantes
+export function crearParesDeCluster(variantes, canonico, relacion = 'mismo', opts = {}) {
+  const normVars = [...new Set((variantes || []).map(normInsumo).filter(Boolean))];
+  if (normVars.length < 2) return [];
+  const canonicoFinal = canonico ? normInsumo(canonico) : normVars[0];
+  const pares = [];
+  const ahora = new Date().toISOString();
+
+  for (let i = 0; i < normVars.length; i++) {
+    for (let j = i + 1; j < normVars.length; j++) {
+      pares.push({
+        nombre_a: normVars[i],
+        nombre_b: normVars[j],
+        relacion,
+        canonico: canonicoFinal,
+        fuente: opts.fuente || 'manual',
+        demo: !!opts.demo,
+        company_id: opts.companyId || null,
+        updated_at: ahora,
+      });
+    }
+  }
+  return pares;
+}
+

@@ -6,8 +6,16 @@
 // perfecta, y el objetivo es que agilice el proceso de categorización».
 // `Modelos/Categorizacion Simple.xlsx` deja de ser un archivo suelto en una
 // carpeta y pasa a ser LA LISTA contra la que la app propone nombres, unidades
-// y familias: 444 insumos en 10 familias comerciales, 34 servicios, y la regla
-// de disgregación del acero.
+// y categorías: 444 insumos, 34 servicios, y la regla de disgregación del acero.
+//
+// ⚠️ ACTUALIZACIÓN 13-set-2026 — LA TAXONOMÍA CAMBIÓ.
+// Las 10 familias comerciales del xlsx y sus subfamilias se ABANDONARON. La
+// única clasificación es ahora el estándar IUPC del INEI (R.J. Nº 016-2026)
+// más las categorías complementarias, todo en `indices-unificados-iupc.js`.
+// Lo que sigue abajo describe el diseño ORIGINAL: se mantiene porque explica
+// por qué existen `tipoInsumoDe()` y `categoriaItemDe()` —el puente a los
+// otros dos vocabularios, que sigue siendo la razón de ser de esta lib— pero
+// donde dice «familia comercial» hay que leer «categoría IUPC».
 //
 // 🔴 EL RIESGO QUE ESTA LIB EXISTE PARA EVITAR
 // Ya conviven TRES vocabularios de categorización en el repo:
@@ -65,28 +73,59 @@ import {
   normMapeo, prepararLinea, proponerFactor,
 } from './mapeo-insumos.js';
 import { clasificarInsumo } from './insumo-clasificador.js';
+import {
+  IUPC_CODIGOS, IUPC_POR_CODIGO, REAGRUPACIONES_IUPC,
+  CATEGORIAS_COMPLEMENTARIAS, listarCategoriasDisponibles,
+  etiquetaCategoria, clasificarConIUPC, tipoDeCategoria, gastoDeCategoria,
+} from './indices-unificados-iupc.js';
 
-// ── 1. LAS FAMILIAS COMERCIALES ────────────────────────────────────
+// ── 1. LA ÚNICA CLASIFICACIÓN: IUPC (INEI) + COMPLEMENTARIAS ───────
+//
+// Decisión de Gabriel (13-set-2026): se abandonan las familias comerciales y
+// las subfamilias. Queda UNA sola taxonomía — los Índices Unificados de
+// Precios de la Construcción de la R.J. Nº 016-2026-INEI — y para lo que la
+// norma no contempla se crean categorías propias (las complementarias, y las
+// personalizadas que haga falta agregar).
 //
 // `tipo` es el vocabulario de `insumo-clasificador.js` (a qué tabla de
-// inventario va). `categoria` es el de `clasificar-items.js` (cómo se agrupa el
-// gasto para la contadora). `refina` marca las familias donde la regla puede
-// desempatar adentro; en las demás la familia es la palabra final.
-export const FAMILIAS_CATALOGO = [
-  { slug: 'tuberia_accesorios', label: 'Tubería y accesorios',          tipo: 'material',    categoria: 'materiales' },
-  { slug: 'ferreteria',         label: 'Material de ferretería',        tipo: 'material',    categoria: 'materiales' },
-  { slug: 'valvulas',           label: 'Válvulas',                      tipo: 'material',    categoria: 'materiales' },
-  { slug: 'seguridad',          label: 'Implementos de seguridad',      tipo: 'epp',         categoria: 'epp' },
-  { slug: 'agregados',          label: 'Agregados',                     tipo: 'material',    categoria: 'materiales' },
-  { slug: 'madera',             label: 'Madera',                        tipo: 'material',    categoria: 'materiales' },
-  { slug: 'equipos_herramientas', label: 'Equipos y herramientas',      tipo: 'herramienta', categoria: 'herramientas', refina: ['herramienta', 'maquinaria'] },
-  { slug: 'administrativos',    label: 'Insumos administrativos',       tipo: 'material',    categoria: 'gastos_generales' },
-  { slug: 'perfiles_metalicos', label: 'Perfiles y estructuras metálicas', tipo: 'material', categoria: 'materiales' },
-  { slug: 'otros',              label: 'Otros',                         tipo: 'material',    categoria: 'otros', refina: ['material', 'herramienta', 'epp', 'maquinaria', 'servicio'] },
-  { slug: 'servicios',          label: 'Servicios',                     tipo: 'servicio',    categoria: 'gastos_generales' },
+// inventario va). `categoria` es el de `clasificar-items.js` (cómo agrupa el
+// gasto la contadora). Los dos salen ahora de `indices-unificados-iupc.js`,
+// que es el único lugar donde vive el mapeo.
+export const FAMILIAS_CATALOGO = listarCategoriasDisponibles().map(c => ({
+  slug: c.codigo,
+  label: c.label,
+  grupo: c.grupo,
+  tipo: tipoDeCategoria(c.codigo),
+  categoria: gastoDeCategoria(c.codigo),
+}));
+
+// ── COMPATIBILIDAD DE LECTURA con las 9 familias comerciales viejas ──
+//
+// NO se ofrecen en ningún desplegable: la taxonomía que se OFRECE es solo la
+// de arriba. Existen únicamente para que las filas del catálogo que todavía no
+// pasaron por el panel de reclasificación sigan resolviendo su tipo, su
+// categoría de gasto y su etiqueta mientras tanto. Sin esto, las 477 filas sin
+// reclasificar caerían en `categoria: 'otros'` de un día para el otro y el
+// reporte de costos de la contadora se vaciaría.
+//
+// Cuando el catálogo esté reclasificado (0 filas con familia legacy), este
+// bloque se borra y con él la última huella del vocabulario viejo.
+export const FAMILIAS_LEGACY = [
+  { slug: 'tuberia_accesorios', label: 'Tubería y accesorios', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'ferreteria', label: 'Material de ferretería', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'valvulas', label: 'Válvulas', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'seguridad', label: 'Implementos de seguridad', tipo: 'epp', categoria: 'epp', legacy: true },
+  { slug: 'agregados', label: 'Agregados', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'madera', label: 'Madera', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'equipos_herramientas', label: 'Equipos y herramientas', tipo: 'herramienta', categoria: 'herramientas', refina: ['herramienta', 'maquinaria'], legacy: true },
+  { slug: 'perfiles_metalicos', label: 'Perfiles y estructuras metálicas', tipo: 'material', categoria: 'materiales', legacy: true },
+  { slug: 'otros', label: 'Otros', tipo: 'material', categoria: 'otros', refina: ['material', 'herramienta', 'epp', 'maquinaria', 'servicio'], legacy: true },
 ];
 
-export const FAMILIA_POR_SLUG = new Map(FAMILIAS_CATALOGO.map(f => [f.slug, f]));
+/** Todo lo que la app sabe LEER (para contar, etiquetar y ordenar). */
+export const FAMILIAS_CONOCIDAS = [...FAMILIAS_CATALOGO, ...FAMILIAS_LEGACY];
+
+export const FAMILIA_POR_SLUG = new Map(FAMILIAS_CONOCIDAS.map(f => [f.slug, f]));
 
 /** Texto de familia → clave de búsqueda (sin tildes, sin puntuación). */
 const claveFamilia = (s) => String(s || '')
@@ -149,7 +188,81 @@ export function familiaDeTexto(texto) {
   return slugFamilia(texto) || limpiarNombre(texto).toUpperCase() || 'otros';
 }
 
-export const etiquetaFamilia = (slug) => FAMILIA_POR_SLUG.get(slug)?.label || slug || '—';
+export const etiquetaFamilia = (slug) => etiquetaCategoria(slug);
+
+/** ¿Esta familia pertenece al vocabulario viejo que hay que reclasificar? */
+export const esFamiliaLegacy = (f) => FAMILIAS_LEGACY.some(x => x.slug === f);
+
+/**
+ * Reclasificación recomendativa del catálogo contra el estándar oficial IUPC.
+ * Pura propuesta: NO escribe nada hasta que una persona la acepta.
+ *
+ * DOS REGLAS QUE EVITAN QUE ESTO SEA UN «REEMPLAZAR TODO»:
+ *
+ * 1. Ordena por confianza DESCENDENTE. Las que el diccionario oficial reconoce
+ *    exacto van arriba y se despachan de a lotes; las dudosas quedan al final,
+ *    que es donde hay que sentarse a mirar. Al revés —que es como salía— la
+ *    pantalla arrancaba mostrando justo lo que peor sabe.
+ *
+ * 2. No pisa una decisión humana con una corazonada. Si la fila YA tiene una
+ *    categoría IUPC válida (o sea: alguien ya la reclasificó) solo se vuelve a
+ *    proponer si la recomendación nueva es fuerte (banda alta). Las filas con
+ *    familia del vocabulario viejo se proponen siempre — esas son las que
+ *    falta migrar.
+ */
+export function revisarCategoriasCatalogo(activas = []) {
+  const recomendaciones = [];
+  let yaClasificadas = 0;
+  let pendientesLegacy = 0;
+  let sinRecomendacion = 0;
+
+  for (const r of activas) {
+    if (!r || r.activo === false || r.revisado) continue;
+    const catActual = r.familia || r.categoria || 'otros';
+    const legacy = esFamiliaLegacy(catActual) || !esFamiliaCanonica(catActual);
+    if (legacy) pendientesLegacy += 1; else yaClasificadas += 1;
+
+    const rec = clasificarConIUPC(r.nombre);
+    if (catActual === rec.codigo) continue;
+
+    // 🔴 REGLA 3: nunca proponer un DOWNGRADE.
+    // Medido contra el catálogo real (13-set): 28 insumos —RASTRILLO, PRENSA
+    // DE 6", VALDE VACIO— no los alcanza el estándar y el clasificador
+    // devuelve 'sin_clasificar' (gasto 'otros'). Su familia vieja
+    // ('equipos_herramientas' → gasto 'herramientas') es MEJOR que eso.
+    // Ofrecer el cambio sería invitar a empeorar el dato con un click. Se
+    // cuentan aparte y se resuelven a mano desde la lista de abajo.
+    if (rec.codigo === 'sin_clasificar') { sinRecomendacion += 1; continue; }
+
+    // Regla 2: no proponer cambios flojos sobre lo que ya está clasificado.
+    if (!legacy && rec.banda !== 'alta') continue;
+
+    recomendaciones.push({
+      id: r.id,
+      nombre: r.nombre,
+      familia: catActual,
+      categoriaActual: catActual,
+      familiaSugerida: rec.codigo,
+      categoriaSugerida: rec.codigo,
+      nombreSugerido: rec.nombre,
+      score: rec.score,
+      banda: rec.banda,          // slug ('alta' | 'media' | …), no el objeto
+      esLegacy: legacy,
+      inclinacion: rec.inclinacion,
+      motivo: rec.motivos?.[0] || 'Estándar oficial INEI',
+    });
+  }
+
+  // Regla 1: primero lo que el estándar reconoce mejor.
+  recomendaciones.sort((a, b) => b.score - a.score
+    || String(a.nombre).localeCompare(String(b.nombre), 'es'));
+
+  const porBanda = recomendaciones.reduce((acc, r) => {
+    acc[r.banda] = (acc[r.banda] || 0) + 1; return acc;
+  }, {});
+
+  return { recomendaciones, porBanda, total: activas.length, yaClasificadas, pendientesLegacy, sinRecomendacion };
+}
 
 // ── 2. UNIDADES ────────────────────────────────────────────────────
 // El archivo mezcla mayúsculas y minúsculas para la misma cosa (`und` y `UND`,
@@ -520,7 +633,7 @@ export function contarPorFamilia(rows, opts = {}) {
   const vivos = resolverCatalogo(rows, opts).filter(r => r.activo !== false);
   const m = new Map();
   for (const r of vivos) m.set(r.familia, (m.get(r.familia) || 0) + 1);
-  const canonicas = FAMILIAS_CATALOGO
+  const canonicas = FAMILIAS_CONOCIDAS
     .map(f => ({ ...f, n: m.get(f.slug) || 0, propia: false }))
     .filter(f => f.n > 0);
   // Las familias propias de la entidad van DESPUÉS y marcadas: son las que
@@ -617,7 +730,7 @@ export function matrizCategorias(catalogoRows, mapeoRows) {
     if (!f.entidades.has(dueño)) f.entidades.set(dueño, new Set());
     f.entidades.get(dueño).add(r.familia);
   }
-  const orden = FAMILIAS_CATALOGO.map(f => f.slug);
+  const orden = FAMILIAS_CONOCIDAS.map(f => f.slug);
   return {
     filas: [...filas.entries()]
       .map(([slug, v]) => ({

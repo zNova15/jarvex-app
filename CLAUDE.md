@@ -51,13 +51,28 @@ Tras el build, verificá que **no** aparezca un chunk nuevo inesperado en `dist/
 
 ## Flujo de deploy
 
-Vercel despliega **solo** al recibir push a `main`.
+Vercel despliega a **producción** solo al recibir push a `main`. El push a
+`staging` genera un **preview** en
+`https://jarvex-app-git-staging-znova15s-projects.vercel.app`.
+
+> ⚠️ **Staging comparte la base de Supabase con producción.** No hay branch de
+> Supabase (`list_branches` devuelve vacío). Lo que se prueba en el preview
+> ESCRIBE datos reales de la obra. Probar lecturas y navegación, sí; probar
+> altas y borrados masivos, no.
 
 ```bash
 # 1) Trabajar y commitear en staging
 git add -A && git commit -m "..."      # terminar el mensaje con Co-Authored-By: Claude ...
 git push origin staging
-# 2) Promover a producción (dispara el deploy)
+
+# 2) ⛔ ESPERAR el preview y PROBARLO a mano. No seguir hasta verlo andar.
+#    (medido el 13-set-2026: los 20 deploys previos promovían a main entre 9 y
+#     18 segundos después de pushear staging — el preview ni había compilado.
+#     Staging no filtraba nada: era ceremonia que costaba el doble de builds.
+#     El commit 0639123 pasó por ahí y aun así puso en producción un modal con
+#     letra blanca sobre fondo blanco.)
+
+# 3) Recién ahí, promover a producción (dispara el deploy)
 git checkout main && git merge --ff-only staging && git push origin main
 git checkout staging                    # volver a staging
 ```
@@ -87,7 +102,7 @@ git checkout staging                    # volver a staging
 - `scripts/` — utilidades Node (backups, google-drive [referencia], n8n, reporte-email).
 - `tests/` — e2e (Playwright); los unit tests van junto a cada lib.
 
-### Funciones serverless: 8 en uso (el tope de 12 era de Hobby)
+### Funciones serverless: 10 en uso (el tope de 12 era de Hobby)
 La cuenta está en plan **Pro** (verificado 3-sep-2026): el límite de 12 funciones
 por deployment es de **Hobby** y ya no aplica. La regla vieja ("no crear
 endpoints, 12/12") frenó decisiones sin motivo durante meses.
@@ -111,6 +126,9 @@ timeout):
   contadora nunca presiona. La tercera (`action:'sugerir_insumo'`, vía
   `src/lib/sugerir-insumo-match.js`) es la única con uso posible.
 - **`sentry-tunnel`** solo se activa si `VITE_SENTRY_DSN` está configurado.
+- **`r2`** firma URLs de Cloudflare R2 para las evidencias y **`bases-analizar`**
+  lee las bases de licitación (las dos se sumaron después de escrito este
+  conteo; verificado el 13-sep-2026 con `ls api/*.js`).
 - **Borradas el 3-sep** por 0 uso comprobado: `ocr-asistencia` (0 asistencias),
   `asistente-solicitud-mat` (0 solicitudes de frente),
   `sugerir-cadena-trazabilidad` y `analizar-coherencia-cadena` (0 cadenas).
@@ -157,6 +175,27 @@ timeout):
    permisos → para darle una sección nueva a esos roles hay que agregarla **a su lista**.
 7. **Zona horaria:** usar `window.__fecha.hoyLocal()` (`src/lib/fecha.js`, default
    `America/Lima`), nunca `new Date().toISOString().slice(0,10)` (da UTC).
+8. **UNA sola clasificación de insumos (13-sep-2026).** Se abandonaron las familias
+   comerciales y las subfamilias. La taxonomía es el **estándar IUPC del INEI**
+   (R.J. Nº 016-2026, códigos `01`…`95`) más las **complementarias** de
+   `src/lib/indices-unificados-iupc.js` (`servicios`, `administrativos`,
+   `sin_clasificar`) y las personalizadas que se agreguen. Reglas:
+   - Los desplegables ofrecen **solo** `FAMILIAS_CATALOGO`. `FAMILIAS_LEGACY` existe
+     únicamente para LEER las filas que todavía no se reclasificaron, y se borra
+     cuando el catálogo esté migrado.
+   - El puente a los otros dos vocabularios vive en un solo lugar:
+     `tipoDeCategoria()` (a qué tabla de inventario va) y `gastoDeCategoria()`
+     (cómo lo agrupa la contadora). No re-derivar el mapeo en otro archivo.
+   - Cuando el clasificador no reconoce algo, devuelve `sin_clasificar`. **No se
+     inventa un código plausible** — una fila que dice «no sé» se filtra y se
+     resuelve; una con un código inventado se pierde entre las buenas.
+   - El panel de reclasificación **no tiene «marcar todas»** a propósito: se
+     despacha por banda de confianza. Es una decisión de producto de Gabriel.
+9. **`insumo_categoria` tiene un CHECK que la app debe respetar:**
+   `decision='catalogo'` exige `catalogo_insumo_id NOT NULL`. Dexie no lo valida,
+   así que una fila mal formada se guarda local y **rebota en el push** (23514)
+   dejando el sync en reintento eterno. Si no hay fila de catálogo contra la cual
+   decidir, dar de alta el insumo primero (`agregarAlCatalogoYDecidir`).
 
 ---
 

@@ -977,8 +977,8 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         )}
 
         {modalCategorizar && (
-          <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-            <div className="card" style={{ width: '100%', maxWidth: 440, padding: 20, background: 'var(--bg-card, #fff)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)' }}>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+            <div className="card" style={{ width: '100%', maxWidth: 440, padding: 20, background: 'var(--bg-c)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Categorizar Insumo</h4>
                 <button className="btn btn-ghost btn-xs" onClick={() => setModalCategorizar(null)}>✕</button>
@@ -1029,7 +1029,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                   Cancelar
                 </button>
                 <button
-                  className="btn btn-primary btn-sm"
+                  className="btn btn-blue btn-sm"
                   disabled={modalCategorizar.guardando}
                   onClick={async () => {
                     setModalCategorizar(prev => ({ ...prev, guardando: true }));

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normInsumo, parClave, resolverPares, construirGrupos, claveGrupoDe,
-  scoreNombres, sugerirPares,
+  scoreNombres, sugerirPares, sugerirClusters, crearParesDeCluster,
 } from '../insumo-correlacion';
 
 describe('normInsumo / parClave', () => {
@@ -97,3 +97,31 @@ describe('sugerirPares', () => {
     expect(s[0].nombre_a).toBe(normInsumo(listaCruzada[0]));
   });
 });
+
+describe('sugerirClusters — Correlaciones Multi-Insumo (N a N)', () => {
+  it('agrupa 3 o más variantes del mismo insumo en un solo cluster', () => {
+    const variantes = [
+      'Clavos N3',
+      'Clavos numero 3',
+      'Clavos de 3',
+      'Clavo 3 pulg',
+      'Pintura látex blanca',
+    ];
+    const clusters = sugerirClusters(variantes, new Map(), new Map());
+    expect(clusters.length).toBeGreaterThanOrEqual(1);
+    const clusterClavos = clusters.find(c => c.variantes.some(v => v.includes('clavo')));
+    expect(clusterClavos).toBeDefined();
+    expect(clusterClavos.totalVariantes).toBeGreaterThanOrEqual(3);
+    expect(clusterClavos.canonico).toBeTruthy();
+  });
+
+  it('crearParesDeCluster genera los enlaces de equivalencia completos para el grupo', () => {
+    const vars = ['clavos n3', 'clavos numero 3', 'clavos de 3'];
+    const pares = crearParesDeCluster(vars, 'Clavos de 3 pulgadas', 'mismo');
+    // Para 3 elementos: combinatoria C(3,2) = 3 pares
+    expect(pares.length).toBe(3);
+    expect(pares.every(p => p.canonico === normInsumo('Clavos de 3 pulgadas'))).toBe(true);
+    expect(pares.every(p => p.relacion === 'mismo')).toBe(true);
+  });
+});
+

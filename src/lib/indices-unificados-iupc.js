@@ -1,0 +1,1557 @@
+// ═══════════════════════════════════════════════════════════════════
+// JARVEX — ÍNDICES UNIFICADOS DE PRECIOS DE LA CONSTRUCCIÓN (IUPC)
+// Base oficial del Estado Peruano: R.J. Nº 016-2026-INEI (20-ene-2026).
+// Anexo 1: Relación de Índices Unificados de Precios de la Construcción.
+// Anexo 2: Diccionario Oficial de Elementos de la Construcción.
+//
+// Regla rectora del sistema:
+// SOLO UNA CLASIFICACIÓN EN TODA LA APP (sin familias y subfamilias).
+// Insumos y recursos que no pertenecen a construcción civil entran en
+// categorías complementarias: 'servicios' (Servicios en general),
+// 'administrativos' (Consumos administrativos) o categorías especiales.
+// ═══════════════════════════════════════════════════════════════════
+
+export const IUPC_CODIGOS = [
+  { codigo: '01', nombre: 'Aceite y lubricante', tipo: 'material' },
+  { codigo: '02', nombre: 'Acero de construcción liso', tipo: 'material' },
+  { codigo: '03', nombre: 'Acero de construcción corrugado', tipo: 'material' },
+  { codigo: '04', nombre: 'Agregado fino', tipo: 'material' },
+  { codigo: '05', nombre: 'Agregado grueso', tipo: 'material' },
+  { codigo: '06', nombre: 'Alambre y cable de cobre desnudo', tipo: 'material' },
+  { codigo: '07', nombre: 'Alambre y cable tipo TW, THW, LSOH', tipo: 'material' },
+  { codigo: '08', nombre: 'Alambre y cable tipo WP, CPI', tipo: 'material' },
+  { codigo: '09', nombre: 'Alcantarilla metálica y guardavías', tipo: 'material' },
+  { codigo: '10', nombre: 'Aparato sanitario con grifería', tipo: 'material' },
+  { codigo: '11', nombre: 'Artefacto de alumbrado exterior', tipo: 'material' },
+  { codigo: '12', nombre: 'Artefacto de alumbrado interior', tipo: 'material' },
+  { codigo: '13', nombre: 'Asfalto', tipo: 'material' },
+  { codigo: '14', nombre: 'Baldosa acústica', tipo: 'material' },
+  { codigo: '16', nombre: 'Baldosa vinílica y PVC', tipo: 'material' },
+  { codigo: '17', nombre: 'Bloque y ladrillo', tipo: 'material' },
+  { codigo: '18', nombre: 'Cable telefónico y de red', tipo: 'material' },
+  { codigo: '19', nombre: 'Cable NYY, N2XY, NPT, N2XOH, N2XSY', tipo: 'material' },
+  { codigo: '20', nombre: 'Cemento asfáltico', tipo: 'material' },
+  { codigo: '21', nombre: 'Cemento Portland e hidráulico', tipo: 'material', reagrupa: ['22', '23'] },
+  { codigo: '24', nombre: 'Cerámica y porcelanato', tipo: 'material' },
+  { codigo: '26', nombre: 'Cerrajería', tipo: 'material' },
+  { codigo: '27', nombre: 'Detonante', tipo: 'material' },
+  { codigo: '28', nombre: 'Dinamita', tipo: 'material' },
+  { codigo: '30', nombre: 'Dólar más inflación mercado USA', tipo: 'financiero' },
+  { codigo: '31', nombre: 'Prefabricado de concreto', tipo: 'material', reagrupa: ['69', '70'] },
+  { codigo: '32', nombre: 'Flete terrestre', tipo: 'servicio' },
+  { codigo: '33', nombre: 'Flete aéreo', tipo: 'servicio' },
+  { codigo: '34', nombre: 'Gasohol y gasolina', tipo: 'material' },
+  { codigo: '37', nombre: 'Herramienta manual', tipo: 'herramienta' },
+  { codigo: '38', nombre: 'Hormigón y afirmado', tipo: 'material' },
+  { codigo: '39', nombre: 'Índice de Precios al Consumidor (INEI)', tipo: 'financiero' },
+  { codigo: '40', nombre: 'Loseta y terrazo', tipo: 'material', reagrupa: ['64'] },
+  { codigo: '41', nombre: 'Madera nacional en tiras para piso', tipo: 'material' },
+  { codigo: '42', nombre: 'Madera importada para encofrado y carpintería', tipo: 'material' },
+  { codigo: '43', nombre: 'Madera nacional para encofrado y carpintería', tipo: 'material' },
+  { codigo: '44', nombre: 'Madera terciada nacional', tipo: 'material', reagrupa: ['45'] },
+  { codigo: '46', nombre: 'Malla de acero', tipo: 'material' },
+  { codigo: '47', nombre: 'Mano de obra (incluye leyes sociales)', tipo: 'mano_obra' },
+  { codigo: '47-1', nombre: 'Mano de obra de alta especialización (incluye leyes sociales)', tipo: 'mano_obra' },
+  { codigo: '48', nombre: 'Maquinaria y equipo de construcción liviano', tipo: 'maquinaria' },
+  { codigo: '49', nombre: 'Maquinaria y equipo de construcción pesado', tipo: 'maquinaria' },
+  { codigo: '50', nombre: 'Marco y tapa de fierro', tipo: 'material' },
+  { codigo: '51', nombre: 'Perfil de acero al carbono', tipo: 'material' },
+  { codigo: '52', nombre: 'Perfil de aluminio', tipo: 'material' },
+  { codigo: '53', nombre: 'Petróleo diésel', tipo: 'material' },
+  { codigo: '54', nombre: 'Pintura látex', tipo: 'material' },
+  { codigo: '55', nombre: 'Pintura temple', tipo: 'material' },
+  { codigo: '56', nombre: 'Plancha de acero LAC', tipo: 'material' },
+  { codigo: '57', nombre: 'Plancha de acero LAF', tipo: 'material' },
+  { codigo: '59', nombre: 'Plancha de fibrocemento y yeso', tipo: 'material' },
+  { codigo: '60', nombre: 'Plancha de poliuretano, poliestireno y termoaislante', tipo: 'material' },
+  { codigo: '61', nombre: 'Plancha galvanizada', tipo: 'material' },
+  { codigo: '62', nombre: 'Poste de concreto', tipo: 'material' },
+  { codigo: '65', nombre: 'Tubería de acero negro y/o galvanizado', tipo: 'material' },
+  { codigo: '66', nombre: 'Tubería de PVC para la red de agua potable y alcantarillado', tipo: 'material' },
+  { codigo: '68', nombre: 'Tubería de cobre', tipo: 'material' },
+  { codigo: '71', nombre: 'Tubería de hierro fundido y dúctil', tipo: 'material' },
+  { codigo: '72', nombre: 'Tubería de PVC para redes interiores', tipo: 'material', reagrupa: ['73'] },
+  { codigo: '77', nombre: 'Válvula de bronce y latón', tipo: 'material' },
+  { codigo: '78', nombre: 'Válvula de hierro y acero', tipo: 'material' },
+  { codigo: '79', nombre: 'Vidrio', tipo: 'material' },
+  { codigo: '80', nombre: 'Concreto premezclado', tipo: 'material' },
+  { codigo: '81', nombre: 'Aditivo de concreto y similar', tipo: 'material' },
+  { codigo: '82', nombre: 'Alambre y cable de aluminio', tipo: 'material' },
+  { codigo: '83', nombre: 'Implemento y accesorio de seguridad', tipo: 'epp' },
+  { codigo: '84', nombre: 'Madera terciada importada', tipo: 'material' },
+  { codigo: '85', nombre: 'Perfil de acero galvanizado', tipo: 'material' },
+  { codigo: '86', nombre: 'Pintura esmalte y epóxica', tipo: 'material' },
+  { codigo: '87', nombre: 'Plancha con cubierta aluzinc', tipo: 'material' },
+  { codigo: '88', nombre: 'Plancha y cobertura plástica', tipo: 'material' },
+  { codigo: '89', nombre: 'Poste y tubería de fibra de vidrio', tipo: 'material' },
+  { codigo: '90', nombre: 'Tubería de polietileno', tipo: 'material' },
+  { codigo: '91', nombre: 'Geomembrana y geotextil', tipo: 'material' },
+  { codigo: '92', nombre: 'Flete fluvial', tipo: 'servicio' },
+  { codigo: '93', nombre: 'Bienes y servicios auxiliares', tipo: 'servicio' },
+  { codigo: '94', nombre: 'Encofrado y andamio prefabricado', tipo: 'material' },
+  { codigo: '95', nombre: 'Equipamiento permanente de obra', tipo: 'maquinaria' },
+];
+
+/** Mapa de códigos IUPC por código string */
+export const IUPC_POR_CODIGO = new Map(IUPC_CODIGOS.map(c => [c.codigo, c]));
+
+/** Reagrupaciones según Nota (a) de la R.J. 016-2026-INEI */
+export const REAGRUPACIONES_IUPC = {
+  '22': '21', // Cemento Portland tipo II -> Cemento Portland e hidráulico
+  '23': '21', // Cemento Portland tipo V -> Cemento Portland e hidráulico
+  '45': '44', // Madera terciada para encofrado -> Madera terciada nacional
+  '64': '40', // Terrazo -> Loseta y terrazo
+  '69': '31', // Tubería de concreto simple -> Prefabricado de concreto
+  '70': '31', // Tubería de concreto reforzado -> Prefabricado de concreto
+  '73': '72', // Ducto telefónico de PVC -> Tubería de PVC para redes interiores
+};
+
+/**
+ * Categorías complementarias: lo que la norma NO contempla y la obra sí usa.
+ * Es el escape previsto en la decisión del 13-set — «para insumos o servicios
+ * que no se contemplen dentro de los índices se creará su propia categoría».
+ *
+ * `sin_clasificar` es deliberada: cuando el clasificador no reconoce nada,
+ * decirlo es mejor que inventar un código IUPC plausible. Antes el residual
+ * caía en el 93 («Bienes y servicios auxiliares»), que además es de tipo
+ * SERVICIO — o sea que todo lo desconocido entraba al catálogo como servicio.
+ * Una fila en `sin_clasificar` se ve, se filtra y se resuelve; una fila con un
+ * 93 inventado se pierde entre las buenas.
+ */
+export const CATEGORIAS_COMPLEMENTARIAS = [
+  { codigo: 'servicios', nombre: 'Servicios en general', tipo: 'servicio', complementaria: true },
+  { codigo: 'administrativos', nombre: 'Consumos administrativos / Oficina', tipo: 'material', complementaria: true },
+  { codigo: 'sin_clasificar', nombre: 'Sin clasificar — revisar a mano', tipo: 'material', complementaria: true },
+];
+
+/** Diccionario Oficial de Elementos de Construcción (Anexo 2 de la R.J. 016-2026-INEI) */
+export const ELEMENTOS_DICCIONARIO_INEI = [
+  // A
+  { nombre: 'Abrazadera de acero', iupc: '02' },
+  { nombre: 'Abrazadera de hierro', iupc: '71' },
+  { nombre: 'Abrazadera de hierro dúctil', iupc: '71' },
+  { nombre: 'Abrazadera de polipropileno', iupc: '72' },
+  { nombre: 'Abrazadera de PVC', iupc: '72' },
+  { nombre: 'Acabadora de concreto', iupc: '48' },
+  { nombre: 'Accesorio CPVC', iupc: '72' },
+  { nombre: 'Accesorio de tubería de acero', iupc: '65' },
+  { nombre: 'Accesorio para tubería de cobre', iupc: '68' },
+  { nombre: 'Accesorio para tubería de hierro dúctil', iupc: '71' },
+  { nombre: 'Accesorio para tubería de hierro fundido', iupc: '71' },
+  { nombre: 'Accesorio PVC sanitaria', iupc: '72' },
+  { nombre: 'Accesorio PVC SAP eléctrica', iupc: '72' },
+  { nombre: 'Accesorio PVC SEL eléctrica', iupc: '72' },
+  { nombre: 'Accesorio PVC telefónico', iupc: '72' },
+  { nombre: 'Accesorio PVC-O para redes de agua', iupc: '66' },
+  { nombre: 'Accesorio PVC-U CR para agua fría', iupc: '72' },
+  { nombre: 'Accesorio PVC-U para drenaje y alcantarillado', iupc: '66' },
+  { nombre: 'Accesorio PVC-U para redes de agua', iupc: '66' },
+  { nombre: 'Accesorio PVC-U SP para agua fría', iupc: '72' },
+  { nombre: 'Accesorios de continuidad de pantalla', iupc: '11' },
+  { nombre: 'Accesorios de tubería de PRFV', iupc: '89' },
+  { nombre: 'Accesorios telefónicos de PVC', iupc: '72' },
+  { nombre: 'Accesorios tubería HDPE', iupc: '90' },
+  { nombre: 'Accesorios tubería PP-R', iupc: '90' },
+  { nombre: 'Access point', iupc: '95' },
+  { nombre: 'Aceite', iupc: '01' },
+  { nombre: 'Aceite aislante', iupc: '01' },
+  { nombre: 'Aceite dieléctrico', iupc: '01' },
+  { nombre: 'Aceite linaza', iupc: '93' },
+  { nombre: 'Aceite lubricante', iupc: '01' },
+  { nombre: 'Aceite para transformadores', iupc: '01' },
+  { nombre: 'Acelerógrafo', iupc: '95' },
+  { nombre: 'Acero corrugado ASTM A496', iupc: '03' },
+  { nombre: 'Acero corrugado ASTM A615', iupc: '03' },
+  { nombre: 'Acero corrugado ASTM A706', iupc: '03' },
+  { nombre: 'Acero corrugado dimensionado', iupc: '03' },
+  { nombre: 'Acero de construcción corrugado', iupc: '03' },
+  { nombre: 'Acero liso redondo', iupc: '02' },
+  { nombre: 'Acero para pretensado', iupc: '30' },
+  { nombre: 'Acero roscado acero galvanizado', iupc: '02' },
+  { nombre: 'Acero roscado acero negro', iupc: '02' },
+  { nombre: 'Acero roscado zincado', iupc: '02' },
+  { nombre: 'Acetileno', iupc: '93' },
+  { nombre: 'Ácido muriático', iupc: '93' },
+  { nombre: 'Acople de acero', iupc: '65' },
+  { nombre: 'Acrílico', iupc: '88' },
+  { nombre: 'Adaptador brida campana de hierro dúctil', iupc: '71' },
+  { nombre: 'Adaptador de acero', iupc: '65' },
+  { nombre: 'Adaptador integral para barra helicoidal', iupc: '02' },
+  { nombre: 'Adhesivo epóxico multipropósito', iupc: '81' },
+  { nombre: 'Aditivo acelerante de fragua', iupc: '81' },
+  { nombre: 'Aditivo curador', iupc: '81' },
+  { nombre: 'Aditivo endurecedor de superficies', iupc: '81' },
+  { nombre: 'Aditivo impermeabilizante', iupc: '81' },
+  { nombre: 'Aditivo incorporador de aire', iupc: '81' },
+  { nombre: 'Aditivo inhibidor de corrosión', iupc: '81' },
+  { nombre: 'Aditivo para concreto', iupc: '81' },
+  { nombre: 'Aditivo plastificante', iupc: '81' },
+  { nombre: 'Aditivo retardante', iupc: '81' },
+  { nombre: 'Aditivo superplastificante', iupc: '81' },
+  { nombre: 'Adobe', iupc: '04' },
+  { nombre: 'Adoquín de concreto', iupc: '17' },
+  { nombre: 'Afirmado', iupc: '38' },
+  { nombre: 'Afirmado para subbase', iupc: '38' },
+  { nombre: 'Agitador hiperbólico', iupc: '95' },
+  { nombre: 'Agitador sumergible', iupc: '95' },
+  { nombre: 'Agregado fino', iupc: '04' },
+  { nombre: 'Agregado grueso', iupc: '05' },
+  { nombre: 'Agua', iupc: '93' },
+  { nombre: 'Aire acondicionado', iupc: '95' },
+  { nombre: 'Aislador carrete', iupc: '11' },
+  { nombre: 'Aislador de porcelana vidriada', iupc: '11' },
+  { nombre: 'Aislador eléctrico', iupc: '11' },
+  { nombre: 'Aislador eléctrico de pin', iupc: '11' },
+  { nombre: 'Aislador polimérico', iupc: '11' },
+  { nombre: 'Aislador sísmico', iupc: '30' },
+  { nombre: 'Aislador tipo pin', iupc: '11' },
+  { nombre: 'Aislamiento elastómero', iupc: '60' },
+  { nombre: 'Alambre', iupc: '02' },
+  { nombre: 'Alambre de acero', iupc: '02' },
+  { nombre: 'Alambre de aluminio', iupc: '82' },
+  { nombre: 'Alambre de cobre', iupc: '06' },
+  { nombre: 'Alambre de cobre desnudo', iupc: '06' },
+  { nombre: 'Alambre de púas', iupc: '02' },
+  { nombre: 'Alambre de púas zincado', iupc: '02' },
+  { nombre: 'Alambre galvanizado', iupc: '02' },
+  { nombre: 'Alambre negro', iupc: '02' },
+  { nombre: 'Alambre negro recocido', iupc: '02' },
+  { nombre: 'Alambre para devanado de cobre', iupc: '06' },
+  { nombre: 'Alambre pretensor', iupc: '30' },
+  { nombre: 'Alambre y cable CAAI de aluminio', iupc: '82' },
+  { nombre: 'Alambre y cable CAI de aluminio', iupc: '82' },
+  { nombre: 'Alambre y cable CPI', iupc: '08' },
+  { nombre: 'Alambre y cable CPI (WP)', iupc: '08' },
+  { nombre: 'Alambre y cable GPT', iupc: '07' },
+  { nombre: 'Alambre y cable LSOH', iupc: '07' },
+  { nombre: 'Alambre y cable LSOHX', iupc: '07' },
+  { nombre: 'Alambre y cable NH', iupc: '07' },
+  { nombre: 'Alambre y cable NHX', iupc: '07' },
+  { nombre: 'Alambre y cable THW', iupc: '07' },
+  { nombre: 'Alambre y cable tipo TW', iupc: '07' },
+  { nombre: 'Alambre y cable tipo TW y THW', iupc: '07' },
+  { nombre: 'Alambre y cable tipo WP', iupc: '08' },
+  { nombre: 'Alambrón', iupc: '02' },
+  { nombre: 'Alambrón para trefilado', iupc: '02' },
+  { nombre: 'Alarma audible', iupc: '95' },
+  { nombre: 'Alcantarilla metálica', iupc: '09' },
+  { nombre: 'Alcantarilla TMC', iupc: '09' },
+  { nombre: 'Alcantarilla TMC circular', iupc: '09' },
+  { nombre: 'Alcantarilla TMC media caña', iupc: '09' },
+  { nombre: 'Alcayata', iupc: '02' },
+  { nombre: 'Alcohol', iupc: '93' },
+  { nombre: 'Aldaba', iupc: '26' },
+  { nombre: 'Alfombra', iupc: '93' },
+  { nombre: 'Alicate', iupc: '37' },
+  { nombre: 'Alisadora de concreto', iupc: '48' },
+  { nombre: 'Alquiler de baños portátiles', iupc: '93' },
+  { nombre: 'Alquiler de oficina', iupc: '93' },
+  { nombre: 'Alquitrán', iupc: '13' },
+  { nombre: 'Altavoz', iupc: '95' },
+  { nombre: 'Amasadora de asfalto', iupc: '49' },
+  { nombre: 'Amolador', iupc: '48' },
+  { nombre: 'Amortiguador sísmico', iupc: '30' },
+  { nombre: 'Amperímetro', iupc: '95' },
+  { nombre: 'Anclaje de acero', iupc: '02' },
+  { nombre: 'Anclaje de acero tipo J', iupc: '02' },
+  { nombre: 'Anclaje de acero tipo L', iupc: '02' },
+  { nombre: 'Anclaje para pretensado', iupc: '30' },
+  { nombre: 'Andamio metálico', iupc: '94' },
+  { nombre: 'Andamio prefabricado', iupc: '94' },
+  { nombre: 'Anemómetro', iupc: '95' },
+  { nombre: 'Anfo', iupc: '28' },
+  { nombre: 'Anfo pesado', iupc: '28' },
+  { nombre: 'Angulo de acero al carbono', iupc: '51' },
+  { nombre: 'Ángulo de aluminio', iupc: '52' },
+  { nombre: 'Angulo perimetral', iupc: '85' },
+  { nombre: 'Anillo de cera para inodoro', iupc: '10' },
+  { nombre: 'Anillo de jebe', iupc: '66' },
+  { nombre: 'Anillo de jebe para tubería', iupc: '66' },
+  { nombre: 'Anillo de jebe presión para agua potable', iupc: '66' },
+  { nombre: 'Anillo de jebe presión para alcantarillado', iupc: '66' },
+  { nombre: 'Antena de telemetría', iupc: '95' },
+  { nombre: 'Anticorrosivo', iupc: '86' },
+  { nombre: 'Aparato sanitario', iupc: '10' },
+  { nombre: 'Apisonadora', iupc: '48' },
+  { nombre: 'Apoyos neopreno', iupc: '30' },
+  { nombre: 'Arandela', iupc: '02' },
+  { nombre: 'Arandela de cuero', iupc: '93' },
+  { nombre: 'Arandela de fierro', iupc: '02' },
+  { nombre: 'Arandela de presión', iupc: '02' },
+  { nombre: 'Árbol', iupc: '93' },
+  { nombre: 'Arcilla', iupc: '04' },
+  { nombre: 'Arco de sierra', iupc: '37' },
+  { nombre: 'Arena fina', iupc: '04' },
+  { nombre: 'Arena fina de rio', iupc: '04' },
+  { nombre: 'Arena gruesa', iupc: '04' },
+  { nombre: 'Arena gruesa de rio', iupc: '04' },
+  { nombre: 'Armella', iupc: '02' },
+  { nombre: 'Arnés de seguridad', iupc: '83' },
+  { nombre: 'Arrancador para Lámpara de vapor de mercurio', iupc: '11' },
+  { nombre: 'Arrancador para Lámpara de vapor de sodio', iupc: '11' },
+  { nombre: 'Artefacto de alumbrado exterior', iupc: '11' },
+  { nombre: 'Artefacto de alumbrado interior', iupc: '12' },
+  { nombre: 'Artefacto fluorescente', iupc: '12' },
+  { nombre: 'Artefacto LED', iupc: '12' },
+  { nombre: 'Artefacto tipo farol', iupc: '11' },
+  { nombre: 'Ascensor', iupc: '95' },
+  { nombre: 'Asfalto', iupc: '13' },
+  { nombre: 'Asfalto industrial sólido', iupc: '13' },
+  { nombre: 'Asfalto liquido', iupc: '13' },
+  { nombre: 'Asfalto liquido MC', iupc: '13' },
+  { nombre: 'Asfalto liquido RC', iupc: '13' },
+  { nombre: 'Asfalto liquido SC', iupc: '13' },
+  { nombre: 'Asiendo de ducha de acero', iupc: '10' },
+  { nombre: 'Asiento para inodoro', iupc: '10' },
+  { nombre: 'Asignación excepcional', iupc: '47' },
+  { nombre: 'Aspersor de PVC', iupc: '72' },
+  { nombre: 'Aspirador', iupc: '48' },
+  { nombre: 'Atornillador eléctrico', iupc: '48' },
+  { nombre: 'Autohormiguera', iupc: '49' },
+  { nombre: 'Automóvil', iupc: '49' },
+  { nombre: 'Ayudante', iupc: '47' },
+  { nombre: 'Azulejo', iupc: '24' },
+
+  // B
+  { nombre: 'Badilejo', iupc: '37' },
+  { nombre: 'Balanza', iupc: '95' },
+  { nombre: 'Balde', iupc: '37' },
+  { nombre: 'Balde de pruebas hidráulicas', iupc: '37' },
+  { nombre: 'Baldosa acústica', iupc: '14' },
+  { nombre: 'Baldosa acústica de fibra mineral', iupc: '14' },
+  { nombre: 'Baldosa de PVC', iupc: '16' },
+  { nombre: 'Baldosa de vidrio', iupc: '79' },
+  { nombre: 'Baldosa de yeso multiplaca', iupc: '14' },
+  { nombre: 'Baldosa vinílica', iupc: '16' },
+  { nombre: 'Baldosín semigres', iupc: '40' },
+  { nombre: 'Baliza', iupc: '83' },
+  { nombre: 'Bambú', iupc: '43' },
+  { nombre: 'Banco de baterías', iupc: '95' },
+  { nombre: 'Banco de ducto de concreto', iupc: '31' },
+  { nombre: 'Banda elástica elastomérica', iupc: '60' },
+  { nombre: 'Bandeja de fibra de vidrio', iupc: '89' },
+  { nombre: 'Bandeja de fibra óptica', iupc: '18' },
+  { nombre: 'Bandeja portacable de acero galvanizado', iupc: '85' },
+  { nombre: 'Baranda modular', iupc: '94' },
+  { nombre: 'Baritina', iupc: '30' },
+  { nombre: 'Barniz', iupc: '86' },
+  { nombre: 'Barniz marino', iupc: '86' },
+  { nombre: 'Barniz poliuretano', iupc: '86' },
+  { nombre: 'Barra angular abatible de acero para SSHH', iupc: '10' },
+  { nombre: 'Barra angular de acero para SSHH', iupc: '10' },
+  { nombre: 'Barra antipánico', iupc: '26' },
+  { nombre: 'Barra cuadrada de acero al carbono', iupc: '51' },
+  { nombre: 'Barra de acero liso', iupc: '02' },
+  { nombre: 'Barra equipotencial de cobre', iupc: '06' },
+  { nombre: 'Barra helicoidal', iupc: '03' },
+  { nombre: 'Barra recta de acero para SSHH', iupc: '10' },
+  { nombre: 'Barra retráctil', iupc: '37' },
+  { nombre: 'Barredora mecánica', iupc: '49' },
+  { nombre: 'Barreno', iupc: '37' },
+  { nombre: 'Barrera de concreto', iupc: '31' },
+  { nombre: 'Barrera de contención metálico', iupc: '09' },
+  { nombre: 'Barrera de tráfico', iupc: '83' },
+  { nombre: 'Barro', iupc: '04' },
+  { nombre: 'Bastón desnivelador topográfico', iupc: '48' },
+  { nombre: 'Batea', iupc: '37' },
+  { nombre: 'Batería', iupc: '95' },
+  { nombre: 'Bentonita', iupc: '04' },
+  { nombre: 'Berbiquí', iupc: '37' },
+  { nombre: 'Bidet', iupc: '10' },
+  { nombre: 'Biodepurador de polietileno', iupc: '90' },
+  { nombre: 'Biodiesel', iupc: '53' },
+  { nombre: 'Biodigestor de polietileno', iupc: '90' },
+  { nombre: 'Bisagra de acero', iupc: '26' },
+  { nombre: 'Bisagra de acero tipo capuchina', iupc: '26' },
+  { nombre: 'Bisagra de extensión', iupc: '26' },
+  { nombre: 'Bisagra importada', iupc: '26' },
+  { nombre: 'Bisagra nacional', iupc: '26' },
+  { nombre: 'Bisagra roller', iupc: '26' },
+  { nombre: 'Bisagra vaivén', iupc: '26' },
+  { nombre: 'Bita', iupc: '65' },
+  { nombre: 'Bloque de 50 pares para armario', iupc: '18' },
+  { nombre: 'Bloque de concreto', iupc: '17' },
+  { nombre: 'Bloque de concreto para muros', iupc: '17' },
+  { nombre: 'Bloque de concreto para techos', iupc: '17' },
+  { nombre: 'Bloque de poliestireno expandido', iupc: '60' },
+  { nombre: 'Bloque de vidrio', iupc: '79' },
+  { nombre: 'Bloqueador solar', iupc: '93' },
+  { nombre: 'Bobina', iupc: '06' },
+  { nombre: 'Bobina de acero LAF', iupc: '57' },
+  { nombre: 'Bolardo', iupc: '83' },
+  { nombre: 'Bomba centrífuga', iupc: '95' },
+  { nombre: 'Bomba contraincendios', iupc: '95' },
+  { nombre: 'Bomba de agua Diesel', iupc: '48' },
+  { nombre: 'Bomba de agua solar', iupc: '95' },
+  { nombre: 'Bomba de agua tipo turbina', iupc: '95' },
+  { nombre: 'Bomba de cavidad progresiva', iupc: '95' },
+  { nombre: 'Bomba de concentrado', iupc: '95' },
+  { nombre: 'Bomba de concreto', iupc: '49' },
+  { nombre: 'Bomba de inyección de cemento', iupc: '49' },
+  { nombre: 'Bomba de lodos', iupc: '95' },
+  { nombre: 'Bomba dosificadora', iupc: '95' },
+  { nombre: 'Bomba neumática para vaciado de concreto', iupc: '49' },
+  { nombre: 'Bomba para sistema contraincendios', iupc: '95' },
+  { nombre: 'Bomba sumergible', iupc: '95' },
+  { nombre: 'Bonificaciones mano de obra', iupc: '47' },
+  { nombre: 'Borne', iupc: '06' },
+  { nombre: 'Borne de cobre', iupc: '06' },
+  { nombre: 'Botas de jebe', iupc: '83' },
+  { nombre: 'Bote', iupc: '49' },
+  { nombre: 'Botín de seguridad', iupc: '83' },
+  { nombre: 'Botiquín', iupc: '83' },
+  { nombre: 'Botón con campanilla', iupc: '12' },
+  { nombre: 'Boya', iupc: '83' },
+  { nombre: 'Braquete', iupc: '12' },
+  { nombre: 'Brea', iupc: '13' },
+  { nombre: 'Brea industrial', iupc: '13' },
+  { nombre: 'Brea liquida', iupc: '13' },
+  { nombre: 'Brick cerámico', iupc: '24' },
+  { nombre: 'Brida de acero', iupc: '56' },
+  { nombre: 'Brida de acero LAC', iupc: '56' },
+  { nombre: 'Brida de hierro dúctil', iupc: '56' },
+  { nombre: 'Brida rompe aguas de acero LAC', iupc: '56' },
+  { nombre: 'Brida rompe aguas de hierro dúctil', iupc: '71' },
+  { nombre: 'Broca', iupc: '37' },
+  { nombre: 'Brocha', iupc: '37' },
+  { nombre: 'Bronce', iupc: '68' },
+  { nombre: 'Buje CPVC', iupc: '72' },
+  { nombre: 'Bujía', iupc: '48' },
+  { nombre: 'Bureta', iupc: '95' },
+  { nombre: 'Bushing de acero', iupc: '65' },
+  { nombre: 'Bushing de fierro galvanizado', iupc: '65' },
+  { nombre: 'Bushing de PVC', iupc: '72' },
+  { nombre: 'Bushing PVC-U CR para agua fría', iupc: '72' },
+  { nombre: 'Buzón de concreto prefabricado', iupc: '31' },
+  { nombre: 'Buzón eléctrico', iupc: '31' },
+  { nombre: 'Buzón para ducto de basura', iupc: '56' },
+  { nombre: 'Buzone termoplástico', iupc: '95' },
+
+  // C
+  { nombre: 'Caballete de madera', iupc: '43' },
+  { nombre: 'Cable CCT-B', iupc: '18' },
+  { nombre: 'Cable coaxial', iupc: '18' },
+  { nombre: 'Cable de acero', iupc: '30' },
+  { nombre: 'Cable de acero con recubrimiento de cobre', iupc: '06' },
+  { nombre: 'Cable de acero para concreto pretensado', iupc: '30' },
+  { nombre: 'Cable de cobre desnudo', iupc: '06' },
+  { nombre: 'Cable de control multipar', iupc: '18' },
+  { nombre: 'Cable de fibra óptica', iupc: '18' },
+  { nombre: 'Cable de guarda', iupc: '82' },
+  { nombre: 'Cable de red', iupc: '18' },
+  { nombre: 'Cable ethernet', iupc: '18' },
+  { nombre: 'Cable FPLR', iupc: '18' },
+  { nombre: 'Cable HDMI', iupc: '18' },
+  { nombre: 'Cable mensajero', iupc: '18' },
+  { nombre: 'Cable multiconductor para control y señalización', iupc: '18' },
+  { nombre: 'Cable multipar', iupc: '18' },
+  { nombre: 'Cable N2XOH', iupc: '19' },
+  { nombre: 'Cable N2XSY', iupc: '19' },
+  { nombre: 'Cable N2XY', iupc: '19' },
+  { nombre: 'Cable NKBA', iupc: '19' },
+  { nombre: 'Cable NKY', iupc: '19' },
+  { nombre: 'Cable NPT', iupc: '19' },
+  { nombre: 'Cable NYY', iupc: '19' },
+  { nombre: 'Cable para control y señalización', iupc: '18' },
+  { nombre: 'Cable para seguridad y alarma', iupc: '18' },
+  { nombre: 'Cable para teléfono', iupc: '18' },
+  { nombre: 'Cable patch cord', iupc: '18' },
+  { nombre: 'Cable PEAT', iupc: '18' },
+  { nombre: 'Cable PECSAT', iupc: '18' },
+  { nombre: 'Cable PROFIBUS', iupc: '18' },
+  { nombre: 'Cable SFTP', iupc: '18' },
+  { nombre: 'Cable telefónico', iupc: '18' },
+  { nombre: 'Cable telefónico armado', iupc: '18' },
+  { nombre: 'Cable telefónico con aislamiento de papel', iupc: '18' },
+  { nombre: 'Cable telefónico con aislamiento de polietileno', iupc: '18' },
+  { nombre: 'Cable tipo boa', iupc: '30' },
+  { nombre: 'Cable TW y THW', iupc: '07' },
+  { nombre: 'Cable UTP', iupc: '18' },
+  { nombre: 'Cable WP', iupc: '08' },
+  { nombre: 'Cable XPT', iupc: '18' },
+  { nombre: 'Cabo', iupc: '93' },
+  { nombre: 'Cabría', iupc: '94' },
+  { nombre: 'Cachaco de concreto', iupc: '83' },
+  { nombre: 'Cachaco de PVC', iupc: '83' },
+  { nombre: 'Cadena', iupc: '02' },
+  { nombre: 'Cadena de acero', iupc: '02' },
+  { nombre: 'Caja cabina eléctrica', iupc: '12' },
+  { nombre: 'Caja condulet', iupc: '12' },
+  { nombre: 'Caja cuadrada eléctrica', iupc: '12' },
+  { nombre: 'Caja de conexión de agua y desagüe', iupc: '31' },
+  { nombre: 'Caja de conexiones de fierro fundido', iupc: '50' },
+  { nombre: 'Caja de fierro galvanizado eléctrica', iupc: '12' },
+  { nombre: 'Caja de herramientas', iupc: '37' },
+  { nombre: 'Caja de madera para tablero eléctrico', iupc: '12' },
+  { nombre: 'Caja de pase galvanizada', iupc: '61' },
+  { nombre: 'Caja de pase PVC', iupc: '72' },
+  { nombre: 'Caja de pozo a tierra de concreto', iupc: '31' },
+  { nombre: 'Caja de registro de agua', iupc: '31' },
+  { nombre: 'Caja de registro de desagüe', iupc: '31' },
+  { nombre: 'Caja eléctrica', iupc: '12' },
+  { nombre: 'Caja galvanizada', iupc: '61' },
+  { nombre: 'Caja metálica para tablero eléctrico', iupc: '12' },
+  { nombre: 'Caja octogonal liviana eléctrica', iupc: '12' },
+  { nombre: 'Caja para medidor de agua de fierro fundido', iupc: '50' },
+  { nombre: 'Caja para medidor de fierro', iupc: '50' },
+  { nombre: 'Caja portafusibles', iupc: '12' },
+  { nombre: 'Caja portamedidor polimérico', iupc: '12' },
+  { nombre: 'Caja prefabricada', iupc: '31' },
+  { nombre: 'Caja prefabricada grifo', iupc: '31' },
+  { nombre: 'Caja protección concreto prefabricada', iupc: '31' },
+  { nombre: 'Caja rectangular liviana eléctrica', iupc: '12' },
+  { nombre: 'Caja sumidero', iupc: '31' },
+  { nombre: 'Caja sumidero de concreto', iupc: '31' },
+  { nombre: 'Caja termoplástica', iupc: '88' },
+  { nombre: 'Cal', iupc: '21' },
+  { nombre: 'Calamina de aluminio', iupc: '52' },
+  { nombre: 'Calamina de Zinc', iupc: '56' },
+  { nombre: 'Caldera', iupc: '49' },
+  { nombre: 'Calentador de aceite', iupc: '49' },
+  { nombre: 'Calentador de agua', iupc: '95' },
+  { nombre: 'Calentador eléctrico', iupc: '95' },
+  { nombre: 'Calibrador Pie de Rey', iupc: '37' },
+  { nombre: 'Cámara bullet IP', iupc: '95' },
+  { nombre: 'Cámara de seguridad', iupc: '95' },
+  { nombre: 'Cámara domo IP', iupc: '95' },
+  { nombre: 'Cámara neumática', iupc: '93' },
+  { nombre: 'Cámara PTZ IP', iupc: '95' },
+  { nombre: 'Camilla de seguridad', iupc: '83' },
+  { nombre: 'Camión', iupc: '49' },
+  { nombre: 'Camión baranda', iupc: '49' },
+  { nombre: 'Camión cisterna', iupc: '49' },
+  { nombre: 'Camión concretero', iupc: '49' },
+  { nombre: 'Camión hidrojet', iupc: '49' },
+  { nombre: 'Camión imprimador', iupc: '49' },
+  { nombre: 'Camión plataforma', iupc: '49' },
+  { nombre: 'Camión tractor', iupc: '49' },
+  { nombre: 'Camión volquete', iupc: '49' },
+  { nombre: 'Camioneta', iupc: '49' },
+  { nombre: 'Campana extractora', iupc: '95' },
+  { nombre: 'Campana timbre eléctrico', iupc: '12' },
+  { nombre: 'Canal C de acero al carbono', iupc: '51' },
+  { nombre: 'Canal de aluminio', iupc: '52' },
+  { nombre: 'Canal de concreto', iupc: '31' },
+  { nombre: 'Canal U de acero al carbono', iupc: '51' },
+  { nombre: 'Canaleta de aluminio', iupc: '52' },
+  { nombre: 'Canaleta de PVC', iupc: '72' },
+  { nombre: 'Canaleta fibro-cemento', iupc: '59' },
+  { nombre: 'Canaleta galvanizada', iupc: '61' },
+  { nombre: 'Canaleta zinc', iupc: '56' },
+  { nombre: 'Canalón fibro-cemento', iupc: '59' },
+  { nombre: 'Canastilla de bronce', iupc: '77' },
+  { nombre: 'Canastilla de latón', iupc: '77' },
+  { nombre: 'Canastilla de PVC', iupc: '72' },
+  { nombre: 'Candado', iupc: '26' },
+  { nombre: 'Canopla', iupc: '10' },
+  { nombre: 'Canto rodado', iupc: '05' },
+  { nombre: 'Cantonera de acero', iupc: '51' },
+  { nombre: 'Cantonera de aluminio', iupc: '52' },
+  { nombre: 'Cantonera de PVC', iupc: '72' },
+  { nombre: 'Caña Guayaquil', iupc: '43' },
+  { nombre: 'Capataz', iupc: '47' },
+  { nombre: 'Captafaro', iupc: '83' },
+  { nombre: 'Carbón mineral', iupc: '05' },
+  { nombre: 'Carbón vegetal', iupc: '43' },
+  { nombre: 'Cargador frontal', iupc: '49' },
+  { nombre: 'Cargador retroexcavador', iupc: '49' },
+  { nombre: 'Cargador sobre llantas', iupc: '49' },
+  { nombre: 'Cargador sobre orugas', iupc: '49' },
+  { nombre: 'Carretilla', iupc: '37' },
+  { nombre: 'Cartón', iupc: '93' },
+  { nombre: 'Casco de seguridad', iupc: '83' },
+  { nombre: 'Casco minero', iupc: '83' },
+  { nombre: 'Cascote', iupc: '17' },
+  { nombre: 'Cascote de arcilla', iupc: '17' },
+  { nombre: 'Casquete Spot Light', iupc: '12' },
+  { nombre: 'Catalizador epóxico', iupc: '86' },
+  { nombre: 'Cautín eléctrico', iupc: '48' },
+  { nombre: 'Cemento asfáltico', iupc: '20' },
+  { nombre: 'Cemento blanco', iupc: '21' },
+  { nombre: 'Cemento con aditivo', iupc: '81' },
+  { nombre: 'Cemento conductivo', iupc: '81' },
+  { nombre: 'Cemento hidráulico', iupc: '21' },
+  { nombre: 'Cemento hidráulico tipo GU', iupc: '21' },
+  { nombre: 'Cemento hidráulico tipo HE', iupc: '21' },
+  { nombre: 'Cemento hidráulico tipo HS', iupc: '21' },
+  { nombre: 'Cemento hidráulico tipo IP', iupc: '21' },
+  { nombre: 'Cemento hidráulico tipo MS', iupc: '21' },
+  { nombre: 'Cemento portland', iupc: '21' },
+  { nombre: 'Cemento Portland tipo I', iupc: '21' },
+  { nombre: 'Cemento Portland tipo II', iupc: '21' },
+  { nombre: 'Cemento Portland tipo V', iupc: '21' },
+  { nombre: 'Cepilladora de madera', iupc: '48' },
+  { nombre: 'Cepillo', iupc: '37' },
+  { nombre: 'Cera', iupc: '93' },
+  { nombre: 'Cerámica esmaltada y sin esmaltar', iupc: '24' },
+  { nombre: 'Cerámico', iupc: '24' },
+  { nombre: 'Cerámico para piso', iupc: '24' },
+  { nombre: 'Cerámico piscina', iupc: '24' },
+  { nombre: 'Cerámico piso pared', iupc: '24' },
+  { nombre: 'Cerradura de embutir', iupc: '26' },
+  { nombre: 'Cerradura de manija', iupc: '26' },
+  { nombre: 'Cerradura de perilla', iupc: '26' },
+  { nombre: 'Cerradura de sobreponer', iupc: '26' },
+  { nombre: 'Cerradura digital', iupc: '26' },
+  { nombre: 'Cerradura eléctrica', iupc: '26' },
+  { nombre: 'Cerradura inteligente', iupc: '95' },
+  { nombre: 'Cerrajería', iupc: '26' },
+  { nombre: 'Cerrojo', iupc: '26' },
+  { nombre: 'Césped', iupc: '93' },
+  { nombre: 'Chaleco de seguridad', iupc: '83' },
+  { nombre: 'Chancadora', iupc: '49' },
+  { nombre: 'Chapa', iupc: '26' },
+  { nombre: 'Cierrapuertas', iupc: '26' },
+  { nombre: 'Cilindro', iupc: '37' },
+  { nombre: 'Cilindro de concreto', iupc: '31' },
+  { nombre: 'Cincel', iupc: '37' },
+  { nombre: 'Cinta aislante', iupc: '37' },
+  { nombre: 'Cinta aislante eléctrica', iupc: '37' },
+  { nombre: 'Cinta antideslizante', iupc: '83' },
+  { nombre: 'Cinta autoadhesiva para drywall', iupc: '59' },
+  { nombre: 'Cinta de papel para drywall', iupc: '59' },
+  { nombre: 'Cinta plástica de seguridad', iupc: '83' },
+  { nombre: 'Cinta teflón', iupc: '72' },
+  { nombre: 'Cisterna de polietileno', iupc: '90' },
+  { nombre: 'Cizalla manual', iupc: '37' },
+  { nombre: 'Clavo', iupc: '02' },
+  { nombre: 'Clavo de acero con cabeza', iupc: '02' },
+  { nombre: 'Clavo de acero galvanizado', iupc: '02' },
+  { nombre: 'Clavo de acero para calamina', iupc: '02' },
+  { nombre: 'Clavo de acero sin cabeza', iupc: '02' },
+  { nombre: 'Cloro', iupc: '93' },
+  { nombre: 'Cobre', iupc: '06' },
+  { nombre: 'Codo CPVC', iupc: '72' },
+  { nombre: 'Codo de acero', iupc: '65' },
+  { nombre: 'Codo de cobre', iupc: '68' },
+  { nombre: 'Codo de fierro fundido', iupc: '71' },
+  { nombre: 'Codo de hierro dúctil', iupc: '71' },
+  { nombre: 'Codo HDPE', iupc: '90' },
+  { nombre: 'Codo PVC agua', iupc: '72' },
+  { nombre: 'Codo PVC SAL desagüe', iupc: '72' },
+  { nombre: 'Codo PVC sanitaria', iupc: '72' },
+  { nombre: 'Codo PVC SAP eléctrica', iupc: '72' },
+  { nombre: 'Codo PVC-U CR para agua fría', iupc: '72' },
+  { nombre: 'Codo PVC-U para drenaje y alcantarillado', iupc: '66' },
+  { nombre: 'Codo PVC-U SP para agua fría', iupc: '72' },
+  { nombre: 'Cola', iupc: '93' },
+  { nombre: 'Cola sintética', iupc: '93' },
+  { nombre: 'Comba', iupc: '37' },
+  { nombre: 'Compactador manual', iupc: '37' },
+  { nombre: 'Compactadora de rodillos', iupc: '49' },
+  { nombre: 'Compactadora vibratoria', iupc: '49' },
+  { nombre: 'Compresora de aire eléctrica', iupc: '48' },
+  { nombre: 'Compresora Diesel', iupc: '49' },
+  { nombre: 'Compresora neumática', iupc: '49' },
+  { nombre: 'Concreto en bolsa', iupc: '80' },
+  { nombre: 'Concreto premezclado', iupc: '80' },
+  { nombre: 'Conductor aéreo', iupc: '82' },
+  { nombre: 'Conductor autoportante de aluminio', iupc: '82' },
+  { nombre: 'Conductor de cobre desnudo', iupc: '06' },
+  { nombre: 'Conector de cobre', iupc: '06' },
+  { nombre: 'Conector eléctrico', iupc: '06' },
+  { nombre: 'Conector PVC SAP eléctrica', iupc: '72' },
+  { nombre: 'Conector PVC SEL eléctrica', iupc: '72' },
+  { nombre: 'Conector RJ', iupc: '18' },
+  { nombre: 'Conexión PVC', iupc: '72' },
+  { nombre: 'Confitillo', iupc: '05' },
+  { nombre: 'Cono de seguridad', iupc: '83' },
+  { nombre: 'Contactor', iupc: '12' },
+  { nombre: 'Contrazócalo de aluminio', iupc: '52' },
+  { nombre: 'Contrazócalo de madera', iupc: '41' },
+  { nombre: 'Contrazócalo de PVC', iupc: '16' },
+  { nombre: 'Contrazócalo de vinílico', iupc: '16' },
+  { nombre: 'Contrazócalo loseta', iupc: '40' },
+  { nombre: 'Contrazócalo terrazo', iupc: '40' },
+  { nombre: 'Cordel', iupc: '37' },
+  { nombre: 'Cordón detonante', iupc: '27' },
+  { nombre: 'Correa de acero al carbono', iupc: '51' },
+  { nombre: 'Cortadora de concreto', iupc: '48' },
+  { nombre: 'Cortadora de fierro de construcción', iupc: '37' },
+  { nombre: 'Cortadora de mayólica', iupc: '37' },
+  { nombre: 'Cortadora de pavimento', iupc: '48' },
+  { nombre: 'Crawler Drill', iupc: '49' },
+  { nombre: 'Cristal templado', iupc: '79' },
+  { nombre: 'Cruceta de concreto', iupc: '62' },
+  { nombre: 'Cruceta de madera', iupc: '41' },
+  { nombre: 'Cruz de PVC', iupc: '72' },
+  { nombre: 'Cuña de madera', iupc: '43' },
+  { nombre: 'Curva de PVC eléctrica', iupc: '72' },
+  { nombre: 'Curva HDPE', iupc: '90' },
+  { nombre: 'Curva PVC SAP eléctrica', iupc: '72' },
+  { nombre: 'Curva PVC-U para redes de agua', iupc: '66' },
+
+  // D
+  { nombre: 'Destornillador', iupc: '37' },
+  { nombre: 'Detonador eléctrico', iupc: '27' },
+  { nombre: 'Detonador no eléctrico', iupc: '27' },
+  { nombre: 'Detonante', iupc: '27' },
+  { nombre: 'Diesel', iupc: '53' },
+  { nombre: 'Dinamita', iupc: '28' },
+  { nombre: 'Dinamita gelatina', iupc: '28' },
+  { nombre: 'Dinamita pulverulenta', iupc: '28' },
+  { nombre: 'Dinamita semigelatina', iupc: '28' },
+  { nombre: 'Dintel prefabricado de concreto', iupc: '31' },
+  { nombre: 'Disco de corte', iupc: '37' },
+  { nombre: 'Disco de desbaste', iupc: '37' },
+  { nombre: 'Disipador sísmico', iupc: '30' },
+  { nombre: 'Disolvente de pintura', iupc: '86' },
+  { nombre: 'Disolvente epóxico', iupc: '86' },
+  { nombre: 'Dispensador de jabón', iupc: '10' },
+  { nombre: 'Dispensador de papel', iupc: '10' },
+  { nombre: 'Dobladora de fierro', iupc: '48' },
+  { nombre: 'Dobladora de tubos', iupc: '48' },
+  { nombre: 'Dosificadora de concreto', iupc: '49' },
+  { nombre: 'Dowel de acero corrugado', iupc: '03' },
+  { nombre: 'Ducha', iupc: '10' },
+  { nombre: 'Ducto de concreto', iupc: '31' },
+  { nombre: 'Ducto de plancha de acero galvanizado', iupc: '61' },
+  { nombre: 'Durmiente de concreto', iupc: '31' },
+  { nombre: 'Durmiente de madera', iupc: '43' },
+
+  // E
+  { nombre: 'Electrobomba', iupc: '95' },
+  { nombre: 'Electrodo', iupc: '06' },
+  { nombre: 'Electrodo de acero recubierto de cobre', iupc: '06' },
+  { nombre: 'Electrodo de cobre', iupc: '06' },
+  { nombre: 'Elevador eléctrico', iupc: '49' },
+  { nombre: 'Empaquetadura', iupc: '86' },
+  { nombre: 'Empaquetadura de jebe', iupc: '66' },
+  { nombre: 'Emulsión asfáltica', iupc: '13' },
+  { nombre: 'Emulsión explosiva', iupc: '28' },
+  { nombre: 'Enchape cerámico', iupc: '24' },
+  { nombre: 'Enchufe', iupc: '12' },
+  { nombre: 'Encofrado metálico', iupc: '94' },
+  { nombre: 'Encofrado prefabricado', iupc: '94' },
+  { nombre: 'Endurecedor de pisos', iupc: '81' },
+  { nombre: 'Energía eléctrica', iupc: '93' },
+  { nombre: 'Ensayo de laboratorio', iupc: '93' },
+  { nombre: 'Epóxico', iupc: '86' },
+  { nombre: 'Equipo de cloración', iupc: '95' },
+  { nombre: 'Equipo de oxicorte', iupc: '48' },
+  { nombre: 'Equipo de protección colectiva', iupc: '83' },
+  { nombre: 'Equipo de protección personal', iupc: '83' },
+  { nombre: 'Equipo de termofusión', iupc: '48' },
+  { nombre: 'Escalera', iupc: '37' },
+  { nombre: 'Escalera modular', iupc: '94' },
+  { nombre: 'Escalera telescópica', iupc: '37' },
+  { nombre: 'Escoba', iupc: '37' },
+  { nombre: 'Esmalte', iupc: '86' },
+  { nombre: 'Esmeril', iupc: '48' },
+  { nombre: 'Esparcidora de agregados', iupc: '49' },
+  { nombre: 'Esparcidora de asfalto', iupc: '49' },
+  { nombre: 'Esparcidora de concreto', iupc: '49' },
+  { nombre: 'Espátula', iupc: '37' },
+  { nombre: 'Espejo', iupc: '79' },
+  { nombre: 'Espiga de acero', iupc: '02' },
+  { nombre: 'Espuma expansiva', iupc: '60' },
+  { nombre: 'Estabilizadora de suelos', iupc: '49' },
+  { nombre: 'Estaca de madera', iupc: '43' },
+  { nombre: 'Estación total', iupc: '48' },
+  { nombre: 'Estrobo', iupc: '02' },
+  { nombre: 'Eucalipto', iupc: '43' },
+  { nombre: 'Excavadora sobre llantas', iupc: '49' },
+  { nombre: 'Excavadora sobre orugas', iupc: '49' },
+  { nombre: 'Extintor', iupc: '83' },
+
+  // F & G
+  { nombre: 'Faja lumbar', iupc: '83' },
+  { nombre: 'Faja transportadora', iupc: '49' },
+  { nombre: 'Farol', iupc: '11' },
+  { nombre: 'Fibra de acero', iupc: '02' },
+  { nombre: 'Fibra de vidrio', iupc: '89' },
+  { nombre: 'Fibra óptica', iupc: '18' },
+  { nombre: 'Fierro corrugado', iupc: '03' },
+  { nombre: 'Fierro liso', iupc: '02' },
+  { nombre: 'Flete aéreo', iupc: '33' },
+  { nombre: 'Flete fluvial', iupc: '92' },
+  { nombre: 'Flete terrestre', iupc: '32' },
+  { nombre: 'Flexómetro', iupc: '37' },
+  { nombre: 'Fluxómetro mecánico para inodoro', iupc: '10' },
+  { nombre: 'Fluxómetro mecánico para urinario', iupc: '10' },
+  { nombre: 'Formador de empaquetadura', iupc: '86' },
+  { nombre: 'Formica', iupc: '84' },
+  { nombre: 'Formón', iupc: '37' },
+  { nombre: 'Fragua para rellenar juntas', iupc: '81' },
+  { nombre: 'Fresadora', iupc: '49' },
+  { nombre: 'Frotacho', iupc: '37' },
+  { nombre: 'Fulminante', iupc: '27' },
+  { nombre: 'Fusible eléctrico', iupc: '11' },
+  { nombre: 'Gabinete metálico', iupc: '56' },
+  { nombre: 'Gas', iupc: '53' },
+  { nombre: 'Gas licuado de petróleo (GLP)', iupc: '53' },
+  { nombre: 'Gas natural', iupc: '93' },
+  { nombre: 'Gasohol', iupc: '34' },
+  { nombre: 'Gasolina', iupc: '34' },
+  { nombre: 'Gel Conductivo', iupc: '81' },
+  { nombre: 'Generador', iupc: '49' },
+  { nombre: 'Generador eléctrico portátil', iupc: '48' },
+  { nombre: 'Geobolsa', iupc: '91' },
+  { nombre: 'Geocompuesto', iupc: '91' },
+  { nombre: 'Geomalla', iupc: '91' },
+  { nombre: 'Geomembrana', iupc: '91' },
+  { nombre: 'Geotextil', iupc: '91' },
+  { nombre: 'Gotero HDPE', iupc: '90' },
+  { nombre: 'GPS diferencial', iupc: '48' },
+  { nombre: 'Granito', iupc: '05' },
+  { nombre: 'Grapa', iupc: '02' },
+  { nombre: 'Grasa lubricante', iupc: '01' },
+  { nombre: 'Grass', iupc: '93' },
+  { nombre: 'Grava', iupc: '05' },
+  { nombre: 'Gravilla', iupc: '05' },
+  { nombre: 'Gres cerámico', iupc: '24' },
+  { nombre: 'Grifería', iupc: '10' },
+  { nombre: 'Grifería nacional aparatos sanitarios', iupc: '10' },
+  { nombre: 'Grifo contra incendio', iupc: '78' },
+  { nombre: 'Grifo jardín', iupc: '10' },
+  { nombre: 'Grifo jardín de bronce', iupc: '77' },
+  { nombre: 'Grillete de sujeción', iupc: '02' },
+  { nombre: 'Grouting', iupc: '81' },
+  { nombre: 'Grúa', iupc: '49' },
+  { nombre: 'Grupo electrógeno', iupc: '95' },
+  { nombre: 'Grupo electrógeno de obra', iupc: '49' },
+  { nombre: 'Guantes', iupc: '83' },
+  { nombre: 'Guardacabo', iupc: '02' },
+  { nombre: 'Guardavía metálico', iupc: '09' },
+
+  // H & I & J & L
+  { nombre: 'Hacha', iupc: '37' },
+  { nombre: 'Herramienta de construcción', iupc: '37' },
+  { nombre: 'Herramienta manual', iupc: '37' },
+  { nombre: 'Hidrante contraincendios', iupc: '78' },
+  { nombre: 'Hidrogel', iupc: '28' },
+  { nombre: 'Hidrolavadora', iupc: '48' },
+  { nombre: 'Hormigón', iupc: '38' },
+  { nombre: 'Hormigón de rio', iupc: '38' },
+  { nombre: 'Humus', iupc: '93' },
+  { nombre: 'Impermeabilizante', iupc: '81' },
+  { nombre: 'Imprimante (pintura)', iupc: '54' },
+  { nombre: 'Inodoro', iupc: '10' },
+  { nombre: 'Inodoro two piece', iupc: '10' },
+  { nombre: 'Inodoro one piece', iupc: '10' },
+  { nombre: 'Interruptor', iupc: '12' },
+  { nombre: 'Interruptor diferencial', iupc: '12' },
+  { nombre: 'Interruptor termomagnético', iupc: '12' },
+  { nombre: 'Inversor', iupc: '95' },
+  { nombre: 'Jabón', iupc: '93' },
+  { nombre: 'Junta de PVC', iupc: '72' },
+  { nombre: 'Junta water stop cobre', iupc: '06' },
+  { nombre: 'Junta water stop PVC', iupc: '72' },
+  { nombre: 'Laca', iupc: '86' },
+  { nombre: 'Ladrillo caravista', iupc: '17' },
+  { nombre: 'Ladrillo de arcilla', iupc: '17' },
+  { nombre: 'Ladrillo de concreto', iupc: '17' },
+  { nombre: 'Ladrillo hueco para techo', iupc: '17' },
+  { nombre: 'Ladrillo king kong', iupc: '17' },
+  { nombre: 'Ladrillo pandereta', iupc: '17' },
+  { nombre: 'Ladrillo pastelero', iupc: '17' },
+  { nombre: 'Ladrillo refractario', iupc: '17' },
+  { nombre: 'Lampa', iupc: '37' },
+  { nombre: 'Lámpara LED', iupc: '12' },
+  { nombre: 'Lavadero', iupc: '10' },
+  { nombre: 'Lavatorio', iupc: '10' },
+  { nombre: 'Lejía', iupc: '93' },
+  { nombre: 'Lentes de seguridad', iupc: '83' },
+  { nombre: 'Lija', iupc: '37' },
+  { nombre: 'Lijadora eléctrica', iupc: '48' },
+  { nombre: 'Lima', iupc: '37' },
+  { nombre: 'Línea de vida', iupc: '83' },
+  { nombre: 'Linterna', iupc: '37' },
+  { nombre: 'Listón de madera', iupc: '43' },
+  { nombre: 'Llana', iupc: '37' },
+  { nombre: 'Llave de ajuste', iupc: '37' },
+  { nombre: 'Llave para ducha', iupc: '10' },
+  { nombre: 'Llave para lavatorio', iupc: '10' },
+  { nombre: 'Lona', iupc: '91' },
+  { nombre: 'Loseta', iupc: '40' },
+  { nombre: 'Loseta de concreto', iupc: '40' },
+  { nombre: 'Loseta veneciana', iupc: '40' },
+  { nombre: 'Lubricante', iupc: '01' },
+  { nombre: 'Luminaria de alumbrado público', iupc: '11' },
+  { nombre: 'Luminaria downlight', iupc: '12' },
+  { nombre: 'Luminaria LED', iupc: '12' },
+
+  // M
+  { nombre: 'Madera tornillo', iupc: '43' },
+  { nombre: 'Madera eucalipto', iupc: '43' },
+  { nombre: 'Madera pino importada', iupc: '42' },
+  { nombre: 'Madera pino oregón', iupc: '42' },
+  { nombre: 'Madera pino radiata', iupc: '42' },
+  { nombre: 'Madera nacional para encofrado y carpintería', iupc: '43' },
+  { nombre: 'Madera terciada nacional', iupc: '44' },
+  { nombre: 'Madera terciada para encofrado', iupc: '44' },
+  { nombre: 'Malla de acero', iupc: '46' },
+  { nombre: 'Malla de seguridad', iupc: '83' },
+  { nombre: 'Malla electrosoldada', iupc: '46' },
+  { nombre: 'Malla gavión de acero', iupc: '46' },
+  { nombre: 'Malla raschel', iupc: '83' },
+  { nombre: 'Manguera', iupc: '37' },
+  { nombre: 'Mano de obra', iupc: '47' },
+  { nombre: 'Manta geotextil', iupc: '91' },
+  { nombre: 'Marco de fierro', iupc: '50' },
+  { nombre: 'Marco y tapa de concreto', iupc: '31' },
+  { nombre: 'Marco y tapa de fierro fundido', iupc: '50' },
+  { nombre: 'Martillo', iupc: '37' },
+  { nombre: 'Martillo eléctrico demoledor', iupc: '48' },
+  { nombre: 'Martillo neumático', iupc: '49' },
+  { nombre: 'Máscara protectora', iupc: '83' },
+  { nombre: 'Mascarilla', iupc: '83' },
+  { nombre: 'Masilla para drywall', iupc: '59' },
+  { nombre: 'Mayólica', iupc: '24' },
+  { nombre: 'Mecha de seguridad', iupc: '27' },
+  { nombre: 'Medidor de agua', iupc: '95' },
+  { nombre: 'Medidor de energía', iupc: '95' },
+  { nombre: 'Mezcladora de concreto', iupc: '48' },
+  { nombre: 'Mezcladora para ducha', iupc: '10' },
+  { nombre: 'Microcemento', iupc: '81' },
+  { nombre: 'Minicargador', iupc: '49' },
+  { nombre: 'Mortero en bolsa', iupc: '80' },
+  { nombre: 'Motobomba', iupc: '48' },
+  { nombre: 'Motoniveladora', iupc: '49' },
+  { nombre: 'Motosierra', iupc: '48' },
+
+  // N & O & P
+  { nombre: 'Neopreno', iupc: '30' },
+  { nombre: 'Niple de acero', iupc: '65' },
+  { nombre: 'Niple de bronce', iupc: '68' },
+  { nombre: 'Niple de PVC', iupc: '72' },
+  { nombre: 'Nivel óptico', iupc: '48' },
+  { nombre: 'Nivel topográfico', iupc: '48' },
+  { nombre: 'Ocre', iupc: '81' },
+  { nombre: 'Oficial', iupc: '47' },
+  { nombre: 'Operario', iupc: '47' },
+  { nombre: 'Operador de equipo pesado', iupc: '47-1' },
+  { nombre: 'Overol', iupc: '83' },
+  { nombre: 'Oxígeno', iupc: '93' },
+  { nombre: 'Pala', iupc: '37' },
+  { nombre: 'Pala hidráulica', iupc: '49' },
+  { nombre: 'Pala mecánica', iupc: '49' },
+  { nombre: 'Panel de concreto prefabricado', iupc: '31' },
+  { nombre: 'Panel de poliestireno', iupc: '60' },
+  { nombre: 'Panel solar', iupc: '95' },
+  { nombre: 'Parante de acero galvanizado', iupc: '85' },
+  { nombre: 'Parquet', iupc: '41' },
+  { nombre: 'Pegamento para PVC', iupc: '86' },
+  { nombre: 'Peón', iupc: '47' },
+  { nombre: 'Perfil de acero al carbono', iupc: '51' },
+  { nombre: 'Perfil de acero galvanizado', iupc: '85' },
+  { nombre: 'Perfil de aluminio', iupc: '52' },
+  { nombre: 'Perno', iupc: '02' },
+  { nombre: 'Perno de expansión', iupc: '02' },
+  { nombre: 'Perno hexagonal', iupc: '02' },
+  { nombre: 'Petróleo diésel', iupc: '53' },
+  { nombre: 'Picaporte', iupc: '26' },
+  { nombre: 'Pico', iupc: '37' },
+  { nombre: 'Piedra chancada', iupc: '05' },
+  { nombre: 'Piedra grande', iupc: '05' },
+  { nombre: 'Pintura anticorrosiva', iupc: '86' },
+  { nombre: 'Pintura epóxica', iupc: '86' },
+  { nombre: 'Pintura esmalte', iupc: '86' },
+  { nombre: 'Pintura látex', iupc: '54' },
+  { nombre: 'Pintura para tráfico', iupc: '86' },
+  { nombre: 'Pintura temple', iupc: '55' },
+  { nombre: 'Piso cerámico', iupc: '24' },
+  { nombre: 'Piso laminado HDF', iupc: '84' },
+  { nombre: 'Piso PVC', iupc: '16' },
+  { nombre: 'Piso vinílico', iupc: '16' },
+  { nombre: 'Pisón manual', iupc: '37' },
+  { nombre: 'Pistola de silicona', iupc: '48' },
+  { nombre: 'Placa colaborante de acero galvanizado', iupc: '61' },
+  { nombre: 'Placa de fibrocemento', iupc: '59' },
+  { nombre: 'Placa de yeso (drywall)', iupc: '59' },
+  { nombre: 'Placa para tomacorriente', iupc: '12' },
+  { nombre: 'Plancha curva de aluzinc', iupc: '87' },
+  { nombre: 'Plancha de acero LAC', iupc: '56' },
+  { nombre: 'Plancha de acero LAC lisa', iupc: '56' },
+  { nombre: 'Plancha de acero LAC estriada', iupc: '56' },
+  { nombre: 'Plancha negra lisa', iupc: '56' },
+  { nombre: 'Plancha negra', iupc: '56' },
+  { nombre: 'Plancha de acero LAF', iupc: '57' },
+  { nombre: 'Plancha de aluzinc para techos', iupc: '87' },
+  { nombre: 'Plancha de fibrocemento', iupc: '59' },
+  { nombre: 'Plancha de policarbonato', iupc: '88' },
+  { nombre: 'Plancha galvanizada', iupc: '61' },
+  { nombre: 'Plancha ondulada de fibrocemento', iupc: '59' },
+  { nombre: 'Platina de acero al carbono', iupc: '51' },
+  { nombre: 'Platina de cobre', iupc: '06' },
+  { nombre: 'Plomada', iupc: '37' },
+  { nombre: 'Poliestireno expandido', iupc: '60' },
+  { nombre: 'Porcelanato', iupc: '24' },
+  { nombre: 'Poste de concreto', iupc: '62' },
+  { nombre: 'Protector auditivo', iupc: '83' },
+  { nombre: 'Puntal metálico telescópico', iupc: '94' },
+
+  // R & S & T & U & V & Z
+  { nombre: 'Reducción de PVC', iupc: '72' },
+  { nombre: 'Reflector', iupc: '11' },
+  { nombre: 'Regla de aluminio', iupc: '37' },
+  { nombre: 'Rejilla de acero negro', iupc: '51' },
+  { nombre: 'Resina epóxica', iupc: '86' },
+  { nombre: 'Respirador', iupc: '83' },
+  { nombre: 'Retroexcavadora', iupc: '49' },
+  { nombre: 'Riel de acero galvanizado', iupc: '85' },
+  { nombre: 'Rodillo compactador vibratorio', iupc: '49' },
+  { nombre: 'Rodillo para pintar', iupc: '37' },
+  { nombre: 'Rotomartillo', iupc: '48' },
+  { nombre: 'Sellador para juntas de expansión', iupc: '60' },
+  { nombre: 'Semáforo', iupc: '95' },
+  { nombre: 'Señal de seguridad', iupc: '83' },
+  { nombre: 'Señal de tránsito', iupc: '83' },
+  { nombre: 'Serrucho', iupc: '37' },
+  { nombre: 'Sierra circular', iupc: '48' },
+  { nombre: 'Silicona', iupc: '60' },
+  { nombre: 'Soldadora eléctrica', iupc: '48' },
+  { nombre: 'Soldadura por electrodo', iupc: '51' },
+  { nombre: 'Solvente xilol', iupc: '86' },
+  { nombre: 'Sumidero de bronce', iupc: '68' },
+  { nombre: 'Sumidero de PVC', iupc: '10' },
+  { nombre: 'Tablero de melamina', iupc: '84' },
+  { nombre: 'Tablero eléctrico', iupc: '12' },
+  { nombre: 'Tablero MDF', iupc: '84' },
+  { nombre: 'Tablero OSB', iupc: '84' },
+  { nombre: 'Taladro', iupc: '48' },
+  { nombre: 'Tanque de polietileno', iupc: '90' },
+  { nombre: 'Tapón de PVC', iupc: '72' },
+  { nombre: 'Tee de PVC', iupc: '72' },
+  { nombre: 'Teja de arcilla', iupc: '17' },
+  { nombre: 'Teja de fibrocemento', iupc: '59' },
+  { nombre: 'Temple', iupc: '55' },
+  { nombre: 'Teodolito', iupc: '48' },
+  { nombre: 'Terma eléctrica', iupc: '95' },
+  { nombre: 'Thinner', iupc: '86' },
+  { nombre: 'Thinner acrílico', iupc: '86' },
+  { nombre: 'Tierra de chacra', iupc: '04' },
+  { nombre: 'Tirafondo de acero', iupc: '02' },
+  { nombre: 'Tomacorriente', iupc: '12' },
+  { nombre: 'Tornillo autoperforante', iupc: '02' },
+  { nombre: 'Tornillo autorroscante', iupc: '02' },
+  { nombre: 'Tornillo para drywall', iupc: '02' },
+  { nombre: 'Tornillo para madera', iupc: '02' },
+  { nombre: 'Tractor sobre orugas', iupc: '49' },
+  { nombre: 'Trampa de PVC para desagüe', iupc: '72' },
+  { nombre: 'Transformador eléctrico', iupc: '95' },
+  { nombre: 'Triplay fenólico importado', iupc: '84' },
+  { nombre: 'Triplay lupuna', iupc: '44' },
+  { nombre: 'Triplay para encofrado', iupc: '44' },
+  { nombre: 'Tronzadora', iupc: '48' },
+  { nombre: 'Tubería CPVC para agua caliente', iupc: '72' },
+  { nombre: 'Tubería de acero electrosoldado', iupc: '65' },
+  { nombre: 'Tubería de acero galvanizado', iupc: '65' },
+  { nombre: 'Tubería de acero negro', iupc: '65' },
+  { nombre: 'Tubería de cobre', iupc: '68' },
+  { nombre: 'Tubería de fierro fundido', iupc: '71' },
+  { nombre: 'Tubería de polietileno', iupc: '90' },
+  { nombre: 'Tubería de PVC para agua', iupc: '72' },
+  { nombre: 'Tubería de PVC para desagüe', iupc: '72' },
+  { nombre: 'Tubería de PVC para red de agua potable', iupc: '66' },
+  { nombre: 'Tubería de PVC para red de alcantarillado', iupc: '66' },
+  { nombre: 'Tubería HDPE', iupc: '90' },
+  { nombre: 'Tubería HDPE a presión', iupc: '90' },
+  { nombre: 'Tubería PP-R', iupc: '90' },
+  { nombre: 'Tubo de abasto', iupc: '10' },
+  { nombre: 'Tubo fluorescente', iupc: '12' },
+  { nombre: 'Tubo LED', iupc: '12' },
+  { nombre: 'Tuerca hexagonal', iupc: '02' },
+  { nombre: 'Unión de PVC agua', iupc: '72' },
+  { nombre: 'Unión universal de PVC', iupc: '72' },
+  { nombre: 'Urinario', iupc: '10' },
+  { nombre: 'Válvula angular de bronce', iupc: '77' },
+  { nombre: 'Válvula check de acero', iupc: '78' },
+  { nombre: 'Válvula check de bronce', iupc: '77' },
+  { nombre: 'Válvula compuerta de bronce', iupc: '77' },
+  { nombre: 'Válvula compuerta de hierro fundido', iupc: '78' },
+  { nombre: 'Válvula de aire de hierro dúctil', iupc: '78' },
+  { nombre: 'Válvula esférica de bronce', iupc: '77' },
+  { nombre: 'Varilla de acero corrugado', iupc: '03' },
+  { nombre: 'Varilla para tierra de cobre', iupc: '06' },
+  { nombre: 'Vibrador de concreto', iupc: '48' },
+  { nombre: 'Vidrio crudo incoloro', iupc: '79' },
+  { nombre: 'Vidrio laminado', iupc: '79' },
+  { nombre: 'Vidrio templado', iupc: '79' },
+  { nombre: 'Viga de acero al carbono', iupc: '51' },
+  { nombre: 'Vigueta prefabricada de concreto', iupc: '31' },
+  { nombre: 'Volquete', iupc: '49' },
+  { nombre: 'Water stop de PVC', iupc: '72' },
+  { nombre: 'Waype', iupc: '37' },
+  { nombre: 'Wincha', iupc: '37' },
+  { nombre: 'Yee PVC desagüe', iupc: '72' },
+  { nombre: 'Yeso', iupc: '04' },
+  { nombre: 'Zapatos de seguridad', iupc: '83' },
+  { nombre: 'Zaranda vibratoria', iupc: '49' },
+  { nombre: 'Zócalo de madera', iupc: '43' },
+  { nombre: 'Zócalo de PVC', iupc: '16' },
+  { nombre: 'Zumbador', iupc: '12' },
+];
+
+/** Normalización estándar para comparación de texto */
+export const normIUPC = (s) => String(s || '')
+  .normalize('NFD')
+  .replace(/[̀-ͯ]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const STOPWORDS = new Set([
+  'de', 'del', 'la', 'el', 'los', 'las', 'con', 'para', 'por', 'en', 'y', 'a', 'un', 'una', 'x',
+  'al', 'su', 'o', 'e', 'tipo', 'clase', 'marca', 'medida', 'diametro', 'd', 'n', 'no',
+]);
+
+const tokensDeTexto = (norm) => norm.split(' ').filter(t => t && !STOPWORDS.has(t));
+
+/** Pre-indexado del diccionario oficial para búsqueda instantánea */
+const DICCIONARIO_INDEXADO = ELEMENTOS_DICCIONARIO_INEI.map(item => {
+  const norm = normIUPC(item.nombre);
+  return {
+    ...item,
+    norm,
+    tokens: tokensDeTexto(norm),
+  };
+});
+
+/** Devuelve la lista completa de todas las categorías disponibles */
+export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
+  const iupc = IUPC_CODIGOS.map(c => ({
+    codigo: c.codigo,
+    label: `[${c.codigo}] ${c.nombre}`,
+    nombre: c.nombre,
+    tipo: c.tipo,
+    grupo: 'IUPC - Estado Peruano',
+  }));
+
+  const complementarias = CATEGORIAS_COMPLEMENTARIAS.map(c => ({
+    codigo: c.codigo,
+    label: c.nombre,
+    nombre: c.nombre,
+    tipo: c.tipo,
+    grupo: 'Complementarias',
+  }));
+
+  const customs = (categoriasPersonalizadas || []).map(c => {
+    const cod = c.codigo || c.id || `custom:${normIUPC(c.nombre || c)}`;
+    const nom = c.nombre || c.label || c;
+    return {
+      codigo: cod,
+      label: nom,
+      nombre: nom,
+      tipo: c.tipo || 'material',
+      grupo: 'Personalizadas',
+    };
+  });
+
+  return [...iupc, ...complementarias, ...customs];
+}
+
+const LEGACY_LABELS = {
+  tuberia_accesorios: 'Tubería y accesorios',
+  ferreteria: 'Material de ferretería',
+  valvulas: 'Válvulas',
+  seguridad: 'Implementos de seguridad',
+  agregados: 'Agregados',
+  madera: 'Madera',
+  equipos_herramientas: 'Equipos y herramientas',
+  perfiles_metalicos: 'Perfiles y estructuras metálicas',
+  otros: 'Otros',
+  servicios: 'Servicios en general',
+  administrativos: 'Consumos administrativos / Oficina',
+};
+
+/** Devuelve la etiqueta legible de una categoría cualquiera */
+export function etiquetaCategoria(codigo) {
+  if (!codigo) return 'Sin categoría';
+  const c = String(codigo).trim();
+  if (LEGACY_LABELS[c]) return LEGACY_LABELS[c];
+  const real = REAGRUPACIONES_IUPC[c] || c;
+  const encontradoIupc = IUPC_POR_CODIGO.get(real);
+  if (encontradoIupc) {
+    return `[${encontradoIupc.codigo}] ${encontradoIupc.nombre}`;
+  }
+  const compl = CATEGORIAS_COMPLEMENTARIAS.find(k => k.codigo === c);
+  if (compl) return compl.nombre;
+  if (c.startsWith('custom:')) {
+    return c.replace(/^custom:/, '').toUpperCase();
+  }
+  return c;
+}
+
+/**
+ * Determina la banda de confianza.
+ * Devuelve el objeto completo; `clasificarConIUPC` expone el `.slug` en su
+ * campo `banda` (string) y este objeto en `bandaInfo`. Esa separación existe
+ * porque mezclar las dos cosas bajo el mismo nombre dejó dos badges pintando
+ * el color equivocado: `BADGE[objeto]` es siempre `undefined`.
+ */
+export function bandaConfianza(score) {
+  const s = Number(score) || 0;
+  if (s >= 0.70) return { slug: 'alta', label: 'Coincidencia alta', color: 'b-green' };
+  if (s >= 0.40) return { slug: 'media', label: 'Coincidencia media', color: 'b-blue' };
+  if (s >= 0.25) return { slug: 'baja', label: 'Coincidencia baja', color: 'b-amber' };
+  if (s >= 0.10) return { slug: 'rara', label: 'Coincidencia rara', color: 'b-purple' };
+  return { slug: 'extrema_baja', label: 'Coincidencia extremadamente baja', color: 'b-red' };
+}
+
+/**
+ * Detecta si el texto corresponde a un servicio y su inclinación temática.
+ * Ejemplo: "Alquiler de retroexcavadora" -> Servicio inclinado a maquinaria pesada [49].
+ *
+ * ── POR QUÉ LAS REGLAS ESTÁN ANCLADAS ────────────────────────────────
+ * La primera versión buscaba las palabras sueltas `instalacion`, `limpieza`,
+ * `estudios?` y `servicios?` en cualquier parte del texto. Medido contra
+ * descripciones reales de factura, eso convertía MATERIALES en servicios:
+ *   «TUBERIA PVC-U 160MM PARA INSTALACION DE ALCANTARILLADO» → servicio
+ *   «ESCOBA DE LIMPIEZA INDUSTRIAL»                          → servicio
+ *   «KIT DE INSTALACION SANITARIA»                           → servicio
+ * En una descripción de factura peruana el sustantivo que manda va al
+ * PRINCIPIO. Por eso las palabras ambiguas solo cuentan si encabezan la
+ * descripción o si vienen enmarcadas por «servicio de …». Las inequívocas
+ * (flete, honorarios, alquiler) siguen valiendo en cualquier posición.
+ *
+ * ── POR QUÉ CADA RAMA TIENE SU PROPIO SCORE ──────────────────────────
+ * Antes todas devolvían 0,85 —banda «alta»— incluida la genérica de último
+ * recurso. Con eso la regla MENOS confiable era la que más seguridad
+ * aparentaba, y la banda dejaba de servir para lo único que sirve: decirle a
+ * la contadora dónde mirar con cuidado. Ahora el score refleja la fuerza de
+ * la evidencia y la banda vuelve a significar algo.
+ */
+export function detectarServicio(texto) {
+  const n = normIUPC(texto);
+
+  // Enmarcado explícito: «servicio de …» / «servicios de …» / empieza con el verbo.
+  const enmarcado = /\bservicios? de\b/.test(n);
+  const encabeza = (re) => new RegExp(`^(${re})\\b`).test(n);
+
+  // Inequívocas: valen en cualquier posición del texto.
+  const esAlquiler = /\b(alquiler|arrendamiento|alquila)\b/.test(n);
+  const esFlete = /\b(flete|acarreo|peaje)\b/.test(n)
+    || /\b(transporte|traslado|movilidad) de\b/.test(n)
+    || encabeza('transporte|traslado|movilidad');
+  const esProfesional = /\b(honorarios?|consultoria|asesoria|supervision|laboratorio|monitoreo|capacitacion|topograf|arqueolog)\b/.test(n)
+    || /\b(estudios?|ensayos?) de\b/.test(n);
+
+  // Ambiguas: solo si encabezan o vienen enmarcadas por «servicio de».
+  const esMantenimiento = /\b(mantenimiento|reparacion|acondicionamiento)\b/.test(n)
+    || /\bservicio tecnico\b/.test(n)
+    || encabeza('limpieza') || /\bservicios? de limpieza\b/.test(n);
+  const esSubcontrato = /\b(subcontrato|sub contrato|mano de obra)\b/.test(n)
+    || encabeza('instalacion|montaje|habilitacion')
+    || /\bservicios? de (instalacion|montaje|habilitacion)\b/.test(n);
+  // «SERVICIOS VARIOS», «SERVICIO DE …» sin más precisión: es un servicio,
+  // pero NO es un subcontrato. Va solo al catch-all débil del final.
+  const esServicioGenerico = encabeza('servicios?') || enmarcado;
+
+  if (!esAlquiler && !esFlete && !esMantenimiento && !esProfesional
+      && !esSubcontrato && !esServicioGenerico) {
+    return null;
+  }
+
+  // Inclinación a maquinaria pesada o liviana (solo tiene sentido si se alquila).
+  if (esAlquiler) {
+    if (/\b(retroexcavadora|excavadora|volquete|camion|tractor|cargador|motoniveladora|grua|rodillo)\b/.test(n)) {
+      return {
+        esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: '49',
+        score: 0.80,
+        inclinacion: 'Alquiler de maquinaria pesada [49]',
+        motivo: 'Servicio de alquiler con inclinación a maquinaria pesada (IUPC 49)',
+      };
+    }
+    if (/\b(mezcladora|trompo|vibrador|cortadora|motobomba|generador|soldadora|compresor|andamio)\b/.test(n)) {
+      return {
+        esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: '48',
+        score: 0.80,
+        inclinacion: 'Alquiler de equipo liviano [48]',
+        motivo: 'Servicio de alquiler con inclinación a equipo liviano (IUPC 48)',
+      };
+    }
+    return {
+      esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: null,
+      score: 0.62,
+      inclinacion: 'Alquiler (equipo sin identificar)',
+      motivo: 'Servicio de alquiler, sin equipo reconocido en el texto',
+    };
+  }
+
+  if (esFlete) {
+    return {
+      esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: '32',
+      score: 0.78,
+      inclinacion: 'Flete / Transporte [32]',
+      motivo: 'Servicio de transporte o flete',
+    };
+  }
+
+  if (esProfesional) {
+    return {
+      esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: null,
+      score: 0.75,
+      inclinacion: 'Servicio profesional',
+      motivo: 'Honorarios, consultoría, supervisión o ensayo',
+    };
+  }
+
+  if (esSubcontrato) {
+    return {
+      esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: null,
+      score: 0.70,
+      inclinacion: 'Subcontrato / mano de obra',
+      motivo: 'Subcontrato, instalación o mano de obra',
+    };
+  }
+
+  if (esMantenimiento) {
+    return {
+      esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: null,
+      score: 0.66,
+      inclinacion: 'Mantenimiento / reparación',
+      motivo: 'Servicio de mantenimiento o reparación',
+    };
+  }
+
+  // Último recurso: dice «servicio de …» y nada más lo precisa. Es una pista
+  // débil y el score lo dice — cae en banda «media/baja», no en «alta».
+  return {
+    esServicio: true, categoriaRecomendada: 'servicios', iupcRelacionado: null,
+    score: 0.38,
+    inclinacion: 'Servicio general',
+    motivo: 'Enmarcado como «servicio de …», sin más precisión en el texto',
+  };
+}
+
+/** Arma la respuesta del clasificador con la banda SIEMPRE coherente. */
+function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelacionado = null }) {
+  const info = bandaConfianza(score);
+  return {
+    categoria: codigo,
+    codigo,
+    nombre,
+    score,
+    banda: info.slug,   // string — es lo que indexan los badges y los filtros
+    bandaInfo: info,    // objeto {slug,label,color} para quien necesite el detalle
+    motivos,
+    inclinacion,
+    iupcRelacionado,
+  };
+}
+
+/** Índice O(1) de coincidencias exactas del diccionario oficial. */
+const DICCIONARIO_EXACTO = new Map();
+for (const item of DICCIONARIO_INDEXADO) {
+  if (!DICCIONARIO_EXACTO.has(item.norm)) DICCIONARIO_EXACTO.set(item.norm, item);
+}
+
+/**
+ * Clasificador universal con 100% de cobertura predictiva.
+ * Siempre retorna una recomendación con categoría, código IUPC/complementario,
+ * score numérico, banda de probabilidad (slug) y motivos explicativos.
+ *
+ * ORDEN DE PRECEDENCIA (importa): el Diccionario Oficial va PRIMERO. Antes la
+ * detección de servicios corría antes que todo y le ganaba a una coincidencia
+ * exacta del Anexo 2 de la norma — o sea, la heurística de la casa le ganaba
+ * al texto de la R.J. 016-2026-INEI. Al revés es lo correcto.
+ */
+export function clasificarConIUPC(texto) {
+  const norm = normIUPC(texto);
+  if (!norm) {
+    return recIUPC({
+      codigo: 'servicios', nombre: 'Servicios en general', score: 0.05,
+      motivos: ['Sin texto suficiente, asignado preventivo a servicios'],
+    });
+  }
+
+  // 1. Coincidencia EXACTA con el Diccionario Oficial INEI (Anexo 2). Manda.
+  const exacto = DICCIONARIO_EXACTO.get(norm);
+  if (exacto) {
+    const real = REAGRUPACIONES_IUPC[exacto.iupc] || exacto.iupc;
+    const info = IUPC_POR_CODIGO.get(real);
+    return recIUPC({
+      codigo: real,
+      nombre: info?.nombre || exacto.nombre,
+      score: 0.98,
+      motivos: [`Coincidencia exacta con «${exacto.nombre}» en Diccionario Oficial INEI (IUPC ${real})`],
+    });
+  }
+
+  // 2. Servicio, con su inclinación y el score propio de cada rama
+  const servicio = detectarServicio(norm);
+  if (servicio) {
+    return recIUPC({
+      codigo: servicio.categoriaRecomendada,
+      nombre: 'Servicios en general',
+      score: servicio.score,
+      motivos: [servicio.motivo],
+      inclinacion: servicio.inclinacion,
+      iupcRelacionado: servicio.iupcRelacionado,
+    });
+  }
+
+  // 3. Búsqueda por tokens en el Diccionario Oficial INEI
+  const toks = tokensDeTexto(norm);
+  let mejorMatch = null;
+  let maxScore = 0;
+  let mejorMotivo = '';
+
+  for (const item of DICCIONARIO_INDEXADO) {
+    // Coincidencia por tokens
+    const itoks = item.tokens;
+    if (!itoks.length || !toks.length) continue;
+
+    let comun = 0;
+    for (const t of toks) {
+      if (itoks.includes(t)) {
+        comun += (t === toks[0] && t === itoks[0]) ? 2 : 1;
+      } else {
+        // Prefijo compartido. Además de los 4 caracteres, el prefijo tiene que
+        // ser la MAYOR PARTE de la palabra larga: sin esa segunda condición
+        // «conocida» pegaba con «cono» (cono de seguridad, IUPC 83) y una
+        // descripción sin ninguna relación terminaba clasificada como EPP.
+        // 0,6 deja pasar los plurales y las variantes ortográficas
+        // («tuberia»/«tuberias», «cemento»/«cementos») y corta el resto.
+        const pref = itoks.some(u => {
+          const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
+          return corto.length >= 4 && largo.startsWith(corto)
+            && (corto.length / largo.length) >= 0.6;
+        });
+        if (pref) comun += 0.8;
+      }
+    }
+
+    const sim = (2 * comun) / (toks.length + itoks.length);
+    if (sim > maxScore) {
+      maxScore = sim;
+      const real = REAGRUPACIONES_IUPC[item.iupc] || item.iupc;
+      mejorMatch = { ...item, iupc: real };
+      mejorMotivo = `Similar a «${item.nombre}» en Diccionario Oficial INEI`;
+    }
+  }
+
+  // 4. Si hubo buen match en Diccionario INEI
+  if (mejorMatch && maxScore >= 0.35) {
+    const info = IUPC_POR_CODIGO.get(mejorMatch.iupc);
+    const scoreAjustado = Math.min(0.95, Math.round(maxScore * 100) / 100);
+    return recIUPC({
+      codigo: mejorMatch.iupc,
+      nombre: info?.nombre || mejorMatch.nombre,
+      score: scoreAjustado,
+      motivos: [mejorMotivo],
+    });
+  }
+
+  // 5. Búsqueda contra los nombres directos de los Códigos IUPC
+  for (const c of IUPC_CODIGOS) {
+    const cNorm = normIUPC(c.nombre);
+    const cToks = tokensDeTexto(cNorm);
+    let comun = 0;
+    for (const t of toks) {
+      if (cToks.includes(t)) comun++;
+    }
+    if (comun > 0) {
+      const sim = (2 * comun) / (toks.length + cToks.length);
+      if (sim > maxScore) {
+        maxScore = sim;
+        mejorMatch = { nombre: c.nombre, iupc: c.codigo };
+        mejorMotivo = `Coincide con concepto de IUPC [${c.codigo}] ${c.nombre}`;
+      }
+    }
+  }
+
+  // Piso de evidencia: por debajo de 0,15 el «parecido» es ruido de un token
+  // suelto. Antes se devolvía igual con el score inflado a 0,12 por un
+  // `Math.max`, o sea que una coincidencia de 0,02 se presentaba como banda
+  // «rara» en vez de admitir que no hay nada.
+  if (mejorMatch && maxScore >= 0.15) {
+    const info = IUPC_POR_CODIGO.get(mejorMatch.iupc);
+    const scoreFinal = Math.min(0.85, Math.round(maxScore * 100) / 100);
+    return recIUPC({
+      codigo: mejorMatch.iupc,
+      nombre: info?.nombre || mejorMatch.nombre,
+      score: scoreFinal,
+      motivos: [mejorMotivo],
+    });
+  }
+
+  // 6. Fallback con cobertura 100%: ningún insumo queda sin recomendación,
+  //    pero con un score que dice honestamente que es una pista débil.
+  if (/\b(papel|lapiz|cuaderno|archivador|toner|tinta|impresion|folder|escritorio|silla)\b/.test(norm)) {
+    return recIUPC({
+      codigo: 'administrativos',
+      nombre: 'Consumos administrativos / Oficina',
+      score: 0.32,
+      motivos: ['Vocabulario típico de suministros administrativos y de oficina'],
+    });
+  }
+
+  if (/\b(seguro|poliza|almuerzo|comida|refrigerio|hospedaje|alojamiento|pasaje)\b/.test(norm)) {
+    return recIUPC({
+      codigo: 'servicios',
+      nombre: 'Servicios en general',
+      score: 0.28,
+      motivos: ['Gasto operacional / servicio auxiliar'],
+    });
+  }
+
+  // Última pista por familia de material, cuando el texto la deja ver.
+  const fallbackIupc = /\b(acero|fierro|metal)\b/.test(norm) ? '03'
+    : /\b(tubo|tuberia|pvc)\b/.test(norm) ? '72'
+    : /\b(madera|tabla)\b/.test(norm) ? '43'
+    : /\b(pintura|color)\b/.test(norm) ? '54'
+    : null;
+
+  if (fallbackIupc) {
+    return recIUPC({
+      codigo: fallbackIupc,
+      nombre: IUPC_POR_CODIGO.get(fallbackIupc)?.nombre || 'Sin clasificar',
+      score: 0.12, // banda «rara»: es una pista de una palabra, nada más
+      motivos: ['Asociación tentativa por familia de material, sin coincidencia léxica directa'],
+    });
+  }
+
+  // Cobertura 100%, sin inventar: la recomendación es «no sé, mirala».
+  return recIUPC({
+    codigo: 'sin_clasificar',
+    nombre: 'Sin clasificar — revisar a mano',
+    score: 0.05,
+    motivos: ['Sin coincidencia en el Diccionario Oficial ni en los conceptos IUPC'],
+  });
+}
+
+// ── EL PUENTE AL VOCABULARIO DE GASTO DE LA CONTADORA ───────────────
+//
+// `CATEGORIAS_ITEM` (src/lib/clasificar-items.js) es el vocabulario con el que
+// la contadora agrupa el gasto. Los `tipo` del IUPC no son los mismos, y el
+// mapeo tiene que ser explícito: sin esto, los fletes (32/33/92/93), la
+// maquinaria (48/49/95), la mano de obra (47) y los índices financieros
+// (30/39) caían todos en «materiales» por defecto — que es exactamente el
+// error que la contadora vería en su reporte de costos.
+const GASTO_POR_TIPO = {
+  material: 'materiales',
+  herramienta: 'herramientas',
+  epp: 'epp',
+  maquinaria: 'maquinaria',
+  servicio: 'servicios',
+  mano_obra: 'gastos_generales',
+  financiero: 'gastos_generales',
+};
+
+/** El `tipo` de una categoría cualquiera (IUPC, complementaria o personalizada). */
+export function tipoDeCategoria(codigo) {
+  if (!codigo) return 'material';
+  const c = String(codigo).trim();
+  const real = REAGRUPACIONES_IUPC[c] || c;
+  const iupc = IUPC_POR_CODIGO.get(real);
+  if (iupc) return iupc.tipo || 'material';
+  const compl = CATEGORIAS_COMPLEMENTARIAS.find(k => k.codigo === c);
+  if (compl) return compl.tipo || 'material';
+  return 'material';
+}
+
+/** La categoría de GASTO (vocabulario de la contadora) de una categoría IUPC. */
+export function gastoDeCategoria(codigo) {
+  const c = String(codigo || '').trim();
+  // Las complementarias tienen destino propio: «administrativos» es gasto
+  // general aunque su `tipo` sea material (papel, tóner, sillas).
+  if (c === 'administrativos') return 'gastos_generales';
+  if (c === 'servicios') return 'servicios';
+  // Sin clasificar no es «materiales»: es «otros», que es la verdad y además
+  // lo deja visible en el reporte de la contadora en vez de disolverlo.
+  if (c === 'sin_clasificar') return 'otros';
+  return GASTO_POR_TIPO[tipoDeCategoria(c)] || 'otros';
+}

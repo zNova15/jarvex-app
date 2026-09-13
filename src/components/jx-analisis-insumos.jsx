@@ -48,7 +48,7 @@ import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { useChart } from "../lib/chart-loader.js";
 import {
-  resolverPares, construirGrupos, sugerirPares, normInsumo,
+  resolverPares, construirGrupos, sugerirPares, sugerirClusters, crearParesDeCluster, normInsumo,
 } from "../lib/insumo-correlacion.js";
 import {
   extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
@@ -188,6 +188,11 @@ function AnalisisInsumosPage({ showToast }) {
     () => sugerirPares(lineasEntidad.map(c => c.nombre), resueltos, grupoDe),
     [lineasEntidad, resueltos, grupoDe]
   );
+  // Sugerir clusters multi-variantes (N a N):
+  const clustersSugeridos = uM(
+    () => sugerirClusters(lineasEntidad.map(c => c.nombre), resueltos, grupoDe),
+    [lineasEntidad, resueltos, grupoDe]
+  );
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
     [resueltos]
@@ -274,6 +279,44 @@ function AnalisisInsumosPage({ showToast }) {
     finally { decidiendoRef.current = false; }
   };
 
+  const decidirCluster = async (cluster, relacion = 'mismo') => {
+    if (decidiendoRef.current) return;
+    decidiendoRef.current = true;
+    try {
+      // 🔴 La firma es (variantes, canonico, relacion, opts). Pasarle el CLUSTER
+      // entero como primer argumento tiraba «(variantes || []).map is not a
+      // function» y, peor, corría `relacion` al lugar de `canonico`: el botón
+      // «Son distintos» habría guardado 'mismo' si el throw no lo hubiera
+      // tapado. Los dos bugs vivían en la misma línea.
+      // El canónico va con el nombre CRUDO de la factura, igual que en el
+      // decidir de a pares: los normalizados en minúscula quedan feos como
+      // display permanente del grupo.
+      const canonicoCrudo = relacion === 'mismo'
+        ? (muestraDe.get(normInsumo(cluster.canonico))?.nombre || cluster.canonico)
+        : null;
+      const pares = crearParesDeCluster(cluster.variantes, canonicoCrudo, relacion);
+      if (!pares.length) return;
+      for (const p of pares) {
+        await corrHook.create({
+          id: window.__newId(),
+          nombre_a: p.nombre_a,
+          nombre_b: p.nombre_b,
+          relacion: p.relacion,
+          canonico: p.canonico,
+          fuente: 'manual',
+          deleted_at: null,
+        });
+      }
+      showToast?.(relacion === 'mismo'
+        ? `✓ ${cluster.variantes.length} variantes correlacionadas bajo «${canonicoCrudo}» (${pares.length} enlaces)`
+        : `✓ Grupo de ${cluster.variantes.length} variantes marcado como distintos`, 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    } finally {
+      decidiendoRef.current = false;
+    }
+  };
+
   const insumoSel = sel ? porInsumo.get(sel) : null;
   const masBarato = insumoSel ? proveedorMasBarato(insumoSel) : null;
 
@@ -311,25 +354,25 @@ function AnalisisInsumosPage({ showToast }) {
           <span style={{ fontSize: 11, color: 'var(--tm)' }}>Base de datos central con aprendizaje global entre entidades</span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 8 }}>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📚 1. Catálogo</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Base de datos maestra central de insumos y servicios de toda la empresa y el aplicativo.
             </div>
           </div>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📥 2. Categorizar</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Homologa descripciones libres de comprobantes al catálogo. Lo aprendido aquí se comparte con todas las entidades.
             </div>
           </div>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 3. Correlaciones</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Une variantes de nombres del mismo insumo y cruza compras con ventas para cuadrar inventarios y saldos.
             </div>
           </div>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-card, #fff)', borderRadius: 6, border: '1px solid var(--border)' }}>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🎯 4. Mapeo de Presupuesto</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Vincula compras o insumos reales con las partidas del presupuesto de una obra o trabajo específico.
@@ -548,8 +591,63 @@ function AnalisisInsumosPage({ showToast }) {
             </div>
           </div>
 
+          {/* ── Clusters Multi-Insumo (N a N) ────────────────── */}
+          {clustersSugeridos.length > 0 && (
+            <div className="card card-p" style={{ borderLeft: '3px solid var(--green)' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>📦</span> Grupos de variantes sugeridos ({clustersSugeridos.length} {clustersSugeridos.length === 1 ? 'grupo multi-insumo' : 'grupos multi-insumo'})
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
+                Detección automática de <strong>clusters multi-variantes (N a N)</strong>. En lugar de revisar par por par,
+                podés unificar todas las formas en que distintos proveedores o comprobantes escriben el mismo insumo de un solo golpe.
+              </div>
+              <div style={{ display: 'grid', gap: 10 }}>
+                {clustersSugeridos.map(c => (
+                  <div key={c.id} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 7, background: 'var(--bg-s)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <strong style={{ fontSize: 13 }}>{c.canonico}</strong>
+                        <span className="badge b-blue" style={{ marginLeft: 8 }}>
+                          {c.variantes.length} variantes
+                        </span>
+                        <span className="badge b-green" style={{ marginLeft: 6 }}>
+                          {Math.round((c.score || 0) * 100)}% similitud
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          className="btn btn-green btn-xs"
+                          style={{ fontWeight: 600 }}
+                          onClick={() => decidirCluster(c, 'mismo')}
+                        >
+                          ✓ Unir las {c.variantes.length} variantes
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => decidirCluster(c, 'distinto')}
+                        >
+                          ✗ Son distintos
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                      {c.variantes.map((v, vi) => {
+                        const m = muestraDe.get(normInsumo(v));
+                        return (
+                          <span key={vi} className="badge b-gray" style={{ fontSize: 11, padding: '3px 8px' }} title={m ? `${m.doc} · ${m.proveedorNombre}` : undefined}>
+                            «{v}» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="card card-p">
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Sugerencias pendientes ({sugerencias.length})</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Sugerencias individuales ({sugerencias.length})</div>
             {sugerencias.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay pares nuevos para revisar — al registrar más facturas aparecerán acá.</div>}
             <div style={{ display: 'grid', gap: 8 }}>
               {sugerencias.map(par => {

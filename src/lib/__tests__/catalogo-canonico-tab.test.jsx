@@ -189,46 +189,67 @@ describe('el ámbito y las categorías entre entidades (mig 193)', () => {
   });
 });
 
-describe('la revisión del catálogo (mig 194)', () => {
-  // Un catálogo con dos cosas mal puestas, como el archivo real.
+describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
   const MAL = [
     { id: 'r1', tipo: 'insumo', nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)', norm: 'cemento portland tipo i 42 5 kg', unidad: 'bolsa', familia: 'ferreteria', origen: 'xlsx', activo: true },
     { id: 'r2', tipo: 'insumo', nombre: 'TRANSPORTE DE RESIDUOS DE OBRA DURANTE LA EJECUCION', norm: 'transporte de residuos de obra durante la ejecucion', unidad: 'glb', familia: 'seguridad', origen: 'xlsx', activo: true },
-    { id: 'r3', tipo: 'insumo', nombre: 'CASCOS DE SEGURIDAD', norm: 'casco de seguridad', unidad: 'und', familia: 'seguridad', origen: 'xlsx', activo: true },
+    { id: 'r3', tipo: 'insumo', nombre: 'CASCOS DE SEGURIDAD', norm: 'casco de seguridad', unidad: 'und', familia: '83', origen: 'xlsx', activo: true },
   ];
 
-  it('avisa cuántos parecen estar en otra familia, con el destino a la vista', () => {
+  it('avisa cuántos tienen recomendación oficial, con el destino IUPC a la vista', () => {
     const h = conDatos(MAL, []);
-    expect(h).toContain('parecen estar en otra familia');
+    expect(h).toContain('con recomendación de categoría');
     expect(h).toContain('CEMENTO PORTLAND TIPO I');
-    expect(h).toContain('Agregados');
+    expect(h).toContain('Cemento Portland');
     expect(h).toContain('Servicios');
   });
 
-  it('explica que son propuestas y no errores seguros', () => {
-    expect(conDatos(MAL, [])).toContain('No son errores seguros');
+  it('dice cuántas faltan reclasificar del vocabulario viejo', () => {
+    // r1 y r2 tienen familia legacy ('ferreteria', 'seguridad'); r3 ya tiene
+    // su código IUPC. El contador tiene que decir «faltan 2 de 3».
+    expect(conDatos(MAL, [])).toContain('faltan reclasificar');
   });
 
-  it('lo que está bien puesto NO aparece como recomendación', () => {
+  it('deja marcar POR BANDA y no ofrece un «marcar todas»', () => {
+    // Reclasificar el catálogo entero de un click es justo lo que no se quiere:
+    // el lote se acota a lo que el estándar reconoce con confianza alta.
+    const h = conDatos(MAL, []);
+    expect(h).not.toContain('Marcar todas');
+    expect(h).toContain('Marcar las');
+  });
+
+  it('las opciones del desplegable de categoría NO salen vacías', () => {
+    // El JSX pedía `c.nombreCompleto`, un campo que nunca existió en
+    // `listarCategoriasDisponibles()` → 80 opciones en blanco y el
+    // desplegable inservible. Esto lo agarra si vuelve a pasar.
+    const h = conDatos(MAL, []);
+    expect(h).toContain('Acero de construcción corrugado');
+    expect(h).toMatch(/<optgroup[^>]*label="IUPC - Estado Peruano"/);
+    expect(h).not.toMatch(/<option value="[^"]+"><\/option>/);
+  });
+
+  it('la fila con familia vieja MUESTRA cuál tiene, deshabilitada', () => {
+    // Las 413 filas sin reclasificar tienen un valor que ya no está entre las
+    // opciones: sin esto el <select> se vería en blanco y se perdería de vista
+    // qué categoría tienen puesta hoy. Se lee, pero no se puede volver a elegir.
+    const h = conDatos(MAL, []);
+    expect(h).toContain('Categoría actual (vocabulario viejo)');
+    expect(h).toMatch(/<option value="ferreteria" disabled/);
+  });
+
+  it('lo que está bien puesto con su código oficial NO aparece como recomendación', () => {
     const h = conDatos([MAL[2]], []);
-    expect(h).not.toContain('parecen estar en otra familia');
-    expect(h).not.toContain('parece estar en otra familia');
+    expect(h).not.toContain('con recomendación de categoría');
   });
 
   it('lo ya revisado deja de proponerse', () => {
     const h = conDatos([{ ...MAL[0], revisado: true }], []);
-    expect(h).not.toContain('parece estar en otra familia');
+    expect(h).not.toContain('con recomendación de categoría');
   });
 
-  it('muestra la subfamilia de cada fila, que es el nivel que faltaba', () => {
+  it('cumple la regla rectora: una sola clasificación y NO subfamilias', () => {
     const h = conDatos(MAL, []);
-    expect(h).toContain('Subfamilia');
-    expect(h).toContain('EPP · cabeza');
-  });
-
-  it('deja filtrar por subfamilia y dice cuántas hay en uso', () => {
-    const h = conDatos(MAL, []);
-    expect(h).toMatch(/Subfamilia <span[^>]*>\(<!-- -->3<!-- --> en uso\)/);
-    expect(h).toContain('Transporte y fletes');
+    expect(h).not.toContain('Subfamilia');
+    expect(h).toContain('Categoría (IUPC / Estándar)');
   });
 });

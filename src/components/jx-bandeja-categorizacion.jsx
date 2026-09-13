@@ -35,17 +35,63 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
-  decisionDeCatalogo, decisionNoInsumo, familiaComercialDe, ESTADOS,
+  decisionDeCatalogo, decisionNoInsumo, ESTADOS,
 } from "../lib/bandeja-categorizacion.js";
 import {
   decidir, decidirEnLote, agregarAlCatalogoYDecidir, reabrir, enseñarALaContadora,
 } from "../lib/bandeja-categorizacion-db.js";
 import {
-  FAMILIAS_CATALOGO, etiquetaFamilia, equivalenciasDe,
+  equivalenciasDe,
 } from "../lib/catalogo-canonico.js";
+import {
+  listarCategoriasDisponibles, etiquetaCategoria, bandaConfianza,
+} from "../lib/indices-unificados-iupc.js";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
+
+// Se calcula UNA vez: son 80+ categorías y este componente se renderiza en
+// cada fila de la tabla. Recalcular el agrupado 60 veces por render es gratis
+// de escribir y caro de correr.
+const CATEGORIAS_AGRUPADAS = (() => {
+  const g = new Map();
+  for (const c of listarCategoriasDisponibles()) {
+    if (!g.has(c.grupo)) g.set(c.grupo, []);
+    g.get(c.grupo).push(c);
+  }
+  return [...g.entries()];
+})();
+const CODIGOS_OFRECIDOS = new Set(listarCategoriasDisponibles().map(c => c.codigo));
+
+/**
+ * Las categorías del desplegable, agrupadas por origen (IUPC del Estado /
+ * Complementarias / Personalizadas). `c.label` y NO `c.nombreCompleto` — ese
+ * campo nunca existió en `listarCategoriasDisponibles()` y dejaba las 80
+ * opciones EN BLANCO.
+ *
+ * `actual` es la categoría que la fila tiene HOY. Si es del vocabulario viejo
+ * ya no está entre las opciones, y sin esto el <select> se vería vacío en las
+ * 413 filas sin reclasificar — se perdería de vista qué tienen puesto. Se
+ * muestra arriba y DESHABILITADA: se lee, no se vuelve a elegir. La migración
+ * al estándar es de ida.
+ */
+function OpcionesCategoria({ actual = null }) {
+  const legacy = actual && !CODIGOS_OFRECIDOS.has(actual);
+  return (
+    <>
+      {legacy && (
+        <optgroup label="Categoría actual (vocabulario viejo)">
+          <option value={actual} disabled>{etiquetaCategoria(actual)}</option>
+        </optgroup>
+      )}
+      {CATEGORIAS_AGRUPADAS.map(([g, cs]) => (
+        <optgroup key={g} label={g}>
+          {cs.map(c => <option key={c.codigo} value={c.codigo}>{c.label}</option>)}
+        </optgroup>
+      ))}
+    </>
+  );
+}
 
 const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
 
@@ -122,6 +168,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
     return filas.filter(f => {
       if (t && !f.muestra.toLowerCase().includes(t)) return false;
       if (filtro === 'pendientes') return f.estado !== 'decididas';
+      if (['alta', 'media', 'baja', 'rara', 'extrema_baja'].includes(filtro)) {
+        return f.estado !== 'decididas' && f.banda === filtro;
+      }
       return f.estado === filtro;
     });
   }, [filas, filtro, busca]);
@@ -145,18 +194,42 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
     finally { guardandoRef.current = false; }
   };
 
-  const aceptar = conGuard(async (fila) => {
+  const aceptar = conGuard(async (fila, categoriaElegida = null) => {
     const cand = fila?.sug?.candidatos?.[0];
     const catFila = catalogoDe(fila);
-    if (!cand || !catFila) return;
+    const catFinal = categoriaElegida
+      || catFila?.familia || fila?.recomendacionIUPC?.codigo || 'sin_clasificar';
+
+    // 🔴 SIN FILA DEL CATÁLOGO NO SE PUEDE DECIDIR «catalogo».
+    // La base lo prohíbe: el CHECK `insumo_categoria_catalogo_coherente` exige
+    // que `decision='catalogo'` venga con un `catalogo_insumo_id` real. Escribir
+    // null pasaba en Dexie y REBOTABA en el push a Supabase (23514) — el sync
+    // quedaba trabado reintentando para siempre y nadie se enteraba.
+    // Cuando el motor no encontró candidato pero SÍ hay recomendación IUPC, la
+    // respuesta correcta no es inventar una decisión sin destino: es dar de
+    // alta el insumo con esa categoría y decidir contra la fila recién creada.
+    if (!catFila) {
+      if (!fila?.recomendacionIUPC) return;
+      const creado = await agregarAlCatalogoYDecidir(fila, {
+        companyId, familia: catFinal, userId,
+        unidad: [...(fila.unidades || [])][0] || 'und',
+      });
+      await enseñarALaContadora([{ fila, catalogoFila: creado }], { userId, equivalencias });
+      await Promise.all([decHook.refresh?.(), catHook.refresh?.()]);
+      showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
+      return;
+    }
+
     await decidir(decisionDeCatalogo(fila, catFila, {
-      factor: cand.factor?.factor ?? null,
-      factorFuente: cand.factor?.fuente ?? null,
-      score: cand.score, companyId,
+      factor: cand?.factor?.factor ?? null,
+      factorFuente: cand?.factor?.fuente ?? null,
+      score: cand?.score ?? fila?.recomendacionIUPC?.score ?? null,
+      companyId,
+      categoria: catFinal,
     }), { userId });
-    await enseñarALaContadora([{ fila, catalogoFila: catFila }], { userId, equivalencias });
+    await enseñarALaContadora([{ fila, catalogoFila: { ...catFila, familia: catFinal } }], { userId, equivalencias });
     await decHook.refresh?.();
-    showToast?.(`✓ ${catFila.nombre} — vale para todas las facturas que digan lo mismo`, 'green');
+    showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
   });
 
   const noEsInsumo = conGuard(async (fila) => {
@@ -319,15 +392,20 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
       {/* ── LA LISTA ──────────────────────────────────────────────── */}
       <div className="card card-p">
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          {ESTADOS.map(([k, lbl]) => (
-            <button key={k} className={`btn btn-sm ${filtro === k ? 'btn-amber' : 'btn-ghost'}`}
-              onClick={() => { setFiltro(k); setCursor(0); }}>
-              {lbl} ({k === 'pendientes' ? avance.total - avance.decididas
-                : k === 'decididas' ? avance.decididas
-                : k === 'propuesto' ? avance.propuesto
-                : k === 'revisar' ? avance.revisar : avance.falta})
-            </button>
-          ))}
+          {ESTADOS.map(([k, lbl]) => {
+            const count = k === 'pendientes' ? avance.total - avance.decididas
+              : k === 'decididas' ? avance.decididas
+              : k === 'propuesto' ? avance.propuesto
+              : k === 'revisar' ? avance.revisar
+              : k === 'falta' ? avance.falta
+              : (avance[k] || 0);
+            return (
+              <button key={k} className={`btn btn-sm ${filtro === k ? 'btn-amber' : 'btn-ghost'}`}
+                onClick={() => { setFiltro(k); setCursor(0); }}>
+                {lbl} ({count})
+              </button>
+            );
+          })}
         </div>
 
         {nMarcadas > 0 && (
@@ -353,7 +431,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
             onMarcar={() => setMarcadas(m => {
               const s = new Set(m); if (s.has(f.norm)) s.delete(f.norm); else s.add(f.norm); return s;
             })}
-            onAceptar={() => aceptar(f)}
+            onAceptar={(cat) => aceptar(f, cat)}
             onFalta={() => setAltaDe(f)}
             onNoInsumo={() => noEsInsumo(f)}
             onDeshacer={() => deshacer(f)}
@@ -381,7 +459,36 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
  * y pasaría el green gate en verde.
  */
 function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
-  const cand = f.sug?.candidatos?.[0];
+  const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
+  const targetCat = catFila || (f?.candidatoIUPC ? {
+    id: null,
+    nombre: f.candidatoIUPC.cat.nombre,
+    familia: f.candidatoIUPC.cat.familia,
+    unidad: [...(f.unidades || [])][0] || 'und',
+  } : null);
+
+  const [categoriaSel, setCategoriaSel] = uS(() => targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros');
+  uE(() => {
+    setCategoriaSel(targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros');
+  }, [targetCat?.familia, f?.recomendacionIUPC?.codigo]);
+
+  const rec = f?.recomendacionIUPC;
+  const score = cand?.score ?? rec?.score ?? 0.08;
+  const scorePct = Math.round(score * 100);
+  // `f.banda` es la que cuenta `resumenAvance` para las pestañas: si el badge
+  // usara otra fuente, el filtro «Coincidencia alta (12)» podría mostrar filas
+  // con el badge en ámbar. Una sola verdad.
+  const banda = f?.banda || bandaConfianza(score).slug;
+
+  const BADGE_BANDA = {
+    alta: { cls: 'b-green', lbl: `Coincidencia alta (${scorePct}%)` },
+    media: { cls: 'b-blue', lbl: `Coincidencia media (${scorePct}%)` },
+    baja: { cls: 'b-amber', lbl: `Coincidencia baja (${scorePct}%)` },
+    rara: { cls: 'b-purple', lbl: `Coincidencia rara (${scorePct}%)` },
+    extrema_baja: { cls: 'b-red', lbl: `Coincidencia extremadamente baja (${scorePct}%)` },
+  };
+  const bInfo = BADGE_BANDA[banda] || BADGE_BANDA.baja;
+
   return (
     <div
       onClick={onFocus}
@@ -399,11 +506,11 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
           <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.muestra}</div>
           <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
             {f.veces} {f.veces === 1 ? 'vez' : 'veces'}
-            {f.provs.size > 0 && <> · {[...f.provs].slice(0, 2).join(', ')}{f.provs.size > 2 ? ` +${f.provs.size - 2}` : ''}</>}
-            {f.unidades.size > 0 && <> · {[...f.unidades].join('/')}</>}
+            {f.provs?.size > 0 && <> · {[...f.provs].slice(0, 2).join(', ')}{f.provs.size > 2 ? ` +${f.provs.size - 2}` : ''}</>}
+            {f.unidades?.size > 0 && <> · {[...f.unidades].join('/')}</>}
             {/* Los dólares se VEN con su marcador y NO se suman al total
                 (decisión de Gabriel del 7-set, la misma de «Sin respaldo»). */}
-            {[...f.monedas].some(m => m !== 'PEN') && (
+            {[...(f.monedas || [])].some(m => m !== 'PEN') && (
               <span className="badge b-amber" style={{ marginLeft: 6 }}>en dólares</span>
             )}
           </div>
@@ -412,23 +519,41 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
             <div style={{ fontSize: 11.5, marginTop: 4 }}>
               {f.decision?.decision === 'catalogo'
                 ? <>→ <strong>{f.cat?.nombre || '(insumo del catálogo)'}</strong>
-                    {f.decision.familia && <span className="badge b-gray" style={{ marginLeft: 6 }}>{etiquetaFamilia(f.decision.familia)}</span>}</>
+                    {f.decision.familia && <span className="badge b-gray" style={{ marginLeft: 6 }}>{etiquetaCategoria(f.decision.familia)}</span>}</>
                 : <span style={{ color: 'var(--tm)' }}>✗ No es un insumo del catálogo</span>}
             </div>
-          ) : cand ? (
-            <div style={{ fontSize: 11.5, marginTop: 4 }}>
-              → {catFila?.nombre}
-              <span className={`badge ${COLOR_ESTADO[f.estado]}`} style={{ marginLeft: 6 }}>
-                {f.estado === 'propuesto' ? `${(cand.score * 100).toFixed(0)}%` : `dudosa ${(cand.score * 100).toFixed(0)}%`}
-              </span>
-              {catFila?.familia && <span className="badge b-gray" style={{ marginLeft: 4 }}>{etiquetaFamilia(catFila.familia)}</span>}
-              {cand.motivos?.length > 0 && (
-                <span style={{ color: 'var(--tm)', marginLeft: 6 }}>({cand.motivos.slice(0, 3).join(', ')})</span>
-              )}
-            </div>
           ) : (
-            <div style={{ fontSize: 11.5, marginTop: 4, color: 'var(--tm)' }}>
-              Sin candidato en el catálogo.
+            <div style={{ fontSize: 11.5, marginTop: 4 }}>
+              → <strong>{targetCat?.nombre || rec?.nombre || 'Insumo sugerido'}</strong>
+              <span className={`badge ${bInfo.cls}`} style={{ marginLeft: 6 }}>
+                {bInfo.lbl}
+              </span>
+              
+              {/* Modificación directa de categoría en la misma fila */}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
+                <label style={{ fontSize: 10, color: 'var(--tm)' }}>Categoría:</label>
+                <select
+                  className="fi"
+                  style={{ fontSize: 11, height: 22, padding: '0 4px', maxWidth: 220 }}
+                  value={categoriaSel}
+                  onChange={e => setCategoriaSel(e.target.value)}
+                  onClick={e => e.stopPropagation()}
+                >
+                  <OpcionesCategoria actual={categoriaSel} />
+                </select>
+              </span>
+
+              {rec?.inclinacion && (
+                <div style={{ fontSize: 11, color: '#d97706', marginTop: 3, fontWeight: 500 }}>
+                  🛠 Servicio con inclinación: <strong>{rec.inclinacion}</strong>
+                </div>
+              )}
+
+              {cand?.motivos?.length > 0 && (
+                <span style={{ color: 'var(--tm)', marginLeft: 6, display: 'block', fontSize: 10.5 }}>
+                  ({cand.motivos.slice(0, 3).join(', ')})
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -440,7 +565,11 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
             <button className="btn btn-sm" onClick={onDeshacer}>Deshacer</button>
           ) : (
             <>
-              {cand && <button className="btn btn-sm btn-green" onClick={onAceptar}>Aceptar</button>}
+              {(cand || rec) && (
+                <button className="btn btn-sm btn-green" onClick={() => onAceptar?.(categoriaSel)}>
+                  Aceptar
+                </button>
+              )}
               <button className="btn btn-sm" onClick={onFalta}>Falta en el catálogo</button>
               <button className="btn btn-sm" onClick={onNoInsumo}>No es un insumo</button>
             </>
@@ -453,15 +582,14 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
 
 /**
  * El alta al catálogo desde la bandeja. Llega con todo propuesto —nombre de la
- * factura en mayúsculas, unidad de la factura, familia de la misma regla que
- * usa el motor para puntuar— porque si hubiera que escribir tres campos desde
- * cero nadie lo usaría y las 120 descripciones sin candidato se quedarían sin
- * respuesta. Todo es corregible antes de guardar.
+ * factura en mayúsculas, unidad de la factura, categoría IUPC o complementaria—
+ * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
+ * Todo es corregible antes de guardar.
  */
 function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
-  const [nombre, setNombre] = uS(() => (fila.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
-  const [familia, setFamilia] = uS(() => familiaComercialDe(fila.muestra));
-  const [unidad, setUnidad] = uS(() => [...(fila.unidades || [])][0] || 'und');
+  const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
+  const [familia, setFamilia] = uS(() => fila?.recomendacionIUPC?.codigo || 'sin_clasificar');
+  const [unidad, setUnidad] = uS(() => [...(fila?.unidades || [])][0] || 'und');
   const Modal = window.Modal;
   const cuerpo = (
     <div style={{ display: 'grid', gap: 10 }}>
@@ -474,10 +602,10 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
         <input className="fi" value={nombre} onChange={e => setNombre(e.target.value)} />
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <div style={{ flex: 2, minWidth: 180 }}>
-          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Familia</label>
+        <div style={{ flex: 2, minWidth: 220 }}>
+          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Categoría (IUPC / Complementaria)</label>
           <select className="fi" value={familia} onChange={e => setFamilia(e.target.value)}>
-            {FAMILIAS_CATALOGO.map(f => <option key={f.slug} value={f.slug}>{f.label}</option>)}
+            <OpcionesCategoria />
           </select>
         </div>
         <div style={{ flex: 1, minWidth: 110 }}>
@@ -485,6 +613,11 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
           <input className="fi" value={unidad} onChange={e => setUnidad(e.target.value)} />
         </div>
       </div>
+      {fila?.recomendacionIUPC?.inclinacion && (
+        <div style={{ fontSize: 11, color: '#d97706' }}>
+          🛠 Inclinación detectada: {fila.recomendacionIUPC.inclinacion}
+        </div>
+      )}
       <div style={{ fontSize: 11, color: 'var(--tm)' }}>
         De la factura: «{fila.muestra}» — {fila.veces} {fila.veces === 1 ? 'vez' : 'veces'}, {soles(fila.importe)}.
       </div>
@@ -503,8 +636,6 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
     <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>{pie}</div>
   );
   if (!Modal) {
-    // Sin el modal global (tests de montaje) igual se renderiza el cuerpo: si
-    // acá adentro hubiera un TDZ, tiene que explotar en el gate y no en la obra.
     return <div className="card card-p">{cuerpo}{pieEnvuelto}</div>;
   }
   return (

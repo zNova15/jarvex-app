@@ -50,12 +50,14 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import {
-  prepararCatalogo, sugerirMapeo, claveMapeo, normMapeo, familiaDe,
+  prepararCatalogo, sugerirMapeo, claveMapeo, normMapeo,
 } from './mapeo-insumos.js';
 import {
   resolverCatalogo, normUnidad, tipoInsumoDe, categoriaItemDe,
 } from './catalogo-canonico.js';
-import { sugerirSubfamilia } from './catalogo-subfamilias.js';
+import {
+  clasificarConIUPC, bandaConfianza, etiquetaCategoria, tipoDeCategoria,
+} from './indices-unificados-iupc.js';
 
 // ── 1. EL CATÁLOGO CONTRA EL QUE SE PROPONE ────────────────────────
 
@@ -84,7 +86,7 @@ export function catalogoParaProponer(catalogoRows, disgregacionRows, { companyId
       if (!norm || !nombre || porNorm.has(norm)) continue;
       porNorm.set(norm, {
         id: `disgregacion:${norm}`, norm, nombre, unidad: unidad || '',
-        tipo: 'insumo', familia: familiaComercialDe(nombre),
+        tipo: 'insumo', familia: clasificarConIUPC(nombre).codigo,
         origen: 'disgregacion', activo: true, company_id: d.company_id || null,
         soloEnDisgregacion: true,
       });
@@ -177,6 +179,11 @@ export function agruparDescripciones(compras) {
 
 export const ESTADOS = [
   ['pendientes', 'Por decidir'],
+  ['alta', 'Coincidencia alta (≥70%)'],
+  ['media', 'Coincidencia media (40-69%)'],
+  ['baja', 'Coincidencia baja (25-39%)'],
+  ['rara', 'Coincidencia rara (10-24%)'],
+  ['extrema_baja', 'Coincidencia extremadamente baja (<10%)'],
   ['propuesto', 'Con propuesta'],
   ['revisar', 'Dudosas'],
   ['falta', 'Falta en el catálogo'],
@@ -187,33 +194,64 @@ export const ESTADOS = [
  * La bandeja entera: cada descripción con su decisión (si la hay) o su
  * propuesta (si el motor encontró algo).
  *
- * Los estados que devuelve el motor (`propuesto` / `revisar` / `servicio` /
- * `sin_candidato`) se colapsan acá en uno solo del lado de la pantalla:
- * **`falta`**. Porque medido contra el catálogo real, «sin candidato» y
- * «es un servicio que el catálogo no tiene» son la misma situación para quien
- * está sentado adelante —no hay contra qué decidir— y la acción correcta en
- * las dos es la misma: agregarlo al catálogo, o decir que no es un insumo.
+ * 100% de cobertura predictiva garantizada: Todo insumo cuenta con una
+ * recomendación oficial IUPC / complementaria y su banda de probabilidad.
  */
 export function filasDeBandeja(descripciones, { prep, porId, decisiones }) {
   return (descripciones || []).map(d => {
     const ya = decisiones?.get(d.norm) || null;
     if (ya) {
       const cat = ya.catalogo_insumo_id ? porId?.get(ya.catalogo_insumo_id) : null;
-      return { ...d, estado: 'decididas', decision: ya, cat, sug: null };
+      return { ...d, estado: 'decididas', decision: ya, cat, sug: null, banda: 'decididas' };
     }
     const sug = prep
       ? sugerirMapeo({ descripcion: d.muestra, unidad: [...d.unidades][0] || '' }, prep, { servicios: true })
       : { estado: 'sin_candidato', candidatos: [] };
     const estado = (sug.estado === 'propuesto' || sug.estado === 'revisar') ? sug.estado : 'falta';
-    return { ...d, estado, decision: null, cat: null, sug };
+
+    // Clasificación predictiva oficial IUPC INEI
+    const recIUPC = clasificarConIUPC(d.muestra);
+    const cand = sug.candidatos?.[0] || null;
+    const scoreEfectivo = cand ? cand.score : recIUPC.score;
+    const b = bandaConfianza(scoreEfectivo);
+
+    const candidatoIUPC = {
+      cat: {
+        codigo: recIUPC.codigo,
+        insumo_codigo: recIUPC.codigo,
+        nombre: `[${recIUPC.codigo}] ${recIUPC.nombre}`,
+        familia: recIUPC.codigo,
+        categoria: recIUPC.codigo,
+        tipo: recIUPC.codigo === 'servicios' ? 'servicio' : 'material',
+        unidad: [...(d.unidades || [])][0] || 'und',
+        esIUPC: true,
+      },
+      score: recIUPC.score,
+      motivos: recIUPC.motivos,
+      inclinacion: recIUPC.inclinacion,
+      banda: b,
+    };
+
+    return {
+      ...d,
+      estado,
+      decision: null,
+      cat: null,
+      sug,
+      banda: b.slug,
+      bandaInfo: b,
+      recomendacionIUPC: recIUPC,
+      candidatoIUPC,
+    };
   });
 }
 
 /** El candidato que se aceptaría con «aceptar», ya resuelto contra el catálogo. */
 export function candidatoDe(fila, porId) {
   const c = fila?.sug?.candidatos?.[0];
-  if (!c) return null;
-  return { ...c, cat: { ...c.cat, fila: porId?.get(c.cat.codigo) || null } };
+  if (c) return { ...c, cat: { ...c.cat, fila: porId?.get(c.cat.codigo) || null } };
+  if (fila?.candidatoIUPC) return fila.candidatoIUPC;
+  return null;
 }
 
 // ── 4. LOS LOTES ───────────────────────────────────────────────────
@@ -237,11 +275,6 @@ export function lotesPorPropuesta(filas) {
   const m = new Map();
   for (const f of (filas || [])) {
     const cod = f?.sug?.candidatos?.[0]?.cat?.codigo;
-    // 🔴 SOLO las que el motor propuso CON confianza. Metiendo también las
-    // «dudosas» el lote se envenena: medido, «PNATON EN BOLSA X 900 GR» (51%),
-    // «BOLSA» y «BOLSA GRANDE» caían en el mismo grupo que «YESO X BLSA X 7
-    // KG», y aceptar el lote de un golpe habría guardado tres respuestas
-    // inventadas. Una dudosa se decide de a una, mirándola.
     if (!cod || f.estado !== 'propuesto') continue;
     const g = m.get(cod) || { codigo: cod, nombre: f.sug.candidatos[0].cat.nombre, filas: [], importe: 0 };
     g.filas.push(f);
@@ -263,9 +296,22 @@ export function resumenAvance(filas) {
     propuesto: 0, plataPropuesto: 0,
     revisar: 0, plataRevisar: 0,
     falta: 0, plataFalta: 0,
+    alta: 0, plataAlta: 0,
+    media: 0, plataMedia: 0,
+    baja: 0, plataBaja: 0,
+    rara: 0, plataRara: 0,
+    extrema_baja: 0, plataExtremaBaja: 0,
   };
   for (const f of (filas || [])) {
     r.total += 1; r.totalPlata += f.importe;
+    if (f.banda && f.banda !== 'decididas' && r[f.banda] !== undefined) {
+      r[f.banda] += 1;
+      if (f.banda === 'alta') r.plataAlta += f.importe;
+      else if (f.banda === 'media') r.plataMedia += f.importe;
+      else if (f.banda === 'baja') r.plataBaja += f.importe;
+      else if (f.banda === 'rara') r.plataRara += f.importe;
+      else if (f.banda === 'extrema_baja') r.plataExtremaBaja += f.importe;
+    }
     if (f.estado === 'decididas') {
       r.decididas += 1; r.plataDecidida += f.importe;
       if (f.decision?.decision === 'catalogo') { r.enCatalogo += 1; r.plataEnCatalogo += f.importe; }
@@ -274,8 +320,6 @@ export function resumenAvance(filas) {
     else if (f.estado === 'revisar') { r.revisar += 1; r.plataRevisar += f.importe; }
     else { r.falta += 1; r.plataFalta += f.importe; }
   }
-  // El avance se mide en PLATA, no en filas: decidir las 20 más caras vale más
-  // que decidir 200 de la cola, y el número tiene que decir eso.
   r.pct = r.totalPlata > 0 ? (r.plataDecidida * 100) / r.totalPlata : 0;
   return r;
 }
@@ -283,27 +327,33 @@ export function resumenAvance(filas) {
 // ── 6. LO QUE SE ESCRIBE ───────────────────────────────────────────
 
 /** El cuerpo de la fila de `insumo_categoria` para «es este insumo del catálogo». */
-export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFuente = null, score = null, companyId = null } = {}) {
+export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFuente = null, score = null, companyId = null, categoria = null } = {}) {
+  // 🔴 EL INVARIANTE QUE LA BASE EXIGE Y DEXIE NO VALIDA.
+  // CHECK `insumo_categoria_catalogo_coherente`: decision='catalogo' obliga a
+  // `catalogo_insumo_id NOT NULL`. Una fila sin id se guardaba local sin
+  // chistar y REBOTABA en el push a Supabase con 23514, dejando el sync en
+  // reintento eterno y en silencio. Mejor romper acá, fuerte y temprano: si no
+  // hay fila de catálogo, la respuesta correcta es darla de alta primero
+  // (`agregarAlCatalogoYDecidir`), no fabricar una decisión sin destino.
+  if (!catalogoFila?.id) {
+    throw new Error('decisionDeCatalogo: sin catalogo_insumo_id no se puede decidir «catalogo» — dar de alta el insumo primero (agregarAlCatalogoYDecidir).');
+  }
   const unidadOrigen = [...(fila.unidades || [])][0] || null;
   const unidadDestino = catalogoFila?.unidad || null;
+  const catElegida = categoria || catalogoFila?.familia || fila?.recomendacionIUPC?.codigo || 'sin_clasificar';
   return {
     norm: fila.norm,
     muestra: fila.muestra,
     decision: 'catalogo',
     catalogo_insumo_id: catalogoFila?.id || null,
-    // Congeladas al decidir: mover el insumo de familia mañana no cambia lo
-    // que ya se respondió (ver mig 195).
-    familia: catalogoFila?.familia || null,
-    subfamilia: catalogoFila?.subfamilia
-      || sugerirSubfamilia(catalogoFila?.nombre || '', catalogoFila?.familia || '')?.subfamilia
-      || null,
+    familia: catElegida,
+    subfamilia: null,
     unidad_origen: unidadOrigen,
     unidad_destino: unidadDestino,
-    // El factor solo tiene sentido si las unidades difieren de verdad.
     factor: (factor != null && normUnidad(unidadOrigen) !== normUnidad(unidadDestino)) ? Number(factor) : null,
     factor_fuente: (factor != null && normUnidad(unidadOrigen) !== normUnidad(unidadDestino)) ? factorFuente : null,
     fuente: 'manual',
-    score: score == null ? null : Number(score),
+    score: score == null ? (fila?.recomendacionIUPC?.score ?? null) : Number(score),
     company_id: companyId || null,
     deleted_at: null,
   };
@@ -325,27 +375,30 @@ export function decisionNoInsumo(fila, { companyId = null, nota = null } = {}) {
   };
 }
 
+
 /**
  * La fila de catálogo que se crearía con «esto falta en el catálogo».
  *
  * El nombre sale de la factura tal cual (en mayúsculas, como el resto del
- * catálogo), la unidad de lo que decía la factura, y la familia de la MISMA
- * regla que usa el motor para puntuar — así el insumo nuevo queda del lado
- * correcto de la compuerta desde el minuto cero y la próxima descripción
- * parecida sí encuentra candidato. Si la regla no sabe, queda en 'otros' y se
- * corrige a mano: no se adivina.
+ * catálogo), la unidad de lo que decía la factura, y la categoría del ESTÁNDAR
+ * IUPC — el mismo que puntúa la bandeja— así el insumo nuevo queda del lado
+ * correcto desde el minuto cero y la próxima descripción parecida sí encuentra
+ * candidato. Todo es corregible antes de guardar.
  */
 export function filaNuevaDeCatalogo(fila, { companyId = null, familia = null, unidad = null, nombre = null } = {}) {
-  const nom = (nombre || fila.muestra || '').trim().toUpperCase().replace(/\s+/g, ' ').slice(0, 200);
-  const fam = familia || familiaComercialDe(fila.muestra);
+  const nom = (nombre || fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' ').slice(0, 200);
+  // La categoría sale SOLO del estándar IUPC — el vocabulario comercial viejo
+  // ya no se usa para dar de alta nada (decisión del 13-set).
+  const fam = familia || fila?.recomendacionIUPC?.codigo || clasificarConIUPC(nom).codigo;
   const u = normUnidad(unidad || [...(fila.unidades || [])][0] || '');
   return {
-    tipo: fam === 'servicios' ? 'servicio' : 'insumo',
+    tipo: tipoDeCategoria(fam) === 'servicio' ? 'servicio' : 'insumo',
     nombre: nom,
     norm: normMapeo(nom),
     unidad: u || 'und',
     familia: fam,
-    subfamilia: sugerirSubfamilia(nom, fam)?.subfamilia || null,
+    // Sin subfamilia: se abandonaron el 13-set, hay UNA sola clasificación.
+    subfamilia: null,
     // 'manual' y no 'xlsx': lo escribió una persona, así que una reimportación
     // del archivo NO puede marcarlo como ausente ni pisarlo (diffCatalogo ya
     // respeta eso).
@@ -357,35 +410,6 @@ export function filaNuevaDeCatalogo(fila, { companyId = null, familia = null, un
   };
 }
 
-// Las familias del MOTOR (mapeo-insumos) no son las 10 COMERCIALES del catálogo:
-// el motor separa por comportamiento físico (tuberia_pvc, acero_corrugado…) y el
-// catálogo por cómo se compra. Este es el puente, y solo en la dirección que
-// hace falta: qué familia comercial le toca a un texto suelto.
-const FAMILIA_MOTOR_A_COMERCIAL = new Map(Object.entries({
-  servicio: 'servicios',
-  cemento: 'ferreteria', ferreteria: 'ferreteria', pintura: 'ferreteria',
-  agregado: 'agregados',
-  acero_corrugado: 'ferreteria',
-  acero_estructural: 'perfiles_metalicos', tuberia_metalica: 'perfiles_metalicos',
-  tuberia_hdpe: 'tuberia_accesorios', tuberia_pvc: 'tuberia_accesorios',
-  accesorio_pvc: 'tuberia_accesorios', electrico: 'tuberia_accesorios',
-  valvula: 'valvulas',
-  epp: 'seguridad',
-  sanitario: 'ferreteria',
-  madera: 'madera',
-  combustible: 'otros',
-}));
-
-/**
- * La familia COMERCIAL del catálogo que le corresponde a un texto de factura.
- * OJO: `familiaDeTexto()` NO sirve acá — esa lee el nombre de una FAMILIA en el
- * xlsx y devuelve el texto en mayúsculas cuando no lo reconoce, así que con un
- * nombre de insumo inventaría una familia nueva por cada descripción.
- */
-export function familiaComercialDe(texto) {
-  return FAMILIA_MOTOR_A_COMERCIAL.get(familiaDe(normMapeo(texto))) || 'otros';
-}
-
 /**
  * Lo que la decisión le enseña al clasificador de la contadora.
  * Es el puente de la entrega 2 puesto a trabajar: una sola decisión en la
@@ -395,12 +419,14 @@ export function familiaComercialDe(texto) {
  */
 export function aprendizajeParaContadora(fila, catalogoFila, equivalencias = null) {
   if (!catalogoFila) return null;
+  // La `subcategoria` que ve la contadora ya NO sale de las subfamilias
+  // (abandonadas el 13-set): es el CÓDIGO IUPC de la categoría. Así el detalle
+  // fino no se pierde y queda expresado en la única taxonomía que hay.
+  const cod = catalogoFila.familia || null;
   return {
     descripcion: fila.muestra,
     categoria: categoriaItemDe(catalogoFila, equivalencias),
-    subcategoria: catalogoFila.subfamilia
-      || sugerirSubfamilia(catalogoFila.nombre || '', catalogoFila.familia || '')?.subfamilia
-      || null,
+    subcategoria: cod ? etiquetaCategoria(cod) : null,
     tipoInsumo: tipoInsumoDe(catalogoFila, equivalencias),
   };
 }

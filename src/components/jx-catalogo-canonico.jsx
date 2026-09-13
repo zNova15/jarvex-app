@@ -35,19 +35,70 @@ import { parseExcelFile } from "../lib/excel.js";
 import {
   parseCatalogoXlsx, resolverCatalogo, resumenDiff, contarPorFamilia,
   etiquetaFamilia, tipoInsumoDe, categoriaItemDe, esFamiliaCanonica,
-  FAMILIAS_CATALOGO, familiasPropias, equivalenciasDe, matrizCategorias,
-  entidadesConCatalogo,
+  familiasPropias, equivalenciasDe, matrizCategorias,
+  entidadesConCatalogo, revisarCategoriasCatalogo,
 } from "../lib/catalogo-canonico.js";
 import {
-  revisarCatalogo, etiquetaSubfamilia, sugerirSubfamilia, SUBFAMILIAS, SUBFAMILIAS_TECNICAS,
-} from "../lib/catalogo-subfamilias.js";
+  listarCategoriasDisponibles, etiquetaCategoria, bandaConfianza,
+} from "../lib/indices-unificados-iupc.js";
 import {
   previsualizarImportacion, aplicarImportacion, corregirFactor,
   corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
-  moverDeFamilia, descartarRecomendaciones, aceptarSubfamilias,
+  moverDeFamilia, descartarRecomendaciones,
 } from "../lib/catalogo-canonico-db.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
+
+// El orden en que conviene despachar la reclasificación: de lo que el estándar
+// reconoce mejor a lo que apenas intuye. No hay lote para las bandas flojas a
+// propósito — esas se miran de a una.
+const BANDAS_LOTE = [
+  ['alta', 'coincidencia alta'],
+  ['media', 'coincidencia media'],
+];
+
+// Se calcula UNA vez: son 80+ categorías y este componente se renderiza en
+// cada fila de la tabla. Recalcular el agrupado 60 veces por render es gratis
+// de escribir y caro de correr.
+const CATEGORIAS_AGRUPADAS = (() => {
+  const g = new Map();
+  for (const c of listarCategoriasDisponibles()) {
+    if (!g.has(c.grupo)) g.set(c.grupo, []);
+    g.get(c.grupo).push(c);
+  }
+  return [...g.entries()];
+})();
+const CODIGOS_OFRECIDOS = new Set(listarCategoriasDisponibles().map(c => c.codigo));
+
+/**
+ * Las categorías del desplegable, agrupadas por origen (IUPC del Estado /
+ * Complementarias / Personalizadas). `c.label` y NO `c.nombreCompleto` — ese
+ * campo nunca existió en `listarCategoriasDisponibles()` y dejaba las 80
+ * opciones EN BLANCO.
+ *
+ * `actual` es la categoría que la fila tiene HOY. Si es del vocabulario viejo
+ * ya no está entre las opciones, y sin esto el <select> se vería vacío en las
+ * 413 filas sin reclasificar — se perdería de vista qué tienen puesto. Se
+ * muestra arriba y DESHABILITADA: se lee, no se vuelve a elegir. La migración
+ * al estándar es de ida.
+ */
+function OpcionesCategoria({ actual = null }) {
+  const legacy = actual && !CODIGOS_OFRECIDOS.has(actual);
+  return (
+    <>
+      {legacy && (
+        <optgroup label="Categoría actual (vocabulario viejo)">
+          <option value={actual} disabled>{etiquetaCategoria(actual)}</option>
+        </optgroup>
+      )}
+      {CATEGORIAS_AGRUPADAS.map(([g, cs]) => (
+        <optgroup key={g} label={g}>
+          {cs.map(c => <option key={c.codigo} value={c.codigo}>{c.label}</option>)}
+        </optgroup>
+      ))}
+    </>
+  );
+}
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 const TIPO_DESTINO = {
@@ -96,8 +147,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
   const [leyendo, setLeyendo] = uS(false);
   const [factorEdit, setFactorEdit] = uS({});
   const [eqElegida, setEqElegida] = uS({});    // familia local → slug canónico
-  const [subSel, setSubSel] = uS('todas');
-  const [subLote, setSubLote] = uS('');
+  const [catOverride, setCatOverride] = uS({});// id → codigo categoria sugerida editada
   const [recMarcadas, setRecMarcadas] = uS({});
   // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap no
   // puede escribir el catálogo dos veces.
@@ -132,32 +182,19 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
   );
   const matriz = uM(() => matrizCategorias(crudo, eqHook.data || []), [crudo, eqHook.data]);
 
-  // La revisión: qué subfamilia le toca a cada fila y cuáles parecen estar en
-  // la familia equivocada. Se calcula al LEER —no se guarda nada hasta que
-  // alguien acepta—, así que mejorar el vocabulario mejora todo el catálogo sin
-  // migrar una fila.
-  const revision = uM(() => revisarCatalogo(activas), [activas]);
-  const subDe = uM(() => {
-    const m = new Map();
-    for (const r of activas) m.set(r.id, r.subfamilia || sugerirSubfamilia(r.nombre, r.familia)?.subfamilia || null);
-    return m;
-  }, [activas]);
-  const subfamiliasPresentes = uM(
-    () => [...revision.porSubfamilia.entries()].sort((a, b) => b[1] - a[1]),
-    [revision.porSubfamilia],
-  );
+  // La revisión recommendativa: recomendaciones oficiales IUPC / INEI.
+  // 100% de cobertura predictiva con bandas de probabilidad.
+  const revision = uM(() => revisarCategoriasCatalogo(activas), [activas]);
   const idsRec = uM(() => Object.keys(recMarcadas).filter(k => recMarcadas[k]), [recMarcadas]);
 
   const visibles = uM(() => {
     const q = busca.trim().toLowerCase();
     return (verInactivos ? todas : activas)
       .filter(r => famSel === 'todas' || r.familia === famSel)
-      .filter(r => subSel === 'todas'
-        || (subSel === '__sin__' ? !subDe.get(r.id) : subDe.get(r.id) === subSel))
       .filter(r => tipoSel === 'todos' || r.tipo === tipoSel)
       .filter(r => !q || String(r.nombre || '').toLowerCase().includes(q))
       .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
-  }, [todas, activas, verInactivos, famSel, subSel, subDe, tipoSel, busca]);
+  }, [todas, activas, verInactivos, famSel, tipoSel, busca]);
 
   const disgregacion = uM(() => {
     const porPadre = new Map();
@@ -250,10 +287,28 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
     if (enCursoRef.current || !idsRec.length) return;
     enCursoRef.current = true;
     try {
-      const n = await moverDeFamilia(revision.recomendaciones.filter(r => recMarcadas[r.id]), { userId });
-      await refrescar(); setRecMarcadas({});
-      showToast?.(`${n} ${n === 1 ? 'insumo movido' : 'insumos movidos'} de familia.`, 'success');
-    } catch (err) { showToast?.(`No se pudo mover: ${err?.message || err}`, 'error'); }
+      const recs = revision.recomendaciones
+        .filter(r => recMarcadas[r.id])
+        .map(r => ({
+          ...r,
+          familiaSugerida: catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida,
+        }));
+      const n = await moverDeFamilia(recs, { userId });
+      await refrescar(); setRecMarcadas({}); setCatOverride({});
+      showToast?.(`${n} ${n === 1 ? 'insumo reclasificado' : 'insumos reclasificados'} exitosamente.`, 'success');
+    } catch (err) { showToast?.(`No se pudo reclasificar: ${err?.message || err}`, 'error'); }
+    finally { enCursoRef.current = false; }
+  };
+
+  const aceptarUna = async (r) => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    try {
+      const destino = catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida;
+      const n = await moverDeFamilia([{ ...r, familiaSugerida: destino }], { userId });
+      await refrescar();
+      showToast?.(`✓ «${r.nombre}» clasificado como ${etiquetaCategoria(destino)}`, 'success');
+    } catch (err) { showToast?.(`No se pudo reclasificar: ${err?.message || err}`, 'error'); }
     finally { enCursoRef.current = false; }
   };
 
@@ -264,17 +319,6 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
       const n = await descartarRecomendaciones(ids, { userId });
       await refrescar(); setRecMarcadas({});
       showToast?.(`${n} ${n === 1 ? 'quedó' : 'quedaron'} donde ${n === 1 ? 'estaba' : 'estaban'}. No se vuelve a proponer.`, 'success');
-    } catch (err) { showToast?.(`No se pudo guardar: ${err?.message || err}`, 'error'); }
-    finally { enCursoRef.current = false; }
-  };
-
-  const congelarSubfamilias = async () => {
-    if (enCursoRef.current) return;
-    enCursoRef.current = true;
-    try {
-      const n = await aceptarSubfamilias(revision.propuestas.filter(p => p.subfamilia && !p.familiaSugerida), { userId });
-      await refrescar();
-      showToast?.(`${n} subfamilias guardadas.`, 'success');
     } catch (err) { showToast?.(`No se pudo guardar: ${err?.message || err}`, 'error'); }
     finally { enCursoRef.current = false; }
   };
@@ -428,65 +472,133 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
         </div>
       ) : (
         <>
-          {/* ── La revisión: lo que parece estar en otra familia ─ */}
+          {/* ── La revisión: recomendaciones oficiales IUPC / INEI ─ */}
           {revision.recomendaciones.length > 0 && (
             <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
               <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>
                 {revision.recomendaciones.length} {revision.recomendaciones.length === 1
-                  ? 'insumo parece estar en otra familia' : 'insumos parecen estar en otra familia'}
+                  ? 'insumo con recomendación de categoría' : 'insumos con recomendación de categoría'}
+                {revision.pendientesLegacy > 0 && (
+                  <span className="badge b-amber" style={{ marginLeft: 8, fontSize: 10 }}>
+                    faltan reclasificar {revision.pendientesLegacy} de {revision.pendientesLegacy + revision.yaClasificadas}
+                  </span>
+                )}
+                {revision.sinRecomendacion > 0 && (
+                  <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 10 }}
+                    title="El estándar no las alcanza. No se proponen porque su categoría actual es mejor que «sin clasificar»: asignalas a mano con el desplegable de cada fila, abajo.">
+                    {revision.sinRecomendacion} que el estándar no alcanza
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8, lineHeight: 1.55 }}>
-                No son errores seguros: son propuestas. Solo se proponen cuando el nombre <em>empieza</em>{' '}
-                diciendo otra cosa —si la pista está en un adjetivo del final no se pregunta, porque así
-                un «pantalón con cinta reflectiva» terminaba en ferretería—. Lo que dejes donde está no
-                se vuelve a proponer.
+                Propuestas del estándar oficial del Estado Peruano (Índices Unificados de Precios de la
+                Construcción, R.J. 016-2026-INEI). Podés aceptar la recomendación, cambiarla en el
+                desplegable, o dejar el insumo donde está.{' '}
+                <strong>Vienen ordenadas de mayor a menor confianza</strong> — las de arriba son las que el
+                Diccionario Oficial reconoce y se despachan por lote; las del final hay que mirarlas de a una.
               </div>
-              <table className="tbl" style={{ fontSize: 11.5 }}>
-                <tbody>
-                  {revision.recomendaciones.slice(0, 60).map(r => (
-                    <tr key={r.id}>
-                      <td style={{ width: 26 }}>
-                        <input type="checkbox" checked={!!recMarcadas[r.id]}
-                          onChange={e => setRecMarcadas(p => {
-                            const n = { ...p };
-                            if (e.target.checked) n[r.id] = true; else delete n[r.id];
-                            return n;
-                          })} />
-                      </td>
-                      <td>{r.nombre}</td>
-                      <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
-                        {etiquetaFamilia(r.familia)} → <strong style={{ color: 'var(--tp)' }}>{etiquetaFamilia(r.familiaSugerida)}</strong>
-                      </td>
-                      <td style={{ color: 'var(--tm)', fontSize: 11 }}>{r.motivo}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        <button className="btn btn-xs btn-ghost" onClick={() => descartarMovidas([r.id])}>Está bien así</button>
-                      </td>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tbl" style={{ fontSize: 11.5 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ width: 26 }}></th>
+                      <th>Insumo</th>
+                      <th>Actual → Sugerida</th>
+                      <th>Cambiar categoría</th>
+                      <th>Motivo oficial</th>
+                      <th>Acciones</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {revision.recomendaciones.slice(0, 60).map(r => {
+                      const scorePct = Math.round((r.score || 0) * 100);
+                      const BADGE_BANDA = {
+                        alta: 'b-green', media: 'b-blue', baja: 'b-amber', rara: 'b-purple', extrema_baja: 'b-red',
+                      };
+                      const catElegida = catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida;
+                      return (
+                        <tr key={r.id}>
+                          <td style={{ width: 26 }}>
+                            <input type="checkbox" checked={!!recMarcadas[r.id]}
+                              onChange={e => setRecMarcadas(p => {
+                                const n = { ...p };
+                                if (e.target.checked) n[r.id] = true; else delete n[r.id];
+                                return n;
+                              })} />
+                          </td>
+                          <td style={{ fontWeight: 600 }}>{r.nombre}</td>
+                          <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
+                            {etiquetaFamilia(r.familia)} →{' '}
+                            <strong style={{ color: 'var(--tp)' }}>{etiquetaCategoria(catElegida)}</strong>
+                            <span className={`badge ${BADGE_BANDA[r.banda] || 'b-gray'}`} style={{ marginLeft: 6 }}>
+                              {scorePct}%
+                            </span>
+                            {r.inclinacion && (
+                              <div style={{ fontSize: 10.5, color: '#d97706', marginTop: 2 }}>
+                                🛠 Servicio con inclinación a: <strong>{r.inclinacion}</strong>
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <select
+                              className="fi"
+                              style={{ fontSize: 11, padding: '1px 6px', height: 24, maxWidth: 220 }}
+                              value={catElegida}
+                              onChange={e => setCatOverride(p => ({ ...p, [r.id]: e.target.value }))}
+                            >
+                              <OpcionesCategoria />
+                            </select>
+                          </td>
+                          <td style={{ color: 'var(--tm)', fontSize: 11 }}>{r.motivo}</td>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            <button className="btn btn-xs btn-green" onClick={() => aceptarUna(r)} style={{ marginRight: 4 }}>
+                              Aceptar
+                            </button>
+                            <button className="btn btn-xs btn-ghost" onClick={() => descartarMovidas([r.id])}>
+                              Está bien así
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-amber btn-sm" disabled={!idsRec.length} onClick={aceptarMovidas}>
-                  Mover {idsRec.length || ''} {idsRec.length === 1 ? 'insumo' : 'insumos'}
+                  Aplicar a {idsRec.length || ''} {idsRec.length === 1 ? 'insumo marcado' : 'insumos marcados'}
                 </button>
                 <button className="btn btn-ghost btn-sm" disabled={!idsRec.length}
                   onClick={() => descartarMovidas(idsRec)}>Dejar donde están</button>
-                <button className="btn btn-ghost btn-sm"
-                  onClick={() => setRecMarcadas(Object.fromEntries(revision.recomendaciones.map(r => [r.id, true])))}>
-                  Marcar todas
-                </button>
+                {/* Marcar de a BANDA, nunca «todas». Reclasificar 450 filas de un
+                    click con un clasificador que a veces se equivoca es
+                    exactamente lo que no se quiere: las de coincidencia alta se
+                    despachan juntas, las dudosas se miran de a una. */}
+                {BANDAS_LOTE.map(([slug, lbl]) => {
+                  const n = revision.porBanda?.[slug] || 0;
+                  if (!n) return null;
+                  return (
+                    <button key={slug} className="btn btn-ghost btn-sm"
+                      onClick={() => setRecMarcadas(Object.fromEntries(
+                        revision.recomendaciones.filter(r => r.banda === slug).map(r => [r.id, true])))}>
+                      Marcar las {n} de {lbl}
+                    </button>
+                  );
+                })}
+                <button className="btn btn-ghost btn-sm" disabled={!idsRec.length}
+                  onClick={() => setRecMarcadas({})}>Desmarcar</button>
               </div>
             </div>
           )}
 
-          {/* ── Familias ──────────────────────────────────────── */}
+          {/* ── Familias / Categorías ─────────────────────────── */}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <button className={`btn btn-xs ${famSel === 'todas' ? 'btn-amber' : 'btn-ghost'}`}
               onClick={() => setFamSel('todas')}>Todas ({activas.length})</button>
             {familias.map(f => (
               <button key={f.slug} className={`btn btn-xs ${famSel === f.slug ? 'btn-amber' : 'btn-ghost'}`}
                 onClick={() => setFamSel(f.slug)}
-                title={f.propia ? 'Categoría propia de esta entidad: falta decir a cuál del grupo equivale.' : `Va a ${TIPO_DESTINO[f.tipo]}`}>
+                title={f.propia ? 'Categoría propia de esta entidad: falta decir a cuál del grupo equivale.' : `Va a ${TIPO_DESTINO[f.tipo] || 'inventario'}`}>
                 {f.propia ? '◆ ' : ''}{f.label} ({f.n})
               </button>
             ))}
@@ -494,18 +606,6 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
 
           {/* ── Filtros ───────────────────────────────────────── */}
           <div className="card card-p" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div style={{ minWidth: 210 }}>
-              <label className="flabel" style={{ fontSize: 10.5 }}>
-                Subfamilia <span style={{ color: 'var(--tm)' }}>({subfamiliasPresentes.length} en uso)</span>
-              </label>
-              <select className="fi" style={{ width: '100%', fontSize: 12 }} value={subSel} onChange={e => setSubSel(e.target.value)}>
-                <option value="todas">Todas</option>
-                {subfamiliasPresentes.map(([k, n]) => (
-                  <option key={k} value={k}>{etiquetaSubfamilia(k)} ({n})</option>
-                ))}
-                {revision.sinSubfamilia > 0 && <option value="__sin__">Sin subfamilia ({revision.sinSubfamilia})</option>}
-              </select>
-            </div>
             <div style={{ flex: 1, minWidth: 200 }}>
               <label className="flabel" style={{ fontSize: 10.5 }}>Buscar</label>
               <input className="fi" style={{ width: '100%', fontSize: 12 }} value={busca}
@@ -532,14 +632,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
                 {idsMarcados.length} {idsMarcados.length === 1 ? 'marcado' : 'marcados'}
               </div>
               <div>
-                <label className="flabel" style={{ fontSize: 10.5 }}>Cambiar la familia a</label>
-                <select className="fi" style={{ fontSize: 12 }} value={famLote} onChange={e => setFamLote(e.target.value)}>
-                  <option value="">— elegir —</option>
-                  {FAMILIAS_CATALOGO.map(f => <option key={f.slug} value={f.slug}>{f.label}</option>)}
+                <label className="flabel" style={{ fontSize: 10.5 }}>Cambiar la categoría a</label>
+                <select className="fi" style={{ fontSize: 12, maxWidth: 240 }} value={famLote} onChange={e => setFamLote(e.target.value)}>
+                  <option value="">— elegir categoría —</option>
+                  <OpcionesCategoria />
                 </select>
               </div>
               <button className="btn btn-amber btn-sm" disabled={!famLote} onClick={() => corregirLote({ familia: famLote })}>
-                Aplicar familia
+                Aplicar categoría
               </button>
               <div>
                 <label className="flabel" style={{ fontSize: 10.5 }}>o la unidad a</label>
@@ -552,29 +652,10 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
               <button className="btn btn-amber btn-sm" disabled={!uniLote.trim()} onClick={() => corregirLote({ unidad: uniLote.trim() })}>
                 Aplicar unidad
               </button>
-              <div>
-                <label className="flabel" style={{ fontSize: 10.5 }}>o la subfamilia a</label>
-                <select className="fi" style={{ fontSize: 12 }} value={subLote} onChange={e => setSubLote(e.target.value)}>
-                  <option value="">— elegir —</option>
-                  {[...SUBFAMILIAS.map(x => x.slug), ...Object.keys(SUBFAMILIAS_TECNICAS)]
-                    .map(k => <option key={k} value={k}>{etiquetaSubfamilia(k)}</option>)}
-                </select>
-              </div>
-              <button className="btn btn-amber btn-sm" disabled={!subLote} onClick={() => corregirLote({ subfamilia: subLote })}>
-                Aplicar subfamilia
-              </button>
               <button className="btn btn-ghost btn-sm" onClick={() => corregirLote({ activo: false })}>
                 Desactivar
               </button>
               <button className="btn btn-ghost btn-sm" onClick={() => setMarcados({})}>Desmarcar todo</button>
-            </div>
-          )}
-
-          {revision.propuestas.some(p => p.subfamilia && !p.familiaSugerida) && (
-            <div style={{ fontSize: 11.5, color: 'var(--ts)' }}>
-              {revision.propuestas.filter(p => p.subfamilia && !p.familiaSugerida).length} subfamilias están
-              PROPUESTAS (salen del nombre y se recalculan solas).{' '}
-              <button className="btn btn-xs btn-ghost" onClick={congelarSubfamilias}>Confirmarlas todas</button>
             </div>
           )}
 
@@ -597,8 +678,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
                   </th>
                   <th>Nombre</th>
                   <th>Unidad</th>
-                  <th>Familia</th>
-                  <th title="El segundo nivel: dentro de la familia, qué clase de cosa es">Subfamilia</th>
+                  <th>Categoría (IUPC / Estándar)</th>
                   <th title="A qué inventario iría si se da de alta">Va a</th>
                   <th title="Cómo lo agrupa contabilidad">Categoría de gasto</th>
                   <th></th>
@@ -620,13 +700,22 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
                       </td>
                       <td>{r.nombre}</td>
                       <td style={{ fontFamily: 'monospace' }}>{r.unidad || '—'}</td>
-                      <td title={propia ? 'Categoría propia de esta entidad' : undefined}>
-                        {propia ? '◆ ' : ''}{etiquetaFamilia(r.familia)}
-                      </td>
-                      <td style={{ color: r.subfamilia ? undefined : 'var(--tm)' }}
-                        title={r.subfamilia ? 'Confirmada' : 'Propuesta: se calcula del nombre y se puede cambiar.'}>
-                        {subDe.get(r.id) ? etiquetaSubfamilia(subDe.get(r.id)) : '—'}
-                        {!r.subfamilia && subDe.get(r.id) ? ' ·' : ''}
+                      <td style={{ minWidth: 200 }} title={propia ? 'Categoría propia de esta entidad' : undefined}>
+                        <select
+                          className="fi"
+                          style={{ fontSize: 11, height: 24, padding: '1px 4px', maxWidth: 240 }}
+                          value={r.familia || 'otros'}
+                          onChange={async (e) => {
+                            const nuevaCat = e.target.value;
+                            if (nuevaCat === r.familia) return;
+                            await corregirEnLote([r.id], { familia: nuevaCat }, { userId });
+                            await refrescar();
+                            showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(nuevaCat)}`, 'green');
+                          }}
+                          title="Cambiar categoría de este insumo directamente"
+                        >
+                          <OpcionesCategoria actual={r.familia} />
+                        </select>
                       </td>
                       <td><span className={`badge ${BADGE_DESTINO[destino] || 'b-gray'}`} style={{ fontSize: 9 }}>{TIPO_DESTINO[destino] || destino}</span></td>
                       <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>
@@ -684,7 +773,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null }) {
                     <select className="fi" style={{ fontSize: 11 }} value={eqElegida[f.familia_local] || ''}
                       onChange={e => setEqElegida(p => ({ ...p, [f.familia_local]: e.target.value }))}>
                       <option value="">— equivale a —</option>
-                      {FAMILIAS_CATALOGO.map(c => <option key={c.slug} value={c.slug}>{c.label}</option>)}
+                      <OpcionesCategoria />
                     </select>
                     <button className="btn btn-xs btn-amber" style={{ marginLeft: 4 }}
                       disabled={!eqElegida[f.familia_local]}

@@ -10,7 +10,7 @@ import { normMapeo } from '../mapeo-insumos.js';
 import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
-  decisionDeCatalogo, decisionNoInsumo, filaNuevaDeCatalogo, familiaComercialDe,
+  decisionDeCatalogo, decisionNoInsumo, filaNuevaDeCatalogo,
   aprendizajeParaContadora,
 } from '../bandeja-categorizacion.js';
 
@@ -255,6 +255,19 @@ describe('las decisiones ya tomadas', () => {
     expect(decisionDeCatalogo(enUnd, { ...catFila, unidad: 'und' }, { factor: 3, factorFuente: 'tabla' }).factor).toBeNull();
   });
 
+  it('sin fila de catálogo NO fabrica una decisión — la base la rechazaría', () => {
+    // CHECK `insumo_categoria_catalogo_coherente`: decision='catalogo' exige
+    // catalogo_insumo_id NOT NULL. Dexie no lo valida, así que una fila mal
+    // formada se guardaba local y rebotaba en el push con 23514, dejando el
+    // sync en reintento eterno y sin que nadie se enterara.
+    expect(() => decisionDeCatalogo(fila, null)).toThrow(/catalogo_insumo_id/);
+    expect(() => decisionDeCatalogo(fila, { id: null, nombre: 'X' })).toThrow(/catalogo_insumo_id/);
+    // Y con id, la fila que sale SIEMPRE cumple el invariante.
+    const d = decisionDeCatalogo(fila, { id: 'c9', nombre: 'X', unidad: 'und', familia: '03' });
+    expect(d.decision).toBe('catalogo');
+    expect(d.catalogo_insumo_id).toBeTruthy();
+  });
+
   it('la familia se CONGELA al decidir', () => {
     const d = decisionDeCatalogo(fila, { id: 'c4', nombre: 'GUANTES ANTICORTE', unidad: 'par', familia: 'seguridad' });
     expect(d.familia).toBe('seguridad');
@@ -266,7 +279,8 @@ describe('el alta al catálogo desde la bandeja', () => {
     const f = { norm: 'x', muestra: 'plancha negra lisa 1/2 x 1.20 x 2.40mt.', unidades: new Set(['UNIDAD']), importe: 14119, veces: 1 };
     const nueva = filaNuevaDeCatalogo(f);
     expect(nueva.nombre).toBe('PLANCHA NEGRA LISA 1/2 X 1.20 X 2.40MT.');
-    expect(nueva.familia).toBe('perfiles_metalicos');   // la regla del motor: es acero estructural
+    // La categoría sale del estándar IUPC: 56 = «Plancha de acero LAC».
+    expect(nueva.familia).toBe('56');
     expect(nueva.unidad).toBe('und');                   // normalizada
     expect(nueva.norm).toBe(normMapeo(nueva.nombre));
     // 'manual' y no 'xlsx': reimportar el archivo NO puede pisarla ni marcarla
@@ -281,12 +295,22 @@ describe('el alta al catálogo desde la bandeja', () => {
     expect(nueva.tipo).toBe('servicio');
   });
 
-  it('la familia comercial se deduce de la regla del motor, y «otros» cuando no sabe', () => {
-    expect(familiaComercialDe('VARILLA DE ACERO CORRUGADO DE 3/8')).toBe('ferreteria');
-    expect(familiaComercialDe('VALVULA COMPUERTA DE BRONCE DE 2"')).toBe('valvulas');
-    expect(familiaComercialDe('MADERA TORNILLO PARA ENCOFRADO')).toBe('madera');
-    expect(familiaComercialDe('CASCO DE SEGURIDAD')).toBe('seguridad');
-    expect(familiaComercialDe('BAC DOBHAM MCPOL 6N')).toBe('otros');
+  it('la categoría del alta sale del estándar IUPC, no del vocabulario comercial viejo', () => {
+    // Las familias comerciales («ferreteria», «valvulas», «madera», …) se
+    // abandonaron el 13-set: hay UNA sola clasificación y es la de la norma.
+    const cat = (muestra) => filaNuevaDeCatalogo({ norm: 'x', muestra, unidades: new Set(['und']) }).familia;
+    expect(cat('VARILLA DE ACERO CORRUGADO DE 3/8')).toBe('03');   // acero corrugado
+    expect(cat('VALVULA COMPUERTA DE BRONCE DE 2"')).toBe('77');   // válvula de bronce
+    expect(cat('MADERA TORNILLO PARA ENCOFRADO')).toBe('43');      // madera nacional encofrado
+    expect(cat('CASCO DE SEGURIDAD')).toBe('83');                  // implemento de seguridad
+  });
+
+  it('lo que la norma no reconoce NO se inventa: cae en «sin clasificar»', () => {
+    const nueva = filaNuevaDeCatalogo({ norm: 'x', muestra: 'BAC DOBHAM MCPOL 6N', unidades: new Set(['und']) });
+    expect(nueva.familia).toBe('sin_clasificar');
+    // Y nace como INSUMO, no como servicio: el residual viejo era el IUPC 93,
+    // que es de tipo `servicio`, y metía todo lo desconocido ahí.
+    expect(nueva.tipo).toBe('insumo');
   });
 });
 

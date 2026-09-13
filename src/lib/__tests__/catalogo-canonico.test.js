@@ -17,6 +17,7 @@ import {
   contarPorFamilia, factorDisgregacion, etiquetaFamilia, esFamiliaCanonica,
   familiaEfectiva, familiasPropias, equivalenciasDe, matrizCategorias,
   entidadesConCatalogo, presentacionesDe, convertirPresentacion,
+  revisarCategoriasCatalogo,
 } from '../catalogo-canonico.js';
 import { normMapeo as normMapeoTest } from '../mapeo-insumos.js';
 
@@ -217,7 +218,12 @@ describe('la familia traduce, no reemplaza', () => {
 
   it('un servicio nunca cae en una tabla de inventario', () => {
     expect(tipoInsumoDe(de('ALQUILER DE CAMIONETA 4X4'))).toBe('servicio');
-    expect(categoriaItemDe(de('ALQUILER DE CAMIONETA 4X4'))).toBe('gastos_generales');
+    // Cambió el 13-set: va a 'servicios', no a 'gastos_generales'. El bucket
+    // 'servicios' YA existe en CATEGORIAS_ITEM y un alquiler de maquinaria
+    // para la obra es un costo del proyecto, no un gasto de estructura.
+    // Meterlo en 'gastos_generales' era una simplificación de cuando el
+    // catálogo tenía una sola familia «servicios».
+    expect(categoriaItemDe(de('ALQUILER DE CAMIONETA 4X4'))).toBe('servicios');
   });
 
   it('sin familia conocida cae en la regla de siempre, no en un default mudo', () => {
@@ -499,5 +505,49 @@ describe('el fierro en varillas', () => {
   it('lo desactivado y lo borrado no se ofrece', () => {
     const off = DISG.map(d => ({ ...d, activo: false }));
     expect(presentacionesDe('ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', off)).toEqual([]);
+  });
+});
+
+describe('la reclasificación al estándar IUPC (13-set)', () => {
+  const fila = (id, nombre, familia) => ({ id, nombre, familia, tipo: 'insumo', activo: true });
+
+  it('propone primero lo que el estándar reconoce mejor', () => {
+    const { recomendaciones } = revisarCategoriasCatalogo([
+      fila('a', 'PRENSA HIDRAULICA RARA', 'ferreteria'),
+      fila('b', 'ARENA GRUESA', 'ferreteria'),
+      fila('c', 'CEMENTO PORTLAND TIPO I', 'ferreteria'),
+    ]);
+    // Orden descendente por confianza: la pantalla arranca por lo seguro.
+    const scores = recomendaciones.map(r => r.score);
+    expect(scores).toEqual([...scores].sort((x, y) => y - x));
+    expect(recomendaciones[0].banda).toBe('alta');
+  });
+
+  it('NUNCA propone un downgrade a «sin clasificar»', () => {
+    // RASTRILLO no lo alcanza el estándar. Su familia vieja
+    // ('equipos_herramientas' → gasto 'herramientas') es MEJOR que
+    // 'sin_clasificar' (→ gasto 'otros'): ofrecer el cambio sería invitar a
+    // empeorar el dato de un click. Se cuenta aparte y se resuelve a mano.
+    const r = revisarCategoriasCatalogo([fila('a', 'RASTRILLO', 'equipos_herramientas')]);
+    expect(r.recomendaciones).toHaveLength(0);
+    expect(r.sinRecomendacion).toBe(1);
+  });
+
+  it('no pisa una categoría IUPC ya puesta con una corazonada floja', () => {
+    // r ya tiene su código oficial: solo se vuelve a proponer si la
+    // recomendación nueva es de banda alta.
+    const r = revisarCategoriasCatalogo([fila('a', 'VALDE VACIO DE 19 LTS', '37')]);
+    expect(r.recomendaciones).toHaveLength(0);
+    expect(r.yaClasificadas).toBe(1);
+    expect(r.pendientesLegacy).toBe(0);
+  });
+
+  it('cuenta cuántas faltan pasar del vocabulario viejo', () => {
+    const r = revisarCategoriasCatalogo([
+      fila('a', 'ARENA GRUESA', 'agregados'),   // legacy → pendiente
+      fila('b', 'CASCO DE SEGURIDAD', '83'),    // ya con su código
+    ]);
+    expect(r.pendientesLegacy).toBe(1);
+    expect(r.yaClasificadas).toBe(1);
   });
 });
