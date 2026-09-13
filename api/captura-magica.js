@@ -138,6 +138,31 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
   "advertencias": [string]
 }`;
 
+// Separador del texto OCR en el mensaje de usuario (dos saltos + rótulo).
+const BLOQUE_TEXTO_OCR = `
+
+===== TEXTO OCR DEL DOCUMENTO =====
+`;
+
+const SYSTEM_PROMPT_ITEMS = `Eres un experto parser de comprobantes peruanos (SUNAT). Recibirás el TEXTO de un comprobante ya extraído por OCR y tu ÚNICA tarea es transcribir su TABLA DE DETALLE: una entrada por cada línea de producto o servicio facturada.
+
+Reglas estrictas:
+- NO inventes líneas ni datos. Si el texto no tiene tabla de detalle, devuelve items como array VACÍO.
+- NO devuelvas la cabecera, ni el emisor, ni los totales: SOLO las líneas de detalle.
+- Mantén las descripciones tal cual aparecen (no las resumas ni las traduzcas).
+- Las líneas de TOTAL, SUBTOTAL, IGV, DESCUENTO GLOBAL, ANTICIPO, "SON: … SOLES" y las leyendas de detracción NO son ítems.
+- cantidad y precio_unitario son números (usa punto decimal). Si una línea no muestra precio unitario pero sí importe y cantidad, deduce el unitario dividiendo.
+- unidad: la del comprobante (kg, m, und, bls, gal, m2, m3, hr, zzz, nium…). Si no figura, usa "und".
+
+Responde SOLO con JSON válido MINIFICADO: UNA sola línea, sin markdown, sin saltos de línea ni espacios de indentación, sin texto extra. Estructura exacta (indentada SOLO para que la leas):
+{
+  "items": [
+    { "descripcion": string, "cantidad": number, "unidad": string, "precio_unitario": number, "subtotal": number }
+  ],
+  "confianza": "alta" | "media" | "baja",
+  "advertencias": [string]
+}`;
+
 const SYSTEM_PROMPT_CERTIFICADO = `Eres un ingeniero de control de calidad de obras de construcción en Perú. Recibirás un CERTIFICADO DE CALIDAD de un insumo comprado (certificado de ensayo, mill test certificate, ficha técnica, protocolo de pruebas de laboratorio) y un REQUISITO del expediente técnico (insumo + norma y/o especificación mínima). Tu tarea es extraer los datos del certificado y COMPARARLO contra ese requisito.
 
 Reglas estrictas:
@@ -376,6 +401,141 @@ function extractJson(data) {
   }
 }
 
+// ── RELECTURA DE ÍTEMS (tipo 'items') ─────────────────────────────────
+// Gabriel, 13-set-2026: «logró leer parte de la factura, me salió el botón
+// para revisar pero los ítems no los leyó; entiendo que el OCR sí lo hizo,
+// me gustaría poder reintentar solo el post procesamiento». Hasta hoy la única
+// salida era BORRAR la fila y volver a subir el archivo — se perdía la
+// cabecera ya revisada y se pagaba otro OCR.
+//
+// Esta rama hace SOLO el segundo paso del pipeline: texto → lista de ítems.
+//   · Con `texto_ocr` (el que devolvió la lectura anterior): NO se vuelve a
+//     pagar OCR y la respuesta llega en un par de segundos.
+//   · Sin él (fila vieja de la bandeja): se rehace el OCR y después los ítems.
+// La cabecera NO se toca: lo que ya revisó la persona en el modal queda igual.
+//
+// Por qué esto acierta donde falló la lectura completa: al no tener que
+// devolver cabecera, emisor, receptor ni totales, TODO el presupuesto de
+// salida se va en las líneas — que es justo lo que se cortaba.
+async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64, mimeType,
+                                  textoOcr, elegidoOcr, elegidoTexto, cfgOR, apiKey }) {
+  let texto = textoOcr || '';
+  let ocrModel = null;
+  let ocrUsage = null;
+  const veniaConTexto = !!texto;
+  if (!texto) {
+    if (!mistralKey) {
+      return res.status(503).json({
+        error: 'Para releer solo los ítems hace falta el OCR y no está configurado (MISTRAL_API_KEY). Usá "Reintentar" para volver a leer el comprobante entero.',
+        code: 'sin_ocr',
+      });
+    }
+    try {
+      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, elegidoOcr.modelo);
+      if (!r.texto || r.texto.length < 20) throw new Error('ocr-vacio');
+      texto = r.texto;
+      ocrModel = r.model;
+      ocrUsage = r.usage;
+    } catch (e) {
+      console.warn('[captura-magica] relectura de ítems: el OCR falló:', (e && (e.upstreamStatus || e.message)) || e);
+      return res.status(e?.name === 'AbortError' ? 504 : 502).json({
+        error: 'No se pudo volver a leer el texto del comprobante. Probá de nuevo en un momento, o cargá las líneas a mano con "+ Agregar ítem".',
+        code: 'ocr_fallo',
+      });
+    }
+  }
+
+  const itemsEstimados = estimarItems(texto);
+  // Sin cabecera ni totales que devolver, el presupuesto entero es para las
+  // líneas: 60 tokens por ítem (JSON minificado) + 400 de margen.
+  const maxTokensCalc = Math.min(16000, Math.max(3000, 400 + itemsEstimados * 60));
+  const userTexto = 'A continuación está el TEXTO extraído por OCR de un comprobante peruano. '
+    + 'Transcribí ÚNICAMENTE su tabla de detalle (una entrada por línea facturada) al JSON descrito en las '
+    + 'instrucciones del sistema. No devuelvas cabecera, emisor, receptor ni totales. '
+    + 'Responde SOLO con el JSON minificado.' + BLOQUE_TEXTO_OCR + texto;
+
+  const usaOpenRouter = cfgOR.activo;
+  if (!usaOpenRouter && !apiKey) {
+    return res.status(503).json({ error: 'No hay ningún motor de IA configurado en Vercel.' });
+  }
+
+  const llamarClaude = () => anthropicMessages(apiKey, {
+    model: CLAUDE_STRUCT_MODEL,
+    max_tokens: maxTokensCalc,
+    system: SYSTEM_PROMPT_ITEMS,
+    messages: [{ role: 'user', content: [{ type: 'text', text: userTexto }] }],
+  }, deadline);
+
+  let data;
+  let engine = 'mistral-ocr+claude';
+  let proveedorIa = null;
+  try {
+    if (usaOpenRouter) {
+      const restante = Math.max(deadline - Date.now(), 1000);
+      const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
+      try {
+        const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+          modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
+          respaldos: elegidoTexto.auto ? cfgOR.respaldos : [],
+          politica: cfgOR.politica,
+          system: SYSTEM_PROMPT_ITEMS,
+          user: userTexto,
+          maxTokens: presupuestoSalida(itemsEstimados),
+        }), deadlineOR);
+        data = normalizarRespuestaOR(cruda);
+        engine = 'mistral-ocr+openrouter';
+        proveedorIa = data.proveedor;
+      } catch (e) {
+        const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
+        console.warn('[captura-magica] relectura de ítems, OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
+          puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
+        if (!puedeRespaldar) throw e;
+        data = await llamarClaude();
+        engine = 'mistral-ocr+claude(respaldo)';
+      }
+    } else {
+      data = await llamarClaude();
+    }
+
+    let extracted;
+    try {
+      ({ extracted } = extractJson(data));
+    } catch (e) {
+      if (e?.message === 'truncado') {
+        return res.status(502).json({
+          error: 'El detalle de este comprobante es tan largo que no entra en una sola lectura. Cargá las líneas que falten a mano con "+ Agregar ítem" (la cabecera y los totales ya están).',
+          code: 'items_muy_largos',
+        });
+      }
+      throw e;
+    }
+    const items = Array.isArray(extracted?.items) ? extracted.items : [];
+    try {
+      console.log('[ia-uso]', JSON.stringify({
+        endpoint: 'captura-magica', modo: 'items', engine, model: data.model,
+        in: data.usage?.input_tokens ?? null, out: data.usage?.output_tokens ?? null,
+        ocr: ocrUsage ? (ocrUsage.pages_processed ?? 1) : 0, ocr_model: ocrModel,
+        items: items.length,
+        ...(proveedorIa ? { proveedor: proveedorIa } : {}),
+      }));
+    } catch {}
+    return res.status(200).json({
+      items,
+      advertencias: Array.isArray(extracted?.advertencias) ? extracted.advertencias : [],
+      model: data.model,
+      usage: data.usage,
+      engine,
+      ...(proveedorIa ? { proveedor: proveedorIa } : {}),
+      ...(ocrModel ? { ocr_model: ocrModel } : {}),
+      // Se devuelve SOLO cuando el OCR corrió recién: así el próximo reintento
+      // ya no lo paga. Si el texto vino del cliente, no hace falta repetírselo.
+      ...(veniaConTexto ? {} : { ocr_texto: texto }),
+    });
+  } catch (e) {
+    return respondError(e, res, isProd);
+  }
+}
+
 // Traduce un error del pipeline a la respuesta HTTP amigable (igual que antes).
 function respondError(e, res, isProd) {
   if (e && e.name === 'AbortError') {
@@ -512,45 +672,60 @@ export default async function handler(req, res) {
   const file = typeof body.file === 'string' ? body.file.trim() : '';
   const mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim() : '';
 
-  if (!file) {
+  // ── Multiplex: RELECTURA DE ÍTEMS ────────────────────────────────
+  // Es el ÚNICO modo que puede venir SIN archivo: cuando el navegador ya tiene
+  // el texto que devolvió el OCR de la lectura anterior, se manda ese texto y
+  // el binario no hace falta (ni se vuelve a pagar el OCR). Con archivo
+  // funciona igual, pasando por las mismas validaciones que todo lo demás.
+  const esItems = body.tipo === 'items';
+  const textoOcrCliente = esItems && typeof body.texto_ocr === 'string' ? body.texto_ocr.trim() : '';
+  if (esItems && textoOcrCliente.length > 400_000) {
+    return res.status(422).json({ error: 'El texto del comprobante es demasiado largo para releerlo.' });
+  }
+  const sinArchivo = esItems && !!textoOcrCliente;
+
+  if (!file && !sinArchivo) {
     return res.status(422).json({ error: 'Falta el campo "file" en base64' });
   }
-  if (!mimeType) {
-    return res.status(422).json({ error: 'Falta el campo "mimeType"' });
-  }
-  if (!ALLOWED_MIME.includes(mimeType)) {
-    return res.status(422).json({
-      error: `mimeType no permitido. Permitidos: ${ALLOWED_MIME.join(', ')}`,
-    });
-  }
-
-  // Sanitizar base64: remover prefijo data URL si vino incluido
-  const cleanBase64 = file.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
-  if (!cleanBase64) {
-    return res.status(422).json({ error: 'El archivo en base64 está vacío' });
-  }
-  if (cleanBase64.length > MAX_BASE64_BYTES) {
-    return res.status(422).json({
-      error: `Archivo demasiado grande. Máximo ${Math.floor(MAX_BASE64_BYTES / 1024 / 1024)} MB en base64 (≈6 MB binario)`,
-    });
-  }
-  // Validar que sea base64 razonablemente válido (caracteres permitidos)
-  if (!/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
-    return res.status(422).json({ error: 'El archivo no es base64 válido' });
-  }
-
-  // Validar magic bytes — no confiar en mimeType declarado por el cliente.
-  // Un attacker puede mandar un .exe disfrazado como image/png.
-  try {
-    const buf = Buffer.from(cleanBase64, 'base64');
-    const v = validateFileBytes(buf, mimeType);
-    if (!v.ok) {
-      return res.status(415).json({
-        error: v.reason || `El contenido del archivo no coincide con el tipo declarado (${mimeType}). Real: ${v.actualType || 'desconocido'}.`,
+  let cleanBase64 = '';
+  if (!sinArchivo) {
+    if (!mimeType) {
+      return res.status(422).json({ error: 'Falta el campo "mimeType"' });
+    }
+    if (!ALLOWED_MIME.includes(mimeType)) {
+      return res.status(422).json({
+        error: `mimeType no permitido. Permitidos: ${ALLOWED_MIME.join(', ')}`,
       });
     }
-  } catch (e) {
-    return res.status(422).json({ error: 'No se pudo decodificar base64' });
+
+    // Sanitizar base64: remover prefijo data URL si vino incluido
+    cleanBase64 = file.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+    if (!cleanBase64) {
+      return res.status(422).json({ error: 'El archivo en base64 está vacío' });
+    }
+    if (cleanBase64.length > MAX_BASE64_BYTES) {
+      return res.status(422).json({
+        error: `Archivo demasiado grande. Máximo ${Math.floor(MAX_BASE64_BYTES / 1024 / 1024)} MB en base64 (≈6 MB binario)`,
+      });
+    }
+    // Validar que sea base64 razonablemente válido (caracteres permitidos)
+    if (!/^[A-Za-z0-9+/=]+$/.test(cleanBase64)) {
+      return res.status(422).json({ error: 'El archivo no es base64 válido' });
+    }
+
+    // Validar magic bytes — no confiar en mimeType declarado por el cliente.
+    // Un attacker puede mandar un .exe disfrazado como image/png.
+    try {
+      const buf = Buffer.from(cleanBase64, 'base64');
+      const v = validateFileBytes(buf, mimeType);
+      if (!v.ok) {
+        return res.status(415).json({
+          error: v.reason || `El contenido del archivo no coincide con el tipo declarado (${mimeType}). Real: ${v.actualType || 'desconocido'}.`,
+        });
+      }
+    } catch (e) {
+      return res.status(422).json({ error: 'No se pudo decodificar base64' });
+    }
   }
 
   // ── Multiplex: modo certificado de calidad (Fase 4) ──
@@ -587,6 +762,15 @@ export default async function handler(req, res) {
   const deadline = Date.now() + 55000;
   const RESERVA_STRUCT_MS = 28000;
   const mistralKey = process.env.MISTRAL_API_KEY;
+
+  // Relectura de ítems: sale por su propia rama y no toca nada del pipeline
+  // completo (ni el prompt grande, ni el rescate de cabecera, ni la visión).
+  if (esItems) {
+    return await estructurarItems({
+      res, isProd, deadline, mistralKey, cleanBase64, mimeType,
+      textoOcr: textoOcrCliente, elegidoOcr, elegidoTexto, cfgOR, apiKey,
+    });
+  }
 
   // Bloque de contenido para el fallback de visión (PDF vs imagen).
   const isPdf = mimeType === 'application/pdf';
@@ -832,9 +1016,16 @@ export default async function handler(req, res) {
         ...(respaldoUsado ? { respaldo: respaldoUsado } : {}),
       }));
     } catch {}
+    // ¿Se quedó SIN ítems? Entonces el texto del OCR viaja de vuelta: con él,
+    // el botón "Releer ítems" del modal reintenta SOLO la estructuración, sin
+    // volver a pagar el OCR ni perder la cabecera que la persona ya revisó.
+    // Solo en ese caso — en la lectura normal sería tráfico al pepe.
+    const sinItems = !esCert && !esSctr && !(Array.isArray(extracted?.items) && extracted.items.length > 0);
+    const textoParaRelectura = (ocr && sinItems && ocr.texto.length <= 300_000) ? ocr.texto : null;
     return res.status(200).json({
       extracted,
       ...(rescatado ? { items_no_leidos: true } : {}),
+      ...(textoParaRelectura ? { ocr_texto: textoParaRelectura } : {}),
       ...(esCert ? { tipo: 'certificado_calidad' } : {}),
       ...(esSctr ? { tipo: 'sctr_paquete' } : {}),
       model: data.model,

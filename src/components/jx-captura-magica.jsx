@@ -28,6 +28,13 @@ import {
   clasificarPartes, permiteCrearProveedor, permiteCrearEmpresaGrupo,
   OP_VENTA_EXTERNA, OP_INTERCO,
 } from "../lib/partes-comprobante.js";
+// Comparación de razones sociales y veredicto SUNAT (razón social + estado +
+// condición HABIDO/NO HABIDO). `razonSimilar` vivía acá como copia local sin
+// tests y la usaban tres decisiones distintas — ver el encabezado del lib.
+import { razonSimilar, veredictoSunat } from "../lib/sunat-verificacion.js";
+// La regla "¿esta factura genera ingreso al almacén?" en un solo lugar:
+// el casillero, el texto del pie y el recepcion_status que se guarda.
+import { evaluarRecepcionAlmacen } from "../lib/recepcion-almacen.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -149,25 +156,28 @@ function fuzzyScore(a, b) {
   return inter / Math.max(A.size, B.size);
 }
 
-// Tokens jurídicos/genéricos de razón social peruana que NO distinguen una
-// empresa de otra (presentes en casi todas) → se ignoran al comparar nombres,
-// para que el match por razón social no se infle por "COMERCIAL … SAC".
-const RS_STOPWORDS = new Set([
-  'sociedad','anonima','cerrada','responsabilidad','limitada','empresa','individual',
-  'comercial','servicios','generales','distribuidora','distribuciones','importaciones',
-  'exportaciones','representaciones','inversiones','corporacion','negocios','contratistas',
-  'ingenieria','construcciones','constructora','grupo','multiservicios','comercializadora',
-  'industrias','soluciones','peru','sac','eirl','srl','sociedad','del','los','las','company',
-]);
-// Similitud de razón social robusta: Jaccard sobre los tokens DISTINTIVOS
-// (descartando los jurídicos/genéricos y los muy cortos). Devuelve 0..1.
-function razonSimilar(a, b) {
-  const toks = (s) => norm(s).split(' ').filter(w => w.length > 2 && !RS_STOPWORDS.has(w));
-  const A = new Set(toks(a)), B = new Set(toks(b));
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const w of A) if (B.has(w)) inter++;
-  return inter / Math.max(A.size, B.size);
+// Normaliza las líneas que devolvió la IA: fuzzy match contra el catálogo de
+// materiales + clasificación del tipo de insumo (material / herramienta / epp /
+// maquinaria / servicio), que define en qué tabla se crearía el catálogo.
+// Vive a nivel de módulo porque la usan DOS caminos que tienen que coincidir:
+// la lectura inicial y la RELECTURA de ítems. Si divergieran, releer una
+// factura le cambiaría el tipo de insumo a todas sus líneas.
+function mapearItemsOCR(itemsExt, materialesDB) {
+  return (itemsExt || []).map((it, idx) => {
+    const candidatos = (materialesDB || [])
+      .map(m => ({ m, score: fuzzyScore(it.descripcion, m.nombre_material) }))
+      .filter(x => x.score >= 0.5)
+      .sort((a, b) => b.score - a.score);
+    const top = candidatos[0];
+    return {
+      ...it,
+      idx,
+      material_id: top ? top.m.id : '',
+      accion_material: top ? 'usar_existente' : 'crear_nuevo',
+      unidad: it.unidad || top?.m.unidad || 'und',
+      tipo_insumo: clasificarInsumo(it.descripcion || ''),
+    };
+  });
 }
 
 // Match de una empresa DEL GRUPO por RUC (ancla dura) con FALLBACK por razón
@@ -209,23 +219,45 @@ function getSunatCached(ruc) {
   if (c && (Date.now() - (c.at || 0)) < SUNAT_CACHE_TTL) return c;
   return null;
 }
-function setSunatCached(ruc, razonSocial) {
+function setSunatCached(ruc, datos) {
   try {
     const c = _sunatCacheAll();
-    c[ruc] = { razonSocial, at: Date.now() };
+    c[ruc] = { ...datos, at: Date.now() };
     localStorage.setItem(SUNAT_CACHE_KEY, JSON.stringify(c));
   } catch {}
 }
-// Consulta SUNAT por RUC reutilizando la caché. Devuelve { razonSocial, _cached }
-// o null si el RUC es inválido / la consulta falla (offline, 429, etc.).
+// Consulta SUNAT por RUC reutilizando la caché. Devuelve
+// { razonSocial, estado, condicion, direccion, _cached } o null si el RUC es
+// inválido / la consulta falla (offline, 429, etc.).
+//
+// ESTADO y CONDICIÓN se guardan desde el 13-set-2026: la consulta ya los traía
+// y se tiraban. Un proveedor NO HABIDO no da derecho a crédito fiscal ni a
+// gasto deducible, y eso hay que verlo al registrar la factura, no en la
+// fiscalización. Las entradas de la caché VIEJA (solo razón social) siguen
+// sirviendo: quedan sin estado hasta que venzan sus 7 días y se refresquen —
+// no se invalidan a mano para no re-gastar la cuota de golpe.
 async function consultarRucCacheado(ruc) {
   const r = String(ruc || '').replace(/\D/g, '');
   if (!/^\d{11}$/.test(r)) return null;
   const cached = getSunatCached(r);
-  if (cached) return { razonSocial: cached.razonSocial, _cached: true };
+  if (cached) {
+    return {
+      razonSocial: cached.razonSocial,
+      estado: cached.estado || '', condicion: cached.condicion || '',
+      direccion: cached.direccion || '', _cached: true,
+    };
+  }
   try {
     const res = await window.__identity?.consultarRUC?.(r);
-    if (res?.razonSocial) { setSunatCached(r, res.razonSocial); return { razonSocial: res.razonSocial, _cached: false }; }
+    if (res?.razonSocial) {
+      const datos = {
+        razonSocial: res.razonSocial,
+        estado: res.estado || '', condicion: res.condicion || '',
+        direccion: res.direccion || '',
+      };
+      setSunatCached(r, datos);
+      return { ...datos, _cached: false };
+    }
   } catch {}
   return null;
 }
@@ -502,6 +534,11 @@ function CapturaMagicaPage({ showToast }) {
   // confirma o descarta — sobreviven navegación entre pestañas, recargas, y
   // cierre del browser.
   const [items, setItems] = uSCM([]);
+  // Espejo en un ref: los handlers async (releer ítems, confirmar) corren mucho
+  // después del render que los creó y leer el estado directo daría la lista
+  // vieja. Mismo patrón que cfgIAFilas.
+  const itemsRef = uRCM([]);
+  uECM(() => { itemsRef.current = items; }, [items]);
   const [reviewing, setReviewing] = uSCM(null);
   // Cuando una factura recién registrada coincide con ingresos del almacén
   // marcados como pendiente_sustento del mismo proveedor, abrimos un modal
@@ -540,8 +577,19 @@ function CapturaMagicaPage({ showToast }) {
       const res = await consultarRucCacheado(ruc);
       setRucVerif(v => v ? { ...v, checked: i + 1 } : v);
       if (res?.razonSocial) {
-        const sim = razonSimilar(p.razon_social || '', res.razonSocial);
-        if (sim < 0.6) results.push({ id: p.id, ruc, actual: p.razon_social || '', sunat: res.razonSocial, similar: Math.round(sim * 100), applied: false });
+        // MISMO veredicto que el modal de revisión: además del nombre, mira el
+        // padrón (ACTIVO / HABIDO). Un barrido de los ~380 proveedores saca de
+        // una vez todos los NO HABIDO, que es lo que después cuesta plata en
+        // una fiscalización — y eso antes no se veía en ningún lado.
+        const v = veredictoSunat({ razonOCR: p.razon_social || '', sunat: res });
+        if (v && (v.mismatch || v.alertas.length)) {
+          results.push({
+            id: p.id, ruc, actual: p.razon_social || '', sunat: v.razonSocial,
+            similar: v.similitud, mismatch: v.mismatch,
+            estado: v.estado, condicion: v.condicion, alertas: v.alertas,
+            applied: false,
+          });
+        }
       }
       // Throttle SOLO cuando hubo consulta real (no cacheada): ≤30/min en apis.net.pe.
       if (!eraCache && i < provs.length - 1 && !verifCancelRef.current) await new Promise(r => setTimeout(r, 2300));
@@ -709,7 +757,10 @@ function CapturaMagicaPage({ showToast }) {
             }
             const status = it.status === 'procesando' ? 'pendiente' : it.status;
             if (it.file_blob) { try { blobPersistidoRef.current.add(it.id); } catch {} }
-            return { ...it, file, status };
+            // `releyendo` es de la sesión, no del archivo: si la pestaña se
+            // cerró en medio de una relectura, el botón quedaría deshabilitado
+            // para siempre.
+            return { ...it, file, status, releyendo: false };
           } catch { return null; }
         }).filter(Boolean).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         // MERGE, no reemplazo ciego: esta pestaña es la ÚNICA escritora de
@@ -962,6 +1013,11 @@ function CapturaMagicaPage({ showToast }) {
         // (antes solo decía "Ya existe en la DB" y la asistente no podía verificar).
         duplicate_info: dup ? { doc: dup.document_number, fecha: dup.date, monto: dup.amount, moneda: dup.currency, tercero: dup.third_party_name, tipo: dup.document_type } : null,
         nc_aviso: ncSerieDeFactura ? avisoSerieRepetida({ serieNota: ext.serie_correlativo, serieFactura: ncSerieDeFactura.document_number }) : null,
+        // TEXTO DEL OCR: el server lo devuelve SOLO cuando el comprobante quedó
+        // sin ítems. Guardarlo es lo que permite "Releer ítems" sin volver a
+        // pagar el OCR (y sin perder la cabecera ya revisada).
+        ocr_texto: data.ocr_texto || null,
+        items_no_leidos: !!data.items_no_leidos,
         motor: { engine: data.engine || null, model: data.model || null, proveedor: data.proveedor || null, ms: Date.now() - t0Lectura },
       } : x));
       return dup ? 'duplicado' : 'revisar';
@@ -979,6 +1035,68 @@ function CapturaMagicaPage({ showToast }) {
       return 'error';
     } finally {
       enVuelo.current.delete(id);
+    }
+  };
+
+  // ── RELEER SOLO LOS ÍTEMS ─────────────────────────────────────────
+  // Gabriel, 13-set-2026: «logró leer parte de la factura, me salió el botón
+  // para revisar pero los ítems no los leyó… me gustaría que se pueda
+  // reintentar solo el post procesamiento. Yo tuve que borrar esa factura y
+  // volver a subirla». Esto hace exactamente eso: rehace el paso texto → líneas
+  // y REEMPLAZA `review.items`, sin tocar nada de lo que la persona ya revisó
+  // (emisor, serie, fechas, destino, totales).
+  //
+  // Si el server nos devolvió el texto del OCR en la lectura anterior, va ese
+  // texto y no se vuelve a pagar OCR; si no (fila vieja de la bandeja), va el
+  // archivo y el server rehace las dos etapas.
+  const releyendoRef = uRCM(new Set());   // anti doble-click (regla crítica 2)
+  const releerItems = async (id) => {
+    if (releyendoRef.current.has(id)) return;
+    releyendoRef.current.add(id);
+    setItems(prev => prev.map(x => x.id === id ? { ...x, releyendo: true } : x));
+    try {
+      const it = itemsRef.current.find(x => x.id === id);
+      if (!it) return;
+      const cuerpo = { tipo: 'items' };
+      if (it.ocr_texto) {
+        cuerpo.texto_ocr = it.ocr_texto;
+      } else {
+        if (!it.file) { showToast('No queda el archivo en este dispositivo para releerlo — volvé a subirlo.', 'red'); return; }
+        cuerpo.file = it.base64 || await fileToBase64(it.file);
+        cuerpo.mimeType = it.mimeType || it.file.type;
+      }
+      try {
+        const { cuerpoDeModelos } = await import('../lib/modelos-ia-config.js');
+        Object.assign(cuerpo, cuerpoDeModelos(cfgIAFilas.current || [], 'captura'));
+      } catch { /* sin configuración, el default del servidor */ }
+      const { apiFetch, apiParse } = await import('../lib/api-client');
+      const resp = await apiFetch('/api/captura-magica', {
+        method: 'POST', timeout: 90000,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cuerpo),
+      });
+      const data = await apiParse(resp);
+      if (!resp.ok) throw new Error(data.error || data.detail || `HTTP ${resp.status}`);
+      const leidos = Array.isArray(data.items) ? data.items : [];
+      if (!leidos.length) {
+        showToast('La IA volvió a leer el comprobante y tampoco encontró líneas de detalle. Si la factura tiene ítems, cargalos con "+ Agregar ítem".', 'amber');
+        // Igual guardamos el texto: el próximo intento ya no paga OCR.
+        if (data.ocr_texto) setItems(prev => prev.map(x => x.id === id ? { ...x, ocr_texto: data.ocr_texto } : x));
+        return;
+      }
+      const nuevos = mapearItemsOCR(leidos, materialesDB);
+      setItems(prev => prev.map(x => x.id === id ? {
+        ...x,
+        ocr_texto: data.ocr_texto || x.ocr_texto || null,
+        items_no_leidos: false,
+        review: x.review ? { ...x.review, items: nuevos } : x.review,
+      } : x));
+      showToast(`✓ Se leyeron ${nuevos.length} ítem(s). Verificá cantidades y precios contra el PDF; el total de la cabecera no se tocó.`, 'green');
+    } catch (e) {
+      showToast('No se pudieron releer los ítems: ' + (e?.message || e), 'red');
+    } finally {
+      releyendoRef.current.delete(id);
+      setItems(prev => prev.map(x => x.id === id ? { ...x, releyendo: false } : x));
     }
   };
 
@@ -1071,25 +1189,7 @@ function CapturaMagicaPage({ showToast }) {
       obraSugerida = obrasVisibles[0].id;
     }
     // Items: match con materiales existentes
-    const items = (ext.items || []).map((it, idx) => {
-      const candidatos = materialesDB
-        .map(m => ({ m, score: fuzzyScore(it.descripcion, m.nombre_material) }))
-        .filter(x => x.score >= 0.5)
-        .sort((a, b) => b.score - a.score);
-      const top = candidatos[0];
-      // Clasificar el insumo en uno de los 4 grupos: material / herramienta
-      // / epp / maquinaria / servicio. Esto define en qué tabla se va a
-      // crear el catálogo si el contador marca "Crear materiales".
-      const tipoInsumo = clasificarInsumo(it.descripcion || '');
-      return {
-        ...it,
-        idx,
-        material_id: top ? top.m.id : '',
-        accion_material: top ? 'usar_existente' : 'crear_nuevo',
-        unidad: it.unidad || top?.m.unidad || 'und',
-        tipo_insumo: tipoInsumo,
-      };
-    });
+    const items = mapearItemsOCR(ext.items, materialesDB);
     // ── RECIBO POR HONORARIOS: detección + pre-match del trabajador ──
     // Un RxH tiene emisor PERSONA NATURAL (RUC empieza en 10). Se vincula a un
     // trabajador (por DNI derivado del RUC, o por nombre) y crea un pago, no una compra.
@@ -1697,6 +1797,14 @@ function CapturaMagicaPage({ showToast }) {
     // use, no solo el bloque de recepción.
     if (esNota || esVenta) r = { ...r, vincular_a_oc: null };
     const esNotaCredito = r.tipo_documento === 'nota_credito';
+    // ¿Genera recepción de almacén? MISMA función que usa el casillero del
+    // modal (src/lib/recepcion-almacen.js). Antes acá solo se miraba
+    // `r.obra_id`, así que una obra TERMINADA seguía recibiendo recepciones
+    // pendientes que nadie iba a cerrar.
+    const recepAlmacen = evaluarRecepcionAlmacen({
+      obraDestino: r.obra_destino, obras,
+      esRxh: !!r.es_rxh, esNota, esVenta,
+    });
 
     // Validaciones
     if (esVenta) {
@@ -1851,15 +1959,11 @@ function CapturaMagicaPage({ showToast }) {
     const algunItemRealAlmacen = (r.items || []).some(it =>
       it.tipo_insumo && it.tipo_insumo !== 'servicio'
     );
-    if (algunItemRealAlmacen && (r.crear_materiales_catalogo || r.genera_recepcion_almacen) && !r.obra_id) {
-      if (r.obra_destino === '__empresa__') {
-        // Elección deliberada: gasto general de la empresa → no es un descuido.
-        showToast('Gasto general de la empresa: los items quedan solo en contabilidad (sin almacén de obra).', 'blue');
-      } else if (r.obra_destino === '__nose__') {
-        showToast('Sin clasificar: la factura queda solo en contabilidad hasta que la Contadora Jefe le asigne el destino.', 'amber');
-      } else {
-        showToast('Sin obra: los items quedaron solo en contabilidad, no se crearon en almacén.', 'orange');
-      }
+    if (algunItemRealAlmacen && (r.crear_materiales_catalogo || r.genera_recepcion_almacen) && !recepAlmacen.permitido) {
+      // El motivo lo explica el mismo lib que apagó el casillero, así el
+      // toast y la pantalla nunca dicen cosas distintas.
+      showToast(recepAlmacen.texto || 'Sin obra: los ítems quedaron solo en contabilidad, no se crearon en almacén.',
+        recepAlmacen.motivo === 'gastos_generales' ? 'blue' : 'amber');
     }
 
     const now = new Date().toISOString();
@@ -2168,7 +2272,7 @@ function CapturaMagicaPage({ showToast }) {
             ? 'pending'
             : (r.payment_status === 'credit' ? 'pending' : (r.payment_status || 'pending'))),
         // Recepción de almacén: solo en COMPRAS con obra (una venta no ingresa al almacén).
-        recepcion_status: (!esVenta && !esNota && r.genera_recepcion_almacen && r.obra_id && r.items?.length > 0)
+        recepcion_status: (recepAlmacen.permitido && r.genera_recepcion_almacen && r.items?.length > 0)
           ? 'pendiente_recepcion'
           : 'no_aplica',
         document_type: tipoAcc,
@@ -2677,7 +2781,7 @@ function CapturaMagicaPage({ showToast }) {
         <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', justifyContent:'flex-end' }}>
           {canWritePro && (
             <button className="btn btn-ghost btn-sm" onClick={verificarTodosRucs} disabled={rucVerif?.running}
-              title="Consulta SUNAT el RUC de cada proveedor y lista los que tienen una razón social distinta para que la corrijas">
+              title="Consulta SUNAT el RUC de cada proveedor y lista los que tienen una razón social distinta (para corregirla) o un padrón que no está ACTIVO/HABIDO (para avisarle a la Contadora Jefe)">
               <JxIcon name="search" size={13}/> {rucVerif?.running ? `Verificando ${rucVerif.checked}/${rucVerif.total}…` : 'Verificar RUCs'}
             </button>
           )}
@@ -2825,6 +2929,14 @@ function CapturaMagicaPage({ showToast }) {
                         {r && it.status === 'revisar' && r.tipo_documento !== 'guia_remision' && !(Number(r.total) > 0) && (
                           <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>⚠ Total no leído (0.00) — abrí "Revisar" y escribí el total del PDF antes de confirmar.</div>
                         )}
+                        {/* Cabecera leída pero SIN líneas: el caso que obligaba
+                            a borrar la factura y volver a subirla. Ahora se
+                            releen solo los ítems desde acá o desde el modal. */}
+                        {r && it.status === 'revisar' && r.tipo_documento !== 'guia_remision' && !r.es_rxh && (r.items?.length || 0) === 0 && (
+                          <div style={{ fontSize:10, color:'var(--amber)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>
+                            ⚠ Sin líneas de detalle{it.items_no_leidos ? ' (el comprobante era demasiado largo)' : ''} — probá “🔄 Releer ítems”.
+                          </div>
+                        )}
                       </td>
                       <td>
                         {r ? (
@@ -2849,6 +2961,13 @@ function CapturaMagicaPage({ showToast }) {
                         {(it.status === 'revisar' || it.status === 'duplicado') && (
                           <button className="btn btn-amber btn-xs" onClick={()=>setReviewing(it.id)}>
                             <JxIcon name="eye" size={11}/> Revisar
+                          </button>
+                        )}
+                        {it.status === 'revisar' && r && !r.es_rxh && r.tipo_documento !== 'guia_remision' && (r.items?.length || 0) === 0 && (
+                          <button className="btn btn-ghost btn-xs" style={{ marginLeft:4 }} disabled={!!it.releyendo}
+                            title="Le pide a la IA solo la tabla de detalle. No toca la cabecera ni los totales ya leídos."
+                            onClick={()=>releerItems(it.id)}>
+                            <JxIcon name="refresh" size={11}/> {it.releyendo ? 'Releyendo…' : 'Releer ítems'}
                           </button>
                         )}
                         {it.status === 'confirmado' && (
@@ -2895,6 +3014,7 @@ function CapturaMagicaPage({ showToast }) {
           onChange={(newReview) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: newReview } : x))}
           onPatch={(patch) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: { ...x.review, ...patch } } : x))}
           onConfirm={() => confirmarItem(reviewItem.id)}
+          onReleerItems={releerItems}
           onClose={() => setReviewing(null)}
         />
       )}
@@ -2921,17 +3041,21 @@ function CapturaMagicaPage({ showToast }) {
             </div>
           ) : rucVerif.results.length === 0 ? (
             <div style={{ padding:'20px 0', textAlign:'center', color:'var(--green)', fontSize:13 }}>
-              ✓ Revisé {rucVerif.total} proveedor(es) con RUC válido. Ninguno tiene la razón social muy distinta a SUNAT.
+              ✓ Revisé {rucVerif.total} proveedor(es) con RUC válido. Ninguno tiene la razón social muy distinta a SUNAT, y todos figuran ACTIVOS y HABIDOS en el padrón.
             </div>
           ) : (
             <div>
               <div style={{ fontSize:12.5, color:'var(--ts)', marginBottom:10, lineHeight:1.5 }}>
-                {rucVerif.results.length} proveedor(es) con razón social <strong>distinta</strong> a la de SUNAT. Revisá y elegí cuáles corregir — al aplicar, también se actualiza el nombre en los movimientos contables de ese proveedor.
+                {rucVerif.results.length} proveedor(es) con algo para mirar: razón social <strong>distinta</strong> a la de SUNAT, o un <strong>padrón</strong> que no está ACTIVO/HABIDO.
+                Al corregir el nombre también se actualiza en los movimientos contables de ese proveedor.
+                <div style={{ fontSize:11.5, color:'var(--amber)', marginTop:4 }}>
+                  ⚠ Un proveedor <strong>NO HABIDO</strong> no se corrige con un botón: sus comprobantes no dan derecho a crédito fiscal ni a gasto deducible. Pasale la lista a la Contadora Jefe.
+                </div>
               </div>
               <div style={{ maxHeight:'52vh', overflow:'auto' }}>
                 <table className="tbl" style={{ fontSize:12 }}>
                   <thead><tr>
-                    <th>RUC</th><th>Nombre actual</th><th>Razón social SUNAT</th><th style={{ textAlign:'center' }}>Parecido</th><th style={{ textAlign:'center' }}>Acción</th>
+                    <th>RUC</th><th>Nombre actual</th><th>Razón social SUNAT</th><th style={{ textAlign:'center' }}>Parecido</th><th style={{ textAlign:'center' }}>Padrón</th><th style={{ textAlign:'center' }}>Acción</th>
                   </tr></thead>
                   <tbody>
                     {rucVerif.results.map(row => (
@@ -2939,9 +3063,17 @@ function CapturaMagicaPage({ showToast }) {
                         <td className="col-m" style={{ fontFamily:'monospace' }}>{row.ruc}</td>
                         <td>{row.actual || <span style={{ color:'var(--tm)' }}>—</span>}</td>
                         <td style={{ color:'var(--blue)', fontWeight:600 }}>{row.sunat}</td>
-                        <td style={{ textAlign:'center', color: row.similar < 30 ? 'var(--red)' : 'var(--amber)' }}>{row.similar}%</td>
+                        <td style={{ textAlign:'center', color: row.mismatch ? (row.similar < 30 ? 'var(--red)' : 'var(--amber)') : 'var(--tm)' }}>
+                          {row.mismatch ? `${row.similar}%` : '—'}
+                        </td>
+                        <td style={{ textAlign:'center', fontSize:10.5, lineHeight:1.35, color: row.alertas?.length ? 'var(--amber)' : 'var(--green)' }}
+                          title={(row.alertas || []).join(' · ')}>
+                          {row.estado || '—'}<br/>{row.condicion || '—'}
+                        </td>
                         <td style={{ textAlign:'center' }}>
-                          {row.applied ? (
+                          {!row.mismatch ? (
+                            <span style={{ fontSize:10.5, color:'var(--tm)' }}>el nombre está bien</span>
+                          ) : row.applied ? (
                             <span style={{ fontSize:11, color:'var(--green)' }}>✓ Corregido</span>
                           ) : (
                             <button className="btn btn-amber btn-xs" onClick={()=>aplicarCorreccionRuc(row)}>Usar SUNAT</button>
@@ -3044,7 +3176,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, personal, obras, consorcios = [], consorcioSocios = [], proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose }) {
+function ReviewModal({ item, companies, personal, obras, consorcios = [], consorcioSocios = [], proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose, onReleerItems }) {
   // Estado del botón Confirmar: sin esto los reclicks se tragaban en silencio
   // (el guard vive en un ref del padre) y lo editado DESPUÉS del clic se
   // descartaba sin que se notara. Va acá arriba por la regla de hooks.
@@ -3112,6 +3244,22 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
     : (r.obra_destino && (obras || []).some(o => o.id === r.obra_destino && !o.deleted_at) ? r.obra_destino : '');
   const upd = (patch) => onChange({ ...r, ...patch });
   const [previewUrl, setPreviewUrl] = uSCM(null);
+  // ¿Esta factura puede generar un ingreso al almacén? Una sola respuesta para
+  // el casillero, el texto del pie y el `recepcion_status` que se guarda
+  // (src/lib/recepcion-almacen.js). El almacén es DE UNA OBRA: con "Gastos
+  // Generales", "Contabilidad Neta" o "No sé" no hay a dónde mandar nada.
+  const recepAlmacen = uMCM(() => evaluarRecepcionAlmacen({
+    obraDestino: r.obra_destino, obras,
+    esRxh: !!r.es_rxh,
+    esNota: !!(r.es_nota_credito || r.es_nota_debito),
+    esVenta: !!r.emisor_company_id,
+  }), [r.obra_destino, obras, r.es_rxh, r.es_nota_credito, r.es_nota_debito, r.emisor_company_id]);
+  // El flag guardado NO se apaga con un efecto a propósito. `recepAlmacen`
+  // manda: si no está permitido, el casillero no se muestra, el pie no promete
+  // recepción y el confirmar escribe 'no_aplica'. Un efecto que lo pisara
+  // tendría carrera con el que siembra la obra activa al montar el modal
+  // (destino todavía vacío → apagaría el default de las compras de bienes, que
+  // es venir marcado) y encima haría perder la elección al volver a la obra.
 
   // ── La sugerencia de costo/gasto, en vivo ─────────────────────────
   // El movimiento TAL COMO QUEDARÍA con lo elegido ahora mismo: mismo mapeo
@@ -3190,9 +3338,13 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
   const guiaSel = (r?.guia_facturas_sel ?? seleccionPorDefectoGuia(guiaCands))
     .filter(id => guiaCands.some(c => c.mov.id === id));   // sin fantasmas si cambió el Doc. Ref.
 
-  // Verificación del RUC del emisor contra SUNAT (cacheada). Si el nombre oficial
-  // difiere del capturado por el OCR, recomendamos el cambio — el usuario decide.
-  const [sunatCheck, setSunatCheck] = uSCM(null); // { razonSocial, mismatch } | null
+  // ── Verificación del emisor contra SUNAT (cacheada) ────────────────
+  // Se consulta el RUC y se contrasta TODO lo que devuelve, no solo el nombre:
+  //   · razón social ≠ la del comprobante → se ofrece la oficial
+  //   · estado ≠ ACTIVO / condición ≠ HABIDO → se avisa antes de registrar
+  // El veredicto lo arma src/lib/sunat-verificacion.js (testeado); acá solo se
+  // dispara la consulta y se pinta. Nunca bloquea: es información.
+  const [sunatCheck, setSunatCheck] = uSCM(null); // veredictoSunat(...) | null
   uECM(() => {
     let cancel = false;
     const ruc = String(r.proveedor_ruc || '').replace(/\D/g, '');
@@ -3200,13 +3352,14 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
     (async () => {
       const res = await consultarRucCacheado(ruc);
       if (cancel || !res?.razonSocial) return;
-      const actual = r.proveedor_razon_social || '';
-      const mismatch = razonSimilar(actual, res.razonSocial) < 0.6;
-      setSunatCheck({ razonSocial: res.razonSocial, mismatch });
+      setSunatCheck(veredictoSunat({ razonOCR: r.proveedor_razon_social || '', sunat: res }));
     })();
     return () => { cancel = true; };
+    // El NOMBRE también dispara el efecto: así el aviso se apaga solo en cuanto
+    // se corrige la razón social. No cuesta cuota — la respuesta de ese RUC ya
+    // quedó en la caché de localStorage tras la primera consulta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [r.proveedor_ruc]);
+  }, [r.proveedor_ruc, r.proveedor_razon_social]);
 
   uECM(() => {
     if (!item.file) return;
@@ -3618,14 +3771,40 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                   ⚠ Lo emparejé por <strong>razón social</strong> ({r.proveedor_match_score}% parecido a “{r.proveedor_match_nombre_db}”), no por RUC — el RUC de la factura no coincidió con ninguno. <strong>Verificá</strong> que sea el mismo proveedor; si no, elegí “Crear nuevo”.
                 </div>
               )}
-              {sunatCheck?.mismatch && (
+              {/* ── VERIFICACIÓN CONTRA SUNAT ────────────────────────────
+                  Antes solo se hablaba cuando el NOMBRE no coincidía, y todo
+                  lo demás que devuelve la consulta se descartaba. Ahora:
+                    · coincide y está activo/habido → una línea verde de "listo"
+                      (silencio total dejaba la duda de si se había chequeado)
+                    · nombre distinto → el aviso de siempre, con el botón
+                    · NO HABIDO / no activo → aviso ámbar: eso decide si la
+                      factura da crédito fiscal, y se ve acá o no se ve nunca */}
+              {sunatCheck && (sunatCheck.mismatch || sunatCheck.faltaNombre) && (
                 <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(52,152,219,0.08)', border:'1px solid rgba(52,152,219,0.4)', borderRadius:6, fontSize:11.5, color:'var(--ts)', lineHeight:1.45 }}>
-                  🔎 Según <strong>SUNAT</strong>, el RUC {r.proveedor_ruc} corresponde a <strong style={{ color:'var(--blue)' }}>{sunatCheck.razonSocial}</strong> — distinto del nombre capturado (“{r.proveedor_razon_social || '—'}”).
+                  🔎 Según <strong>SUNAT</strong>, el RUC {r.proveedor_ruc} corresponde a <strong style={{ color:'var(--blue)' }}>{sunatCheck.razonSocial}</strong>
+                  {sunatCheck.faltaNombre
+                    ? ' — el comprobante no trajo la razón social.'
+                    : <> — distinto del nombre capturado (“{r.proveedor_razon_social || '—'}”, {sunatCheck.similitud}% de parecido).</>}
                   <div style={{ marginTop:6, display:'flex', gap:8, flexWrap:'wrap' }}>
                     <button type="button" className="btn btn-xs" style={{ background:'var(--blue)', color:'#fff' }}
                       onClick={()=>upd({ proveedor_razon_social: sunatCheck.razonSocial })}>Usar nombre SUNAT</button>
                     <span style={{ fontSize:10.5, color:'var(--tm)', alignSelf:'center' }}>o dejá el nombre comercial de la factura si preferís.</span>
                   </div>
+                </div>
+              )}
+              {sunatCheck?.alertas?.length > 0 && (
+                <div style={{ marginBottom:8, padding:'8px 10px', background:'rgba(242,183,5,0.10)', border:'1px solid rgba(242,183,5,0.45)', borderRadius:6, fontSize:11.5, color:'var(--amber)', lineHeight:1.45 }}>
+                  <strong>⚠ Padrón SUNAT:</strong> {sunatCheck.estado || '—'} · {sunatCheck.condicion || '—'}
+                  {sunatCheck.alertas.map((a, i) => (
+                    <div key={i} style={{ color:'var(--ts)', marginTop:4 }}>{a}</div>
+                  ))}
+                </div>
+              )}
+              {sunatCheck?.nivel === 'ok' && (
+                <div style={{ marginBottom:8, fontSize:10.5, color:'var(--green)' }}
+                  title={`SUNAT: ${sunatCheck.razonSocial}`}>
+                  ✓ Verificado con SUNAT: el RUC {r.proveedor_ruc} es de {sunatCheck.razonSocial}
+                  {sunatCheck.estado ? ` · ${sunatCheck.estado}` : ''}{sunatCheck.condicion ? ` · ${sunatCheck.condicion}` : ''}
                 </div>
               )}
               {r.proveedor_accion === 'usar_existente' ? (
@@ -3643,7 +3822,20 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                 <div className="g2">
                   <div><label className="flabel">RUC</label><input className="fi" maxLength={11} value={r.proveedor_ruc||''} onChange={e=>upd({ proveedor_ruc: e.target.value.replace(/\D/g,'').slice(0,11) })}/></div>
                   <div><label className="flabel">Razón social *</label><input className="fi" value={r.proveedor_razon_social||''} onChange={e=>upd({ proveedor_razon_social: e.target.value })}/></div>
-                  <div style={{ gridColumn:'1/-1' }}><label className="flabel">Dirección</label><input className="fi" value={r.proveedor_direccion||''} onChange={e=>upd({ proveedor_direccion: e.target.value })}/></div>
+                  <div style={{ gridColumn:'1/-1' }}>
+                    <label className="flabel">Dirección</label>
+                    <input className="fi" value={r.proveedor_direccion||''} onChange={e=>upd({ proveedor_direccion: e.target.value })}/>
+                    {/* El domicilio fiscal de SUNAT es el que vale para el
+                        padrón de proveedores; el del comprobante suele ser el
+                        del local de venta (o no venir). */}
+                    {sunatCheck?.direccionSunat && sunatCheck.direccionSunat !== (r.proveedor_direccion || '') && (
+                      <button type="button" className="btn btn-ghost btn-xs" style={{ marginTop:4 }}
+                        onClick={()=>upd({ proveedor_direccion: sunatCheck.direccionSunat })}
+                        title={sunatCheck.direccionSunat}>
+                        📍 Usar domicilio fiscal de SUNAT
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -4004,17 +4196,56 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                   Ítems ({r.items.length})
                 </div>
                 <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
-                  {!(r.es_rxh || r.es_nota_credito || r.es_nota_debito || r.emisor_company_id) && (
+                  {/* CASILLERO DE ALMACÉN: solo cuando el destino es una obra
+                      viva. Antes salía siempre marcado, incluso con la factura
+                      yendo a Gastos Generales — prometía una recepción que no
+                      podía existir. Ver src/lib/recepcion-almacen.js. */}
+                  {recepAlmacen.permitido && (
                   <label style={{ fontSize:11, color:'var(--tm)', display:'flex', alignItems:'center', gap:4 }}
-                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero, que decide allí crear el insumo nuevo o vincularlo a uno existente cuando confirme la recepción física. Solo aplica a compras de bienes: en recibos por honorarios, notas y ventas no aparece.">
+                    title="Si está marcado, esta factura aparece en 'Compras pendientes' del almacenero de esa obra, que decide allí crear el insumo nuevo o vincularlo a uno existente cuando confirme la recepción física. Solo aplica a compras de bienes con destino a una obra: en recibos por honorarios, notas, ventas y gastos de empresa no aparece.">
                     <input type="checkbox" checked={r.genera_recepcion_almacen !== false} onChange={e=>upd({ genera_recepcion_almacen: e.target.checked })}/>
-                    Genera ingreso al almacén (esperar recepción física)
+                    Genera ingreso al almacén de <strong style={{ color:'var(--ts)' }}>{recepAlmacen.obra?.nombre_obra?.slice(0, 34) || 'la obra'}</strong>
                   </label>
+                  )}
+                  {!recepAlmacen.permitido && !!recepAlmacen.texto && (
+                    <span style={{ fontSize:10.5, color:'var(--tm)', maxWidth:420, lineHeight:1.4 }}
+                      title="El ingreso al almacén es de una obra: sin obra viva no hay a dónde mandarlo.">
+                      📦 Sin ingreso al almacén — {recepAlmacen.texto}
+                    </span>
                   )}
                   {!r.es_rxh && !itemsSoloLectura && <button type="button" className="btn btn-ghost btn-xs" onClick={recalcular}>↻ Recalcular total</button>}
                   {itemsSoloLectura && <span className="badge b-green" style={{ fontSize:10 }}>Solo lectura · anulación total</span>}
                 </div>
               </div>
+
+              {/* ── RELEER ÍTEMS / AGREGAR A MANO ─────────────────────────
+                  Pedido de Gabriel (13-set): pasó que el OCR leyó la factura
+                  pero el post-procesamiento no devolvió las líneas. La única
+                  salida era borrar la fila y volver a subir el archivo. Ahora
+                  se reintenta SOLO ese paso (sin re-pagar el OCR cuando el
+                  texto ya está guardado) y, si aun así no salen, se cargan a
+                  mano. Lo de "a mano" es la excepción, no el camino. */}
+              {!itemsSoloLectura && (
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center', marginBottom:6 }}>
+                  <button type="button" className="btn btn-ghost btn-xs" disabled={!!item.releyendo}
+                    title="Vuelve a pedirle a la IA solo la tabla de detalle. No toca la cabecera ni los totales que ya revisaste."
+                    onClick={() => onReleerItems?.(item.id)}>
+                    {item.releyendo ? '🤖 Releyendo…' : '🔄 Releer ítems con IA'}
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-xs"
+                    onClick={() => upd({ items: [...(r.items || []), {
+                      descripcion: '', cantidad: 1, unidad: 'und', precio_unitario: 0, subtotal: 0,
+                      tipo_insumo: 'material', material_id: '', accion_material: 'crear_nuevo', manual: true,
+                    }] })}>
+                    + Agregar ítem
+                  </button>
+                  {(r.items || []).length === 0 && (
+                    <span style={{ fontSize:10.5, color:'var(--amber)' }}>
+                      La IA no leyó ninguna línea de detalle. Probá “Releer ítems” antes de cargarlas a mano.
+                    </span>
+                  )}
+                </div>
+              )}
               {/* La columna "Material" (crear/vincular insumo) se quitó a propósito:
                   ese trabajo es del ALMACENERO en "Compras pendientes". El contador
                   solo verifica descripción, tipo, cantidad y precio. */}
@@ -4027,6 +4258,7 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                     <th style={{ width:70 }}>Unid</th>
                     <th style={{ textAlign:'right', width:100 }}>P.Unit</th>
                     <th style={{ textAlign:'right', width:100 }}>Subt</th>
+                    {!itemsSoloLectura && <th style={{ width:36 }}></th>}
                   </tr></thead>
                   <tbody>
                     {/* Anulación total de una factura: los ítems se MUESTRAN (para
@@ -4062,8 +4294,23 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                         <td><input className="fi" style={{ fontSize:12, padding:'6px 8px', width:60 }} value={it.unidad||''} onChange={e=>updateItem(i, { unidad: e.target.value })}/></td>
                         <td><input className="fi" type="number" step="0.01" style={{ fontSize:12, padding:'6px 8px', width:90, textAlign:'right' }} value={it.precio_unitario ?? ''} onChange={e=>updateItem(i, { precio_unitario: e.target.value })}/></td>
                         <td style={{ textAlign:'right' }}>{((Number(it.cantidad)||0) * (Number(it.precio_unitario)||0)).toFixed(2)}</td>
+                        {/* Borrar la línea: el OCR a veces inventa una fila con
+                            el "SON: … SOLES" o repite el encabezado de la tabla.
+                            Hasta hoy había que confirmar con esa basura adentro
+                            (y le llegaba al almacenero como un insumo a recibir). */}
+                        <td style={{ textAlign:'center' }}>
+                          <button type="button" className="btn btn-ghost btn-xs" title="Quitar esta línea"
+                            onClick={()=>upd({ items: r.items.filter((_, j) => j !== i) })}>
+                            <JxIcon name="trash" size={11}/>
+                          </button>
+                        </td>
                       </tr>
                     ))}
+                    {r.items.length === 0 && (
+                      <tr><td colSpan={itemsSoloLectura ? 6 : 7} style={{ textAlign:'center', color:'var(--tm)', fontSize:11.5, padding:'14px 8px', lineHeight:1.5 }}>
+                        Sin líneas de detalle.{!itemsSoloLectura && ' Se puede confirmar igual (el movimiento contable sale de la cabecera y el total), pero entonces no habrá insumos para el almacén.'}
+                      </td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -4214,7 +4461,7 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                 resumen igual anunciaba "1 proveedor +" y asustaba con razón. */}
             Al confirmar se crea: {permiteCrearProveedor(opPartes) && r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
             {r.crear_materiales_catalogo && obraDestinoResuelta ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
-            {r.genera_recepcion_almacen && obraDestinoResuelta && r.items?.length > 0 ? ` + 1 recepción pendiente para almacén` : ''}
+            {r.genera_recepcion_almacen && recepAlmacen.permitido && r.items?.length > 0 ? ` + 1 recepción pendiente en el almacén de la obra` : ''}
             {' + 1 evidencia.'}
           </div>
           <div style={{ display:'flex', gap:8 }}>
