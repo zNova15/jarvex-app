@@ -93,7 +93,7 @@ git checkout staging                    # volver a staging
   `personal-categoria`, `evidencias-visibilidad`, `sctr-paquete`,
   `reporte-email-programacion`, `stock-cronologia`, `depositos-bancarizacion`,
   `dedupe-movs-contables`, `pagos`, `ayuda-contenido`, `frente-partidas`, `mi-frente`,
-  `color-ingeniero`, `fecha`, …
+  `color-ingeniero`, `fecha`, `mapeo-trabajo`, `anticipos`, …
 - `src/db/jarvex.db.js` — esquema Dexie (versionado `db.version(N)`).
 - `src/sync/SyncEngine.js` — push/pull contra Supabase.
 - `src/hooks/useOfflineData.js` — hooks de datos offline-first.
@@ -184,6 +184,9 @@ timeout):
      catálogo del grupo.
    - **Complementarias:** `servicios` (el cajón «no sé cuál»), `administrativos`,
      `sin_clasificar`.
+   - **`S14` Ejecución de obra** (13-set): cuando lo que se factura ES la obra
+     («OBRA: …», una valorización, «por el saldo de … de la obra»). Individual o
+     en consorcio lo dice `obras.ejecutora_tipo`, no el comprobante.
    - **Propias:** las que se crean desde el Catálogo → tabla `clasificaciones`
      (mig 205). Su código NO puede pisar el espacio oficial: lo valida
      `validarClasificacion()`.
@@ -210,6 +213,18 @@ timeout):
    - Cuando el clasificador no reconoce algo, devuelve `sin_clasificar`. **No se
      inventa un código plausible** — una fila que dice «no sé» se filtra y se
      resuelve; una con un código inventado se pierde entre las buenas.
+   - Y `sin_clasificar` **NO se ofrece como sugerencia**: en la bandeja esas
+     filas salen en la banda `sin_propuesta`, sin porcentaje, con el desplegable
+     vacío y «Aceptar» apagado hasta que alguien elija. Sugerir «no sé» con un
+     botón verde al lado es lo mismo que no sugerir nada, y encima se guarda.
+   - **UNA SOLA SECCIÓN para clasificar** (13-set): «Catálogo» y «Categorizar»
+     eran dos pestañas que contestaban mitades de la misma pregunta y mostraban
+     dos números que no cerraban (484 filas de catálogo vs 723 descripciones).
+     Ahora es «🗂 Clasificación de insumos y servicios» con tres vistas dentro
+     de `jx-catalogo-canonico.jsx`: clasificaciones y diccionario · insumos y
+     servicios · nombres de factura por reconocer (la bandeja, montada adentro).
+     Por dentro siguen siendo DOS tablas y tienen que serlo: `catalogo_insumos`
+     es el vocabulario y `insumo_categoria` son los alias.
    - El panel de reclasificación **no tiene «marcar todas»** a propósito: se
      despacha por banda de confianza. Es una decisión de producto de Gabriel.
 9. **`insumo_categoria` tiene un CHECK que la app debe respetar:**
@@ -217,6 +232,30 @@ timeout):
    así que una fila mal formada se guarda local y **rebota en el push** (23514)
    dejando el sync en reintento eterno. Si no hay fila de catálogo contra la cual
    decidir, dar de alta el insumo primero (`agregarAlCatalogoYDecidir`).
+   El mismo invariante vale para `insumo_trabajo_mapeo` (mig 206):
+   `decision='mapeado'` exige `insumo_codigo`.
+
+10. **Tres tablas de mapeo que NO son la misma pregunta.** Confundirlas envenena
+    en silencio la pantalla de la otra:
+    - `insumo_categoria` (mig 195): descripción de factura → insumo del catálogo
+      de la empresa. La escribe la vista «nombres por reconocer».
+    - `insumo_trabajo_mapeo` (mig 206): insumo del catálogo de una empresa →
+      insumo del presupuesto de UN trabajo. `obra_id` es NOT NULL a propósito:
+      los códigos del presupuesto son por obra.
+    - `insumo_mapeo` (mig 183): descripción de factura → código del presupuesto,
+      SIN obra. Es la vieja; la leen Abastecimiento y las órdenes. No se le
+      agregan filas nuevas desde el panel de insumos.
+    La cadena buena es descripción → catálogo → presupuesto: dos decisiones
+    cortas en vez de una larga por cada una de las 2.220 descripciones.
+
+11. **Los importes de SUNAT vienen en SOLES con el TC aparte.** El archivo del
+    RCE trae `Total CP` ya convertido y la columna `Tipo de Cambio`; la app
+    guarda el importe en la moneda del comprobante. Compararlos crudos hacía que
+    las 13 facturas en dólares de KOPLAST salieran como «importe distinto» (la
+    primera acusaba S/ 199.600 inexistentes). `conciliarImporte()` en
+    `comparativa-sunat.js` prueba las dos lecturas. **Nunca sumar monedas
+    distintas** para «poder totalizar»: en anticipos, inventario y cotejo cada
+    moneda va por separado.
 
 ---
 
