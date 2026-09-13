@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   esMovimientoAnticipo, detectarAnticipos, resolverAplicaciones,
   saldoDeAnticipo, facturasCandidatas, proponerAplicaciones,
-  panelAnticipos, aplicacionNueva,
+  panelAnticipos, aplicacionNueva, pareceCubiertaPorAnticipo,
 } from '../anticipos.js';
 
 const GASOMI = 'gasomi-id';
@@ -280,5 +280,41 @@ describe('lo que se escribe', () => {
   it('🔴 un anticipo no se aplica a sí mismo — lo prohíbe el CHECK de la mig 207', () => {
     expect(() => aplicacionNueva(ant, { facturaId: ant.id, monto: 1 })).toThrow(/sí mismo/);
     expect(() => aplicacionNueva(ant, { monto: 1 })).toThrow(/factura/);
+  });
+});
+
+describe('pareceCubiertaPorAnticipo (Captura Mágica, 13-set-2026)', () => {
+  it('el caso KOPLAST del reporte: total 0 + "Monto total del anticipo" leído', () => {
+    expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: 3302.03, sumaItems: 3302.03 })).toBe(true);
+  });
+
+  it('total 0 sin el campo del pie, pero con ítems de valor real', () => {
+    // El OCR no siempre distingue el campo del pie de la tabla de totales —
+    // el total en 0 con líneas reales ya es señal suficiente por sí sola.
+    expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: null, sumaItems: 1740 })).toBe(true);
+  });
+
+  it('total 0 CON el campo del pie pero SIN ítems (factura ilegible salvo el pie)', () => {
+    expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: 500, sumaItems: 0 })).toBe(true);
+  });
+
+  it('una factura NORMAL con total > 0 nunca se marca, aunque traiga ítems', () => {
+    expect(pareceCubiertaPorAnticipo({ total: 1500, montoAnticipoLeido: null, sumaItems: 1500 })).toBe(false);
+  });
+
+  it('total realmente 0 sin ninguna otra señal: no es un anticipo, es una lectura vacía', () => {
+    expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: null, sumaItems: 0 })).toBe(false);
+    expect(pareceCubiertaPorAnticipo({})).toBe(false);
+  });
+
+  it('un total apenas positivo por redondeo del OCR no debe bloquear el camino normal', () => {
+    // 0.01 es "total leído" real, no una entrega en cero — no se marca aunque
+    // haya ítems, para no ofrecer el checkbox de anticipo en el caso común.
+    expect(pareceCubiertaPorAnticipo({ total: 0.5, montoAnticipoLeido: null, sumaItems: 500 })).toBe(false);
+  });
+
+  it('respeta la tolerancia de redondeo (±0.05) tanto en total como en las señales', () => {
+    expect(pareceCubiertaPorAnticipo({ total: 0.03, montoAnticipoLeido: 100, sumaItems: 0 })).toBe(true);
+    expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: 0.04, sumaItems: 0.04 })).toBe(false);
   });
 });

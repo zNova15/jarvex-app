@@ -82,6 +82,32 @@ export function esMovimientoAnticipo(mov) {
 }
 
 /**
+ * ¿Esta factura recién leída (Captura Mágica, antes de crear el movimiento)
+ * parece una entrega ya cubierta por un anticipo pagado antes?
+ *
+ * Caso real (KOPLAST/GASOMI, 13-set-2026): el proveedor documenta la entrega
+ * con TOTAL 0 porque el descuento del anticipo ya se aplicó adentro del
+ * comprobante — antes eso quedaba bloqueado sin salida ("el total debe ser
+ * mayor a 0"), obligando a inventar un total o a no poder subir la factura.
+ *
+ * Dos señales, cualquiera alcanza (el total en 0 es condición dura: sin eso,
+ * no hay nada que "cubrir"):
+ *   1) el pie de la factura trae el campo real "Monto total del anticipo"
+ *      (SUNAT lo resta antes de calcular el Importe Total), o
+ *   2) el total viene en 0 pero las líneas de detalle valen algo real — no
+ *      hay otra explicación común para que eso pase.
+ *
+ * Puro y sin acceso a movimientos: solo decide SÍ/NO. A quién vincular lo
+ * decide `detectarAnticipos` + `saldoDeAnticipo` con el proveedor y la moneda
+ * ya en mano.
+ */
+export function pareceCubiertaPorAnticipo({ total, montoAnticipoLeido = null, sumaItems = 0 } = {}) {
+  const tot = Number(total) || 0;
+  if (tot > TOLERANCIA) return false;
+  return (Number(montoAnticipoLeido) || 0) > TOLERANCIA || (Number(sumaItems) || 0) > TOLERANCIA;
+}
+
+/**
  * Los anticipos de una empresa (o de todo el grupo), ordenados por plata.
  *
  * `monto` es el TOTAL del comprobante, no la suma de los ítems: es lo que

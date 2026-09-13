@@ -35,6 +35,13 @@ import { razonSimilar, veredictoSunat } from "../lib/sunat-verificacion.js";
 // La regla "¿esta factura genera ingreso al almacén?" en un solo lugar:
 // el casillero, el texto del pie y el recepcion_status que se guarda.
 import { evaluarRecepcionAlmacen } from "../lib/recepcion-almacen.js";
+// Anticipos a proveedores (mig 207): detectar una entrega que vino en 0
+// porque el proveedor ya descontó un anticipo pagado antes, y vincularla al
+// anticipo correcto sin salir del modal. La lógica pura vive en anticipos.js
+// (la usa también el panel de Inventario de la empresa); acá solo se dispara
+// la detección y se escribe la aplicación al confirmar.
+import { detectarAnticipos, saldoDeAnticipo, resolverAplicaciones, aplicacionNueva, pareceCubiertaPorAnticipo } from "../lib/anticipos.js";
+import { aplicarAnticipo } from "../lib/anticipos-db.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
 // heurística para pre-llenar apellidos/nombres al crear un trabajador desde un
@@ -524,6 +531,10 @@ function CapturaMagicaPage({ showToast }) {
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
   // Todo el personal (sin obra_id → todas las obras): para vincular recibos por honorarios.
   const { data: personal } = window.__hooks?.usePersonal?.() || { data: [] };
+  // Anticipos a proveedores (mig 207): con qué facturas ya se cruzó cada uno.
+  // Son decenas de filas, se traen enteras (mismo criterio que el panel de
+  // Inventario de la empresa).
+  const { data: aplicacionesAnticipo } = window.__hooks?.useAnticipoAplicaciones?.() || { data: [] };
   // Dedup de trabajadores creados en ESTE lote/sesión (dni/RUC → personal_id):
   // si suben varios recibos de la misma persona, se crea UNA sola vez (el hook
   // `personal` puede tardar en refrescar entre confirmaciones seguidas).
@@ -1388,6 +1399,49 @@ function CapturaMagicaPage({ showToast }) {
           vincular_a_oc: (!esNotaDoc && !esRxh && !emisorCompanyMatch && mejorOC && mejorOC.ratio >= 0.7) ? mejorOC.oc_id : null,
         };
       })(),
+      // ── ¿ENTREGA CUBIERTA POR UN ANTICIPO YA PAGADO? ────────────────
+      // Gabriel, 13-set: el caso KOPLAST/GASOMI — el proveedor factura la
+      // entrega en $0 porque el anticipo pagado meses antes ya la cubre (lo
+      // muestra el propio comprobante: "Monto total del anticipo"). Hasta hoy
+      // el total en 0 quedaba bloqueado sin salida. Detección AUTOMÁTICA pero
+      // el checkbox del modal queda editable a mano (mismo patrón que
+      // Detracción): si el campo del pie no se leyó bien, o el usuario prefiere
+      // decidir distinto, no hay que pelear con la IA para poder confirmar.
+      // Solo aplica a COMPRAS (un anticipo A PROVEEDORES): ni ventas, ni RxH,
+      // ni notas — esas no tienen este concepto.
+      ...(() => {
+        const totalLeido = esRxh ? rxhNeto : Number(ext.totales?.total || 0);
+        const montoAnticipoLeido = ext.totales?.monto_anticipo != null ? Number(ext.totales.monto_anticipo) : null;
+        const sumaItems = items.reduce((a, it) => a + (Number(it.cantidad) || 0) * (Number(it.precio_unitario) || 0), 0);
+        const detectado = !esRxh && !esNotaDoc && !emisorCompanyMatch
+          && pareceCubiertaPorAnticipo({ total: totalLeido, montoAnticipoLeido, sumaItems });
+        let anticipoSugerido = null;
+        if (detectado && rucN) {
+          const monedaN = String(ext.moneda || 'PEN').trim().toUpperCase();
+          const esPruebaAnt = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+          const aplicVivas = resolverAplicaciones(aplicacionesAnticipo || [], { demo: esPruebaAnt });
+          const candidatos = detectarAnticipos(movs, { companyId: companyMatch?.id || null, demo: esPruebaAnt })
+            .filter(a => a.proveedorRuc === rucN && a.moneda === monedaN)
+            .map(a => ({ ...a, ...saldoDeAnticipo(a, aplicVivas) }))
+            .filter(a => a.saldo > 0.05)
+            // El anticipo se consume en el orden en que llega la mercadería:
+            // el más viejo con saldo primero.
+            .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+          // Con UN solo candidato, se autovincula; con varios (o ninguno),
+          // decide la asistente en el modal — adivinar entre dos sería peor
+          // que dejarlo sin vincular.
+          if (candidatos.length === 1) anticipoSugerido = candidatos[0];
+        }
+        return {
+          cubierta_por_anticipo: detectado,
+          // Lo que la IA leyó del pie del comprobante (solo informativo).
+          monto_anticipo_leido: montoAnticipoLeido,
+          // El VALOR REAL de esta entrega — no el Total, que es 0 a propósito —
+          // es lo que hay que descontar del saldo del anticipo. Prefill editable.
+          anticipo_monto_cubierto: Math.round(((montoAnticipoLeido || sumaItems || 0)) * 100) / 100,
+          anticipo_vinculado_id: anticipoSugerido?.id || '',
+        };
+      })(),
       // ── Detección INTERCOMPANY ──────────────────────────────
       // Si emisor y receptor son ambas nuestras empresas, es trazabilidad interna.
       es_intercompany: esIntercompany,
@@ -1816,7 +1870,20 @@ function CapturaMagicaPage({ showToast }) {
       showToast('Falta empresa compradora del grupo', 'red'); return;
     }
     if (!r.serie_correlativo) { showToast('Falta serie-correlativo', 'red'); return; }
-    if (!(Number(r.total) > 0)) { showToast('El total debe ser mayor a 0', 'red'); return; }
+    // Total en 0: bloqueado, SALVO que la entrega esté marcada como cubierta
+    // por un anticipo ya pagado (checkbox del modal, src/lib/anticipos.js). En
+    // ese caso hace falta el VALOR REAL de la entrega — el Total no sirve,
+    // vino en 0 a propósito — para poder descontarlo del saldo del anticipo.
+    if (!(Number(r.total) > 0)) {
+      if (esVenta || !r.cubierta_por_anticipo) {
+        showToast('El total debe ser mayor a 0. Si esta entrega vino en 0 porque ya la cubrió un anticipo pagado antes, marcá "🧾 Esta entrega está cubierta por un anticipo" y confirmá.', 'red');
+        return;
+      }
+      if (!(Number(r.anticipo_monto_cubierto) > 0)) {
+        showToast('Escribí el valor real de esta entrega (lo que se descuenta del anticipo) — no puede ser 0.', 'red');
+        return;
+      }
+    }
     // NC/ND con el MISMO número que la factura que modifica: esto se bloqueaba
     // como si fuera un error de lectura, con el consejo de "corregí la serie,
     // suele empezar con FC/BC" — una regla que no existe. SUNAT numera cada
@@ -2288,6 +2355,14 @@ function CapturaMagicaPage({ showToast }) {
           materiales_creados: materialesCreados.length,
           movs_creados: movsMatCreados.length,
           oc_vinculada: r.vincular_a_oc || null,
+          // Entrega en 0 cubierta por un anticipo (src/lib/anticipos.js): queda
+          // acá aunque no se haya vinculado todavía, para que el Inventario de
+          // la empresa sepa por cuánto es la entrega real al vincularla después.
+          ...(r.cubierta_por_anticipo ? {
+            anticipo_cubierta: true,
+            anticipo_monto: Number(r.anticipo_monto_cubierto) || 0,
+            anticipo_vinculado_id: r.anticipo_vinculado_id || null,
+          } : {}),
           // Persistimos los items detectados con sus material_id (los
           // recién creados ya tienen el id). El almacenero los usa para
           // pre-llenar el modal de ingreso cuando confirma la recepción.
@@ -2649,6 +2724,39 @@ function CapturaMagicaPage({ showToast }) {
         }
       }
 
+      // 4.6) ANTICIPO — esta entrega vino en 0 porque la cubre un anticipo ya
+      // pagado. Si la asistente eligió a cuál vincularla, se registra la
+      // aplicación (src/lib/anticipos.js); si no eligió ("vincular después"),
+      // el movimiento igual queda creado y se vincula más tarde desde el
+      // Inventario de la empresa — Gabriel: «dejarlo subir para luego hacer
+      // el anticipo». El VALOR REAL de la entrega (no el Total, que es 0) es
+      // lo que se descuenta del saldo.
+      if (!esVenta && !esNota && r.cubierta_por_anticipo && r.anticipo_vinculado_id) {
+        try {
+          const anticipoMov = (movs || []).find(m => m.id === r.anticipo_vinculado_id);
+          const montoCubierto = Number(r.anticipo_monto_cubierto) || 0;
+          if (anticipoMov && montoCubierto > 0) {
+            const monedaAnt = String(anticipoMov.currency || 'PEN').trim().toUpperCase();
+            await aplicarAnticipo(aplicacionNueva({
+              id: anticipoMov.id,
+              companyId: anticipoMov.company_id || null,
+              fecha: anticipoMov.date || '',
+              moneda: monedaAnt,
+              monto: Math.abs(Number(anticipoMov.amount) || 0),
+            }, {
+              facturaId: accId,
+              monto: montoCubierto,
+              motivo: `Entrega en cero (${r.serie_correlativo}) cubierta por el anticipo ${anticipoMov.document_number || ''} — vinculada desde Captura Mágica.`,
+              fuente: 'manual',
+            }), { userId });
+            showToast(`✓ Vinculada al anticipo ${anticipoMov.document_number || ''} por ${fmtCurMagic(montoCubierto, monedaAnt)}.`, 'green');
+          }
+        } catch (e) {
+          console.warn('[captura-magica] vincular anticipo', e);
+          showToast('Factura registrada, pero no se pudo vincular al anticipo: ' + (e.message || e), 'amber');
+        }
+      }
+
       // Marca como confirmado y borra de Dexie (el usuario ya lo procesó)
       setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'confirmado', accId } : x));
       deleteItemFromDB(id);
@@ -2927,7 +3035,11 @@ function CapturaMagicaPage({ showToast }) {
                             devuelve con total 0 A PROPÓSITO. Advertir acá era pedir un dato
                             incumplible: la asistente obedecía y dejaba las guías varadas. */}
                         {r && it.status === 'revisar' && r.tipo_documento !== 'guia_remision' && !(Number(r.total) > 0) && (
-                          <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>⚠ Total no leído (0.00) — abrí "Revisar" y escribí el total del PDF antes de confirmar.</div>
+                          r.cubierta_por_anticipo
+                            // Total 0 detectado como entrega cubierta por anticipo: no es un
+                            // error de lectura, es cómo el proveedor documenta la entrega.
+                            ? <div style={{ fontSize:10, color:'var(--tm)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>🧾 Total en 0 — cubierta por anticipo (revisá el vínculo en "Revisar")</div>
+                            : <div style={{ fontSize:10, color:'var(--red)', marginTop:3, maxWidth:280, lineHeight:1.4 }}>⚠ Total no leído (0.00) — abrí "Revisar" y escribí el total del PDF antes de confirmar.</div>
                         )}
                         {/* Cabecera leída pero SIN líneas: el caso que obligaba
                             a borrar la factura y volver a subirla. Ahora se
@@ -3011,6 +3123,7 @@ function CapturaMagicaPage({ showToast }) {
           proveedoresDB={proveedoresDB}
           materialesDB={materialesDB}
           ocsActivasDB={ocsActivasDB}
+          aplicacionesAnticipo={aplicacionesAnticipo || []}
           onChange={(newReview) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: newReview } : x))}
           onPatch={(patch) => setItems(prev => prev.map(x => x.id === reviewItem.id ? { ...x, review: { ...x.review, ...patch } } : x))}
           onConfirm={() => confirmarItem(reviewItem.id)}
@@ -3176,7 +3289,7 @@ function VincularPendientesModal({ data, materialesDB, onClose, onConfirm }) {
 }
 
 // ─── MODAL DE REVISIÓN ───────────────────────────────────────
-function ReviewModal({ item, companies, personal, obras, consorcios = [], consorcioSocios = [], proveedoresDB, materialesDB, ocsActivasDB, movs = [], onChange, onPatch, onConfirm, onClose, onReleerItems }) {
+function ReviewModal({ item, companies, personal, obras, consorcios = [], consorcioSocios = [], proveedoresDB, materialesDB, ocsActivasDB, movs = [], aplicacionesAnticipo = [], onChange, onPatch, onConfirm, onClose, onReleerItems }) {
   // Estado del botón Confirmar: sin esto los reclicks se tragaban en silencio
   // (el guard vive en un ref del padre) y lo editado DESPUÉS del clic se
   // descartaba sin que se notara. Va acá arriba por la regla de hooks.
@@ -3337,6 +3450,30 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
   // confirmarGuia aplica exactamente el mismo default.
   const guiaSel = (r?.guia_facturas_sel ?? seleccionPorDefectoGuia(guiaCands))
     .filter(id => guiaCands.some(c => c.mov.id === id));   // sin fantasmas si cambió el Doc. Ref.
+
+  // ── ANTICIPOS: candidatos vivos para vincular esta entrega en cero ─────
+  // Recalculado EN VIVO (a diferencia de Detracción, que solo se sugiere una
+  // vez): si el OCR no leyó bien el RUC del emisor, corregirlo acá tiene que
+  // traer los anticipos de ESE proveedor, no quedarse con los del RUC mal leído.
+  const anticipoCands = uMCM(() => {
+    if (!r?.cubierta_por_anticipo) return [];
+    const rucAnt = normalizarRuc(r.proveedor_ruc);
+    if (!rucAnt) return [];
+    const monedaAnt = String(r.moneda || 'PEN').trim().toUpperCase();
+    const esPruebaAnt = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+    const aplicVivas = resolverAplicaciones(aplicacionesAnticipo || [], { demo: esPruebaAnt });
+    return detectarAnticipos(movs, { companyId: r.company_id || null, demo: esPruebaAnt })
+      .filter(a => a.proveedorRuc === rucAnt && a.moneda === monedaAnt)
+      .map(a => ({ ...a, ...saldoDeAnticipo(a, aplicVivas) }))
+      .filter(a => a.saldo > 0.05)
+      .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  }, [r?.cubierta_por_anticipo, r?.proveedor_ruc, r?.moneda, r?.company_id, movs, aplicacionesAnticipo]);
+  // Selección efectiva: si el vinculado guardado ya no es candidato (RUC
+  // corregido después, saldo agotado por otra factura) se muestra sin
+  // vincular en vez de arrastrarlo ciego — mismo criterio que guiaSel, sin
+  // un efecto que reescriba el review y pueda pisar una edición en curso.
+  const anticipoVinculadoId = anticipoCands.some(a => a.id === r?.anticipo_vinculado_id)
+    ? r.anticipo_vinculado_id : '';
 
   // ── Verificación del emisor contra SUNAT (cacheada) ────────────────
   // Se consulta el RUC y se contrasta TODO lo que devuelve, no solo el nombre:
@@ -4339,6 +4476,57 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                 </div>
               </span>
             </label>
+
+            {/* ── ENTREGA CUBIERTA POR UN ANTICIPO YA PAGADO ──────────────
+                Gabriel, 13-set: el caso KOPLAST/GASOMI — el proveedor factura
+                la entrega en $0 porque un anticipo pagado antes ya la cubre
+                (lo dice el propio comprobante: "Monto total del anticipo").
+                Sin esto, "El total debe ser mayor a 0" dejaba la factura sin
+                poder subir. Solo aplica a COMPRAS: NC/ND y ventas no llegan acá
+                (las excluye el fragmento de totales / emisorNuestro). */}
+            {!r.es_nota_credito && !r.es_nota_debito && !emisorNuestro && (
+            <div style={{ marginTop:10, padding:'8px 10px', border:'1px solid rgba(155,89,182,0.35)', borderRadius:8,
+              background: r.cubierta_por_anticipo ? 'rgba(155,89,182,0.07)' : 'transparent' }}>
+              <label style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer', fontSize:12.5, fontWeight:600 }}>
+                <input type="checkbox" checked={!!r.cubierta_por_anticipo}
+                  onChange={e=>upd({ cubierta_por_anticipo: e.target.checked })}/>
+                🧾 Esta entrega está cubierta por un anticipo ya pagado (permite Total = 0)
+              </label>
+              {r.monto_anticipo_leido > 0.05 && (
+                <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>
+                  La IA leyó "Monto total del anticipo" en el pie del comprobante: {fmtCurMagic(r.monto_anticipo_leido, r.moneda)}.
+                </div>
+              )}
+              {r.cubierta_por_anticipo && (
+                <>
+                  <div className="g2" style={{ marginTop:8 }}>
+                    <div>
+                      <label className="flabel">Valor real de esta entrega *</label>
+                      <input className="fi" type="number" step="0.01" value={r.anticipo_monto_cubierto ?? ''}
+                        onChange={e=>upd({ anticipo_monto_cubierto: e.target.value })}/>
+                      <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
+                        Es lo que se descuenta del saldo del anticipo — no el Total de arriba, que quedó en 0 a propósito.
+                      </div>
+                    </div>
+                    <div>
+                      <label className="flabel">Vincular al anticipo</label>
+                      <select className="fi" value={anticipoVinculadoId} onChange={e=>upd({ anticipo_vinculado_id: e.target.value })}>
+                        <option value="">— Vincular después, desde el Inventario de la empresa —</option>
+                        {anticipoCands.map(a => (
+                          <option key={a.id} value={a.id}>{a.documento || '(s/doc)'} · {a.fecha || 's/f'} · saldo {fmtCurMagic(a.saldo, a.moneda)}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  {anticipoCands.length === 0 && (
+                    <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:6, lineHeight:1.4 }}>
+                      No encontré ningún anticipo con saldo a favor de este proveedor en {r.moneda || 'PEN'}. Podés confirmar igual — vinculalo después desde el Inventario de la empresa cuando cargues el anticipo (o corregí el RUC/moneda si tenían que coincidir con uno que ya está cargado).
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            )}
             </>)}
 
             {/* NOTA DE CRÉDITO/DÉBITO — factura que modifica + efecto contable */}
@@ -4462,6 +4650,7 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
             Al confirmar se crea: {permiteCrearProveedor(opPartes) && r.proveedor_accion === 'crear_nuevo' && '1 proveedor + '}1 movimiento contable
             {r.crear_materiales_catalogo && obraDestinoResuelta ? ` + ${r.items.filter(i=>i.accion_material==='crear_nuevo').length} material(es) en catálogo (sin stock)` : ''}
             {r.genera_recepcion_almacen && recepAlmacen.permitido && r.items?.length > 0 ? ` + 1 recepción pendiente en el almacén de la obra` : ''}
+            {r.cubierta_por_anticipo && r.anticipo_vinculado_id ? ` + 1 aplicación de anticipo` : ''}
             {' + 1 evidencia.'}
           </div>
           <div style={{ display:'flex', gap:8 }}>
