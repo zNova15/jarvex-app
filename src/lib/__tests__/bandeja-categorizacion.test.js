@@ -11,7 +11,7 @@ import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
   decisionDeCatalogo, decisionNoInsumo, filaNuevaDeCatalogo,
-  aprendizajeParaContadora,
+  aprendizajeParaContadora, candidatoDe,
 } from '../bandeja-categorizacion.js';
 
 const cat = (id, nombre, unidad, familia, tipo = 'insumo', extra = {}) => ({
@@ -366,5 +366,72 @@ describe('el puente a la contadora', () => {
 
   it('sin insumo no hay nada que enseñar', () => {
     expect(aprendizajeParaContadora({ muestra: 'x' }, null)).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// «SIN CLASIFICAR» NO ES UNA SUGERENCIA (13-set-2026)
+//
+// Gabriel: «las sugerencias que te pedí para categorizar se supone que siempre
+// te mostraban una sugerencia, y sugerir "Sin clasificar — revisar a mano" es
+// lo mismo que no sugerir una clasificación».
+//
+// Medido en la bandeja de GASOMI antes del cambio: 150 descripciones,
+// S/ 584.467, dibujadas con badge de porcentaje y botón verde de «Aceptar»
+// como si el motor hubiera encontrado algo. Aceptarlas guardaba la NO-decisión
+// y las sacaba de la cola sin clasificar nada.
+// ═══════════════════════════════════════════════════════════════════
+describe('lo que el sistema no reconoce se dice, no se disfraza', () => {
+  it('una descripción impenetrable queda SIN candidato y en su propia banda', () => {
+    const { filas } = armar([compra('ARTICULO 1', 1200)]);
+    const f = filas[0];
+    expect(f.sinPropuesta).toBe(true);
+    expect(f.banda).toBe('sin_propuesta');
+    // Lo importante: no hay nada que «aceptar».
+    expect(f.candidatoIUPC).toBe(null);
+    expect(f.sug.candidatos?.[0]).toBeFalsy();
+    expect(candidatoDe(f, new Map())).toBe(null);
+  });
+
+  it('la que SÍ tiene propuesta conserva su banda y su candidato', () => {
+    const { filas } = armar([compra('CEMENTO PORTLAND TIPO I 42.5 KG - PACASMAYO', 9000, { unidad: 'bolsa' })]);
+    const f = filas[0];
+    expect(f.sinPropuesta).toBe(false);
+    expect(f.banda).not.toBe('sin_propuesta');
+    expect(f.sug.candidatos?.[0]?.cat?.codigo).toBe('c1');
+  });
+
+  it('el avance cuenta aparte las que no tienen propuesta, con su plata', () => {
+    const { filas } = armar([
+      compra('ARTICULO 1', 1200),
+      compra('CEMENTO PORTLAND TIPO I 42.5 KG - PACASMAYO', 9000, { unidad: 'bolsa' }),
+    ]);
+    const r = resumenAvance(filas);
+    expect(r.sin_propuesta).toBe(1);
+    expect(r.plataSinPropuesta).toBe(1200);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// EJECUCIÓN DE OBRA (S14) — las dos líneas más caras que quedaban sin casa
+// ═══════════════════════════════════════════════════════════════════
+describe('cuando lo que se factura ES la obra', () => {
+  const CASOS = [
+    ['OBRA: REHABILITACION DEL LOCAL ESCOLAR N 88389 JUAN VALERSANDOVAL DISTRITO DE NUEVO CHIMBOTE PROVINCIA DEL SANTA DPTO DE ANCASH', 59501],
+    ['POR EL SALDO DE TARRAJEO DE LA OBRA: SALDO DE LA DE LA I.E. 040 NUEVA ESPERANZA DEL DISTRITO DE NUEVO CHIMBOTE, PROVINCIA DE SANTA, DEPARTAMENTO DE ANCASH', 44068],
+  ];
+  for (const [texto, importe] of CASOS) {
+    it(`«${texto.slice(0, 40)}…» cae en S14 y ya no en «sin propuesta»`, () => {
+      const { filas } = armar([compra(texto, importe)]);
+      const f = filas[0];
+      expect(f.recomendacionIUPC.codigo).toBe('S14');
+      expect(f.sinPropuesta).toBe(false);
+      expect(f.banda).toBe('alta');
+    });
+  }
+
+  it('un material que solo MENCIONA la obra no se contagia', () => {
+    const { filas } = armar([compra('CEMENTO PORTLAND TIPO I PARA OBRA', 5000, { unidad: 'bolsa' })]);
+    expect(filas[0].recomendacionIUPC.codigo).not.toBe('S14');
   });
 });

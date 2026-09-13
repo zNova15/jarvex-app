@@ -268,9 +268,19 @@ describe('el Catálogo abre en las clasificaciones y su diccionario', () => {
   it('la vista por defecto son las clasificaciones, no la lista plana', () => {
     const h = conDatosClas();
     expect(h).toContain('Clasificaciones y diccionario');
-    expect(h).toContain('Lista completa');
+    expect(h).toContain('Insumos y servicios (');
     // El diccionario es el punto de la pantalla; la tabla de 483 filas no.
     expect(h).toContain('diccionario');
+  });
+
+  // 13-set: «Categorizar» dejó de ser una pestaña aparte. Las tres vistas
+  // —clasificaciones, insumos y servicios, nombres por reconocer— viven en la
+  // misma sección, y el encabezado explica por qué sus números no coinciden.
+  it('la sección ofrece las TRES vistas y explica los dos números', () => {
+    const h = conDatosClas();
+    expect(h).toContain('Nombres de factura por reconocer');
+    expect(h).toContain('única sección donde se clasifican');
+    expect(h).toContain('Nunca van a ser el mismo número');
   });
 
   it('tiene los DOS árboles: insumos y servicios', () => {

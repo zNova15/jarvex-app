@@ -152,6 +152,61 @@ export function formatoPeriodoHumano(periodoOFecha) {
 const importeDe = (x) => Math.abs(r2(x));
 
 /**
+ * ¿El importe de SUNAT y el de JARVEX son el mismo, aunque estén en monedas
+ * distintas?
+ *
+ * ── 🔴 EL BUG QUE ESTO ARREGLA (13-set-2026) ──────────────────────
+ * Gabriel: «esta empresa realizó sus facturas en dólares pero en la
+ * comparativa de SUNAT vs JARVEX el monto en dólares se los detecta como soles
+ * y se detecta una incoherencia».
+ *
+ * Medido contra los cortes reales de GASOMI (KOPLAST INDUSTRIAL, RUC
+ * 20505543174), que factura en dólares:
+ *
+ *   comprobante   SUNAT dice   TC del archivo   JARVEX tiene   ¿mismo?
+ *   F003-3384     279.600,00   3,495            80.000,00 USD  sí (×3,495)
+ *   F003-3409      66.070,87   3,385            19.518,72 USD  sí (×3,385)
+ *   F003-3436      49.932,06   3,442            14.506,70 USD  sí (×3,442)
+ *   F003-3458      31.312,16   3,478             9.002,92 USD  sí (×3,478)
+ *
+ * O sea: el archivo de SUNAT trae los importes YA CONVERTIDOS A SOLES y el
+ * tipo de cambio aparte, en su propia columna —que `sunat-csv.js` ya leía y
+ * guardaba, y que nadie usaba—. La app guarda el importe en la moneda del
+ * comprobante. Comparar los dos números crudos daba «importe distinto» por
+ * S/ 199.600 en la primera fila, y las 13 facturas de KOPLAST salían todas
+ * como error. No había ninguna incoherencia: faltaba multiplicar.
+ *
+ * ── POR QUÉ SE PRUEBAN LAS DOS LECTURAS Y NO SE ASUME UNA ─────────
+ * Se probó primero el número crudo y después el convertido. Si mañana SUNAT
+ * cambia el layout y manda el importe en la moneda de origen, esto lo sigue
+ * cruzando bien en vez de inventar una diferencia nueva: la regla es
+ * «coinciden de alguna de las dos formas», no «coinciden después de
+ * multiplicar».
+ *
+ * @returns {{diferencia:number, tipoCambio:number|null, appEnSoles:number|null}}
+ */
+export function conciliarImporte(filaSunat, mov) {
+  const sunat = importeDe(filaSunat?.total);
+  const app = importeDe(mov?.amount);
+  const difDirecta = r2(sunat - app);
+  if (Math.abs(difDirecta) <= TOLERANCIA) {
+    return { diferencia: difDirecta, tipoCambio: null, appEnSoles: null };
+  }
+
+  const monedaSunat = String(filaSunat?.moneda || 'PEN').trim().toUpperCase();
+  const monedaApp = String(mov?.currency || 'PEN').trim().toUpperCase();
+  const tc = Number(filaSunat?.tipoCambio) || 0;
+  // Solo cuando las dos partes dicen que el comprobante es en la MISMA moneda
+  // extranjera y el archivo trajo su tipo de cambio. Sin esas tres cosas,
+  // convertir sería adivinar.
+  if (monedaSunat !== 'PEN' && monedaSunat === monedaApp && tc > 1) {
+    const appEnSoles = r2(app * tc);
+    return { diferencia: r2(sunat - appEnSoles), tipoCambio: tc, appEnSoles };
+  }
+  return { diferencia: difDirecta, tipoCambio: null, appEnSoles: null };
+}
+
+/**
  * Cruza un libro de SUNAT contra los movimientos de la app.
  *
  * @param filas  las filas ya parseadas por `parseCsvSunat`
@@ -241,7 +296,10 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
 
     if (m) {
       usados.add(m.id);
-      const dif = r2(importeDe(f.total) - importeDe(m.amount));
+      // El importe se concilia con la moneda y el tipo de cambio del propio
+      // archivo — ver `conciliarImporte` y el caso KOPLAST.
+      const conc = conciliarImporte(f, m);
+      const dif = conc.diferencia;
       const signoDistinto = Math.sign(r2(f.total)) !== 0
         && Math.sign(r2(m.amount)) !== 0
         && Math.sign(r2(f.total)) !== Math.sign(r2(m.amount));
@@ -263,10 +321,15 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         appDocumento: m.document_number,
         appFecha: m.date,
         appTotal: r2(m.amount),
+        appMoneda: String(m.currency || 'PEN').trim().toUpperCase(),
         appNombre: m.third_party_name || '',
         periodoDetectado,
         motivoPeriodo,
         diferencia: dif,
+        // Con qué tipo de cambio se comparó, para poder decirlo en pantalla.
+        // null = no hizo falta convertir (los dos estaban en la misma moneda).
+        tipoCambio: conc.tipoCambio,
+        appEnSoles: conc.appEnSoles,
       });
       continue;
     }
@@ -291,7 +354,17 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     // ¿Y con la serie escrita distinta? Mismo RUC, mismo importe, misma fecha.
     // Sin esto, CHIFA MONTEORO salía como DOS errores (una que falta y una que
     // sobra) cuando en realidad es uno solo: la serie mal tipeada.
-    const candidatosRucImporte = porRucImporte.get(`${rucLimpio(f.contraparteRuc)}|${importeDe(f.total)}`) || [];
+    // El rescate también tiene que saber de monedas: con un comprobante en
+    // dólares el importe de SUNAT viene en soles y NUNCA pegaría contra el
+    // índice, que guarda lo que dice la app. Se prueba el crudo y, si el
+    // archivo trajo tipo de cambio, el equivalente en la moneda de origen.
+    const rucF = rucLimpio(f.contraparteRuc);
+    const tcFila = Number(f.tipoCambio) || 0;
+    const candidatosRucImporte = porRucImporte.get(`${rucF}|${importeDe(f.total)}`)
+      || (String(f.moneda || 'PEN').trim().toUpperCase() !== 'PEN' && tcFila > 1
+        ? porRucImporte.get(`${rucF}|${importeDe(r2(f.total / tcFila))}`)
+        : null)
+      || [];
     const gemelo = candidatosRucImporte.find(x => !usados.has(x.id) && x.date === f.fecha);
     if (gemelo) {
       usados.add(gemelo.id);

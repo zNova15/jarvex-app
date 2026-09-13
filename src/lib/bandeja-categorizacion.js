@@ -195,8 +195,30 @@ export const ESTADOS = [
   ['baja', 'Coincidencia baja (25-39%)'],
   ['rara', 'Coincidencia rara (10-24%)'],
   ['extrema_baja', 'Coincidencia extremadamente baja (<10%)'],
+  ['sin_propuesta', 'Sin propuesta — elegir a mano'],
   ['decididas', 'Ya decididas'],
 ];
+
+/**
+ * La banda de las filas que el sistema NO sabe clasificar.
+ *
+ * 🔴 POR QUÉ EXISTE (13-set-2026, pedido de Gabriel: «sugerir "Sin clasificar
+ * — revisar a mano" es lo mismo que no sugerir una clasificación»).
+ * Antes estas filas se dibujaban EXACTAMENTE igual que una propuesta de
+ * verdad: «→ [sin_clasificar] Sin clasificar — revisar a mano · Coincidencia
+ * extremadamente baja (5%)», con su botón verde de «Aceptar». O sea que el
+ * botón más fácil de apretar guardaba la NO-decisión como si fuera una
+ * decisión, y la fila salía de la cola sin que nadie hubiera clasificado nada.
+ * En la bandeja de GASOMI la banda más floja —menos de 10% de confianza, que
+ * es donde caían éstas— eran 150 descripciones. Ahora se dicen con todas las
+ * letras y no tienen candidato que aceptar: hay que elegir la clasificación a
+ * mano, que es la única respuesta honesta.
+ */
+export const BANDA_SIN_PROPUESTA = {
+  slug: 'sin_propuesta',
+  label: 'Sin propuesta',
+  color: 'b-gray',
+};
 
 /**
  * La bandeja entera: cada descripción con su decisión (si la hay) o su
@@ -221,7 +243,28 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones, termino
     const recIUPC = clasificarConIUPC(d.muestra, { terminosCustom });
     const cand = sug.candidatos?.[0] || null;
     const scoreEfectivo = cand ? cand.score : recIUPC.score;
-    const b = bandaConfianza(scoreEfectivo);
+
+    // 🔴 «Sin clasificar» NO es una propuesta: es la ausencia de una. Si no
+    // hay candidato del catálogo Y el estándar tampoco reconoce nada, la fila
+    // se marca como tal y NO lleva candidato — no hay nada que «aceptar».
+    // Ver `BANDA_SIN_PROPUESTA`.
+    const sinPropuesta = !cand && recIUPC.codigo === 'sin_clasificar';
+    const b = sinPropuesta ? BANDA_SIN_PROPUESTA : bandaConfianza(scoreEfectivo);
+
+    if (sinPropuesta) {
+      return {
+        ...d,
+        estado,
+        decision: null,
+        cat: null,
+        sug,
+        banda: BANDA_SIN_PROPUESTA.slug,
+        bandaInfo: BANDA_SIN_PROPUESTA,
+        recomendacionIUPC: recIUPC,
+        candidatoIUPC: null,
+        sinPropuesta: true,
+      };
+    }
 
     const candidatoIUPC = {
       cat: {
@@ -250,6 +293,7 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones, termino
       bandaInfo: b,
       recomendacionIUPC: recIUPC,
       candidatoIUPC,
+      sinPropuesta: false,
     };
   });
 }
@@ -309,6 +353,7 @@ export function resumenAvance(filas) {
     baja: 0, plataBaja: 0,
     rara: 0, plataRara: 0,
     extrema_baja: 0, plataExtremaBaja: 0,
+    sin_propuesta: 0, plataSinPropuesta: 0,
   };
   for (const f of (filas || [])) {
     r.total += 1; r.totalPlata += f.importe;
@@ -319,6 +364,7 @@ export function resumenAvance(filas) {
       else if (f.banda === 'baja') r.plataBaja += f.importe;
       else if (f.banda === 'rara') r.plataRara += f.importe;
       else if (f.banda === 'extrema_baja') r.plataExtremaBaja += f.importe;
+      else if (f.banda === 'sin_propuesta') r.plataSinPropuesta += f.importe;
     }
     if (f.estado === 'decididas') {
       r.decididas += 1; r.plataDecidida += f.importe;

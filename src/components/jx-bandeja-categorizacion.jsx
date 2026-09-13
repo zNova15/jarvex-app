@@ -75,10 +75,11 @@ const CODIGOS_OFRECIDOS = new Set(listarCategoriasDisponibles().map(c => c.codig
  * muestra arriba y DESHABILITADA: se lee, no se vuelve a elegir. La migración
  * al estándar es de ida.
  */
-function OpcionesCategoria({ actual = null }) {
+function OpcionesCategoria({ actual = null, placeholder = null }) {
   const legacy = actual && !CODIGOS_OFRECIDOS.has(actual);
   return (
     <>
+      {placeholder && <option value="">{placeholder}</option>}
       {legacy && (
         <optgroup label="Categoría actual (vocabulario viejo)">
           <option value={actual} disabled>{etiquetaCategoria(actual)}</option>
@@ -99,7 +100,7 @@ const COLOR_ESTADO = {
   propuesto: 'b-green', revisar: 'b-amber', falta: 'b-blue', decididas: 'b-gray',
 };
 
-function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
+function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambitoExterno = false }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
@@ -128,7 +129,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
   const guardandoRef = uR(false);
 
   const empresas = uM(() => (compHook.data || []).filter(c => !c.deleted_at), [compHook.data]);
-  const companyId = empresaFija || entidad || null;
+  // `ambitoExterno`: la bandeja vive DENTRO de la sección de clasificación
+  // (13-set-2026) y el ámbito lo manda el selector de esa pantalla —incluido
+  // «todo el grupo», que es `null`—. Dos selectores que pueden decir cosas
+  // distintas sobre la misma lista es la forma más rápida de mirar la base
+  // equivocada, así que acá no se ofrece ninguno.
+  const companyId = ambitoExterno ? (empresaFija || null) : (empresaFija || entidad || null);
 
   // `equivalenciasDe` (familia local → familia del grupo) es la forma que
   // espera `familiaEfectiva`; `resolverEquivalencias` devuelve las filas
@@ -197,6 +203,13 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
   const aceptar = conGuard(async (fila, categoriaElegida = null) => {
     const cand = fila?.sug?.candidatos?.[0];
     const catFila = catalogoDe(fila);
+    // Sin propuesta no se puede «aceptar» nada: guardar 'sin_clasificar' sería
+    // sacar la fila de la cola sin haberla clasificado. El botón ya viene
+    // apagado; esto es el cinturón por si alguien llega por el atajo «A».
+    if (fila?.sinPropuesta && !categoriaElegida) {
+      showToast?.('Elegí primero una clasificación: el sistema no tiene ninguna que proponer.', 'amber');
+      return;
+    }
     const catFinal = categoriaElegida
       || catFila?.familia || fila?.recomendacionIUPC?.codigo || 'sin_clasificar';
 
@@ -326,15 +339,17 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
 
       <div className="card card-p">
         <div className="frow-sb" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ minWidth: 220, flex: 1 }}>
-            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Compras de</label>
-            <select className="fi" value={companyId || ''} disabled={!!empresaFija}
-              title={empresaFija ? 'El ámbito lo fija el selector de arriba de la pantalla.' : undefined}
-              onChange={e => { setEntidad(e.target.value); setCursor(0); }}>
-              {!empresaFija && <option value="">Todo el grupo ({(compras || []).length} líneas)</option>}
-              {empresas.map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
-            </select>
-          </div>
+          {!ambitoExterno && (
+            <div style={{ minWidth: 220, flex: 1 }}>
+              <label style={{ fontSize: 11, color: 'var(--tm)' }}>Compras de</label>
+              <select className="fi" value={companyId || ''} disabled={!!empresaFija}
+                title={empresaFija ? 'El ámbito lo fija el selector de arriba de la pantalla.' : undefined}
+                onChange={e => { setEntidad(e.target.value); setCursor(0); }}>
+                {!empresaFija && <option value="">Todo el grupo ({(compras || []).length} líneas)</option>}
+                {empresas.map(c => <option key={c.id} value={c.id}>{c.name || c.id}</option>)}
+              </select>
+            </div>
+          )}
           <div style={{ minWidth: 240, flex: 2 }}>
             <label style={{ fontSize: 11, color: 'var(--tm)' }}>Buscar en las descripciones</label>
             <input className="fi" value={busca} onChange={e => { setBusca(e.target.value); setCursor(0); }} placeholder="cemento, fierro, tubo…" />
@@ -359,6 +374,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null }) {
           <span>· coincidencia alta: <strong>{avance.alta}</strong> ({soles(avance.plataAlta)})</span>
           <span>· media: <strong>{avance.media}</strong> ({soles(avance.plataMedia)})</span>
           <span>· para mirar de a una: <strong>{avance.baja + avance.rara + avance.extrema_baja}</strong> ({soles(avance.plataBaja + avance.plataRara + avance.plataExtremaBaja)})</span>
+          {avance.sin_propuesta > 0 && (
+            <span title="El sistema no reconoce estas descripciones: no hay nada que aceptar, hay que elegir la clasificación a mano.">
+              · sin propuesta: <strong>{avance.sin_propuesta}</strong> ({soles(avance.plataSinPropuesta)})
+            </span>
+          )}
         </div>
       </div>
 
@@ -464,10 +484,15 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
     unidad: [...(f.unidades || [])][0] || 'und',
   } : null);
 
-  const [categoriaSel, setCategoriaSel] = uS(() => targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros');
+  // Sin propuesta: el sistema no reconoce la descripción. El desplegable arranca
+  // VACÍO a propósito —no hay nada que aceptar hasta que una persona elija— y
+  // «Aceptar» queda apagado. Ver `BANDA_SIN_PROPUESTA` en la lib.
+  const sinPropuesta = !!f?.sinPropuesta;
+  const catInicial = () => (sinPropuesta ? '' : (targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros'));
+  const [categoriaSel, setCategoriaSel] = uS(catInicial);
   uE(() => {
-    setCategoriaSel(targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros');
-  }, [targetCat?.familia, f?.recomendacionIUPC?.codigo]);
+    setCategoriaSel(sinPropuesta ? '' : (targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros'));
+  }, [sinPropuesta, targetCat?.familia, f?.recomendacionIUPC?.codigo]);
 
   const rec = f?.recomendacionIUPC;
   const score = cand?.score ?? rec?.score ?? 0.08;
@@ -483,6 +508,9 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
     baja: { cls: 'b-amber', lbl: `Coincidencia baja (${scorePct}%)` },
     rara: { cls: 'b-purple', lbl: `Coincidencia rara (${scorePct}%)` },
     extrema_baja: { cls: 'b-red', lbl: `Coincidencia extremadamente baja (${scorePct}%)` },
+    // Sin porcentaje: un 5% de confianza sobre «no sé» es un número inventado
+    // que sólo sirve para que parezca que hubo un análisis.
+    sin_propuesta: { cls: 'b-gray', lbl: 'Sin propuesta' },
   };
   const bInfo = BADGE_BANDA[banda] || BADGE_BANDA.baja;
 
@@ -521,22 +549,34 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
             </div>
           ) : (
             <div style={{ fontSize: 11.5, marginTop: 4 }}>
-              → <strong>{targetCat?.nombre || rec?.nombre || 'Insumo sugerido'}</strong>
+              {sinPropuesta ? (
+                <span style={{ color: 'var(--tm)' }}>
+                  → <em>El sistema no reconoce esta descripción.</em> Elegí su clasificación:
+                </span>
+              ) : (
+                <>→ <strong>{targetCat?.nombre || rec?.nombre || 'Insumo sugerido'}</strong></>
+              )}
               <span className={`badge ${bInfo.cls}`} style={{ marginLeft: 6 }}>
                 {bInfo.lbl}
               </span>
-              
+
               {/* Modificación directa de categoría en la misma fila */}
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
-                <label style={{ fontSize: 10, color: 'var(--tm)' }}>Categoría:</label>
+                <label style={{ fontSize: 10, color: 'var(--tm)' }}>Clasificación:</label>
                 <select
                   className="fi"
-                  style={{ fontSize: 11, height: 22, padding: '0 4px', maxWidth: 220 }}
+                  style={{
+                    fontSize: 11, height: 22, padding: '0 4px', maxWidth: 240,
+                    ...(sinPropuesta && !categoriaSel ? { borderColor: 'var(--amber)' } : null),
+                  }}
                   value={categoriaSel}
                   onChange={e => setCategoriaSel(e.target.value)}
                   onClick={e => e.stopPropagation()}
                 >
-                  <OpcionesCategoria actual={categoriaSel} />
+                  <OpcionesCategoria
+                    actual={categoriaSel}
+                    placeholder={sinPropuesta ? '— Elegí la clasificación —' : null}
+                  />
                 </select>
               </span>
 
@@ -563,7 +603,13 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
           ) : (
             <>
               {(cand || rec) && (
-                <button className="btn btn-sm btn-green" onClick={() => onAceptar?.(categoriaSel)}>
+                <button
+                  className="btn btn-sm btn-green"
+                  disabled={sinPropuesta && !categoriaSel}
+                  title={sinPropuesta && !categoriaSel
+                    ? 'Elegí primero una clasificación: el sistema no tiene ninguna que proponer.'
+                    : undefined}
+                  onClick={() => onAceptar?.(categoriaSel)}>
                   Aceptar
                 </button>
               )}
@@ -585,7 +631,11 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
  */
 function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
-  const [familia, setFamilia] = uS(() => fila?.recomendacionIUPC?.codigo || 'sin_clasificar');
+  // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
+  // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
+  // catálogo con un click.
+  const sinPropuesta = !!fila?.sinPropuesta || fila?.recomendacionIUPC?.codigo === 'sin_clasificar';
+  const [familia, setFamilia] = uS(() => (sinPropuesta ? '' : (fila?.recomendacionIUPC?.codigo || '')));
   const [unidad, setUnidad] = uS(() => [...(fila?.unidades || [])][0] || 'und');
   const Modal = window.Modal;
   const cuerpo = (
@@ -600,10 +650,15 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ flex: 2, minWidth: 220 }}>
-          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Categoría (IUPC / Complementaria)</label>
+          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Clasificación (IUPC / Servicios / Complementaria)</label>
           <select className="fi" value={familia} onChange={e => setFamilia(e.target.value)}>
-            <OpcionesCategoria />
+            <OpcionesCategoria actual={familia} placeholder="— Elegí la clasificación —" />
           </select>
+          {!familia && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+              El estándar no reconoció esta descripción: elegila vos.
+            </div>
+          )}
         </div>
         <div style={{ flex: 1, minWidth: 110 }}>
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Unidad</label>
@@ -623,7 +678,7 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
   const pie = (
     <>
       <button className="btn btn-sm" onClick={onCancel}>Cancelar</button>
-      <button className="btn btn-sm btn-green" disabled={!nombre.trim()}
+      <button className="btn btn-sm btn-green" disabled={!nombre.trim() || !familia}
         onClick={() => onGuardar(fila, { nombre, familia, unidad })}>
         Agregar al catálogo
       </button>

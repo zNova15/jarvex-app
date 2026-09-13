@@ -1277,6 +1277,63 @@ export function bandaConfianza(score) {
  * la contadora dónde mirar con cuidado. Ahora el score refleja la fuerza de
  * la evidencia y la banda vuelve a significar algo.
  */
+/**
+ * Normalización que CONSERVA los dos puntos. `normIUPC` los tira, y en
+ * «OBRA: REHABILITACION DEL LOCAL ESCOLAR…» los dos puntos son justamente la
+ * prueba de que lo que se factura es la obra y no un material «para obra».
+ */
+const normConDosPuntos = (s) => String(s || '')
+  .normalize('NFD')
+  .replace(/[̀-ͯ]/g, '')
+  .toLowerCase()
+  .replace(/[^a-z0-9:]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+/**
+ * ¿Lo que se factura ES LA OBRA? (13-set-2026, pedido de Gabriel)
+ *
+ * Las dos líneas más caras que quedaban en «sin clasificar» en la bandeja de
+ * GASOMI eran ésta familia: «OBRA: REHABILITACION DEL LOCAL ESCOLAR N 88389…»
+ * (S/ 59.501) y «POR EL SALDO DE TARRAJEO DE LA OBRA: I.E. 040 NUEVA
+ * ESPERANZA…» (S/ 44.068). No son un material ni un servicio auxiliar: son la
+ * ejecución de una obra contratada, y por eso tienen clasificación propia
+ * (S14) en vez de caer en el cajón de «servicios en general».
+ *
+ * Las reglas están ANCLADAS, por la misma razón que en `detectarServicio`:
+ * `\bobra\b` suelto convertiría en «ejecución de obra» a cualquier
+ * «CEMENTO PARA OBRA». Hace falta los dos puntos, o el sustantivo pegado a
+ * «de (la) obra».
+ *
+ * @returns {{score:number, motivo:string}|null}
+ */
+export function detectarEjecucionObra(texto) {
+  const n = normConDosPuntos(texto);
+  if (!n) return null;
+
+  // «OBRA: …» — el encabezado con el que se factura una obra entera.
+  if (/(^|\s)obra\s*:/.test(n)) {
+    return { score: 0.92, motivo: 'La descripción encabeza con «OBRA:» — lo que se factura es la obra' };
+  }
+  // Una valorización es, por definición, avance de obra facturado.
+  if (/\bvalorizacion(es)?\b/.test(n)) {
+    return { score: 0.90, motivo: 'Es una valorización: avance de obra facturado' };
+  }
+  // «ejecución / avance / adelanto / liquidación / contrato / saldo DE (LA) OBRA».
+  if (/\b(ejecucion|avance|adelanto|liquidacion|contrato|saldo|valorizado) de (la |las |los )?obra/.test(n)) {
+    return { score: 0.90, motivo: 'Lo facturado es la ejecución de una obra, no un insumo' };
+  }
+  // «POR EL SALDO DE … DE LA OBRA» — la forma en que las contratistas del
+  // grupo facturan un saldo pendiente de una partida ejecutada.
+  if (/^por el saldo de\b/.test(n) && /\bobra\b/.test(n)) {
+    return { score: 0.85, motivo: 'Saldo de una partida ejecutada de la obra' };
+  }
+  if (/\bmetrados? ejecutados?\b/.test(n)) {
+    return { score: 0.85, motivo: 'Metrado ejecutado: avance de obra' };
+  }
+  return null;
+}
+
 export function detectarServicio(texto) {
   const n = normIUPC(texto);
 
@@ -1578,6 +1635,15 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
       score: 0.98,
       motivos: [`Coincidencia exacta con «${exactoServ.nombre}» en el diccionario de servicios`],
     });
+  }
+
+  // 2a. ¿LO QUE SE FACTURA ES LA OBRA? Va antes de los parecidos porque es una
+  //     regla dura: «OBRA: REHABILITACION…» no se parece a un material, ES
+  //     otra cosa. Después del diccionario propio y de los exactos, para que
+  //     una corrección deliberada de Gabriel siga pisando.
+  const ejecObra = detectarEjecucionObra(texto);
+  if (ejecObra) {
+    return recServicio({ cod: 'S14', score: ejecObra.score, motivos: [ejecObra.motivo] });
   }
 
   const toks = tokensDeTexto(norm);

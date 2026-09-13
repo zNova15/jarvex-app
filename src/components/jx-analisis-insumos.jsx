@@ -12,17 +12,17 @@
 //    COMPRÓ — sin esto no hay Abastecimiento ni órdenes que nazcan antes del
 //    comprobante. Reusa las correlaciones de la pestaña de al lado: mapear un
 //    nombre mapea a todos sus hermanos ya confirmados.
-//  · 📚 Catálogo: el catálogo canónico de insumos y servicios (tanda 14,
-//    entrega 2). Se importa «Categorizacion Simple.xlsx» —444 insumos en 10
-//    familias comerciales, 34 servicios y la disgregación del acero—, se ve qué
-//    quedó cargado y se corrige a mano lo que el archivo dejó mal. Es la lista
-//    contra la que la app propone nombres, unidades y familias.
-//  · 📥 Categorizar: la BANDEJA QUE APRENDE (tanda 14, entrega 4). Dice qué
-//    insumo del catálogo canónico es cada descripción de factura —o que no es
-//    un insumo—, ordenada por plata, de a lotes y con teclado. Lo que falta en
-//    el catálogo se agrega desde ahí mismo. Es otra pregunta que la de «Mapeo
-//    al presupuesto»: acá se decide QUÉ ES, allá contra qué código de la obra
-//    va. Escribe en `insumo_categoria` (mig 195), no en `insumo_mapeo`.
+//  · 🗂 Clasificación de insumos y servicios: UNA sola sección (13-set-2026)
+//    con tres vistas — las clasificaciones y su diccionario, la lista de
+//    insumos y servicios de la entidad, y los nombres de factura por
+//    reconocer. Antes eran DOS pestañas («Catálogo» y «Categorizar») que
+//    contestaban mitades de la misma pregunta y mostraban dos números que no
+//    cerraban: 484 filas de catálogo contra 723 descripciones por decidir.
+//    Gabriel: «se supone que haya una sola sección donde clasifiquemos todos
+//    los insumos y servicios de la entidad en la que estemos». Por dentro
+//    siguen siendo dos tablas y tienen que serlo: `catalogo_insumos` es el
+//    vocabulario y `insumo_categoria` (mig 195) son los alias; lo que se
+//    unificó es la pregunta que se le hace a la persona.
 //  · 🤝 Correlaciones: el sistema PROPONE pares de nombres que parecen el
 //    mismo insumo; acá se confirma ("mismo") o se rechaza ("distintos") y la
 //    decisión queda grabada en insumo_correlaciones (sincronizada) para NO
@@ -55,7 +55,6 @@ import {
 } from "../lib/analisis-insumos.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
-import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -124,13 +123,24 @@ function AnalisisInsumosPage({ showToast }) {
   const empresaFija = useEmpresaBloqueada();
   const [empresaSelRaw, setEmpresaSel] = uS(() => filtroInicialEmpresa(''));
   const empresaVista = empresaFija || empresaSelRaw || null;
+  // «bandeja» ya no es una pestaña: la categorización vive DENTRO de la
+  // sección de clasificación, como tercera vista. El alias se conserva porque
+  // hay navegaciones guardadas (y la memoria muscular de Gabriel) que todavía
+  // piden esa pestaña por nombre.
   const [tab, setTab] = uS(() => {
     const t = typeof window !== 'undefined' && window.__analisisInsumosIntent?.tab;
     if (t) {
       delete window.__analisisInsumosIntent.tab;
-      return t;
+      // Deja la vista pedida para el useState de abajo, que corre después.
+      if (t === 'bandeja') window.__analisisInsumosIntent.vista = 'reconocer';
+      return t === 'bandeja' ? 'catalogo' : t;
     }
     return 'comparador';
+  });
+  const [vistaCatalogo, setVistaCatalogo] = uS(() => {
+    const v = typeof window !== 'undefined' && window.__analisisInsumosIntent?.vista;
+    if (v) { delete window.__analisisInsumosIntent.vista; return v; }
+    return 'clasificaciones';
   });
   const [busca, setBusca] = uS('');
   const [sel, setSel] = uS(null);
@@ -146,8 +156,14 @@ function AnalisisInsumosPage({ showToast }) {
   uE(() => {
     if (typeof window !== 'undefined' && window.__analisisInsumosIntent) {
       if (window.__analisisInsumosIntent.tab) {
-        setTab(window.__analisisInsumosIntent.tab);
+        const t = window.__analisisInsumosIntent.tab;
+        setTab(t === 'bandeja' ? 'catalogo' : t);
+        if (t === 'bandeja') setVistaCatalogo('reconocer');
         delete window.__analisisInsumosIntent.tab;
+      }
+      if (window.__analisisInsumosIntent.vista) {
+        setVistaCatalogo(window.__analisisInsumosIntent.vista);
+        delete window.__analisisInsumosIntent.vista;
       }
       if (window.__analisisInsumosIntent.companyId) {
         setEmpresaSel(window.__analisisInsumosIntent.companyId);
@@ -366,27 +382,28 @@ function AnalisisInsumosPage({ showToast }) {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 8 }}>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📚 1. Catálogo</div>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🗂 1. Clasificación</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              Base de datos maestra central de insumos y servicios de toda la empresa y el aplicativo.
+              La única sección donde se clasifican los insumos y servicios de la entidad, y donde se reconocen
+              los nombres con que aparecen en las facturas.
             </div>
           </div>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>📥 2. Categorizar</div>
-            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              Homologa descripciones libres de comprobantes al catálogo. Lo aprendido aquí se comparte con todas las entidades.
-            </div>
-          </div>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 3. Correlaciones</div>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 2. Correlaciones</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Une variantes de nombres del mismo insumo y cruza compras con ventas para cuadrar inventarios y saldos.
             </div>
           </div>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🎯 4. Mapeo de Presupuesto</div>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🎯 3. Mapeo al presupuesto</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              Vincula compras o insumos reales con las partidas del presupuesto de una obra o trabajo específico.
+              Dice qué insumo del presupuesto de un trabajo es cada insumo ya clasificado de la entidad.
+            </div>
+          </div>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🔍 4. Comparador de precios</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Qué proveedor vendió cada insumo, a qué precio y cómo evolucionó.
             </div>
           </div>
         </div>
@@ -401,10 +418,7 @@ function AnalisisInsumosPage({ showToast }) {
           🎯 Mapeo al presupuesto
         </button>
         <button className={`btn btn-sm ${tab === 'catalogo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('catalogo')}>
-          📚 Catálogo
-        </button>
-        <button className={`btn btn-sm ${tab === 'bandeja' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('bandeja')}>
-          📥 Categorizar
+          🗂 Clasificación de insumos y servicios
         </button>
       </div>
 
@@ -508,12 +522,18 @@ function AnalisisInsumosPage({ showToast }) {
         <MapeoInsumosTab compras={compras} grupoDe={grupoDe} showToast={showToast} />
       )}
 
-      {tab === 'bandeja' && (
-        <BandejaCategorizacionTab compras={compras} showToast={showToast} empresaFija={empresaVista} />
-      )}
-
+      {/* UNA SOLA SECCIÓN DE CLASIFICACIÓN (13-set-2026). Antes esto eran dos
+          pestañas —«Catálogo» y «Categorizar»— que contestaban mitades de la
+          misma pregunta y mostraban dos números que no cerraban (484 vs 723).
+          Ahora es una sección con tres vistas; el encabezado de adentro
+          explica qué cuenta cada número. */}
       {tab === 'catalogo' && (
-        <CatalogoCanonicoTab showToast={showToast} empresaFija={empresaVista} />
+        <CatalogoCanonicoTab
+          showToast={showToast}
+          empresaFija={empresaVista}
+          compras={compras}
+          vistaInicial={vistaCatalogo}
+        />
       )}
 
       {tab === 'correlaciones' && (

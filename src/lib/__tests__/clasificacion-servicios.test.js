@@ -9,8 +9,10 @@ import {
 } from '../indices-unificados-iupc.js';
 
 describe('el árbol de servicios', () => {
-  it('tiene las 13 clasificaciones acordadas y todas con destino de gasto', () => {
-    expect(SERVICIOS_CODIGOS).toHaveLength(13);
+  it('tiene las 14 clasificaciones acordadas y todas con destino de gasto', () => {
+    // 14 desde el 13-set: se sumó S14 «Ejecución de obra», la sección especial
+    // que pidió Gabriel para lo que se factura cuando lo facturado ES la obra.
+    expect(SERVICIOS_CODIGOS).toHaveLength(14);
     expect(SERVICIOS_CODIGOS.every(s => /^S\d{2}$/.test(s.codigo))).toBe(true);
     expect(SERVICIOS_CODIGOS.every(s => s.nombre && s.gasto)).toBe(true);
     expect(esCodigoServicio('S05')).toBe(true);
@@ -36,7 +38,7 @@ describe('el árbol de servicios', () => {
     const arboles = new Set(cats.map(c => c.arbol));
     expect(arboles.has('insumo')).toBe(true);
     expect(arboles.has('servicio')).toBe(true);
-    expect(cats.filter(c => c.arbol === 'servicio')).toHaveLength(13);
+    expect(cats.filter(c => c.arbol === 'servicio')).toHaveLength(14);
     expect(cats.every(c => c.label && c.grupo)).toBe(true);
   });
 });

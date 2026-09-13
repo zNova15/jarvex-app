@@ -393,3 +393,95 @@ describe('Cotejo inteligente multi-período (cross-period matching)', () => {
     expect(resumen.brecha).toBe(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LOS COMPROBANTES EN DÓLARES (13-set-2026)
+//
+// Gabriel: «esta empresa realizó sus facturas en dólares pero en la
+// comparativa de SUNAT vs JARVEX el monto en dólares se los detecta como soles
+// y se detecta una incoherencia».
+//
+// Los cuatro casos son los REALES de KOPLAST INDUSTRIAL S.A.C (RUC
+// 20505543174) en los cortes de GASOMI de marzo y abril 2026, con el tipo de
+// cambio que trae cada fila del archivo de SUNAT. Antes del arreglo las 13
+// facturas de este proveedor salían todas como «importe distinto»; la primera
+// sola acusaba una diferencia de S/ 199.600 que no existe.
+// ═══════════════════════════════════════════════════════════════════
+describe('comprobantes en dólares: SUNAT trae soles y la app, la moneda de origen', () => {
+  const KOPLAST = '20505543174';
+  const CASOS = [
+    ['F003-3384', 3384, 279600, 3.495, 80000, '2026-03-31'],
+    ['F003-3409', 3409, 66070.87, 3.385, 19518.72, '2026-04-13'],
+    ['F003-3436', 3436, 49932.06, 3.442, 14506.70, '2026-04-22'],
+    ['F003-3458', 3458, 31312.16, 3.478, 9002.92, '2026-04-27'],
+  ];
+
+  for (const [doc, nro, soles, tc, dolares, fecha] of CASOS) {
+    it(`${doc}: US$ ${dolares} × ${tc} = los S/ ${soles} de SUNAT — cuadra`, () => {
+      const { filas } = compararLibro(
+        [sunat('01', 'F003', nro, KOPLAST, soles, fecha, { moneda: 'USD', tipoCambio: tc, nombre: 'KOPLAST INDUSTRIAL S.A.C' })],
+        [mov(`m-${nro}`, doc, KOPLAST, dolares, fecha, { currency: 'USD', nombre: 'KOPLAST INDUSTRIAL S.A.C' })],
+        { companyId: JARVEX, libro: 'compras', periodo: fecha.slice(0, 7).replace('-', ''), companies: COMPANIES },
+      );
+      expect(filas).toHaveLength(1);
+      expect(filas[0].estado).toBe('cuadra');
+      expect(filas[0].diferencia).toBe(0);
+      // Y se puede decir en pantalla con qué se comparó.
+      expect(filas[0].tipoCambio).toBe(tc);
+      expect(filas[0].appMoneda).toBe('USD');
+    });
+  }
+
+  it('una diferencia REAL en dólares se sigue viendo, y en soles', () => {
+    // La app tiene US$ 19.000 donde SUNAT dice US$ 19.518,72.
+    const { filas } = compararLibro(
+      [sunat('01', 'F003', 3409, KOPLAST, 66070.87, '2026-04-13', { moneda: 'USD', tipoCambio: 3.385 })],
+      [mov('m1', 'F003-3409', KOPLAST, 19000, '2026-04-13', { currency: 'USD' })],
+      { companyId: JARVEX, libro: 'compras', periodo: '202604', companies: COMPANIES },
+    );
+    expect(filas[0].estado).toBe('importe_distinto');
+    expect(filas[0].diferencia).toBeCloseTo(66070.87 - 19000 * 3.385, 2);
+  });
+
+  it('no convierte cuando la app tiene el comprobante en soles: eso SÍ es una diferencia', () => {
+    const { filas } = compararLibro(
+      [sunat('01', 'F003', 3384, KOPLAST, 279600, '2026-03-31', { moneda: 'USD', tipoCambio: 3.495 })],
+      [mov('m1', 'F003-3384', KOPLAST, 80000, '2026-03-31', { currency: 'PEN' })],
+      { companyId: JARVEX, libro: 'compras', periodo: '202603', companies: COMPANIES },
+    );
+    expect(filas[0].estado).toBe('importe_distinto');
+    expect(filas[0].tipoCambio).toBe(null);
+  });
+
+  it('sin tipo de cambio en el archivo no se inventa uno', () => {
+    const { filas } = compararLibro(
+      [sunat('01', 'F003', 3384, KOPLAST, 279600, '2026-03-31', { moneda: 'USD', tipoCambio: 1 })],
+      [mov('m1', 'F003-3384', KOPLAST, 80000, '2026-03-31', { currency: 'USD' })],
+      { companyId: JARVEX, libro: 'compras', periodo: '202603', companies: COMPANIES },
+    );
+    expect(filas[0].estado).toBe('importe_distinto');
+    expect(filas[0].tipoCambio).toBe(null);
+  });
+
+  it('si el archivo viniera en la moneda de origen, también cruza', () => {
+    // Robustez de layout: la regla es «coinciden de alguna de las dos formas».
+    const { filas } = compararLibro(
+      [sunat('01', 'F003', 3409, KOPLAST, 19518.72, '2026-04-13', { moneda: 'USD', tipoCambio: 3.385 })],
+      [mov('m1', 'F003-3409', KOPLAST, 19518.72, '2026-04-13', { currency: 'USD' })],
+      { companyId: JARVEX, libro: 'compras', periodo: '202604', companies: COMPANIES },
+    );
+    expect(filas[0].estado).toBe('cuadra');
+    expect(filas[0].tipoCambio).toBe(null);
+  });
+
+  it('el rescate por serie mal escrita también sabe de monedas', () => {
+    // Misma factura, serie tipeada distinta, comprobante en dólares.
+    const { filas } = compararLibro(
+      [sunat('01', 'F003', 3409, KOPLAST, 66070.87, '2026-04-13', { moneda: 'USD', tipoCambio: 3.385 })],
+      [mov('m1', 'FA03-3409', KOPLAST, 19518.72, '2026-04-13', { currency: 'USD' })],
+      { companyId: JARVEX, libro: 'compras', periodo: '202604', companies: COMPANIES },
+    );
+    expect(filas[0].estado).toBe('serie_distinta');
+    expect(filas[0].movimientoId).toBe('m1');
+  });
+});

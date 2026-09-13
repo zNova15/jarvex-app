@@ -51,6 +51,9 @@ import {
   corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
   moverDeFamilia, descartarRecomendaciones,
 } from "../lib/catalogo-canonico-db.js";
+import { getCurrentMode } from "../lib/app-mode-core.js";
+import { agruparDescripciones, resolverCategorias } from "../lib/bandeja-categorizacion.js";
+import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 
@@ -124,11 +127,12 @@ const UNIDADES_SUGERIDAS = ['und', 'm', 'm2', 'm3', 'kg', 'bolsa', 'gal', 'par',
 
 const num = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 3 });
 
-function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'clasificaciones' }) {
+function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'clasificaciones', compras = [] }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
   const compHook = window.__hooks.useCompanies();
+  const decHook = window.__hooks.useInsumoCategorias();
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
 
@@ -142,6 +146,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
   const [famSel, setFamSel] = uS('todas');
   const [tipoSel, setTipoSel] = uS('todos');
   const [verInactivos, setVerInactivos] = uS(false);
+  const [soloDudosos, setSoloDudosos] = uS(false);
   const [limite, setLimite] = uS(80);
   const [marcados, setMarcados] = uS({});      // id → true
   const [famLote, setFamLote] = uS('');
@@ -205,14 +210,56 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
   );
   const idsRec = uM(() => Object.keys(recMarcadas).filter(k => recMarcadas[k]), [recMarcadas]);
 
+  // La recomendación de cada fila, para poder decirlo EN LA FILA y no sólo en
+  // un panel arriba de todo. Pedido de Gabriel (13-set): «quiero igual un
+  // botón de sugerencia si se piensa que algún insumo o servicio está mal
+  // clasificado». El panel de lote sigue existiendo para despachar de a
+  // muchas; esto es para cuando estás mirando una.
+  const recPorId = uM(
+    () => new Map(revision.recomendaciones.map(r => [r.id, r])),
+    [revision],
+  );
+
+  // ── CUÁNTOS NOMBRES DE FACTURA FALTAN RECONOCER ──────────────────
+  // 🔴 EL NÚMERO QUE CONFUNDÍA (13-set-2026). Gabriel: «en Lista completa me
+  // salen 484 … pero en categorizar me salen 723 por decidir. Eso no lo
+  // entiendo». Son dos universos distintos y hasta hoy vivían en dos pestañas
+  // distintas sin decir nunca cómo se relacionan:
+  //   · 484 = los insumos y servicios QUE LA ENTIDAD TIENE, cada uno con su
+  //     clasificación. Es el vocabulario.
+  //   · 723 = las formas distintas en que esos insumos aparecen ESCRITOS en
+  //     las facturas de la entidad (medido: 732 descripciones distintas en las
+  //     887 líneas de compra de GASOMI; el grupo entero tiene 2.220). Cada una
+  //     se pega a uno de los 484 —o crea uno nuevo— y deja de preguntarse.
+  // Nunca van a ser el mismo número: un insumo se escribe de cinco maneras.
+  // Ahora las dos listas son VISTAS DE UNA MISMA SECCIÓN y el encabezado lo
+  // explica con los dos contadores al lado.
+  //
+  // El conteo es barato a propósito (agrupar + resolver decisiones, sin correr
+  // el motor de propuestas): se calcula en cada render para pintar la pestaña,
+  // y el trabajo caro sólo ocurre cuando se entra a la vista.
+  const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+  const porReconocer = uM(() => {
+    const enAlcance = companyId
+      ? (compras || []).filter(c => c.companyId === companyId)
+      : (compras || []);
+    const descripciones = agruparDescripciones(enAlcance);
+    if (!descripciones.length) return { total: 0, pendientes: 0, decididas: 0 };
+    const decididas = resolverCategorias(decHook.data || [], { companyId, demo: esPrueba });
+    let pend = 0;
+    for (const d of descripciones) if (!decididas.get(d.norm)) pend += 1;
+    return { total: descripciones.length, pendientes: pend, decididas: descripciones.length - pend };
+  }, [compras, companyId, decHook.data, esPrueba]);
+
   const visibles = uM(() => {
     const q = busca.trim().toLowerCase();
     return (verInactivos ? todas : activas)
       .filter(r => famSel === 'todas' || r.familia === famSel)
       .filter(r => tipoSel === 'todos' || r.tipo === tipoSel)
+      .filter(r => !soloDudosos || recPorId.has(r.id))
       .filter(r => !q || String(r.nombre || '').toLowerCase().includes(q))
       .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
-  }, [todas, activas, verInactivos, famSel, tipoSel, busca]);
+  }, [todas, activas, verInactivos, famSel, tipoSel, busca, soloDudosos, recPorId]);
 
   const disgregacion = uM(() => {
     const porPadre = new Map();
@@ -490,12 +537,50 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
         </div>
       ) : (
         <>
+          {/* ── QUÉ ES CADA NÚMERO ──────────────────────────────────
+              Sin esto, «484» y «723» son dos cifras que no cierran y parecen
+              un error. Con esto son las dos mitades del mismo trabajo. */}
+          <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6, borderLeft: '3px solid var(--blue)' }}>
+            Esta es la <strong>única sección donde se clasifican los insumos y servicios</strong> de {etiquetaAmbito}.
+            Tiene dos mitades y cada una cuenta cosas distintas:
+            <div style={{ marginTop: 6, color: 'var(--tm)' }}>
+              · <strong>{activas.length}</strong> insumos y servicios que la entidad tiene, cada uno con su clasificación
+              (el <em>vocabulario</em>).<br />
+              · <strong>{porReconocer.pendientes}</strong> formas de escribirlos que aparecen en las facturas y todavía no
+              están pegadas a ninguno de esos {activas.length} (los <em>alias</em>).
+              {porReconocer.total > 0 && <> Van {porReconocer.decididas} de {porReconocer.total} reconocidas.</>}
+            </div>
+            <div style={{ marginTop: 6, color: 'var(--tm)' }}>
+              Nunca van a ser el mismo número: el mismo cemento se factura de cinco maneras distintas. Reconocer un
+              nombre lo pega a un insumo que ya existe —o da de alta uno nuevo— y no se vuelve a preguntar.
+            </div>
+          </div>
+
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className={`btn btn-sm ${vista === 'clasificaciones' ? 'btn-amber' : 'btn-ghost'}`}
               onClick={() => setVista('clasificaciones')}>🗂 Clasificaciones y diccionario</button>
             <button className={`btn btn-sm ${vista === 'lista' ? 'btn-amber' : 'btn-ghost'}`}
-              onClick={() => setVista('lista')}>📋 Lista completa ({activas.length})</button>
+              onClick={() => setVista('lista')}>
+              📋 Insumos y servicios ({activas.length})
+              {revision.recomendaciones.length > 0 && (
+                <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}
+                  title={`${revision.recomendaciones.length} podrían estar mal clasificados: el estándar propone otra clasificación.`}>
+                  ⚠ {revision.recomendaciones.length}
+                </span>
+              )}
+            </button>
+            <button className={`btn btn-sm ${vista === 'reconocer' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('reconocer')}>
+              📥 Nombres de factura por reconocer ({porReconocer.pendientes})
+            </button>
           </div>
+
+          {vista === 'reconocer' && (
+            <BandejaCategorizacionTab
+              compras={compras} showToast={showToast}
+              empresaFija={companyId || null} ambitoExterno
+            />
+          )}
 
           {vista === 'clasificaciones' && (
             <PanelClasificaciones
@@ -663,6 +748,11 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
               <input type="checkbox" checked={verInactivos} onChange={e => setVerInactivos(e.target.checked)} />
               Ver los desactivados{inactivas > 0 ? ` (${inactivas})` : ''}
             </label>
+            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, cursor: 'pointer' }}
+              title="Los que el estándar clasificaría distinto de como están hoy.">
+              <input type="checkbox" checked={soloDudosos} onChange={e => setSoloDudosos(e.target.checked)} />
+              Solo los que parecen mal clasificados ({revision.recomendaciones.length})
+            </label>
           </div>
 
           {/* ── Corregir en lote ──────────────────────────────── */}
@@ -756,6 +846,26 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                         >
                           <OpcionesCategoria actual={r.familia} />
                         </select>
+                        {(() => {
+                          const rec = recPorId.get(r.id);
+                          if (!rec) return null;
+                          return (
+                            <div style={{ fontSize: 10.5, marginTop: 3, color: 'var(--amber)', lineHeight: 1.4 }}
+                              title={rec.motivo}>
+                              ⚠ Puede estar mal: el estándar dice{' '}
+                              <strong>{etiquetaCategoria(rec.familiaSugerida)}</strong>{' '}
+                              ({Math.round(rec.score * 100)}%){' '}
+                              <button className="btn btn-xs" style={{ padding: '0 6px' }}
+                                onClick={async () => {
+                                  await corregirEnLote([r.id], { familia: rec.familiaSugerida }, { userId });
+                                  await refrescar();
+                                  showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(rec.familiaSugerida)}`, 'green');
+                                }}>
+                                Cambiar
+                              </button>
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td><span className={`badge ${BADGE_DESTINO[destino] || 'b-gray'}`} style={{ fontSize: 9 }}>{TIPO_DESTINO[destino] || destino}</span></td>
                       <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>

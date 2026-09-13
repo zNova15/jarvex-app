@@ -60,10 +60,13 @@ describe('Verificación dentro de la aplicación (E2E Component & Logic)', () =>
 
     // 2. Tanda 5: La tarjeta guía de las 4 herramientas se renderiza
     expect(html).toContain('Guía de Insumos y Servicios en JARVEX');
-    expect(html).toContain('Catálogo');
-    expect(html).toContain('Categorizar');
+    // 13-set: «Catálogo» y «Categorizar» se fusionaron en UNA sección.
+    expect(html).toContain('Clasificación de insumos y servicios');
     expect(html).toContain('Correlaciones');
-    expect(html).toContain('Mapeo de Presupuesto');
+    expect(html).toContain('Mapeo al presupuesto');
+    expect(html).toContain('Comparador de precios');
+    // Y la pestaña vieja ya no existe como botón propio.
+    expect(html).not.toContain('📥 Categorizar');
 
     // 3. Tanda 1: Unión manual de insumos presente
     expect(html).toContain('Unir dos insumos manualmente');

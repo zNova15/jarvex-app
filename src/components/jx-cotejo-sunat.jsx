@@ -67,6 +67,14 @@ const irAEditarMovimiento = (companyId, movId, doc) => {
 };
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** El importe con SU moneda: los comprobantes de KOPLAST son en dólares y
+ *  escribirles «S/» adelante es exactamente lo que hacía parecer que el cruce
+ *  estaba mal por S/ 199.600. */
+const fmtMoneda = (n, moneda) => {
+  const m = String(moneda || 'PEN').trim().toUpperCase();
+  const simbolo = m === 'PEN' ? 'S/' : m === 'USD' ? 'US$' : m;
+  return `${simbolo} ` + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 const periodoDe = (anio, mes) => `${anio}${String(mes).padStart(2, '0')}`;
 const fmtFechaHora = (iso) => {
   if (!iso) return '';
@@ -171,6 +179,24 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     () => (decHook.data || []).filter(d => d.ambito === 'comparativa'),
     [decHook.data],
   );
+
+  // ── EL REGISTRO DE LO QUE YA REVISASTE ──────────────────────────
+  // 🔴 Gabriel (13-set-2026): «los botones de "aplica" o "ya lo vi", ¿para qué
+  // sirven? La idea es que se guarde eso también… pero no veo una sección
+  // donde se guarde eso que corregí o acepté».
+  //
+  // Se guardaba desde siempre —19 decisiones vivas en `cotejo_decisiones` al
+  // 13-set— pero sólo se podían ver desde adentro del mes que las originó y
+  // eligiendo «Ya decididas» en un desplegable. Si el corte de ese mes se
+  // quitaba, o se estaba parado en otro mes, el trabajo era invisible: parecía
+  // que el botón no guardaba nada. Ahora hay un registro propio, de TODOS los
+  // meses de esta empresa, que no depende de que haya un CSV cargado.
+  const [verRegistro, setVerRegistro] = uS(false);
+  const registro = uM(() => decisiones
+    .filter(d => !d.company_id || d.company_id === company?.id)
+    .slice()
+    .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))),
+  [decisiones, company?.id]);
 
   // ── EL CORTE VIVE EN LA BASE ────────────────────────────────────
   // Antes los CSV vivían en un `useState` de este componente: cambiar de
@@ -512,6 +538,70 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
         ) : null))}
       </div>
 
+      {/* ── LO QUE YA REVISASTE, DE TODOS LOS MESES ──────────────── */}
+      {registro.length > 0 && (
+        <div className="card card-p" style={{ padding: 16, marginBottom: 16 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ fontWeight: 700 }}>
+              Lo que ya revisaste: {registro.length}
+              {' '}{registro.length === 1 ? 'diferencia' : 'diferencias'}
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', flex: 1, minWidth: 260 }}>
+              De todos los meses de {company?.name || 'esta empresa'}. Queda guardado y sincronizado entre las
+              dos PCs: lo que marcaste «no aplica» no vuelve a salir, y «ya la vi» dice que la miraste y
+              decidiste dejarla así.
+            </div>
+            <button className="btn btn-sm" onClick={() => setVerRegistro(v => !v)}>
+              {verRegistro ? 'Ocultar' : 'Ver el registro'}
+            </button>
+          </div>
+          {verRegistro && (
+            <div style={{ marginTop: 10, maxHeight: 320, overflow: 'auto' }}>
+              <table className="tbl" style={{ width: '100%', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left' }}>Período</th>
+                    <th style={{ textAlign: 'left' }}>Comprobante</th>
+                    <th style={{ textAlign: 'left' }}>Qué decía</th>
+                    <th style={{ textAlign: 'left' }}>Qué dijiste</th>
+                    <th style={{ textAlign: 'right' }}>Importe</th>
+                    <th style={{ textAlign: 'left' }}>Cuándo</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {registro.map(d => (
+                    <tr key={d.id}>
+                      <td>{formatoPeriodoHumano(d.periodo) || '—'}</td>
+                      <td>
+                        {d.documento || '—'}
+                        {d.libro ? <span style={{ fontSize: 10.5, color: 'var(--tm)' }}> · {d.libro}</span> : null}
+                      </td>
+                      <td style={{ color: 'var(--tm)' }}>{ETIQUETA_ESTADO[d.estado] || d.estado || '—'}</td>
+                      <td style={{ fontWeight: 600 }}>
+                        {d.decision === 'no_aplica' ? 'No aplica' : 'Ya la vi'}
+                        {d.nota ? <div style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--tm)' }}>{d.nota}</div> : null}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>{d.monto ? fmtS(d.monto) : '—'}</td>
+                      <td style={{ color: 'var(--tm)' }}>{fmtFechaHora(d.updated_at)}</td>
+                      <td>
+                        <button className="btn btn-sm"
+                          title="Vuelve a la lista de pendientes del mes al que pertenece."
+                          onClick={() => decidirCotejo(
+                            { ambito: 'comparativa', llave: d.llave, decision: null }, userId,
+                          )}>
+                          Deshacer
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {!hayAlgo ? null : (
         <>
           {/* Resumen */}
@@ -764,7 +854,16 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       ) : null}
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      {f.movimientoId ? fmtS(f.appTotal) : <span style={{ color: '#d33' }}>no está</span>}
+                      {f.movimientoId
+                        ? fmtMoneda(f.appTotal, f.appMoneda)
+                        : <span style={{ color: '#d33' }}>no está</span>}
+                      {/* Un comprobante en dólares y un archivo en soles no son
+                          una incoherencia: hay que decir con qué TC se compararon. */}
+                      {f.tipoCambio ? (
+                        <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                          = {fmtS(f.appEnSoles)} · TC {f.tipoCambio}
+                        </div>
+                      ) : null}
                     </td>
                     <td style={{ textAlign: 'right', color: Math.abs(f.diferencia || 0) > 0.05 ? '#d33' : 'var(--tm)' }}>
                       {Math.abs(f.diferencia || 0) > 0.05 ? fmtS(f.diferencia) : '—'}

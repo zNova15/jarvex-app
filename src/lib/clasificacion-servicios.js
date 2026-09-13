@@ -28,7 +28,7 @@
  * El árbol de servicios. `gasto` es el vocabulario de `clasificar-items.js`
  * (CATEGORIAS_ITEM), o sea cómo lo agrupa la contadora.
  *
- * Los diez primeros son servicios DE LA OBRA: se contratan para ejecutar y son
+ * Los once primeros son servicios DE LA OBRA: se contratan para ejecutar y son
  * costo del proyecto. Los tres últimos son de estructura y por eso van a
  * gastos generales — la distinción la pidió el propio plan de cuentas, no el
  * gusto de nadie.
@@ -43,6 +43,9 @@ export const SERVICIOS_CODIGOS = [
   { codigo: 'S07', nombre: 'Estudios, consultoría y supervisión', gasto: 'servicios' },
   { codigo: 'S08', nombre: 'Mantenimiento y reparación', gasto: 'servicios' },
   { codigo: 'S09', nombre: 'Subcontrato de obra', gasto: 'servicios' },
+  // S14 va acá, con los servicios de obra, aunque su código sea el último: el
+  // orden de esta lista es el de los desplegables, no el de la numeración.
+  { codigo: 'S14', nombre: 'Ejecución de obra (contrato y valorizaciones)', gasto: 'servicios' },
   { codigo: 'S10', nombre: 'Personal contratado por servicio', gasto: 'servicios' },
   { codigo: 'S11', nombre: 'Alimentación y hospedaje', gasto: 'gastos_generales' },
   { codigo: 'S12', nombre: 'Gestión documental y publicaciones', gasto: 'gastos_generales' },
@@ -163,6 +166,30 @@ export const DICCIONARIO_SERVICIOS = [
   { nombre: 'Encofrado y desencofrado', cod: 'S09' },
   { nombre: 'Mano de obra', cod: 'S09' },
   { nombre: 'Servicio de instalación', cod: 'S09' },
+
+  // S14 — Ejecución de obra (contrato y valorizaciones)
+  //
+  // 🔴 POR QUÉ ES UNA CLASIFICACIÓN APARTE Y NO «SUBCONTRATO» (13-set-2026).
+  // Las dos líneas más caras que el clasificador dejaba en «sin clasificar»
+  // —«OBRA: REHABILITACION DEL LOCAL ESCOLAR N 88389…» (S/ 59.501, JOALMA) y
+  // «POR EL SALDO DE TARRAJEO DE LA OBRA: I.E. 040 NUEVA ESPERANZA…»
+  // (S/ 44.068, ISUM)— no son un material ni un servicio auxiliar: lo que se
+  // factura ES LA OBRA. Pedido de Gabriel: «entraría dentro de una sección
+  // especial que sería ejecución de obra de manera individual o como
+  // consorcio». Individual o en consorcio es QUIÉN ejecuta, y eso ya lo dice
+  // `obras.ejecutora_tipo` — la clasificación del comprobante es una sola.
+  { nombre: 'Ejecución de obra', cod: 'S14' },
+  { nombre: 'Contrato de obra', cod: 'S14' },
+  { nombre: 'Valorización de obra', cod: 'S14' },
+  { nombre: 'Valorización de avance de obra', cod: 'S14' },
+  { nombre: 'Avance de obra', cod: 'S14' },
+  { nombre: 'Adelanto de obra', cod: 'S14' },
+  { nombre: 'Liquidación de obra', cod: 'S14' },
+  { nombre: 'Saldo de obra', cod: 'S14' },
+  { nombre: 'Metrado ejecutado', cod: 'S14' },
+  { nombre: 'Partida de obra ejecutada', cod: 'S14' },
+  { nombre: 'Rehabilitación de local', cod: 'S14' },
+  { nombre: 'Mejoramiento y ampliación del servicio', cod: 'S14' },
 
   // S10 — Personal contratado por servicio
   { nombre: 'Chofer', cod: 'S10' },
