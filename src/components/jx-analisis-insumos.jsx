@@ -6,12 +6,12 @@
 //    correlaciones confirmadas), qué proveedor vendió cada una, a qué precio
 //    (último/mín/máx), el más barato comparable y el gráfico de evolución.
 //    Todo sale RETROACTIVO de las facturas ya registradas (items_factura).
-//  · 🎯 Mapeo al presupuesto: traduce lo que dicen las facturas a los códigos
-//    canónicos del presupuesto de la obra (tanda 7, entrega 5). Es el paso que
-//    habilita comparar lo que la obra NECESITA contra lo que el grupo ya
-//    COMPRÓ — sin esto no hay Abastecimiento ni órdenes que nazcan antes del
-//    comprobante. Reusa las correlaciones de la pestaña de al lado: mapear un
-//    nombre mapea a todos sus hermanos ya confirmados.
+//  · 🎯 Mapeo al presupuesto: dice qué insumo del presupuesto de un TRABAJO es
+//    cada insumo ya clasificado de la empresa (mig 206, 13-set-2026). Es un
+//    mapeo entre CATÁLOGOS y no toca compras: la cadena hasta la factura sale
+//    sola por el otro lado —`insumo_categoria` pega cada descripción a un
+//    insumo de la empresa, y de ahí acá—. Antes preguntaba por cada una de las
+//    2.220 descripciones del grupo, que es una pantalla que no se termina.
 //  · 🗂 Clasificación de insumos y servicios: UNA sola sección (13-set-2026)
 //    con tres vistas — las clasificaciones y su diccionario, la lista de
 //    insumos y servicios de la entidad, y los nombres de factura por
@@ -519,7 +519,7 @@ function AnalisisInsumosPage({ showToast }) {
       )}
 
       {tab === 'mapeo' && (
-        <MapeoInsumosTab compras={compras} grupoDe={grupoDe} showToast={showToast} />
+        <MapeoInsumosTab showToast={showToast} empresaFija={empresaVista} />
       )}
 
       {/* UNA SOLA SECCIÓN DE CLASIFICACIÓN (13-set-2026). Antes esto eran dos

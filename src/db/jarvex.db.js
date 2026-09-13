@@ -123,6 +123,18 @@ export const db = new Dexie('JarvexDB');
 // `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
 // y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
 // Aditivo.
+// Versión 64: QUÉ INSUMO DEL TRABAJO ES CADA INSUMO DE LA EMPRESA (mig 206).
+// NO es `insumo_mapeo` (mig 183): ésa mapea la DESCRIPCIÓN CRUDA de una
+// factura y no guarda a qué obra pertenece el código —los códigos del
+// presupuesto son POR OBRA, así que con dos obras presupuestadas una decisión
+// tomada contra la primera aparecería como «ya decidida» contra un código que
+// en la segunda no existe—. Acá `obra_id` es obligatorio y va en el índice
+// compuesto porque toda lectura pregunta exactamente eso: «lo de este trabajo
+// y esta entidad, más lo general». Aditivo.
+db.version(64).stores({
+  insumo_trabajo_mapeo: 'id, obra_id, company_id, norm, [obra_id+norm], [obra_id+insumo_codigo], insumo_codigo, decision, deleted_at, sync_status',
+});
+
 db.version(63).stores({
   licitaciones:          'id, etapa, fecha_presentacion, obra_id, deleted_at, sync_status',
   licitacion_requisitos: 'id, licitacion_id, clase, candidato_personal_id, deleted_at, sync_status',

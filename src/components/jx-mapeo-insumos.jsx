@@ -1,78 +1,116 @@
 // ═══════════════════════════════════════════════════════════════════
-// JARVEX — MAPEO AL PRESUPUESTO (tanda 7, entrega 5). Pestaña de Análisis
-// de Insumos, gate admin/gerente heredado del panel.
+// JARVEX — MAPEO AL PRESUPUESTO. Pestaña de Análisis de Insumos, gate
+// admin/gerente heredado del panel.
 //
-// Traduce lo que dicen las facturas a los códigos del presupuesto de la obra.
-// Es el paso que le falta a todo lo demás: sin esto no se puede comparar lo que
-// la obra NECESITA contra lo que el grupo YA COMPRÓ, y sin esa comparación no
-// hay pantalla de Abastecimiento ni órdenes que nazcan antes del comprobante.
+// ── QUÉ PREGUNTA AHORA, Y POR QUÉ CAMBIÓ (13-set-2026) ────────────
+// Antes preguntaba «¿qué código del presupuesto de esta obra es esta
+// DESCRIPCIÓN DE FACTURA?» — 2.220 descripciones distintas en el grupo, una
+// pantalla que no se termina, y encima mezclaba lo que se COMPRÓ con lo que el
+// presupuesto PIDE.
 //
-// Cómo se trabaja acá: se decide por DESCRIPCIÓN, no por factura. El mismo
-// texto aparece en facturas de varias empresas; se decide una vez y vale para
-// todas, las de ayer y las que entren mañana. Las filas vienen ordenadas por
-// plata, así que decidir las primeras veinte ya mueve la aguja.
+// Gabriel: «esta sección debería ser súper sencilla en realidad. Para empezar
+// debería detectar si el consorcio ejecutor ya clasificó los insumos y
+// servicios del presupuesto en base a la ley de clasificaciones […] Con los
+// insumos y servicios del presupuesto que tenga clasificados solo se comparará
+// con los insumos y servicios ya clasificados de la empresa. Se avisa aquí
+// cuánto porcentaje falta clasificar del trabajo elegido y pues de la empresa
+// misma […] Aquí no se vincula las compras ni nada de eso, solo se mapea.»
 //
-// Tres botones y ninguna sorpresa: aceptar el código propuesto, elegir otro, o
-// decir «esto no está en el presupuesto» —que es la respuesta correcta para la
-// mitad del gasto medido y que TAMBIÉN se recuerda, para que no vuelva a
-// preguntarse. El factor de conversión se puede editar siempre: lo que propone
-// la norma es un punto de partida, no una imposición.
+// Entonces ahora es entre CATÁLOGOS: los insumos y servicios de la empresa
+// contra los del presupuesto del trabajo. Las compras no aparecen. La cadena
+// hasta la factura sale sola por el otro lado: `insumo_categoria` (mig 195)
+// pega cada descripción a un insumo de la empresa, y de ahí acá.
+//
+// ── TRES COSAS QUE ESTA PANTALLA TIENE QUE HACER BIEN ─────────────
+// 1. DECIR CUÁNTO FALTA CLASIFICAR DE LOS DOS LADOS, arriba de todo y antes de
+//    pedir una sola decisión. Si el presupuesto está sin clasificar, mapear es
+//    imposible y la pantalla tiene que decirlo en vez de mostrar una lista
+//    vacía que parece un error.
+// 2. PREFERIR LA MISMA CLASIFICACIÓN. Es lo que la hace corta: un guante
+//    compite contra los de [83], no contra los 97 códigos de tubería. Pero es
+//    preferencia y no muro —ver `proponerParaInsumo`—: los dos lados clasifican
+//    por caminos distintos y cuando discrepan hay que decirlo, no esconder el
+//    candidato.
+// 3. LA VISTA INVERSA. «De las 434 cosas que la obra necesita, ¿cuáles ya sé
+//    quién me las vende?» es la pregunta que de verdad importa después, y es
+//    la que habilita todo lo que Gabriel quiere hacer con esto más adelante.
+//
+// La lógica vive en `mapeo-trabajo.js` (pura, con tests) y la escritura en
+// `mapeo-trabajo-db.js`. Acá solo está la pantalla.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import {
-  prepararCatalogo, sugerirMapeo, resolverMapeos, buscarMapeo, indicePorGrupo,
-  claveMapeo, proponerFactor, prepararLinea, cantidadCanonica,
-} from "../lib/mapeo-insumos.js";
+  presupuestoDelTrabajo, catalogoDeLaEmpresa, resumenClasificacion,
+  resolverMapeosTrabajo, indiceDelPresupuesto, filasDeMapeoTrabajo,
+  resumenAvanceMapeo, cobertura, decisionDeMapeo, decisionNoEsta,
+  factorPropuesto, bandaDe, ESTADOS_MAPEO,
+} from "../lib/mapeo-trabajo.js";
+import { decidirMapeo, decidirMapeoEnLote, reabrirMapeo } from "../lib/mapeo-trabajo-db.js";
+import { etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
+import { TIPO_TRABAJO_LBL } from "../lib/tipos-trabajo.js";
 
 const { useState: uS, useMemo: uM, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const SearchableSelect = (p) => (window.SearchableSelect ? <window.SearchableSelect {...p} /> : null);
 
-const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
 const cant = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
+const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
+const pct = (n) => `${Number(n || 0).toFixed(0)}%`;
 
 const ETIQUETA_FUENTE = {
   tabla: { txt: 'norma', color: 'b-green', ayuda: 'Sale de una tabla técnica (kg/m del acero, kg por bolsa).' },
-  descripcion: { txt: 'de la factura', color: 'b-green', ayuda: 'La propia factura dice el largo o la presentación.' },
+  descripcion: { txt: 'del nombre', color: 'b-green', ayuda: 'El propio nombre dice el largo o la presentación.' },
   supuesto: { txt: 'supuesto', color: 'b-amber', ayuda: 'Valor comercial asumido. Revisalo antes de aceptar.' },
   manual: { txt: 'tuyo', color: 'b-blue', ayuda: 'Lo escribiste vos.' },
 };
 
-const FILTROS = [
-  ['pendientes', 'Por decidir'],
-  ['propuesto', 'Con propuesta'],
-  ['revisar', 'Dudosas'],
-  ['sin_candidato', 'Sin candidato'],
-  ['servicio', 'Servicios'],
-  ['decididas', 'Ya decididas'],
-];
+/** Una barra de «cuánto está clasificado». Es lo primero que se pidió ver. */
+function BarraClasificacion({ titulo, resumen, ayuda, accion }) {
+  const ok = resumen.total > 0 && resumen.faltan === 0;
+  return (
+    <div style={{ flex: 1, minWidth: 250 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: 12.5 }}>{titulo}</strong>
+        <span style={{ fontSize: 16, fontWeight: 700, color: ok ? 'var(--green)' : 'var(--amber)' }}>
+          {pct(resumen.pct)}
+        </span>
+        <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          {resumen.clasificados} de {resumen.total} clasificados
+        </span>
+      </div>
+      <div style={{ display: 'flex', height: 7, borderRadius: 4, overflow: 'hidden', background: 'var(--bg-s)', marginTop: 5 }}>
+        <div style={{ width: `${Math.min(100, resumen.pct)}%`, background: ok ? 'var(--green)' : 'var(--amber)' }} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+        {resumen.faltan > 0
+          ? <>Faltan <strong>{resumen.faltan}</strong>. {ayuda}{accion}</>
+          : <>Todo clasificado.</>}
+      </div>
+    </div>
+  );
+}
 
-function MapeoInsumosTab({ compras, grupoDe, showToast }) {
-  const mapHook = window.__hooks.useInsumoMapeos();
+function MapeoInsumosTab({ showToast, empresaFija = null }) {
   const obrasHook = window.__hooks.useObras();
   const consorciosHook = window.__hooks.useConsorcios();
+  const catHook = window.__hooks.useCatalogoInsumos();
+  const terHook = window.__hooks.useClasificacionTerminos();
+  const mapHook = window.__hooks.useInsumoTrabajoMapeos();
+  const compHook = window.__hooks.useCompanies();
+  const auth = window.__useAuth ? window.__useAuth() : {};
+  const userId = auth?.profile?.id || null;
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
 
   const [obraSel, setObraId] = uS('');
-  // 🔴 EL ALCANCE (7-set-2026). Esta pestaña tiraba las 2.490 líneas de compra
-  // de las 24 entidades del grupo contra el presupuesto de UNA obra. A Gabriel
-  // le aparecía «POR EL SALDO DE TARRAJEO DE LA OBRA: I.E. 040 NUEVA ESPERANZA,
-  // NUEVO CHIMBOTE» —una factura de GASOMI, de otro proyecto y sin obra—
-  // pidiendo ser mapeada contra una obra de agua potable en Cajamarca. Eso no
-  // es una decisión que alguien pueda tomar: es ruido, y el ruido hace que la
-  // pantalla se abandone. Por defecto se mira SOLO lo de la ejecutora de esa
-  // obra más lo que esté cargado a la obra; «todo el grupo» sigue a un clic.
-  const [alcance, setAlcance] = uS('obra');
   const [filtro, setFiltro] = uS('pendientes');
   const [busca, setBusca] = uS('');
-
-  const [elegido, setElegido] = uS({});       // norm → insumo_codigo elegido a mano
-  const [factorEdit, setFactorEdit] = uS({}); // norm → factor escrito a mano
+  const [vista, setVista] = uS('empresa');      // 'empresa' | 'cobertura'
+  const [elegido, setElegido] = uS({});          // norm → insumo_codigo elegido a mano
   const [limite, setLimite] = uS(60);
-  // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap en
-  // «Aceptar» no puede escribir dos filas para la misma descripción.
+  // Anti doble-click (regla crítica 2 del CLAUDE.md): ref SÍNCRONO. Un doble
+  // tap en «Es este» no puede escribir la misma decisión dos veces.
   const guardandoRef = uR(false);
 
   const obras = uM(() => (obrasHook.data || []).filter(o => !o.deleted_at), [obrasHook.data]);
@@ -80,381 +118,460 @@ function MapeoInsumosTab({ compras, grupoDe, showToast }) {
   // no hay un primer pintado con el selector vacío, y el test de montaje ve la
   // tabla de verdad (renderToString no corre efectos).
   const obraId = obraSel || obras[0]?.id || '';
+  const obra = uM(() => obras.find(o => o.id === obraId) || null, [obras, obraId]);
 
-  // El catálogo canónico sale del presupuesto de la obra, por HOOK y no por un
-  // useEffect con estado: así se calcula durante el render y el test de montaje
-  // puede ver la tabla dibujada. Con `useEffect` el cuerpo de la pestaña no se
-  // renderizaba nunca en el gate —renderToString no corre efectos— y un TDZ ahí
-  // adentro habría pasado en verde, igual que el que dejó Movimientos Contables
-  // muerto el 3-sep.
   const ipsHook = window.__hooks.useInsumosPartida(obraId);
-  const catalogo = uM(() => {
-    if (!obraId || ipsHook.loading) return null;
-    // El presupuesto reparte el mismo insumo en muchas partidas (el cemento
-    // está en 191): se consolida por código, que es la unidad de decisión.
-    const porCodigo = new Map();
-    for (const ip of (ipsHook.data || [])) {
-      const k = ip?.insumo_codigo && String(ip.insumo_codigo).trim();
-      if (!k) continue;
-      const cur = porCodigo.get(k) || { insumo_codigo: k, nombre: ip.nombre_insumo, unidad: ip.unidad, tipo: ip.tipo_insumo, cantidad: 0, partidas: 0 };
-      cur.cantidad += Number(ip.cantidad_presupuestada) || 0;
-      cur.partidas += 1;
-      porCodigo.set(k, cur);
-    }
-    return prepararCatalogo([...porCodigo.values()]);
-  }, [obraId, ipsHook.data, ipsHook.loading]);
+  const terminosCustom = terHook?.data || null;
 
-  const mapeos = uM(() => resolverMapeos(mapHook.data || [], { demo: esPrueba }), [mapHook.data, esPrueba]);
-
-  // Quién ejecuta esta obra: el consorcio si lo hay, si no la empresa titular.
+  // Quién ejecuta este trabajo: el consorcio si lo hay, si no la empresa
+  // titular. Se muestra porque es de QUIÉN se espera que haya clasificado el
+  // presupuesto — «detectar si el consorcio ejecutor ya clasificó».
   const ejecutoraId = uM(
-    () => titularContableDeObra(obras.find(o => o.id === obraId), consorciosHook.data || []),
-    [obras, obraId, consorciosHook.data],
+    () => titularContableDeObra(obra, consorciosHook.data || []),
+    [obra, consorciosHook.data],
   );
-  const comprasDeLaObra = uM(
-    () => (compras || []).filter(c => (obraId && c.obraId === obraId) || (ejecutoraId && c.companyId === ejecutoraId)),
-    [compras, obraId, ejecutoraId],
-  );
-  const comprasEnAlcance = alcance === 'grupo' ? (compras || []) : comprasDeLaObra;
-
-  // Una fila por DESCRIPCIÓN, con lo que esa descripción movió en total.
-  const descripciones = uM(() => {
-    const porNorm = new Map();
-    for (const c of (comprasEnAlcance || [])) {
-      if (c.clase && c.clase !== 'compra') continue;
-      const k = claveMapeo(c.nombre);
-      if (!k) continue;
-      const cur = porNorm.get(k) || { norm: k, muestra: c.nombre, veces: 0, cantidad: 0, importe: 0, unidades: new Set(), provs: new Set() };
-      cur.veces += 1;
-      cur.cantidad += Number(c.cantidad) || 0;
-      cur.importe += (Number(c.cantidad) || 0) * (Number(c.precio) || 0);
-      if (c.unidad) cur.unidades.add(c.unidad);
-      if (c.proveedorNombre) cur.provs.add(c.proveedorNombre);
-      porNorm.set(k, cur);
-    }
-    return [...porNorm.values()].sort((a, b) => b.importe - a.importe);
-  }, [comprasEnAlcance]);
-
-  const porGrupo = uM(
-    () => indicePorGrupo(mapeos, descripciones.map(d => ({ descripcion: d.muestra })), grupoDe),
-    [mapeos, descripciones, grupoDe],
+  const nombreDe = uM(
+    () => new Map((compHook.data || []).filter(c => !c.deleted_at).map(c => [c.id, c.name])),
+    [compHook.data],
   );
 
-  // El motor corre acá, sobre TODAS las descripciones. Son ~0,6 s para 1.852 ×
-  // 433 comparaciones, memoizadas: solo se recalcula si cambia el presupuesto.
-  const filas = uM(() => {
-    if (!catalogo) return [];
-    return descripciones.map(d => {
-      const decidido = buscarMapeo(d.muestra, mapeos, grupoDe, porGrupo);
-      const sug = sugerirMapeo({ descripcion: d.muestra, unidad: [...d.unidades][0] || '' }, catalogo);
-      return { ...d, decidido, sug, estado: decidido ? 'decididas' : sug.estado };
-    });
-  }, [descripciones, catalogo, mapeos, grupoDe, porGrupo]);
+  // El ámbito de la EMPRESA cuyos insumos se mapean lo manda la pantalla de
+  // arriba. Sin empresa elegida se mapea el catálogo general del grupo.
+  const companyId = empresaFija || null;
 
-  const resumen = uM(() => {
-    const r = { total: 0, decidido: 0, mapeado: 0, noAplica: 0, propuesto: 0, revisar: 0, sinCand: 0, servicio: 0, nDecididas: 0 };
-    for (const f of filas) {
-      r.total += f.importe;
-      if (f.decidido) {
-        r.decidido += f.importe; r.nDecididas += 1;
-        if (f.decidido.fila.decision === 'mapeado') r.mapeado += f.importe; else r.noAplica += f.importe;
-      } else if (f.estado === 'propuesto') r.propuesto += f.importe;
-      else if (f.estado === 'revisar') r.revisar += f.importe;
-      else if (f.estado === 'servicio') r.servicio += f.importe;
-      else r.sinCand += f.importe;
-    }
-    return r;
-  }, [filas]);
+  const presupuesto = uM(
+    () => (obraId && !ipsHook.loading ? presupuestoDelTrabajo(ipsHook.data || [], { terminosCustom }) : []),
+    [obraId, ipsHook.data, ipsHook.loading, terminosCustom],
+  );
+  const catalogo = uM(
+    () => catalogoDeLaEmpresa(catHook.data || [], { companyId }),
+    [catHook.data, companyId],
+  );
+
+  const resPresupuesto = uM(() => resumenClasificacion(presupuesto), [presupuesto]);
+  const resEmpresa = uM(() => resumenClasificacion(catalogo), [catalogo]);
+
+  const { prep, porCodigo } = uM(() => indiceDelPresupuesto(presupuesto), [presupuesto]);
+  const decisiones = uM(
+    () => resolverMapeosTrabajo(mapHook.data || [], { obraId, companyId, demo: esPrueba }),
+    [mapHook.data, obraId, companyId, esPrueba],
+  );
+  const filas = uM(
+    () => filasDeMapeoTrabajo(catalogo, { prep, porCodigo, decisiones }),
+    [catalogo, prep, porCodigo, decisiones],
+  );
+  const avance = uM(() => resumenAvanceMapeo(filas), [filas]);
+  const cob = uM(
+    () => cobertura(presupuesto, (mapHook.data || []).filter(m => m.obra_id === obraId && !!m.demo === esPrueba)),
+    [presupuesto, mapHook.data, obraId, esPrueba],
+  );
 
   const visibles = uM(() => {
     const t = busca.trim().toLowerCase();
     return filas.filter(f => {
-      if (t && !f.muestra.toLowerCase().includes(t)) return false;
-      if (filtro === 'pendientes') return !f.decidido && f.estado !== 'servicio';
-      if (filtro === 'decididas') return !!f.decidido;
-      return !f.decidido && f.estado === filtro;
+      if (t && !String(f.nombre || '').toLowerCase().includes(t)) return false;
+      if (filtro === 'pendientes') return f.estado !== 'decididas' && f.estado !== 'sin_clasificar';
+      return f.estado === filtro;
     });
   }, [filas, filtro, busca]);
 
-  const opcionesCatalogo = uM(() => (catalogo?.items || []).map(c => ({
-    value: c.codigo, label: `${c.nombre} — ${cant(c.cantidad)} ${c.unidad} (${c.codigo})`,
-  })), [catalogo]);
+  const enPantalla = uM(() => visibles.slice(0, limite), [visibles, limite]);
 
-  const candidatoDe = (f) => {
-    const cod = elegido[f.norm];
-    if (cod) {
-      const enSug = f.sug.candidatos.find(c => c.cat.codigo === cod);
-      if (enSug) return enSug;
-      const cat = catalogo.items.find(c => c.codigo === cod);
-      if (!cat) return null;
-      // Elegido a mano fuera de los sugeridos: igual se le propone un factor.
-      return { cat, score: null, motivos: ['elegido a mano'], factor: proponerFactor(prepararLinea({ descripcion: f.muestra, unidad: [...f.unidades][0] || '' }), cat) };
-    }
-    return f.sug.candidatos[0] || null;
-  };
+  const opcionesPresupuesto = uM(() => presupuesto.map(p => ({
+    value: p.codigo,
+    label: `${p.nombre} — ${cant(p.cantidad)} ${p.unidad} · ${p.clasificacionNombre}`,
+  })), [presupuesto]);
 
-  const factorDe = (f, c) => {
-    const escrito = factorEdit[f.norm];
-    if (escrito !== undefined && escrito !== '') return { factor: Number(escrito), fuente: 'manual' };
-    return c?.factor || { factor: null, fuente: null };
-  };
-
-  const guardar = async (f, payload) => {
+  // ── Acciones ─────────────────────────────────────────────────────
+  const conGuard = (fn) => async (...args) => {
     if (guardandoRef.current) return;
     guardandoRef.current = true;
-    try {
-      const previa = (mapHook.data || []).find(m => !m.deleted_at && !!m.demo === esPrueba && m.norm === f.norm);
-      const fila = { norm: f.norm, muestra: f.muestra, fuente: 'manual', deleted_at: null, ...payload };
-      if (previa) await mapHook.update(previa.id, fila);
-      else await mapHook.create({ id: window.__newId(), ...fila });
-      setElegido(p => { const n = { ...p }; delete n[f.norm]; return n; });
-      setFactorEdit(p => { const n = { ...p }; delete n[f.norm]; return n; });
-      showToast?.(payload.decision === 'no_aplica'
-        ? '✓ Marcado como fuera del presupuesto — no se vuelve a preguntar'
-        : '✓ Mapeado — vale para todas las facturas con ese texto', 'green');
-    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
+    try { await fn(...args); }
+    catch (e) { showToast?.('Error: ' + (e?.message || e), 'red'); }
     finally { guardandoRef.current = false; }
   };
 
-  const aceptar = (f) => {
-    const c = candidatoDe(f);
-    if (!c) return;
-    const fa = factorDe(f, c);
-    guardar(f, {
-      decision: 'mapeado', insumo_codigo: c.cat.codigo,
-      factor: Number.isFinite(fa.factor) ? fa.factor : null,
-      factor_fuente: fa.factor == null ? null : fa.fuente,
-      unidad_origen: [...f.unidades][0] || null, unidad_destino: c.cat.unidad || null,
-      score: c.score ?? null, nota: c.factor?.nota || null,
-    });
+  const insumoElegidoDe = (f) => {
+    const cod = elegido[f.norm] || f.sug?.candidatos?.[0]?.cat?.codigo || null;
+    return cod ? porCodigo.get(cod) || null : null;
   };
 
-  const noAplica = (f) => guardar(f, {
-    decision: 'no_aplica', insumo_codigo: null, factor: null, factor_fuente: null,
-    unidad_origen: [...f.unidades][0] || null, unidad_destino: null, score: null,
-    nota: f.estado === 'servicio' ? 'es un servicio' : null,
+  const aceptar = conGuard(async (f) => {
+    const destino = insumoElegidoDe(f);
+    if (!destino) { showToast?.('Elegí primero el insumo del presupuesto.', 'amber'); return; }
+    const fac = factorPropuesto(f, destino);
+    await decidirMapeo(decisionDeMapeo(f, destino, {
+      obraId, companyId,
+      factor: fac?.factor ?? null, factorFuente: fac?.fuente ?? null,
+      score: f.sug?.candidatos?.[0]?.score ?? null,
+    }), { userId });
+    await mapHook.refresh?.();
+    showToast?.(`✓ «${f.nombre}» → ${destino.nombre}`, 'green');
   });
 
-  const reabrir = async (f) => {
-    if (guardandoRef.current) return;
-    guardandoRef.current = true;
-    try {
-      const previa = (mapHook.data || []).find(m => !m.deleted_at && !!m.demo === esPrueba && m.norm === f.norm);
-      if (previa) await mapHook.update(previa.id, { deleted_at: new Date().toISOString() });
-      showToast?.('Decisión deshecha — vuelve a la lista', 'green');
-    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
-    finally { guardandoRef.current = false; }
-  };
+  const noEsta = conGuard(async (f) => {
+    await decidirMapeo(decisionNoEsta(f, { obraId, companyId }), { userId });
+    await mapHook.refresh?.();
+    showToast?.('✓ Marcado: no está en este presupuesto — no se vuelve a preguntar', 'green');
+  });
 
-  if (!obras.length) return <div className="card card-p" style={{ color: 'var(--tm)' }}>No hay obras cargadas.</div>;
+  const deshacer = conGuard(async (f) => {
+    await reabrirMapeo(f.norm, { obraId, companyId });
+    await mapHook.refresh?.();
+    showToast?.('Decisión deshecha — vuelve a la lista', 'green');
+  });
 
-  const pct = resumen.total ? (resumen.mapeado / resumen.total) * 100 : 0;
+  const aceptarLasPropuestas = conGuard(async () => {
+    const conPropuesta = filas.filter(f => f.estado === 'propuesto');
+    if (!conPropuesta.length) return;
+    const cuerpos = conPropuesta.map(f => {
+      const destino = porCodigo.get(f.sug.candidatos[0].cat.codigo);
+      const fac = factorPropuesto(f, destino);
+      return decisionDeMapeo(f, destino, {
+        obraId, companyId,
+        factor: fac?.factor ?? null, factorFuente: fac?.fuente ?? null,
+        score: f.sug.candidatos[0].score,
+      });
+    });
+    const n = await decidirMapeoEnLote(cuerpos, { userId });
+    await mapHook.refresh?.();
+    showToast?.(`✓ ${n} insumos mapeados de una`, 'green');
+  });
+
+  // ── Render ───────────────────────────────────────────────────────
+  const sinPresupuesto = !!obraId && !ipsHook.loading && presupuesto.length === 0;
 
   return (
     <>
       <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
-        Acá se dice <strong>qué insumo del presupuesto</strong> es cada cosa que aparece en las facturas.
-        Se decide <strong>por texto, no por factura</strong>: vale para todas las que digan lo mismo, y no se vuelve a preguntar.
-        «No está en el presupuesto» también es una respuesta válida y también se recuerda.
+        Acá se dice <strong>qué insumo del presupuesto de un trabajo es cada insumo de la empresa</strong>.
+        Es un mapeo entre catálogos: <strong>no se vinculan compras ni facturas</strong>.
+        Solo se comparan los que están clasificados de los dos lados, y cada uno solo contra los de su
+        <strong> misma clasificación</strong> — por eso la lista es corta y las propuestas se entienden.
       </div>
 
-      <div className="card card-p">
-        <div className="frow-sb" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ minWidth: 240, flex: 1 }}>
-            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Presupuesto de</label>
-            <select className="fi" value={obraId} onChange={e => setObraId(e.target.value)}>
-              {obras.map(o => <option key={o.id} value={o.id}>{o.nombre_obra || o.nombre || o.id}</option>)}
-            </select>
-          </div>
-          <div style={{ minWidth: 200, flex: 1 }}>
-            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Compras a mapear</label>
-            <select className="fi" value={alcance} onChange={e => setAlcance(e.target.value)}>
-              <option value="obra">De esta obra y su ejecutora ({comprasDeLaObra.length})</option>
-              <option value="grupo">De todo el grupo ({(compras || []).length})</option>
-            </select>
-          </div>
-          <div style={{ minWidth: 240, flex: 2 }}>
-            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Buscar en las descripciones</label>
-            <input className="fi" value={busca} onChange={e => setBusca(e.target.value)} placeholder="cemento, fierro, tubo…" />
+      {/* ── El trabajo ───────────────────────────────────────────── */}
+      <div className="card card-p" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ flex: 2, minWidth: 260 }}>
+          <label style={{ fontSize: 11, color: 'var(--tm)' }}>Trabajo</label>
+          <select className="fi" value={obraId} onChange={e => { setObraId(e.target.value); setElegido({}); }}>
+            {!obras.length && <option value="">— no hay trabajos cargados —</option>}
+            {obras.map(o => (
+              <option key={o.id} value={o.id}>
+                {o.nombre_obra}{o.tipo_trabajo ? ` · ${TIPO_TRABAJO_LBL[o.tipo_trabajo] || o.tipo_trabajo}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ flex: 1, minWidth: 220, fontSize: 11.5, color: 'var(--tm)' }}>
+          {ejecutoraId
+            ? <>Lo ejecuta <strong>{nombreDe.get(ejecutoraId) || 'una entidad del grupo'}</strong>.</>
+            : <>Sin ejecutora asignada.</>}
+          <div>
+            Mapeando los insumos de{' '}
+            <strong>{companyId ? (nombreDe.get(companyId) || 'esta entidad') : 'el catálogo general del grupo'}</strong>.
           </div>
         </div>
-
-        {alcance === 'obra' && (
-          <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.5 }}>
-            Se mapea contra el presupuesto de ESTA obra, así que por defecto solo se pide decidir lo
-            que compró su ejecutora o lo que está cargado a ella. Las compras de las otras empresas
-            —otros proyectos, otros años— no tienen contra qué mapearse acá.
-          </div>
-        )}
-
-        {catalogo === null && <div style={{ marginTop: 10, fontSize: 12, color: 'var(--tm)' }}>Leyendo el presupuesto…</div>}
-        {catalogo && catalogo.items.length === 0 && (
-          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--amber)' }}>
-            ⚠ Esta obra no tiene presupuesto cargado con códigos de insumo. Sin catálogo no hay contra qué mapear.
-          </div>
-        )}
-        {catalogo && catalogo.items.length > 0 && (
-          <>
-            <div style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 22, fontWeight: 700 }}>{pct.toFixed(0)}%</div>
-              <div style={{ fontSize: 12, color: 'var(--ts)' }}>
-                del gasto en compras ya está mapeado al presupuesto — {soles(resumen.mapeado)} de {soles(resumen.total)}
-              </div>
-            </div>
-            <div style={{ display: 'flex', height: 9, borderRadius: 5, overflow: 'hidden', marginTop: 6, background: 'var(--tint-neutral)' }}>
-              {[['#2ecc71', resumen.mapeado], ['#7f8c8d', resumen.noAplica], ['#3aa3ff', resumen.propuesto],
-                ['#f5b428', resumen.revisar], ['#9b59b6', resumen.servicio], ['transparent', resumen.sinCand]].map(([col, val], i) => (
-                <div key={i} style={{ width: `${resumen.total ? (val / resumen.total) * 100 : 0}%`, background: col }} />
-              ))}
-            </div>
-            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5 }}>
-              {resumen.nDecididas} descripciones decididas de {filas.length} · mapeado {soles(resumen.mapeado)} · fuera del presupuesto {soles(resumen.noAplica)} ·
-              con propuesta {soles(resumen.propuesto)} · dudosas {soles(resumen.revisar)} · servicios {soles(resumen.servicio)} · sin candidato {soles(resumen.sinCand)}
-            </div>
-          </>
-        )}
       </div>
 
-      {catalogo && catalogo.items.length > 0 && (
+      {sinPresupuesto ? (
+        <div className="card card-p" style={{ color: 'var(--amber)', fontSize: 12 }}>
+          ⚠ Este trabajo no tiene presupuesto cargado. Sin presupuesto no hay contra qué mapear:
+          cargalo desde Gestión de Obra → Partidas.
+        </div>
+      ) : (
         <>
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-            {FILTROS.map(([id, txt]) => {
-              const n = filas.filter(f => (id === 'pendientes' ? (!f.decidido && f.estado !== 'servicio')
-                : id === 'decididas' ? !!f.decidido : (!f.decidido && f.estado === id))).length;
-              return (
-                <button key={id} className={`btn btn-xs ${filtro === id ? 'btn-amber' : 'btn-ghost'}`}
-                  onClick={() => { setFiltro(id); setLimite(60); }}>
-                  {txt} <span style={{ opacity: 0.7 }}>({n})</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="card" style={{ overflow: 'auto' }}>
-            <table className="tbl" style={{ fontSize: 11.5 }}>
-              <thead>
-                <tr>
-                  <th style={{ minWidth: 230 }}>Lo que dice la factura</th>
-                  <th style={{ textAlign: 'right' }}>Comprado</th>
-                  <th style={{ textAlign: 'right' }}>Importe</th>
-                  <th style={{ minWidth: 260 }}>Insumo del presupuesto</th>
-                  <th style={{ minWidth: 150 }}>Conversión</th>
-                  <th style={{ minWidth: 140 }} />
-                </tr>
-              </thead>
-              <tbody>
-                {visibles.slice(0, limite).map(f => {
-                  const c = candidatoDe(f);
-                  const fa = factorDe(f, c);
-                  const et = fa.fuente ? ETIQUETA_FUENTE[fa.fuente] : null;
-                  const equiv = c && cantidadCanonica(f.cantidad, fa.factor);
-                  const dec = f.decidido;
-                  return (
-                    <tr key={f.norm}>
-                      <td>
-                        <div style={{ fontWeight: 600 }}>{f.muestra}</div>
-                        <div style={{ fontSize: 10, color: 'var(--tm)' }}>
-                          {f.veces} {f.veces === 1 ? 'línea' : 'líneas'} · {f.provs.size} {f.provs.size === 1 ? 'proveedor' : 'proveedores'}
-                          {f.sug.familia !== 'otro' && <> · {f.sug.familia.replace(/_/g, ' ')}</>}
-                        </div>
-                      </td>
-                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{cant(f.cantidad)} {[...f.unidades][0] || ''}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, whiteSpace: 'nowrap' }}>{soles(f.importe)}</td>
-
-                      {dec ? (
-                        <>
-                          <td colSpan={2}>
-                            {dec.fila.decision === 'no_aplica'
-                              ? <span className="badge b-gray" style={{ fontSize: 9 }}>fuera del presupuesto</span>
-                              : <>
-                                  <span className="badge b-green" style={{ fontSize: 9 }}>✓ mapeado</span>{' '}
-                                  {catalogo.items.find(i => i.codigo === dec.fila.insumo_codigo)?.nombre || dec.fila.insumo_codigo}
-                                  {dec.fila.factor != null && <span style={{ color: 'var(--tm)' }}> · ×{dec.fila.factor} {dec.fila.unidad_destino || ''}</span>}
-                                </>}
-                            {dec.heredado && (
-                              <div style={{ fontSize: 10, color: 'var(--tm)' }} title="Viene de una correlación que ya confirmaste en la pestaña 🤝">
-                                heredado de un nombre correlacionado
-                              </div>
-                            )}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            {!dec.heredado && <button className="btn btn-ghost btn-xs" onClick={() => reabrir(f)}>↺ Cambiar</button>}
-                          </td>
-                        </>
-                      ) : f.estado === 'servicio' ? (
-                        <>
-                          <td colSpan={2} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>
-                            Es un servicio — no consume insumos del presupuesto.
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            <button className="btn btn-ghost btn-xs" onClick={() => noAplica(f)}>Confirmar</button>
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td>
-                            <SearchableSelect
-                              value={elegido[f.norm] || c?.cat.codigo || ''}
-                              onChange={v => setElegido(p => ({ ...p, [f.norm]: v }))}
-                              options={opcionesCatalogo}
-                              placeholder={f.sug.candidatos.length ? '— Elegí otro —' : '— Buscá el insumo —'}
-                              fontSize={11}
-                            />
-                            {c && (
-                              <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 3 }}>
-                                {c.score != null && <span className={`badge ${f.estado === 'propuesto' ? 'b-blue' : 'b-amber'}`} style={{ fontSize: 9, marginRight: 4 }}>{Math.round(c.score * 100)}%</span>}
-                                {c.motivos.join(' · ')}
-                                {f.sug.ambiguo && <> · <span style={{ color: 'var(--amber)' }}>hay otro parecido, mirá bien</span></>}
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            {c ? (
-                              <>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                  <span style={{ fontSize: 10, color: 'var(--tm)' }}>×</span>
-                                  <input className="fi" style={{ width: 78, fontSize: 11, padding: '3px 5px' }}
-                                    inputMode="decimal"
-                                    value={factorEdit[f.norm] ?? (fa.factor ?? '')}
-                                    placeholder="?"
-                                    onChange={e => setFactorEdit(p => ({ ...p, [f.norm]: e.target.value }))} />
-                                  <span style={{ fontSize: 10 }}>{c.cat.unidad}</span>
-                                </div>
-                                {et && <span className={`badge ${et.color}`} style={{ fontSize: 9 }} title={et.ayuda}>{et.txt}</span>}
-                                {c.factor?.nota && <div style={{ fontSize: 9.5, color: 'var(--tm)' }}>{c.factor.nota}</div>}
-                                {equiv != null && <div style={{ fontSize: 10, color: 'var(--ts)' }}>= {cant(equiv)} {c.cat.unidad}</div>}
-                              </>
-                            ) : <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>—</span>}
-                          </td>
-                          <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                            <button className="btn btn-green btn-xs" disabled={!c} onClick={() => aceptar(f)}>✓ Es este</button>{' '}
-                            <button className="btn btn-ghost btn-xs" onClick={() => noAplica(f)} title="No está en el presupuesto de esta obra">✗ No está</button>
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
-                {visibles.length === 0 && (
-                  <tr><td colSpan={6} style={{ color: 'var(--tm)', fontStyle: 'italic' }}>
-                    {filtro === 'pendientes' ? 'No queda nada por decidir en este filtro.' : 'Sin descripciones en este filtro.'}
-                  </td></tr>
-                )}
-              </tbody>
-            </table>
-            {visibles.length > limite && (
-              <div style={{ padding: 10, textAlign: 'center' }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setLimite(l => l + 60)}>
-                  Ver más ({visibles.length - limite} restantes) <JxIcon name="chevD" size={12} />
-                </button>
+          {/* ── CUÁNTO FALTA CLASIFICAR, DE LOS DOS LADOS ────────── */}
+          <div className="card card-p">
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>
+              Antes de mapear: ¿está clasificado?
+            </div>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              <BarraClasificacion
+                titulo="Insumos del presupuesto de este trabajo"
+                resumen={resPresupuesto}
+                ayuda="Se clasifican solos con el estándar; los que no reconoce se resuelven agregando su término al diccionario."
+                accion={null}
+              />
+              <BarraClasificacion
+                titulo="Insumos y servicios de la empresa"
+                resumen={resEmpresa}
+                ayuda="Se clasifican en "
+                accion={
+                  <button className="btn btn-xs" style={{ padding: '0 6px' }}
+                    onClick={() => {
+                      window.__analisisInsumosIntent = { ...(window.__analisisInsumosIntent || {}), tab: 'catalogo', vista: 'lista' };
+                      window.__navTo?.('analisis-insumos', 'general');
+                    }}>
+                    Clasificación → Insumos y servicios
+                  </button>
+                }
+              />
+            </div>
+            {resPresupuesto.faltan > 0 && (
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8 }}>
+                Los {resPresupuesto.faltan} del presupuesto que el estándar no reconoce quedan afuera de la
+                comparación hasta que se los clasifique — no se inventan.
               </div>
             )}
           </div>
+
+          {/* ── Las dos vistas ───────────────────────────────────── */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button className={`btn btn-sm ${vista === 'empresa' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('empresa')}>
+              🏢 Insumos de la empresa ({filas.length})
+            </button>
+            <button className={`btn btn-sm ${vista === 'cobertura' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('cobertura')}>
+              🎯 Qué necesita el trabajo ({cob.conCobertura}/{cob.total})
+            </button>
+          </div>
+
+          {vista === 'cobertura' ? (
+            <div className="card card-p">
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{pct(cob.pct)}</div>
+                <div style={{ fontSize: 12, color: 'var(--ts)' }}>
+                  de lo que este trabajo necesita ya tiene quién se lo provea —{' '}
+                  <strong>{cob.conCobertura}</strong> de {cob.total} insumos del presupuesto
+                </div>
+              </div>
+              <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--bg-s)', margin: '6px 0 10px' }}>
+                <div style={{ width: `${Math.min(100, cob.pct)}%`, background: 'var(--green)' }} />
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="tbl" style={{ fontSize: 11.5, width: '100%' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left' }}>Insumo del presupuesto</th>
+                      <th style={{ textAlign: 'left' }}>Clasificación</th>
+                      <th style={{ textAlign: 'right' }}>Cantidad</th>
+                      <th style={{ textAlign: 'right' }}>Costo</th>
+                      <th style={{ textAlign: 'left' }}>Quién lo cubre</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cob.filas.slice(0, 200).map(f => (
+                      <tr key={f.codigo}>
+                        <td>{f.nombre}</td>
+                        <td style={{ color: 'var(--tm)' }}>{f.clasificacionNombre}</td>
+                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{cant(f.cantidad)} {f.unidad}</td>
+                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{soles(f.costo)}</td>
+                        <td>
+                          {f.cubiertoPor.length
+                            ? f.cubiertoPor.map(m => m.muestra).join(' · ')
+                            : <span style={{ color: 'var(--tm)', fontStyle: 'italic' }}>nadie todavía</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {cob.filas.length > 200 && (
+                  <div style={{ padding: 10, fontSize: 11, color: 'var(--tm)' }}>
+                    …y {cob.filas.length - 200} insumos más del presupuesto.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* ── Avance ───────────────────────────────────────── */}
+              <div className="card card-p">
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{pct(avance.pct)}</div>
+                  <div style={{ fontSize: 12, color: 'var(--ts)' }}>
+                    de los insumos que SE PUEDEN decidir ya están decididos —{' '}
+                    <strong>{avance.decididas}</strong> de {avance.total - avance.sinClasificar}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--bg-s)', marginTop: 6 }}>
+                  <div style={{ width: `${Math.min(100, avance.pct)}%`, background: 'var(--green)' }} />
+                </div>
+                <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--tm)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  <span>✓ mapeados: <strong>{avance.mapeadas}</strong></span>
+                  <span>✗ no están en este presupuesto: <strong>{avance.noEstan}</strong></span>
+                  <span>· con propuesta: <strong>{avance.propuesto}</strong></span>
+                  <span>· dudosas: <strong>{avance.revisar}</strong></span>
+                  <span>· sin nada parecido: <strong>{avance.sinCandidato}</strong></span>
+                  {avance.sinClasificar > 0 && (
+                    <span title="No entran a la comparación hasta que se los clasifique.">
+                      · falta clasificarlos: <strong>{avance.sinClasificar}</strong>
+                    </span>
+                  )}
+                </div>
+                {avance.propuesto > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn btn-sm btn-green" onClick={aceptarLasPropuestas}>
+                      Aceptar las {avance.propuesto} propuestas de coincidencia alta
+                    </button>
+                    <span style={{ fontSize: 11, color: 'var(--tm)', marginLeft: 8 }}>
+                      Solo las que el motor propuso sin ambigüedad. Las dudosas se miran de a una.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Filtros ──────────────────────────────────────── */}
+              <div className="card card-p">
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 10 }}>
+                  <div style={{ flex: 1, minWidth: 240 }}>
+                    <label style={{ fontSize: 11, color: 'var(--tm)' }}>Buscar</label>
+                    <input className="fi" value={busca} onChange={e => setBusca(e.target.value)}
+                      placeholder="cemento, tubería, guantes…" />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                  {ESTADOS_MAPEO.map(([k, lbl]) => {
+                    const n = k === 'pendientes'
+                      ? filas.filter(f => f.estado !== 'decididas' && f.estado !== 'sin_clasificar').length
+                      : filas.filter(f => f.estado === k).length;
+                    return (
+                      <button key={k} className={`btn btn-sm ${filtro === k ? 'btn-amber' : 'btn-ghost'}`}
+                        onClick={() => setFiltro(k)}>
+                        {lbl} ({n})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {!visibles.length && (
+                  <div style={{ color: 'var(--tm)', fontSize: 12, padding: 12 }}>
+                    {filas.length ? 'Nada acá con ese filtro.' : 'Esta empresa todavía no tiene insumos en su catálogo.'}
+                  </div>
+                )}
+
+                {enPantalla.map(f => (
+                  <FilaMapeo
+                    key={f.norm}
+                    f={f}
+                    opciones={opcionesPresupuesto}
+                    elegido={elegido[f.norm] || ''}
+                    onElegir={(cod) => setElegido(e => ({ ...e, [f.norm]: cod }))}
+                    destino={insumoElegidoDe(f)}
+                    onAceptar={() => aceptar(f)}
+                    onNoEsta={() => noEsta(f)}
+                    onDeshacer={() => deshacer(f)}
+                  />
+                ))}
+
+                {visibles.length > enPantalla.length && (
+                  <div style={{ paddingTop: 10 }}>
+                    <button className="btn btn-sm" onClick={() => setLimite(l => l + 60)}>
+                      Ver más ({visibles.length - enPantalla.length} restantes)
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
     </>
   );
 }
 
-Object.assign(window, { MapeoInsumosTab });
-export { MapeoInsumosTab };
+/**
+ * Una fila. En su propio componente para que el test de montaje pueda
+ * renderizar la rama «ya decidida» sin poder hacer clic en el filtro: es donde
+ * un `f.decision.decision` sobre un null explotaría en la obra y pasaría el
+ * green gate en verde.
+ */
+function FilaMapeo({ f, opciones, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
+  const cand = f?.sug?.candidatos?.[0] || null;
+  const banda = cand ? bandaDe(cand.score) : null;
+  const fac = destino ? factorPropuesto(f, destino) : null;
+  const et = fac?.fuente ? ETIQUETA_FUENTE[fac.fuente] : null;
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', padding: '9px 8px', display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+      <div style={{ flex: 1, minWidth: 240 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.nombre}</div>
+        <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+          {f.unidad || 'sin unidad'} · {f.clasificacionNombre}
+          {f.tipo === 'servicio' && <span className="badge b-purple" style={{ marginLeft: 6, fontSize: 9 }}>servicio</span>}
+        </div>
+
+        {f.estado === 'decididas' ? (
+          <div style={{ fontSize: 11.5, marginTop: 4 }}>
+            {f.decision?.decision === 'mapeado'
+              ? <>→ <strong>{f.presupuesto?.nombre || f.decision.insumo_nombre || '(insumo del presupuesto)'}</strong>
+                  {f.decision.factor ? <span className="badge b-gray" style={{ marginLeft: 6 }}>× {cant(f.decision.factor)} {f.decision.unidad_destino}</span> : null}</>
+              : <span style={{ color: 'var(--tm)' }}>✗ No está en el presupuesto de este trabajo</span>}
+          </div>
+        ) : f.estado === 'sin_clasificar' ? (
+          <div style={{ fontSize: 11.5, marginTop: 4, color: 'var(--tm)' }}>
+            <em>Falta clasificarlo.</em> Hasta que tenga clasificación no puede compararse con el presupuesto.
+          </div>
+        ) : (
+          <div style={{ marginTop: 5 }}>
+            {cand ? (
+              <div style={{ fontSize: 11.5, marginBottom: 4 }}>
+                → <strong>{cand.cat.nombre}</strong>
+                <span className={`badge ${banda.color}`} style={{ marginLeft: 6 }}>
+                  {banda.label} ({Math.round(cand.score * 100)}%)
+                </span>
+                {/* Los dos lados clasifican por caminos distintos —la empresa
+                    guarda lo que alguien decidió, el presupuesto se deriva del
+                    estándar— y cuando discrepan hay que decirlo, no esconderlo
+                    ni descartar el candidato. */}
+                {cand.otraClasificacion && (
+                  <span className="badge b-amber" style={{ marginLeft: 6 }}
+                    title="El insumo de la empresa y el del presupuesto están en clasificaciones distintas. Puede ser el mismo y estar mal clasificado uno de los dos: mirá antes de aceptar.">
+                    otra clasificación{cand.clasificacionCandidato ? `: ${etiquetaCategoria(cand.clasificacionCandidato)}` : ''}
+                  </span>
+                )}
+                {cand.motivos?.length > 0 && (
+                  <span style={{ color: 'var(--tm)', marginLeft: 6, fontSize: 10.5 }}>
+                    ({cand.motivos.slice(0, 3).join(', ')})
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, marginBottom: 4, color: 'var(--tm)' }}>
+                <em>Nada parecido en este presupuesto.</em> Elegilo a mano si igual está, o marcá que no está.
+              </div>
+            )}
+            <div style={{ maxWidth: 460 }}>
+              {SearchableSelect ? (
+                <SearchableSelect
+                  value={elegido || cand?.cat?.codigo || ''}
+                  onChange={onElegir}
+                  options={opciones}
+                  placeholder="— Buscá el insumo del presupuesto —"
+                  fontSize={11.5}
+                />
+              ) : (
+                <select className="fi" style={{ fontSize: 11.5 }} value={elegido || cand?.cat?.codigo || ''}
+                  onChange={e => onElegir(e.target.value)}>
+                  <option value="">— Buscá el insumo del presupuesto —</option>
+                  {opciones.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              )}
+            </div>
+            {destino && fac && fac.factor && fac.factor !== 1 && (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+                Conversión: 1 {f.unidad} = {cant(fac.factor)} {destino.unidad}
+                {et && <span className={`badge ${et.color}`} style={{ marginLeft: 6 }} title={et.ayuda}>{et.txt}</span>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+        {f.estado === 'decididas' ? (
+          <button className="btn btn-sm" onClick={onDeshacer}>Deshacer</button>
+        ) : f.estado === 'sin_clasificar' ? null : (
+          <>
+            <button className="btn btn-sm btn-green" disabled={!destino} onClick={onAceptar}>Es este</button>
+            <button className="btn btn-sm" onClick={onNoEsta}>No está</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export { MapeoInsumosTab, FilaMapeo };
+export default MapeoInsumosTab;

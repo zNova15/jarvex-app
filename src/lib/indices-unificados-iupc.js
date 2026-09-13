@@ -1346,7 +1346,14 @@ export function detectarServicio(texto) {
   const esFlete = /\b(flete|acarreo|peaje)\b/.test(n)
     || /\b(transporte|traslado|movilidad) de\b/.test(n)
     || encabeza('transporte|traslado|movilidad');
-  const esProfesional = /\b(honorarios?|consultoria|asesoria|supervision|laboratorio|monitoreo|capacitacion|topograf|arqueolog)\b/.test(n)
+  const esProfesional = /\b(honorarios?|consultoria|asesoria|supervision|laboratorio|monitoreo|capacitacion)\b/.test(n)
+    // 🔴 `topograf` y `arqueolog` son PREFIJOS, no palabras. Estaban adentro
+    // de la alternancia de arriba, entre `\b…\b`, así que el `\b` final exigía
+    // que la palabra terminara ahí: «topografo» y «arqueologo» —que es como se
+    // escriben de verdad en el presupuesto— nunca matcheaban. Medido sobre los
+    // 70 insumos más caros de la obra de agua: «TOPOGRAFO» caía en «sin
+    // clasificar» por esto.
+    || /\b(topograf|arqueolog)/.test(n)
     || /\b(estudios?|ensayos?) de\b/.test(n);
 
   // Ambiguas: solo si encabezan o vienen enmarcadas por «servicio de».

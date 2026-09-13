@@ -7,11 +7,17 @@
 // acá pasaría el green gate exactamente igual que el que dejó Movimientos
 // Contables muerto el 3-sep. Este test cierra ese agujero: renderiza el cuerpo
 // de la pestaña, vacío y con datos, y verifica que dibuje.
+//
+// 13-set-2026: la pantalla cambió de pregunta. Ya no mapea DESCRIPCIONES DE
+// FACTURA contra el presupuesto —2.220 decisiones que no se terminan nunca—
+// sino los insumos del CATÁLOGO de la empresa contra los del presupuesto del
+// trabajo, prefiriendo los de la misma clasificación. Los tests siguen ese
+// cambio; los datos son los reales de la obra de agua.
 // ═══════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeAll } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import { claveMapeo } from '../mapeo-insumos.js';
+import { normMapeo } from '../mapeo-insumos.js';
 
 function montarBrowserFalso() {
   const g = globalThis;
@@ -33,45 +39,45 @@ function montarBrowserFalso() {
   };
   g.__newId = () => 'id-falso';
   g.JxIcon = () => null;
+  g.__useAuth = () => ({ profile: { id: 'u1' } });
   // Stub que SÍ pinta la opción elegida: si devolviera null, el test no podría
   // ver qué código se está proponiendo, que es justo lo que hay que verificar.
   g.SearchableSelect = ({ value, options }) =>
     React.createElement('span', { 'data-sel': value || '' },
       (options || []).find(o => o.value === value)?.label || '—');
   const datos = {
-    useInsumoMapeos: () => ({ data: globalThis.__FILAS_MAPEO || [], loading: false, create: async () => {}, update: async () => {} }),
-    useObras: () => ({ data: [{ id: 'o1', nombre_obra: 'MIRAFLORES', ejecutora_company_id: 'elinca' }], loading: false }),
+    useObras: () => ({ data: [{ id: 'o1', nombre_obra: 'MEJORAMIENTO DEL SERVICIO DE AGUA POTABLE', tipo_trabajo: 'obra_ejecucion' }], loading: false }),
+    useConsorcios: () => ({ data: [], loading: false }),
     useInsumosPartida: () => ({ data: globalThis.__PRESUPUESTO_VACIO ? [] : PRESUPUESTO, loading: false }),
+    useCatalogoInsumos: () => ({ data: globalThis.__CATALOGO ?? CATALOGO, loading: false, refresh: async () => {} }),
+    useClasificacionTerminos: () => ({ data: [], loading: false }),
+    useInsumoTrabajoMapeos: () => ({ data: globalThis.__MAPEOS || [], loading: false, refresh: async () => {} }),
+    useCompanies: () => ({ data: [{ id: 'gasomi', name: 'GASOMI INGENIEROS E.I.R.L.' }], loading: false }),
   };
   g.__hooks = new Proxy({}, {
-    get: (_, k) => datos[k] || (() => ({ data: [], loading: false, create: async () => {}, update: async () => {} })),
+    get: (_, k) => datos[k] || (() => ({ data: [], loading: false, refresh: async () => {} })),
   });
 }
 
 // Presupuesto textual de producción, recortado.
 const PRESUPUESTO = [
-  { id: 'a', obra_id: 'o1', insumo_codigo: '210020001', nombre_insumo: 'CEMENTO PORTLAND TIPO I (42.5 kg)', unidad: 'bol', tipo_insumo: 'material', cantidad_presupuestada: 11269.2 },
-  { id: 'b', obra_id: 'o1', insumo_codigo: '30020002', nombre_insumo: 'ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', unidad: 'kg', tipo_insumo: 'material', cantidad_presupuestada: 29856 },
-  { id: 'c', obra_id: 'o1', insumo_codigo: '660020050', nombre_insumo: 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', unidad: 'm', tipo_insumo: 'material', cantidad_presupuestada: 14088.72 },
+  { id: 'a', obra_id: 'o1', insumo_codigo: '210020001', nombre_insumo: 'CEMENTO PORTLAND TIPO I (42.5 kg)', unidad: 'bol', tipo_insumo: 'material', cantidad_presupuestada: 11269.2, costo_presupuestado: 353851 },
+  { id: 'b', obra_id: 'o1', insumo_codigo: '30020002', nombre_insumo: 'ACERO CORRUGADO fy = 4200 kg/cm2 GRADO 60', unidad: 'kg', tipo_insumo: 'material', cantidad_presupuestada: 29856, costo_presupuestado: 103600 },
+  { id: 'c', obra_id: 'o1', insumo_codigo: '660020050', nombre_insumo: 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', unidad: 'm', tipo_insumo: 'material', cantidad_presupuestada: 14088.72, costo_presupuestado: 450839 },
 ];
 
-// Compras como las entrega extraerComprasDeFacturas(). `companyId` = quien las
-// registró: acá el consorcio que ejecuta la obra, que es el alcance por defecto.
-const COMPRAS = [
-  { nombre: 'CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA', cantidad: 2250, precio: 27.71, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
-  { nombre: 'VARILLA DE ACERO CORRUGADO DE 1/2', cantidad: 592, precio: 29.4, unidad: 'und', proveedorNombre: 'GASOMI', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
-  { nombre: 'POR EL SERVICIO DE TRANSPORTE DE TUBO HOPE 100', cantidad: 1, precio: 3000, unidad: 'und', proveedorNombre: 'X', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
-  { nombre: 'LENOVO LOQ GEN 10 (15" INTEL)', cantidad: 2, precio: 5284, unidad: 'und', proveedorNombre: 'SIGLO XXII', clase: 'compra', companyId: 'elinca', obraId: 'o1' },
-];
+const cat = (id, nombre, unidad, familia, tipo = 'insumo') => ({
+  id, nombre, norm: normMapeo(nombre), unidad, familia, tipo,
+  origen: 'xlsx', activo: true, company_id: null,
+});
 
-// La línea REAL que Gabriel vio el 7-set-2026 y que no tiene nada que hacer
-// acá: una factura de GASOMI, de otro proyecto (una I.E. en Nuevo Chimbote) y
-// sin obra asignada, pidiendo ser mapeada contra una obra de agua en Cajamarca.
-const AJENA = {
-  nombre: 'POR EL SALDO DE TARRAJEO DE LA OBRA: SALDO DE LA DE LA I.E. 040 NUEVA ESPERANZA DEL DISTRITO DE NUEVO CHIMBOTE',
-  cantidad: 1, precio: 12000, unidad: 'und', proveedorNombre: 'SUBCONTRATISTA', clase: 'compra',
-  companyId: 'gasomi', obraId: null,
-};
+// El catálogo de la empresa, con la clasificación YA decidida.
+const CATALOGO = [
+  cat('c1', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bolsa', '21'),
+  cat('c2', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', '66'),
+  cat('c3', 'GUANTES ANTICORTE', 'par', '83'),
+  cat('c4', 'INSUMO RARO QUE NADIE CLASIFICO', 'und', 'sin_clasificar'),
+];
 
 let MapeoInsumosTab;
 beforeAll(async () => {
@@ -79,103 +85,152 @@ beforeAll(async () => {
   ({ MapeoInsumosTab } = await import('../../components/jx-mapeo-insumos.jsx'));
 }, 30000);
 
-const pintar = (props) => renderToString(React.createElement(MapeoInsumosTab, { showToast: () => {}, ...props }));
+const pintar = (props = {}) => renderToString(
+  React.createElement(MapeoInsumosTab, { showToast: () => {}, ...props }));
 
 describe('la pestaña de mapeo abre', () => {
-  it('sin una sola compra', () => {
-    expect(() => pintar({ compras: [], grupoDe: new Map() })).not.toThrow();
+  it('con el catálogo vacío no revienta', () => {
+    globalThis.__CATALOGO = [];
+    expect(() => pintar()).not.toThrow();
+    globalThis.__CATALOGO = undefined;
   });
-  it('sin grupos de correlación (grupoDe puede venir vacío o nulo)', () => {
-    expect(() => pintar({ compras: COMPRAS, grupoDe: null })).not.toThrow();
-  });
+
   it('sin presupuesto cargado lo dice, no muestra una tabla vacía sin explicar', () => {
     globalThis.__PRESUPUESTO_VACIO = true;
-    const html = pintar({ compras: COMPRAS, grupoDe: new Map() });
+    const html = pintar();
     globalThis.__PRESUPUESTO_VACIO = false;
     expect(html).toContain('no tiene presupuesto cargado');
   });
-});
 
-describe('lo que la pestaña efectivamente dibuja', () => {
-  const html = () => pintar({ compras: COMPRAS, grupoDe: new Map() });
-
-  it('ordena por plata: el cemento (S/ 62 mil) va antes que las laptops', () => {
-    const h = html();
-    expect(h.indexOf('CEMENTO PORTLAND TIPO I 425 KG')).toBeGreaterThan(-1);
-    expect(h.indexOf('CEMENTO PORTLAND TIPO I 425 KG')).toBeLessThan(h.indexOf('LENOVO LOQ'));
-  });
-  it('propone el código canónico del cemento y muestra a cuánto equivale', () => {
-    const h = html();
-    expect(h).toContain('CEMENTO PORTLAND TIPO I (42.5 kg)');
-    expect(h).toContain('data-sel="210020001"');
-    expect(h).toContain('bol');            // 2.250 und de factura = 2.250 bolsas
-  });
-  it('propone el código a granel del acero, no un código de tubería', () => {
-    expect(html()).toContain('data-sel="30020002"');
-  });
-  it('lo que no está en el presupuesto no recibe propuesta y el botón queda apagado', () => {
-    const h = html();
-    expect(h).toContain('LENOVO LOQ');
-    expect(h).toContain('disabled');
-  });
-  it('el factor del acero sale con su cuenta a la vista y marcado como supuesto', () => {
-    const h = html();
-    expect(h).toContain('8.946');           // 12,7 mm × 0,994 kg/m × 9 m
-    expect(h).toContain('supuesto');        // el largo de 9 m no lo dice la factura
-  });
-  it('los servicios quedan aparte y NO estorban en «Por decidir»', () => {
-    const h = html();
-    // El transporte no aparece en la lista de trabajo; sí en su propio filtro.
-    expect(h).not.toContain('SERVICIO DE TRANSPORTE DE TUBO HOPE');
-    expect(h).toMatch(/Servicios<!-- --> <span style="opacity:0.7">\(<!-- -->1/);
-  });
-  it('muestra el avance en plata, no solo en cantidad de filas', () => {
-    expect(html()).toMatch(/del gasto en compras ya está mapeado/);
-  });
-  it('una descripción ya decidida se pinta decidida y NO vuelve a preguntar', () => {
-    globalThis.__FILAS_MAPEO = [{
-      id: 'm1', norm: claveMapeo('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA'),
-      decision: 'mapeado', insumo_codigo: '210020001', factor: 1, unidad_destino: 'bol',
-      fuente: 'manual', demo: false,
-    }];
-    const h = pintar({ compras: COMPRAS, grupoDe: new Map() });
-    globalThis.__FILAS_MAPEO = [];
-    // Sale de la lista de trabajo y suma al avance en plata.
-    expect(h).not.toContain('CEMENTO PORTLAND TIPO I 425 KG - PACASMAYO-BOLSA');
-    expect(h).toContain('1<!-- --> descripciones decididas');
-    expect(h).toContain('del gasto en compras ya está mapeado');
-  });
   it('nunca imprime «undefined» ni «NaN» en pantalla', () => {
-    const h = html();
+    const h = pintar();
     expect(h).not.toContain('undefined');
     expect(h).not.toContain('NaN');
   });
+
+  it('dice que NO vincula compras — es el cambio de pregunta', () => {
+    const h = pintar();
+    expect(h).toContain('no se vinculan compras ni facturas');
+  });
 });
 
-// ── El alcance (7-set-2026) ────────────────────────────────────────
-// Medido contra producción ese día: 2.490 líneas de compra repartidas en 24
-// entidades, y solo 157 son del consorcio que ejecuta Miraflores. La pestaña
-// las tiraba TODAS contra el presupuesto de esa obra.
-describe('qué compras se piden mapear', () => {
-  it('por defecto NO pide decidir la factura de otra empresa y otro proyecto', () => {
-    const h = pintar({ compras: [...COMPRAS, AJENA], grupoDe: new Map() });
-    expect(h).not.toContain('NUEVA ESPERANZA');
-    expect(h).toContain('CEMENTO PORTLAND TIPO I 425 KG');
+describe('lo primero que se pidió ver: cuánto falta clasificar de los dos lados', () => {
+  it('muestra las dos barras, la del trabajo y la de la empresa', () => {
+    const h = pintar();
+    expect(h).toContain('Insumos del presupuesto de este trabajo');
+    expect(h).toContain('Insumos y servicios de la empresa');
+    expect(h).toContain('Antes de mapear: ¿está clasificado?');
   });
 
-  it('dice cuántas quedan afuera, para que no parezca que se perdieron', () => {
-    const h = pintar({ compras: [...COMPRAS, AJENA], grupoDe: new Map() });
-    expect(h).toContain('De esta obra y su ejecutora (<!-- -->4');
-    expect(h).toContain('De todo el grupo (<!-- -->5');
+  it('el catálogo de ejemplo tiene 3 de 4 clasificados y lo dice', () => {
+    const h = pintar();
+    expect(h).toMatch(/3<!-- --> de <!-- -->4<!-- --> clasificados/);
+  });
+});
+
+describe('la compuerta de clasificación', () => {
+  const h = () => pintar();
+
+  it('el cemento de la empresa encuentra el cemento del presupuesto', () => {
+    expect(h()).toContain('data-sel="210020001"');
   });
 
-  it('explica por qué, en vez de filtrar en silencio', () => {
-    const h = pintar({ compras: COMPRAS, grupoDe: new Map() });
-    expect(h).toContain('no tienen contra qué mapearse acá');
+  it('🔴 la tubería se encuentra AUNQUE los dos lados la clasifiquen distinto', () => {
+    // El catálogo la tiene en [66] «red de agua potable y alcantarillado» y el
+    // estándar la deriva a [72] «redes interiores». Es la misma tubería. Con
+    // la compuerta como muro no se encontraban nunca; como preferencia se
+    // ofrece igual, marcada para que alguien la mire.
+    const html = h();
+    expect(html).toContain('data-sel="660020050"');
+    expect(html).toContain('otra clasificación');
   });
 
-  it('sin ejecutora ni obra en las compras no inventa: no muestra nada en ese alcance', () => {
-    const h = pintar({ compras: [{ ...AJENA, companyId: 'otra' }], grupoDe: new Map() });
-    expect(h).toContain('No queda nada por decidir');
+  it('🔴 el EPP no recibe nada: en este presupuesto no hay NADA que se le parezca', () => {
+    const html = h();
+    expect(html).toContain('GUANTES ANTICORTE');
+    // No es que se filtre por clasificación: es que el motor no encuentra un
+    // solo candidato. Se dice con todas las letras.
+    expect(html).toContain('Nada parecido en este presupuesto');
+  });
+
+  it('lo que falta clasificar se cuenta aparte y tiene su propio filtro', () => {
+    const html = h();
+    // La vista «Por decidir» NO los muestra a propósito: no son decidibles
+    // hasta que se los clasifique, y mezclarlos sería pedir una decisión
+    // imposible. Se cuentan y tienen su filtro.
+    expect(html).toContain('falta clasificarlos:');
+    expect(html).toContain('Falta clasificar el insumo');
+  });
+
+  it('la rama «falta clasificarlo» de la fila se dibuja y no ofrece decidir', async () => {
+    const { FilaMapeo } = await import('../../components/jx-mapeo-insumos.jsx');
+    const html = renderToString(React.createElement(FilaMapeo, {
+      f: {
+        norm: 'x', nombre: 'INSUMO RARO QUE NADIE CLASIFICO', unidad: 'und',
+        clasificacionNombre: 'Sin clasificar — revisar a mano', tipo: 'insumo',
+        estado: 'sin_clasificar', decision: null, presupuesto: null, sug: null,
+      },
+      opciones: [], elegido: '', onElegir: () => {}, destino: null,
+      onAceptar: () => {}, onNoEsta: () => {}, onDeshacer: () => {},
+    }));
+    expect(html).toContain('Falta clasificarlo');
+    expect(html).toContain('no puede compararse con el presupuesto');
+    expect(html).not.toContain('Es este');
+  });
+});
+
+describe('la vista inversa: qué necesita el trabajo', () => {
+  it('ofrece la pestaña con la cuenta de cobertura', () => {
+    expect(pintar()).toContain('Qué necesita el trabajo');
+  });
+});
+
+describe('la fila ya decidida (su propia rama, que el filtro por defecto esconde)', () => {
+  let FilaMapeo;
+  beforeAll(async () => {
+    ({ FilaMapeo } = await import('../../components/jx-mapeo-insumos.jsx'));
+  });
+
+  const pintarFila = (f) => renderToString(React.createElement(FilaMapeo, {
+    f, opciones: [], elegido: '', onElegir: () => {}, destino: null,
+    onAceptar: () => {}, onNoEsta: () => {}, onDeshacer: () => {},
+  }));
+
+  it('«es este» muestra el insumo del presupuesto y ofrece deshacer', () => {
+    const h = pintarFila({
+      norm: 'x', nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)', unidad: 'bolsa',
+      clasificacionNombre: '[21] Cemento Portland e hidráulico', tipo: 'insumo',
+      estado: 'decididas',
+      decision: { decision: 'mapeado', insumo_nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)', factor: null },
+      presupuesto: { nombre: 'CEMENTO PORTLAND TIPO I (42.5 kg)' },
+    });
+    expect(h).toContain('Deshacer');
+    expect(h).not.toContain('undefined');
+  });
+
+  it('🔴 decidida contra un insumo del presupuesto que ya no está no revienta', () => {
+    // El presupuesto se reimporta y los códigos pueden desaparecer. El nombre
+    // congelado en la decisión es lo que salva la fila.
+    const h = pintarFila({
+      norm: 'y', nombre: 'TUBERIA QUE YA NO ESTA', unidad: 'm',
+      clasificacionNombre: '[66] Tubería de PVC', tipo: 'insumo',
+      estado: 'decididas',
+      decision: { decision: 'mapeado', insumo_nombre: 'TUBERIA VIEJA', factor: null },
+      presupuesto: null,
+    });
+    expect(h).toContain('TUBERIA VIEJA');
+    expect(h).not.toContain('undefined');
+  });
+
+  it('«no está» se ve resuelta y también ofrece deshacer', () => {
+    const h = pintarFila({
+      norm: 'z', nombre: 'LAPTOP', unidad: 'und',
+      clasificacionNombre: '[93] Bienes y servicios auxiliares', tipo: 'insumo',
+      estado: 'decididas',
+      decision: { decision: 'no_esta', insumo_codigo: null },
+      presupuesto: null,
+    });
+    expect(h).toContain('No está en el presupuesto de este trabajo');
+    expect(h).toContain('Deshacer');
   });
 });

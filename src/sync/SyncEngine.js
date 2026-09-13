@@ -163,6 +163,11 @@ const TRANSACTIONAL_TABLES = [
   // FK-less, global, y FUERA de TABLA_TO_MODULO — las filas solo nacen del
   // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente.
   'insumo_mapeo',
+  // Qué insumo del presupuesto de un trabajo es cada insumo del catálogo de
+  // una empresa (mig 206). Mismo criterio que insumo_mapeo: solo nace del
+  // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente, y la
+  // RLS repite ese gate en el server. Todos la LEEN.
+  'insumo_trabajo_mapeo',
   // Catálogo canónico de insumos y servicios (mig 192, tanda 14). Igual que
   // los dos de arriba: FK-less, global (sin obra ni empresa) y FUERA de
   // TABLA_TO_MODULO — solo se escribe desde la pestaña «Catálogo» de Análisis
@@ -372,6 +377,7 @@ const MASTER_TABLES = [
   { tabla: 'puente_consultas',             query: () => supabase.from('puente_consultas').select('*').is('deleted_at', null) },
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'insumo_mapeo',                 query: () => supabase.from('insumo_mapeo').select('*').is('deleted_at', null) },
+  { tabla: 'insumo_trabajo_mapeo',         query: () => supabase.from('insumo_trabajo_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_insumos',             query: () => supabase.from('catalogo_insumos').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
@@ -1196,6 +1202,11 @@ const FK_DEPS = {
   clasificaciones:           [{ campo: 'company_id', tabla: 'companies' }],
   clasificacion_terminos:    [{ campo: 'company_id', tabla: 'companies' }],
   insumo_categoria:          [{ campo: 'company_id', tabla: 'companies' }],
+  // mig 206: `obra_id` es FK real y NOT NULL — sin la obra del otro lado el
+  // push rebota. `catalogo_insumo_id` NO va acá a propósito: es FK-less por lo
+  // de siempre (una fila de catálogo creada offline en la otra PC puede no
+  // haber llegado, y esperar por ella trabaría el mapeo entero).
+  insumo_trabajo_mapeo:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }],
   sunat_cortes:              [{ campo: 'company_id', tabla: 'companies' }],
   cotejo_decisiones:         [{ campo: 'company_id', tabla: 'companies' }],
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],
