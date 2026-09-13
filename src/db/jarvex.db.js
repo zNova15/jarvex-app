@@ -123,6 +123,14 @@ export const db = new Dexie('JarvexDB');
 // `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
 // y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
 // Aditivo.
+// Versión 65: ANTICIPOS A PROVEEDORES (mig 207). A qué factura se aplica cada
+// anticipo y por cuánto; el saldo es su monto menos la suma de esto. Se indexa
+// por anticipo (el panel lista «las aplicaciones de éste»), por factura (para
+// poder decir «esta entrega ya consumió anticipo») y por empresa. Aditivo.
+db.version(65).stores({
+  anticipo_aplicaciones: 'id, anticipo_movimiento_id, factura_movimiento_id, company_id, [anticipo_movimiento_id+factura_movimiento_id], deleted_at, sync_status',
+});
+
 // Versión 64: QUÉ INSUMO DEL TRABAJO ES CADA INSUMO DE LA EMPRESA (mig 206).
 // NO es `insumo_mapeo` (mig 183): ésa mapea la DESCRIPCIÓN CRUDA de una
 // factura y no guarda a qué obra pertenece el código —los códigos del

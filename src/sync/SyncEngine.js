@@ -168,6 +168,10 @@ const TRANSACTIONAL_TABLES = [
   // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente, y la
   // RLS repite ese gate en el server. Todos la LEEN.
   'insumo_trabajo_mapeo',
+  // A qué factura se aplica cada anticipo a proveedores (mig 207). Va DESPUÉS
+  // de accounting_movements: las dos FKs apuntan ahí y si sale primero el hijo
+  // el INSERT rebota con 23503.
+  'anticipo_aplicaciones',
   // Catálogo canónico de insumos y servicios (mig 192, tanda 14). Igual que
   // los dos de arriba: FK-less, global (sin obra ni empresa) y FUERA de
   // TABLA_TO_MODULO — solo se escribe desde la pestaña «Catálogo» de Análisis
@@ -378,6 +382,7 @@ const MASTER_TABLES = [
   { tabla: 'insumo_correlaciones',         query: () => supabase.from('insumo_correlaciones').select('*').is('deleted_at', null) },
   { tabla: 'insumo_mapeo',                 query: () => supabase.from('insumo_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'insumo_trabajo_mapeo',         query: () => supabase.from('insumo_trabajo_mapeo').select('*').is('deleted_at', null) },
+  { tabla: 'anticipo_aplicaciones',        query: () => supabase.from('anticipo_aplicaciones').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_insumos',             query: () => supabase.from('catalogo_insumos').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_disgregacion',        query: () => supabase.from('catalogo_disgregacion').select('*').is('deleted_at', null) },
   { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
@@ -1207,6 +1212,8 @@ const FK_DEPS = {
   // de siempre (una fila de catálogo creada offline en la otra PC puede no
   // haber llegado, y esperar por ella trabaría el mapeo entero).
   insumo_trabajo_mapeo:      [{ campo: 'obra_id', tabla: 'obras' }, { campo: 'company_id', tabla: 'companies' }],
+  // mig 207: las DOS FKs son a accounting_movements y son NOT NULL.
+  anticipo_aplicaciones:     [{ campo: 'anticipo_movimiento_id', tabla: 'accounting_movements' }, { campo: 'factura_movimiento_id', tabla: 'accounting_movements' }, { campo: 'company_id', tabla: 'companies' }],
   sunat_cortes:              [{ campo: 'company_id', tabla: 'companies' }],
   cotejo_decisiones:         [{ campo: 'company_id', tabla: 'companies' }],
   emision_reglas:            [{ campo: 'company_id', tabla: 'companies' }, { campo: 'intermediaria1_company_id', tabla: 'companies' }, { campo: 'intermediaria2_company_id', tabla: 'companies' }],

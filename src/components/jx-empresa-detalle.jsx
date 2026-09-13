@@ -52,6 +52,9 @@ import {
 } from "../lib/inventario-empresa.js";
 import { aprenderClasificacion } from "../lib/clasificar-items.js";
 import { decidir } from "../lib/bandeja-categorizacion-db.js";
+// Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
+// pantalla, que es la única que lo usa.
+import { PanelAnticipos } from "./jx-anticipos.jsx";
 import { sociosDeObra } from "../lib/consorcio.js";
 import { TIPO_LBL as TRABAJO_TIPO_LBL, ESTADO_LBL as TRABAJO_ESTADO_LBL, ESTADO_BADGE as TRABAJO_ESTADO_BADGE, esAbierto as trabajoAbierto } from "../lib/trabajos.js";
 import { TIPOS_TRABAJO, TIPO_TRABAJO_DEFAULT, normalizarEstadoObra, ESTADO_OBRA_LBL, ESTADO_OBRA_BADGE } from "../lib/tipos-trabajo.js";
@@ -151,6 +154,9 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // Los papeles de la empresa (ficha RUC, vigencia de poder, testimonio, RNP).
   // Son evidencias SIN obra: se piden todas y se filtran por empresa en la lib.
   const evidenciasHook = window.__hooks.useEvidencias?.(null) || { data: [], refresh: null };
+  // Anticipos a proveedores (mig 207): plata que ya salió y mercadería que
+  // todavía no llegó. Ver `src/lib/anticipos.js` y el caso KOPLAST.
+  const anticiposHook = window.__hooks.useAnticipoAplicaciones?.() || { data: [], refresh: null };
   const [moneda, setMoneda] = uSD('PEN');
   // `seccion` = null → las TARJETAS del desglose (como el Panel del trabajo).
   // Un id de sección → esa vista, con "volver al panel".
@@ -603,6 +609,16 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       </>)}
 
       {seccion === 'inventario' && (<>
+      {/* ── Anticipos a proveedores ──────────────────────────────── */}
+      <PanelAnticipos
+        movs={movs}
+        aplicaciones={anticiposHook.data || []}
+        companyId={company?.id || null}
+        demo={esPrueba}
+        userId={window.__useAuth?.()?.profile?.id || null}
+        onCambio={() => anticiposHook.refresh?.()}
+      />
+
       {/* ── Inventario comprado ──────────────────────────────────── */}
       <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--blue)', fontSize: 11.5, color: 'var(--ts)' }}>
         <strong style={{ color: 'var(--blue)' }}>Qué compró esta empresa</strong> — sale del detalle de las

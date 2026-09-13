@@ -443,6 +443,15 @@ export function useInsumoTrabajoMapeos() {
   , []);
 }
 
+// A qué factura se aplica cada anticipo a proveedores (mig 207). Son decenas
+// de filas, no miles: se trae entera y se resuelve al leer con
+// `resolverAplicaciones()` (dos PCs pueden aplicar el mismo par offline).
+export function useAnticipoAplicaciones() {
+  return useOfflineData('anticipo_aplicaciones', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // El catálogo canónico de insumos y servicios (mig 192, tanda 14): 444 insumos
 // en 10 familias + 34 servicios, importados del xlsx. Global al grupo (sin obra
 // ni empresa) y chico —menos de 500 filas—, así que se trae entero y se resuelve
