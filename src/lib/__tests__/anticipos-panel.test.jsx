@@ -92,6 +92,14 @@ describe('el panel abre', () => {
     });
     expect(h).toContain('cerrado');
   });
+
+  it('🔴 8 facturas normales de US$ 10.000 no revientan el panel (el picker manual viaja de punta a punta)', () => {
+    const ocho = Array.from({ length: 8 }, (_, i) => mov(`f10k-${i}`, `F003-91${i}`, '2026-04-01', 10000));
+    const h = pintar({ movs: [...MOVS, ...ocho] });
+    expect(h).toContain('Anticipos a proveedores');
+    expect(h).not.toContain('undefined');
+    expect(h).not.toContain('NaN');
+  });
 });
 
 describe('el detalle (su propia rama, que el panel esconde hasta que se abre)', () => {
@@ -132,5 +140,32 @@ describe('el detalle (su propia rama, que el panel esconde hasta que se abre)', 
   it('sin nada que proponer y con saldo abierto, sugiere mirar contra SUNAT', () => {
     const h = pintarDetalle({ id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [], propuestas: [] });
     expect(h).toContain('Libros Electrónicos');
+  });
+
+  it('🔴 un `a` sin `manuales` (caller viejo, o un test) no revienta la pantalla', () => {
+    // El campo es nuevo (13-set) — sin este resguardo, undefined.length tumbaba
+    // el detalle apenas se abría un anticipo. Ver la nota en jx-anticipos.jsx.
+    expect(() => pintarDetalle({ id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [], propuestas: [] }))
+      .not.toThrow();
+  });
+
+  it('con facturas normales (sin señal automática) ofrece el picker manual, no "no hay más facturas"', () => {
+    // El caso de Gabriel: 8 facturas de US$ 10.000 contra un anticipo de
+    // US$ 80.000, sin nota de crédito ni total en cero — nada que proponer
+    // sola, pero SÍ hay contra qué aplicar a mano.
+    const manuales = Array.from({ length: 8 }, (_, i) => ({
+      id: `f10k-${i}`, fecha: '2026-04-01', documento: `F003-91${i}`, monto: 10000, moneda: 'USD', enCero: false,
+    }));
+    const h = pintarDetalle({ id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [], propuestas: [], manuales });
+    expect(h).toContain('Aplicar otra factura a este anticipo');
+    expect(h).toContain('F003-910');
+    expect(h).not.toContain('No hay más facturas');
+    expect(h).not.toContain('undefined');
+    expect(h).not.toContain('NaN');
+  });
+
+  it('sin candidatas manuales ni propuestas, no se dibuja el picker', () => {
+    const h = pintarDetalle({ id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [], propuestas: [], manuales: [] });
+    expect(h).not.toContain('Aplicar otra factura a este anticipo');
   });
 });

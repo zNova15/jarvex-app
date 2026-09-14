@@ -277,6 +277,40 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
 }
 
 /**
+ * Las facturas candidatas que TODAVÍA no se aplicaron y que la app NO propuso
+ * sola (no las anuló una nota de crédito, ni vinieron en cero) — el picker
+ * MANUAL: "consumir el anticipo con esta otra factura, por este monto".
+ *
+ * ── POR QUÉ HACE FALTA (Gabriel, 13-set-2026) ─────────────────────
+ * «Cuando quiera vincular las facturas con anticipo quiero ir consumiendo los
+ * montos de los anticipos. Ejemplo, realicé un pago de un anticipo de 80 mil
+ * dólares. Pero las facturas son 8 de 10 mil dólares. Entonces iría
+ * consumiendo con diferentes facturas esos 80 mil, hasta cubrir todo ese
+ * monto.» Las DOS propuestas automáticas (`proponerAplicaciones`) no cubren
+ * este caso: son facturas normales, a precio completo, sin ninguna señal en
+ * el comprobante de estar cubiertas — la decisión de aplicarlas contra el
+ * anticipo es puramente del analista, mirando la relación comercial con el
+ * proveedor, no algo que la IA pueda inferir del papel.
+ *
+ * El monto que se aplica NO tiene por qué ser el total de la factura: una
+ * entrega puede cubrirse PARCIALMENTE con el anticipo (el resto se paga
+ * aparte) — por eso esto solo lista candidatas, el importe lo escribe la
+ * persona en el picker (prellenado con el total de la factura, editable).
+ */
+export function facturasParaAplicarManualmente(anticipo, movimientos, aplicacionesVivas, { demo = false } = {}) {
+  const yaAplicadas = new Set(
+    (aplicacionesVivas || [])
+      .filter(a => a.anticipo_movimiento_id === anticipo.id)
+      .map(a => a.factura_movimiento_id),
+  );
+  const enPropuesta = new Set(
+    proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, { demo }).map(p => p.facturaId),
+  );
+  return facturasCandidatas(anticipo, movimientos, { demo })
+    .filter(c => !yaAplicadas.has(c.id) && !enPropuesta.has(c.id));
+}
+
+/**
  * El panel entero: cada anticipo con su saldo, sus aplicaciones y lo que se
  * propone.
  */
@@ -296,6 +330,7 @@ export function panelAnticipos(movimientos, aplicacionesFilas, { companyId = nul
         facturaFecha: porDoc.get(ap.factura_movimiento_id)?.date || '',
       })),
       propuestas: proponerAplicaciones(a, movimientos, aplicaciones, { demo }),
+      manuales: facturasParaAplicarManualmente(a, movimientos, aplicaciones, { demo }),
     };
   });
 

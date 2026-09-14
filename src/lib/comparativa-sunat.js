@@ -42,6 +42,34 @@
 //   comisiones de INTERBANK `FCC1-7964323/24` (S/ 85, no gravadas).
 // VENTAS: SUNAT 5 · JARVEX 4. Las 4 facturas cruzan; falta la nota de crédito
 //   `07 E001-1` de −S/ 12.920.
+//
+// ── DOS DIAGNÓSTICOS MÁS, MEDIDOS EN GASOMI EL 13-SET-2026 ────────
+// Gabriel: «el comprobante dice que no está en JARVEX pero también dice que
+// hay uno en SUNAT, ¿cómo vinculo esto? Parece que ya está vinculada pero en
+// otra fecha» — y el caso de AUTOMANIA PERU (FF01-11086): «me sale que SUNAT
+// no la tiene, pero SUNAT sí la tiene, tal vez está declarada en otro mes».
+// Se investigó cada caso contra la base real en vez de asumir; ninguno de los
+// dos era «otro mes»:
+//
+//   1) DUPLICADO_JARVEX — AUTOMANIA PERU S.A.C. (RUC 20570848985), FF01-11086,
+//      S/ 330, 27-abr-2026: estaba cargada DOS VECES en accounting_movements
+//      (dos ids, mismo RUC-serie-número-fecha-importe — un doble registro,
+//      probablemente de una doble confirmación). SUNAT trae la factura UNA
+//      sola vez (verificado en el corte 202604): una carga cruza como
+//      «cuadra» y la otra, sin nada contra qué cruzar, caía en «SUNAT no lo
+//      tiene» — que suena a que a SUNAT le falta información, cuando el
+//      problema es el opuesto: a JARVEX le sobra un registro.
+//   2) RUC_DISTINTO — PACÍFICO COMPAÑÍA DE SEGUROS (GASOMI), serie F087: cada
+//      mes hay DOS movimientos con el MISMO número de comprobante
+//      (F087-1328120 en junio, F087-1278273 en marzo, …) pero con dos RUC
+//      distintos (20332970411 y 20418896915) y montos casi idénticos
+//      (S/ 254,26-254,28 — una prima recurrente). El rescate por RUC+importe
+//      emparejaba por error uno de junio contra uno de marzo («cargado en
+//      otro mes»), y el otro RUC del mismo mes quedaba huérfano («SUNAT no
+//      lo tiene»). Sin poder abrir el PDF no se sabe si es un RUC mal
+//      tipeado o dos entidades reales del grupo asegurador — así que el
+//      diagnóstico MUESTRA el contraste (mismo N°, RUC distinto) en vez de
+//      adivinar para cuál lado inventar una fecha.
 // ═══════════════════════════════════════════════════════════════════
 
 import { partirDocumento } from './serie-comprobante.js';
@@ -256,6 +284,32 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     if (!ajenos.has(k)) ajenos.set(k, m);
   }
 
+  // ── RUC DISTINTO, MISMO N° DE COMPROBANTE ──────────────────────────
+  // Caso real (GASOMI, 13-set-2026): PACÍFICO SEGUROS factura F087-1328120 y
+  // JARVEX tiene un movimiento CON ESE MISMO NÚMERO pero un RUC distinto del
+  // que trae el archivo de SUNAT — dos entidades del mismo grupo asegurador,
+  // o un RUC mal tipeado al cargar. Sin este índice, un lado sale «falta» y
+  // el otro «sobra» y nada dice que son el mismo papel con un dato mal puesto.
+  // La llave completa incluye el RUC (`tipo|serie|numero|ruc`); acá se indexa
+  // SIN el RUC para poder encontrarlos.
+  const sinRuc = (llave) => (llave ? llave.split('|').slice(0, 3).join('|') : '');
+  const porDocSinRuc = new Map();
+  for (const m of propios) {
+    const k = sinRuc(llaveDeMovimiento(m));
+    if (!k) continue;
+    if (!porDocSinRuc.has(k)) porDocSinRuc.set(k, []);
+    porDocSinRuc.get(k).push(m);
+  }
+  // Mismo índice del lado de SUNAT, pero SOLO de este período: es contra el
+  // archivo que se está mirando ahora, no contra todo el historial.
+  const sunatPorDocSinRuc = new Map();
+  for (const f of filas) {
+    const k = sinRuc(llaveDeFilaSunat(f));
+    if (!k) continue;
+    if (!sunatPorDocSinRuc.has(k)) sunatPorDocSinRuc.set(k, []);
+    sunatPorDocSinRuc.get(k).push(f);
+  }
+
   // Para el rescate de la serie mal escrita: RUC + importe.
   const porRucImporte = new Map();
   for (const m of propios) {
@@ -402,6 +456,32 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       continue;
     }
 
+    // ¿El MISMO número de comprobante existe en JARVEX, pero con OTRO RUC?
+    // No se puede saber sin mirar el papel si es un RUC mal cargado o dos
+    // comprobantes reales que coinciden en número por casualidad, así que NO
+    // ENTRA EN LA BRECHA: se MUESTRA el contraste para que la contadora
+    // decida mirando el PDF. Sí se marca `usados` — no como si hubiera
+    // cruzado de verdad, sino para no reportar la MISMA pareja dos veces (una
+    // vez desde acá y otra desde el lado JARVEX más abajo).
+    const candidatosRucDistinto = (porDocSinRuc.get(sinRuc(llave)) || []).filter(x => !usados.has(x.id));
+    if (llave && candidatosRucDistinto.length) {
+      const otro = candidatosRucDistinto[0];
+      usados.add(otro.id);
+      salida.push({
+        ...base, estado: 'ruc_distinto',
+        movimientoId: otro.id,
+        companyId: otro.company_id || companyId,
+        appDocumento: otro.document_number,
+        appFecha: otro.date,
+        appTotal: r2(otro.amount),
+        appMoneda: String(otro.currency || 'PEN').trim().toUpperCase(),
+        appNombre: otro.third_party_name || '',
+        appRuc: rucLimpio(otro.third_party_ruc),
+        diferencia: r2(f.total),
+      });
+      continue;
+    }
+
     salida.push({ ...base, estado: 'solo_sunat', movimientoId: null, diferencia: r2(f.total) });
   }
 
@@ -411,6 +491,42 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     if (mes && mesDe(m.date) !== mes) continue;      // de otro mes: no es de este corte
     const p = partirDocumento(m.document_number);
     const k = llaveDeMovimiento(m);
+
+    // ── DUPLICADO EN JARVEX ────────────────────────────────────────
+    // Caso real (AUTOMANIA PERU, RUC 20570848985, FF01-11086, 13-set-2026):
+    // la MISMA factura quedó cargada DOS VECES (dos movimientos vivos, misma
+    // llave). SUNAT solo puede haberla usado para casar UNO — el resto no
+    // «falta en SUNAT», SOBRA en JARVEX. Se mira `porLlave` completo (no
+    // period-filtrado): dos cargas de la MISMA factura en meses distintos
+    // también son un duplicado, no una casualidad de numeración.
+    const hermanos = k ? (porLlave.get(k) || []) : [];
+    if (hermanos.length > 1) {
+      salida.push({
+        llave: k, libro, companyId: m.company_id || companyId,
+        linea: null, tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
+        tipoNombre: m.document_type || 'factura',
+        documento: m.document_number || '',
+        serie: p?.serie || '', numero: p?.correlativo || 0,
+        fecha: m.date,
+        contraparteRuc: rucLimpio(m.third_party_ruc),
+        contraparteNombre: m.third_party_name || '',
+        sunatBase: 0, sunatIgv: 0, sunatNoGravado: 0, sunatTotal: 0,
+        moneda: m.currency || 'PEN', modifica: '',
+        estado: 'duplicado_jarvex',
+        duplicados: hermanos.length,
+        duplicadosIds: hermanos.map(h => h.id),
+        movimientoId: m.id,
+        appDocumento: m.document_number,
+        appFecha: m.date,
+        appTotal: r2(m.amount),
+        appNombre: m.third_party_name || '',
+        // No es plata que falte ni que sobre: el papel está registrado, solo
+        // que más de una vez — sumarlo a la brecha inflaría el faltante.
+        diferencia: 0,
+      });
+      continue;
+    }
+
     const enOtroSunat = k ? sunatOtrosPeriodosPorLlave.get(k) : null;
     if (enOtroSunat) {
       salida.push({
@@ -444,6 +560,34 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       });
       continue;
     }
+
+    // ¿Existe en el archivo de SUNAT DE ESTE MISMO PERÍODO el mismo número de
+    // comprobante, pero declarado con OTRO RUC? Mismo caso de PACÍFICO SEGUROS
+    // visto del lado de JARVEX — ver el índice `sunatPorDocSinRuc` de arriba.
+    const filaOtroRuc = k ? (sunatPorDocSinRuc.get(sinRuc(k)) || [])[0] : null;
+    if (filaOtroRuc) {
+      salida.push({
+        llave: k, libro, companyId: m.company_id || companyId,
+        linea: filaOtroRuc.linea, tipoCp: filaOtroRuc.tipoCp, tipoNombre: filaOtroRuc.tipoNombre,
+        documento: filaOtroRuc.documento, serie: filaOtroRuc.serie, numero: filaOtroRuc.numero,
+        fecha: filaOtroRuc.fecha,
+        contraparteRuc: rucLimpio(filaOtroRuc.contraparteRuc),
+        contraparteNombre: filaOtroRuc.contraparteNombre || '',
+        sunatBase: r2(filaOtroRuc.base), sunatIgv: r2(filaOtroRuc.igv), sunatNoGravado: r2(filaOtroRuc.noGravado),
+        sunatTotal: r2(filaOtroRuc.total), moneda: filaOtroRuc.moneda, modifica: '',
+        estado: 'ruc_distinto',
+        movimientoId: m.id,
+        appDocumento: m.document_number,
+        appFecha: m.date,
+        appTotal: r2(m.amount),
+        appMoneda: String(m.currency || 'PEN').trim().toUpperCase(),
+        appNombre: m.third_party_name || '',
+        appRuc: rucLimpio(m.third_party_ruc),
+        diferencia: -r2(m.amount),
+      });
+      continue;
+    }
+
     salida.push({
       llave: llaveDeMovimiento(m),
       libro,
@@ -477,6 +621,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
 export const ESTADOS_PENDIENTES = [
   'solo_sunat', 'solo_jarvex', 'importe_distinto', 'signo_distinto',
   'serie_distinta', 'otra_empresa', 'otro_periodo', 'sunat_otro_periodo', 'fecha_distinta',
+  'ruc_distinto', 'duplicado_jarvex',
 ];
 
 export const ETIQUETA_ESTADO = {
@@ -490,6 +635,8 @@ export const ETIQUETA_ESTADO = {
   otro_periodo: 'Cargado en otro mes',
   sunat_otro_periodo: 'En SUNAT en otro mes',
   fecha_distinta: 'Fecha distinta',
+  ruc_distinto: 'Mismo N°, RUC distinto',
+  duplicado_jarvex: 'Duplicado en JARVEX',
 };
 
 /**

@@ -241,6 +241,96 @@ describe('compararLibro — lo que la app tiene y SUNAT no', () => {
   });
 });
 
+describe('compararLibro — duplicado en JARVEX (AUTOMANIA PERU, 13-set-2026)', () => {
+  // Caso real GASOMI: FF01-11086, S/330, 27-abr-2026, cargada DOS VECES.
+  // SUNAT solo trae la factura una vez → antes, la copia sobrante salía como
+  // «SUNAT no lo tiene» (parecía culpa de SUNAT cuando el sobrante es de JARVEX).
+  const RUC = '20570848985';
+  const filas = [sunat('01', 'FF01', 11086, RUC, 330, '2026-04-27', { nombre: 'AUTOMANIA PERU S.A.C.' })];
+  const movs = [
+    mov('dup-1', 'FF01-11086', RUC, 330, '2026-04-27', { nombre: 'AUTOMANIA PERU S.A.C.' }),
+    mov('dup-2', 'FF01-11086', RUC, 330, '2026-04-27', { nombre: 'AUTOMANIA PERU S.A.C.' }),
+  ];
+  const { filas: r, resumen } = compararLibro(filas, movs, {
+    companyId: JARVEX, libro: 'compras', periodo: '202604', companies: COMPANIES,
+  });
+
+  it('una copia cruza normal contra SUNAT', () => {
+    const cuadra = r.filter(f => f.estado === 'cuadra');
+    expect(cuadra).toHaveLength(1);
+  });
+
+  it('la copia sobrante se marca «duplicado_jarvex», no «SUNAT no lo tiene»', () => {
+    const dup = r.filter(f => f.estado === 'duplicado_jarvex');
+    expect(dup).toHaveLength(1);
+    expect(dup[0].duplicados).toBe(2);
+    expect(dup[0].duplicadosIds.sort()).toEqual(['dup-1', 'dup-2']);
+  });
+
+  it('un duplicado no infla la brecha: el papel SÍ está registrado', () => {
+    expect(resumen.faltanEnSunat).toBe(0);
+    expect(resumen.porEstado.duplicado_jarvex).toBe(1);
+  });
+
+  it('con TRES copias, las dos sobrantes se marcan (no solo una)', () => {
+    const { filas: r3 } = compararLibro(filas, [...movs, mov('dup-3', 'FF01-11086', RUC, 330, '2026-04-27')], {
+      companyId: JARVEX, libro: 'compras', periodo: '202604', companies: COMPANIES,
+    });
+    expect(r3.filter(f => f.estado === 'duplicado_jarvex')).toHaveLength(2);
+  });
+
+  it('dos cargas del MISMO comprobante en MESES distintos también son duplicado, no una casualidad', () => {
+    const otroMes = mov('dup-otro-mes', 'FF01-11086', RUC, 330, '2026-05-02');
+    const { filas: rMayo } = compararLibro([], [...movs, otroMes], {
+      companyId: JARVEX, libro: 'compras', periodo: '202605', companies: COMPANIES,
+    });
+    // Solo se reporta la copia DE MAYO (la de abril es de otro corte), y como duplicado.
+    expect(rMayo).toHaveLength(1);
+    expect(rMayo[0].estado).toBe('duplicado_jarvex');
+  });
+});
+
+describe('compararLibro — mismo N° de comprobante, RUC distinto (PACÍFICO SEGUROS, 13-set-2026)', () => {
+  // Caso real GASOMI, serie F087: cada mes hay DOS movimientos con el MISMO
+  // número mismo pero dos RUC del grupo asegurador. SUNAT solo declaró uno.
+  const RUC_A = '20332970411';
+  const RUC_B = '20418896915';
+
+  it('SUNAT trae el RUC A; JARVEX tiene el mismo N° bajo el RUC B → ruc_distinto, no «falta»', () => {
+    const filas = [sunat('01', 'F087', 1328120, RUC_A, 254.28, '2026-06-25', { nombre: 'PACÍFICO COMPAÑÍA DE SEGUROS Y REASEGUROS' })];
+    const movs = [mov('pac-b', 'F087-1328120', RUC_B, 254.28, '2026-06-25', { nombre: 'PACÍFICO COMPAÑÍA DE SEGUROS Y REASEGUROS' })];
+    const { filas: r } = compararLibro(filas, movs, {
+      companyId: JARVEX, libro: 'compras', periodo: '202606', companies: COMPANIES,
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0].estado).toBe('ruc_distinto');
+    expect(r[0].contraparteRuc).toBe(RUC_A);   // el RUC que dice SUNAT
+    expect(r[0].appRuc).toBe(RUC_B);           // el RUC que tiene JARVEX
+    expect(r[0].movimientoId).toBe('pac-b');
+    // No se cuenta como brecha: el papel existe, solo con un RUC distinto.
+    expect(resumirComparativa(r).faltanEnApp).toBe(0);
+  });
+
+  it('visto al revés (JARVEX tiene el RUC A, SUNAT declaró el RUC B) da el mismo diagnóstico', () => {
+    const filas = [sunat('01', 'F087', 1328120, RUC_B, 254.28, '2026-06-25', { nombre: 'PACÍFICO COMPAÑÍA DE SEGUROS Y REASEGUROS' })];
+    const movs = [mov('pac-a', 'F087-1328120', RUC_A, 254.28, '2026-06-25', { nombre: 'PACÍFICO COMPAÑÍA DE SEGUROS Y REASEGUROS' })];
+    const { filas: r } = compararLibro(filas, movs, {
+      companyId: JARVEX, libro: 'compras', periodo: '202606', companies: COMPANIES,
+    });
+    expect(r[0].estado).toBe('ruc_distinto');
+    expect(r[0].appRuc).toBe(RUC_A);
+  });
+
+  it('sin ningún candidato con otro RUC, sigue siendo «Falta en JARVEX» de verdad', () => {
+    // El caso KOPLAST del mismo reporte: factura en $0 realmente no cargada.
+    const filas = [sunat('01', 'F002', 31710, '20505543174', 0, '2026-06-25', { nombre: 'KOPLAST INDUSTRIAL S.A.C', moneda: 'USD' })];
+    const { filas: r } = compararLibro(filas, [], {
+      companyId: JARVEX, libro: 'compras', periodo: '202606', companies: COMPANIES,
+    });
+    expect(r[0].estado).toBe('solo_sunat');
+  });
+});
+
 describe('la nota de crédito cargada en positivo', () => {
   it('es «signo distinto», no «importe distinto»', () => {
     // Medido: 2 de las 18 notas de crédito de la app están en positivo.

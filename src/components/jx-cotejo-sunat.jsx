@@ -97,6 +97,8 @@ const COLOR_ESTADO = {
   otro_periodo: 'var(--blue)',
   sunat_otro_periodo: 'var(--purple, #8b5cf6)',
   fecha_distinta: 'var(--tm)',
+  ruc_distinto: 'var(--amber, #d97706)',
+  duplicado_jarvex: '#d33',
 };
 const COLOR_GRAVEDAD = { alta: '#d33', media: 'var(--orange)', baja: 'var(--tm)' };
 
@@ -832,6 +834,30 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                           <span>📌 {f.motivoPeriodo || `En SUNAT en período ${f.periodoDetectado}`}</span>
                         </div>
                       )}
+                      {/* RUC DISTINTO: no se sabe si es un RUC mal tipeado o dos
+                          comprobantes reales que coinciden en número — se muestra
+                          el contraste (sin PDF no se puede decidir por la persona). */}
+                      {f.estado === 'ruc_distinto' && (
+                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>⚠ mismo N°, pero SUNAT dice RUC <strong>{f.contraparteRuc}</strong> y en JARVEX está con RUC <strong>{f.appRuc}</strong> ({f.appNombre || 'sin nombre'}) — ¿RUC mal cargado, o dos comprobantes distintos?</span>
+                          <button
+                            type="button"
+                            className="btn btn-xs"
+                            style={{ padding: '1px 6px', fontSize: 10, cursor: 'pointer' }}
+                            title={`Abrir ${f.appDocumento} en Movimientos Contables para verificar el RUC contra el PDF`}
+                            onClick={() => irAEditarMovimiento(f.companyId || company?.id, f.movimientoId, f.appDocumento)}
+                          >
+                            Revisar en Movimientos
+                          </button>
+                        </div>
+                      )}
+                      {/* DUPLICADO EN JARVEX: el papel SÍ está registrado, pero
+                          más de una vez — no es que falte plata, sobra un registro. */}
+                      {f.estado === 'duplicado_jarvex' && (
+                        <div style={{ fontSize: 11, color: '#d33', marginTop: 4 }}>
+                          ⚠ Este comprobante está cargado {f.duplicados} veces en JARVEX — SUNAT lo declara una sola. Fusioná o eliminá el duplicado en Movimientos Contables.
+                        </div>
+                      )}
                     </td>
                     <td>
                       {f.fecha || f.appFecha || '—'}
@@ -846,7 +872,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       <div style={{ fontSize: 11, color: 'var(--tm)' }}>{f.contraparteRuc}</div>
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      {f.estado === 'solo_jarvex' ? '—' : fmtS(f.sunatTotal)}
+                      {f.estado === 'solo_jarvex' || f.estado === 'duplicado_jarvex' ? '—' : fmtS(f.sunatTotal)}
                       {f.estado === 'sunat_otro_periodo' && f.periodoDetectado ? (
                         <div style={{ fontSize: 10, color: 'var(--purple, #8b5cf6)' }}>en SUNAT {f.periodoDetectado}</div>
                       ) : f.sunatIgv ? (
@@ -865,7 +891,12 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                         </div>
                       ) : null}
                     </td>
-                    <td style={{ textAlign: 'right', color: Math.abs(f.diferencia || 0) > 0.05 ? '#d33' : 'var(--tm)' }}>
+                    <td style={{ textAlign: 'right', color: Math.abs(f.diferencia || 0) <= 0.05 ? 'var(--tm)'
+                      // Ámbar, no rojo: en `ruc_distinto` no está confirmado que
+                      // sea plata faltante — puede ser el mismo papel con el RUC
+                      // mal cargado, y no la brecha real que sugieren los otros
+                      // estados en rojo (ver resumirComparativa: no se le suma).
+                      : f.estado === 'ruc_distinto' ? 'var(--amber, #d97706)' : '#d33' }}>
                       {Math.abs(f.diferencia || 0) > 0.05 ? fmtS(f.diferencia) : '—'}
                     </td>
                     <td style={{ whiteSpace: 'nowrap' }}>

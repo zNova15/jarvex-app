@@ -11,6 +11,7 @@ import {
   esMovimientoAnticipo, detectarAnticipos, resolverAplicaciones,
   saldoDeAnticipo, facturasCandidatas, proponerAplicaciones,
   panelAnticipos, aplicacionNueva, pareceCubiertaPorAnticipo,
+  facturasParaAplicarManualmente,
 } from '../anticipos.js';
 
 const GASOMI = 'gasomi-id';
@@ -264,6 +265,74 @@ describe('el panel entero', () => {
     const docs = p.filas[0].aplicaciones.map(a => a.facturaDocumento);
     expect(docs).toContain('F003-3409');
     expect(docs).toContain('(comprobante no cargado)');
+  });
+});
+
+describe('facturasParaAplicarManualmente — consumir el anticipo factura por factura', () => {
+  // Gabriel, 13-set-2026: «cuando quiera vincular las facturas con anticipo
+  // quiero ir consumiendo los montos de los anticipos. Ejemplo, realicé un
+  // pago de un anticipo de 80 mil dólares. Pero las facturas son 8 de 10 mil
+  // dólares. Entonces iría consumiendo con diferentes facturas esos 80 mil,
+  // hasta cubrir todo ese monto.» Facturas NORMALES, a precio completo — sin
+  // ninguna señal automática (no las anuló una NC, no vinieron en cero) — así
+  // que `proponerAplicaciones` no las ofrece solas: las tiene que elegir la
+  // asistente a mano, una por una.
+  const ANTICIPO_80K = mov('big', 'F003-9000', '2026-03-01', 80000, conItems([
+    { descripcion: 'ANTICIPO DE CLIENTE', cantidad: 1, precio_unitario: 67796.61, unidad: 'und' },
+  ]));
+  const ocho = Array.from({ length: 8 }, (_, i) =>
+    mov(`f10k-${i}`, `F003-91${i}`, '2026-04-01', 10000));
+  const movs = [ANTICIPO_80K, ...ocho];
+
+  it('las 8 facturas de US$ 10.000 aparecen como candidatas manuales (no como propuesta automática)', () => {
+    const [ant] = detectarAnticipos(movs, { companyId: GASOMI });
+    const propuestas = proponerAplicaciones(ant, movs, []);
+    const manuales = facturasParaAplicarManualmente(ant, movs, []);
+    expect(propuestas).toHaveLength(0);       // ninguna señal automática
+    expect(manuales).toHaveLength(8);
+    expect(manuales.every(c => c.monto === 10000)).toBe(true);
+  });
+
+  it('aplicar UNA la saca de la lista de candidatas manuales y baja el saldo en US$ 10.000', () => {
+    const [ant] = detectarAnticipos(movs, { companyId: GASOMI });
+    const aplicaciones = [aplicacionNueva(ant, { facturaId: 'f10k-0', monto: 10000 })];
+    const manuales = facturasParaAplicarManualmente(ant, movs, aplicaciones);
+    expect(manuales).toHaveLength(7);
+    expect(manuales.some(c => c.id === 'f10k-0')).toBe(false);
+    expect(saldoDeAnticipo(ant, aplicaciones).saldo).toBe(70000);
+  });
+
+  it('consumiendo las 8, una por una, el anticipo queda cerrado en cero', () => {
+    const [ant] = detectarAnticipos(movs, { companyId: GASOMI });
+    const aplicaciones = ocho.map(f => aplicacionNueva(ant, { facturaId: f.id, monto: 10000 }));
+    const s = saldoDeAnticipo(ant, aplicaciones);
+    expect(s.saldo).toBe(0);
+    expect(s.cerrado).toBe(true);
+    expect(facturasParaAplicarManualmente(ant, movs, aplicaciones)).toHaveLength(0);
+  });
+
+  it('una entrega PARCIAL (menos que el total de la factura) descuenta solo lo aplicado', () => {
+    // El anticipo cubre solo PARTE de una entrega de US$ 10.000 — el resto se
+    // paga aparte, así que el monto a aplicar lo escribe la persona. Una vez
+    // aplicada (parcial o no) sale del picker — para corregir el monto se
+    // "Quita" la aplicación desde "Ya aplicado" y se vuelve a aplicar, mismo
+    // criterio que ya usan las propuestas automáticas.
+    const [ant] = detectarAnticipos(movs, { companyId: GASOMI });
+    const aplicaciones = [aplicacionNueva(ant, { facturaId: 'f10k-0', monto: 4000 })];
+    expect(saldoDeAnticipo(ant, aplicaciones).saldo).toBe(76000);
+    expect(facturasParaAplicarManualmente(ant, movs, aplicaciones).some(c => c.id === 'f10k-0')).toBe(false);
+  });
+
+  it('la factura en cero y la anulada por NC no aparecen DOS veces (propuesta + manual)', () => {
+    // Reusa el set real de KOPLAST: F_CERO tiene propuesta automática.
+    const [ant] = detectarAnticipos(TODOS, { companyId: GASOMI });
+    const manuales = facturasParaAplicarManualmente(ant, TODOS, []);
+    expect(manuales.some(c => c.id === 'f4')).toBe(false);   // F_CERO: ya está en propuestas
+  });
+
+  it('el panel entero trae `manuales` junto con `propuestas`', () => {
+    const p = panelAnticipos(movs, [], { companyId: GASOMI });
+    expect(p.filas[0].manuales).toHaveLength(8);
   });
 });
 

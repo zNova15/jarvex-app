@@ -192,6 +192,11 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
  */
 function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onQuitar }) {
   const anuladas = (a.propuestas || []).filter(p => !p.pideMonto && p.monto > 0);
+  // `manuales` es nuevo (13-set): un `a` armado a mano (tests, o un caller
+  // viejo) puede no traerlo — sin este resguardo, `undefined.length` tumbaba
+  // la pantalla entera apenas se abría un anticipo (la clase de bug que este
+  // archivo existe para atajar, ver anticipos-panel.test.jsx).
+  const manuales = a.manuales || [];
   return (
     <div style={{ marginTop: 8, paddingLeft: 8, borderLeft: '2px solid var(--border)' }}>
       {a.aplicaciones.length > 0 && (
@@ -239,7 +244,7 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
             </div>
           ))}
         </div>
-      ) : (
+      ) : manuales.length === 0 ? (
         <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>
           No hay más facturas de este proveedor contra las cuales aplicar el anticipo.
           {!a.cerrado && (
@@ -247,6 +252,73 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
             comparalo contra SUNAT en Libros Electrónicos.</>
           )}
         </div>
+      ) : null}
+
+      {/* ── APLICAR OTRA FACTURA, A MANO ────────────────────────────────
+          Gabriel, 13-set: «quiero ir consumiendo los montos de los anticipos.
+          […] realicé un pago de un anticipo de 80 mil dólares, pero las
+          facturas son 8 de 10 mil dólares — iría consumiendo con diferentes
+          facturas esos 80 mil, hasta cubrir todo ese monto». Las propuestas de
+          arriba solo cubren dos señales automáticas (NC que anula, factura en
+          cero); una entrega normal, a precio completo, la elige el analista
+          acá — factura por factura, hasta que el saldo llegue a cero. */}
+      {manuales.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 3 }}>
+            Aplicar otra factura a este anticipo
+          </div>
+          <AplicarManual a={a} manuales={manuales} montos={montos} setMontos={setMontos} onAplicar={onAplicar} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * El picker manual de UNA aplicación: elegir la factura entre las candidatas
+ * que la app no propuso sola, y el monto (prellenado con el total de la
+ * factura — editable, porque un anticipo puede cubrir solo PARTE de una
+ * entrega). Reusa `onAplicar` sin cambios: el mismo handler que las
+ * propuestas automáticas, con `{ facturaId, monto, motivo }`.
+ *
+ * La selección se DERIVA de `manuales` en vez de guardarse aparte con un
+ * efecto: apenas se aplica, esa factura sale de `manuales` (se recalcula
+ * solo, como el resto del panel) y el picker vuelve a "— Elegí una factura —"
+ * sin que haga falta resetear nada a mano.
+ */
+function AplicarManual({ a, manuales, montos, setMontos, onAplicar }) {
+  const [elegidoIdCrudo, setElegidoId] = uS('');
+  const elegido = manuales.find(c => c.id === elegidoIdCrudo) || null;
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <select className="fi" style={{ fontSize: 11.5, height: 26, maxWidth: 300 }}
+        value={elegido ? elegidoIdCrudo : ''}
+        onChange={e => {
+          const id = e.target.value;
+          setElegidoId(id);
+          const c = manuales.find(x => x.id === id);
+          // Prellenar con el total de la factura — la persona lo baja si el
+          // anticipo cubre solo una parte de la entrega.
+          if (c && montos[id] == null) setMontos(m => ({ ...m, [id]: String(c.monto) }));
+        }}>
+        <option value="">— Elegí una factura —</option>
+        {manuales.map(c => (
+          <option key={c.id} value={c.id}>{c.documento || '(s/doc)'} · {fmtFecha(c.fecha)} · {fmtMonto(c.monto, c.moneda)}</option>
+        ))}
+      </select>
+      {elegido && (
+        <>
+          <input className="fi" type="number" step="0.01"
+            style={{ width: 130, fontSize: 11.5, height: 26 }}
+            placeholder={`monto en ${a.moneda}`}
+            value={montos[elegido.id] ?? ''}
+            onChange={e => setMontos(m => ({ ...m, [elegido.id]: e.target.value }))}
+          />
+          <button className="btn btn-xs btn-green"
+            onClick={() => onAplicar(a, { facturaId: elegido.id, monto: elegido.monto, motivo: 'Aplicación manual' })}>
+            Aplicar
+          </button>
+        </>
       )}
     </div>
   );
