@@ -54,6 +54,35 @@ describe('clasificarInsumoConIA', () => {
     expect(body.candidatos).toEqual(CANDIDATOS.map(c => ({ codigo: c.codigo, nombre: c.nombre })));
   });
 
+  // 🔴 EL ARREGLO DEL 15-sep. Sin el Anexo 2 delante, el modelo clasificaba de
+  // memoria: "ALAMBRE DE AMARRE #8" salía [48] Maquinaria liviana. Estos dos
+  // campos son lo que lo apoya en la norma en vez de en su intuición.
+  it('manda la EVIDENCIA del diccionario oficial y la propuesta del motor local', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk({
+      result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.8, razonamiento: 'ok',
+    }));
+    await clasificarInsumoConIA({
+      descripcion: 'ALAMBRE DE AMARRE #8',
+      candidatos: CANDIDATOS,
+      propuestaLocal: { codigo: '02', nombre: '[02] Acero de construcción liso', motivos: ['familia ferretería'] },
+    });
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(Array.isArray(body.evidencia)).toBe(true);
+    expect(body.evidencia.length).toBeGreaterThan(0);
+    expect(body.evidencia[0].codigo).toBe('02');
+    expect(body.evidencia[0].terminos.join(' ').toLowerCase()).toMatch(/alambre/);
+    expect(body.propuesta_local).toMatchObject({ codigo: '02', motivo: 'familia ferretería' });
+  });
+
+  it('sin propuesta local manda null, no un objeto a medio llenar', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk({
+      result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.8, razonamiento: 'ok',
+    }));
+    await clasificarInsumoConIA({ descripcion: 'TORNILLO AUTORROSCANTE', candidatos: CANDIDATOS });
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.propuesta_local).toBeNull();
+  });
+
   it('cachea por descripción: segunda llamada no repite el request', async () => {
     const respMock = { result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.7, razonamiento: 'ok' };
     globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));

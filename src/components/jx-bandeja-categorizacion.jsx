@@ -38,7 +38,7 @@ import {
   decisionDeCatalogo, decisionNoInsumo, ESTADOS,
 } from "../lib/bandeja-categorizacion.js";
 import {
-  decidir, decidirEnLote, agregarAlCatalogoYDecidir, reabrir, enseñarALaContadora,
+  decidir, decidirEnLote, agregarAlCatalogoYDecidir, reabrir, reabrirEnLote, enseñarALaContadora,
 } from "../lib/bandeja-categorizacion-db.js";
 import {
   equivalenciasDe,
@@ -75,7 +75,7 @@ const COLOR_ESTADO = {
  * motor local (sigue siendo el primero, gratis y sin red) ni se aplica sola:
  * el resultado se muestra y `onElegir(codigo)` es un click aparte.
  */
-function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
+function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = null, propuestaLocal = null }) {
   const [sugerencia, setSugerencia] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
@@ -85,7 +85,9 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
     if (cargando) return;
     setCargando(true); setError(null);
     try {
-      const r = await clasificarInsumoConIA({ descripcion, unidad, candidatos: OPCIONES_CLASIFICACION });
+      const r = await clasificarInsumoConIA({
+        descripcion, unidad, candidatos: OPCIONES_CLASIFICACION, terminosCustom, propuestaLocal,
+      });
       if (!r?.result?.codigo_sugerido) {
         setError(r?.razonamiento || 'No encontró una clasificación clara para esto.');
         return;
@@ -94,6 +96,7 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
       setSugerencia({
         codigo: r.result.codigo_sugerido, nombre: opt?.label || r.result.codigo_sugerido,
         confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached,
+        nuevaClasificacion: r.result.clasificacion_nueva || null,
       });
     } catch (e2) {
       setError(e2?.message || 'No se pudo consultar la IA.');
@@ -114,6 +117,7 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
           <span className="badge b-blue" style={{ marginLeft: 4, fontSize: 9 }}>{Math.round((sugerencia.confianza || 0) * 100)}%</span>
           {sugerencia.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
           <div style={{ color: 'var(--tm)', marginTop: 2 }}>{sugerencia.razonamiento}</div>
+          {sugerencia.nuevaClasificacion && <ClasificacionNueva nombre={sugerencia.nuevaClasificacion} />}
           <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
             onClick={(e) => { e.stopPropagation(); onElegir(sugerencia.codigo); }}>
             Usar esta clasificación
@@ -124,12 +128,35 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
   );
 }
 
+/**
+ * «Ninguna de la lista le queda bien» — el aviso que pidió Gabriel el 15-sep
+ * con "LA INMOBILIARIA BCP", que es el interés de un préstamo y no es un
+ * insumo de construcción ni un consumo de oficina. Acá NO se crea nada: la
+ * clasificación propia se da de alta desde el Catálogo, con su código
+ * validado. Esto es una nota para quien decide.
+ */
+function ClasificacionNueva({ nombre }) {
+  return (
+    <div style={{ marginTop: 4, padding: '4px 6px', borderRadius: 4, background: 'rgba(242,183,5,.12)', border: '1px solid rgba(242,183,5,.35)' }}>
+      ⚠ Ninguna clasificación de la lista le queda bien. La IA propone crear una:
+      {' '}<strong>«{nombre}»</strong>.
+      <div style={{ color: 'var(--tm)' }}>
+        Se crea desde <strong>Clasificaciones y diccionario</strong>; acá no se crea sola.
+      </div>
+    </div>
+  );
+}
+
 function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambitoExterno = false }) {
   const catHook = window.__hooks.useCatalogoInsumos();
   const disgHook = window.__hooks.useCatalogoDisgregacion();
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
   const decHook = window.__hooks.useInsumoCategorias();
   const compHook = window.__hooks.useCompanies();
+  // El diccionario PROPIO (mig 205). Va a la IA junto con el oficial del INEI:
+  // las correcciones que ya enseñó la contadora son evidencia tan buena como
+  // el Anexo 2, y es lo que hace que la propuesta mejore con el uso.
+  const terHook = window.__hooks.useClasificacionTerminos?.() || { data: [] };
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   const userId = (() => { try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; } })();
 
@@ -225,6 +252,27 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   const catalogoDe = (fila) => {
     const cod = fila?.sug?.candidatos?.[0]?.cat?.codigo;
     return cod ? porId.get(cod) : null;
+  };
+
+  const terminosCustom = uM(
+    () => (terHook.data || []).filter(t => !t.deleted_at && !!t.demo === esPrueba),
+    [terHook.data, esPrueba],
+  );
+
+  /**
+   * La clasificación que propone el motor LOCAL para esta fila — la misma que
+   * se ve en pantalla. Se le manda a la IA para que la confirme o la corrija
+   * CON ARGUMENTO, en vez de contestar desde cero: en los casos que reportó
+   * Gabriel (alambre de amarre, mesa de melamine) la local era la buena.
+   */
+  const propuestaLocalDe = (f) => {
+    const cod = catalogoDe(f)?.familia || f?.recomendacionIUPC?.codigo || null;
+    if (!cod || cod === 'sin_clasificar') return null;
+    return {
+      codigo: cod,
+      nombre: etiquetaCategoria(cod),
+      motivos: f?.recomendacionIUPC?.motivos || f?.sug?.candidatos?.[0]?.motivos || [],
+    };
   };
 
   // ── Acciones ─────────────────────────────────────────────────────
@@ -344,6 +392,30 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     showToast?.(`✓ ${n} descripciones → ${catFila.nombre}`, 'green');
   });
 
+  /**
+   * DESCLASIFICAR EN LOTE — pedido de Gabriel, 15-sep: «quiero que tengamos
+   * una manera para desclasificar todos los insumos también, o seleccionando
+   * un grupo». Después de un recorrido con IA que aplicó de más, deshacer de
+   * a una no alcanza.
+   *
+   * `filas` son las que se van a reabrir. Pide confirmación SIEMPRE (borra
+   * trabajo hecho) y dice cuántas son antes de tocar nada.
+   */
+  const desclasificar = conGuard(async (filasADeshacer, queEs) => {
+    const norms = [...new Set((filasADeshacer || []).map(f => f.norm).filter(Boolean))];
+    if (!norms.length) return;
+    const ok = typeof confirm !== 'function' || confirm(
+      `Se van a DESCLASIFICAR ${norms.length} ${norms.length === 1 ? 'descripción' : 'descripciones'} (${queEs}).\n\n`
+      + 'Vuelven a la lista de pendientes y hay que volver a decidirlas. '
+      + 'Lo que le enseñaron al diccionario NO se borra.\n\n¿Seguir?',
+    );
+    if (!ok) return;
+    const n = await reabrirEnLote(norms, { companyId });
+    setMarcadas(new Set());
+    await decHook.refresh?.();
+    showToast?.(`↩ ${n} ${n === 1 ? 'decisión deshecha' : 'decisiones deshechas'} — vuelven a la lista`, 'green');
+  });
+
   const noSonInsumoEnLote = conGuard(async () => {
     const elegidas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado !== 'decididas');
     if (!elegidas.length) return;
@@ -380,6 +452,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     procesarItem: async (f) => {
       const r = await clasificarInsumoConIA({
         descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
+        terminosCustom, propuestaLocal: propuestaLocalDe(f),
       });
       const cod = r?.result?.codigo_sugerido;
       if (!cod) return 'saltada';
@@ -391,10 +464,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       }
       guardarRecomendacion('clasificacion', ambitoIA, f.norm, {
         codigo: cod, nombre: etiquetaCategoria(cod), confianza: conf, razonamiento: r.razonamiento || '',
+        nuevaClasificacion: r.result.clasificacion_nueva || null,
       });
       return 'recomendada';
     },
-  }), [pendientesTotal, ambitoIA, aceptar]);
+  }), [pendientesTotal, ambitoIA, aceptar, terminosCustom]);
 
   // ── Teclado ──────────────────────────────────────────────────────
   // Es la mitad de por qué esta pantalla se puede terminar. Se apaga mientras
@@ -426,6 +500,15 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // ── Render ───────────────────────────────────────────────────────
   const sinCatalogo = filasCatalogo.length === 0;
   const nMarcadas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado !== 'decididas').length;
+  // Las marcadas que YA estaban decididas: son las que se pueden desclasificar
+  // en lote. Van aparte de `nMarcadas` porque las dos acciones no se mezclan —
+  // «no son insumos» sobre una fila ya decidida la re-decidiría, no la abriría.
+  const marcadasDecididas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado === 'decididas');
+  const nMarcadasDecididas = marcadasDecididas.length;
+  // Lo que se ve AHORA con el filtro «Decididas» (respeta la búsqueda): es lo
+  // que se lleva el botón de desclasificar todo, para que lo que se borra sea
+  // exactamente lo que está a la vista.
+  const decididasVisibles = uM(() => visibles.filter(f => f.estado === 'decididas'), [visibles]);
   // Solo las que siguen pendientes: una recomendación sobre algo ya decidido
   // no es nada que revisar (y se olvida sola al aceptar).
   const nRecomendadasIA = filas.filter(f => f.estado !== 'decididas' && recsIA[f.norm]).length;
@@ -571,11 +654,33 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
           )}
         </div>
 
-        {nMarcadas > 0 && (
+        {(nMarcadas > 0 || nMarcadasDecididas > 0) && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', background: 'var(--bg-s)', borderRadius: 6, marginBottom: 8, flexWrap: 'wrap' }}>
-            <strong style={{ fontSize: 12 }}>{nMarcadas} marcadas</strong>
-            <button className="btn btn-sm" onClick={noSonInsumoEnLote}>✗ No son insumos del catálogo</button>
+            <strong style={{ fontSize: 12 }}>{nMarcadas + nMarcadasDecididas} marcadas</strong>
+            {nMarcadas > 0 && (
+              <button className="btn btn-sm" onClick={noSonInsumoEnLote}>✗ No son insumos del catálogo</button>
+            )}
+            {nMarcadasDecididas > 0 && (
+              <button className="btn btn-sm btn-amber"
+                onClick={() => desclasificar(marcadasDecididas, 'las marcadas')}>
+                ↩ Desclasificar las {nMarcadasDecididas}
+              </button>
+            )}
             <button className="btn btn-sm" onClick={() => setMarcadas(new Set())}>Desmarcar</button>
+          </div>
+        )}
+
+        {/* Desclasificar TODO lo decidido. Solo aparece parado en «Decididas»:
+            es la pantalla donde se ve qué se está por deshacer, y esconderlo
+            del resto evita el click accidental sobre 800 decisiones. */}
+        {filtro === 'decididas' && decididasVisibles.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontSize: 11.5, color: 'var(--tm)' }}>
+            <button className="btn btn-sm btn-amber"
+              title="Todas las decisiones de este ámbito vuelven a la lista de pendientes. Lo enseñado al diccionario no se borra."
+              onClick={() => desclasificar(decididasVisibles, busca.trim() ? 'las que coinciden con la búsqueda' : 'todas las decididas')}>
+              ↩ Desclasificar {busca.trim() ? `las ${decididasVisibles.length} de la búsqueda` : `las ${decididasVisibles.length}`}
+            </button>
+            <span>Vuelven a pendientes. Lo que le enseñaron al diccionario <strong>no</strong> se borra.</span>
           </div>
         )}
 
@@ -591,6 +696,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             catFila={catalogoDe(f)}
             listId={listId}
             recIA={recsIA[f.norm] || null}
+            terminosCustom={terminosCustom}
+            propuestaLocal={propuestaLocalDe(f)}
             onAceptarIA={(rec) => aceptar(f, rec.codigo, { desdeIA: rec.confianza })}
             onDescartarIA={() => olvidarRecomendacion('clasificacion', ambitoIA, f.norm)}
             marcada={marcadas.has(f.norm)}
@@ -614,7 +721,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         )}
       </div>
 
-      {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
+      {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} terminosCustom={terminosCustom}
+        propuestaLocal={propuestaLocalDe(altaDe)} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
     </>
   );
 }
@@ -625,7 +733,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -674,9 +782,10 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
         cursor: 'pointer',
       }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {f.estado !== 'decididas' && (
-          <input type="checkbox" checked={marcada} onChange={onMarcar} style={{ marginTop: 3 }} />
-        )}
+        {/* También en las ya decididas: es como se arma el grupo a
+            desclasificar (pedido de Gabriel, 15-sep). */}
+        <input type="checkbox" checked={marcada} onChange={onMarcar} style={{ marginTop: 3 }}
+          title={f.estado === 'decididas' ? 'Marcar para desclasificar en lote' : 'Marcar para decidir en lote'} />
         <div style={{ flex: 1, minWidth: 240 }}>
           <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.muestra}</div>
           <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
@@ -746,6 +855,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                   titulo={<>Clasificarlo como <strong>{recIA.nombre || etiquetaCategoria(recIA.codigo)}</strong></>}
                   confianza={recIA.confianza}
                   razonamiento={recIA.razonamiento}
+                  extra={recIA.nuevaClasificacion ? <ClasificacionNueva nombre={recIA.nuevaClasificacion} /> : null}
                   onAceptar={() => onAceptarIA?.(recIA)}
                   onDescartar={() => onDescartarIA?.()}
                 />
@@ -754,6 +864,8 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
               <AyudaClasificacionIA
                 descripcion={f.muestra}
                 unidad={[...(f.unidades || [])][0] || ''}
+                terminosCustom={terminosCustom}
+                propuestaLocal={propuestaLocal}
                 onElegir={setCategoriaSel}
               />
 
@@ -806,7 +918,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
  * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
  * Todo es corregible antes de guardar.
  */
-function AltaEnCatalogo({ fila, listId, onCancel, onGuardar }) {
+function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = null, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
   // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
   // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
@@ -843,7 +955,8 @@ function AltaEnCatalogo({ fila, listId, onCancel, onGuardar }) {
               El estándar no reconoció esta descripción: elegila vos.
             </div>
           )}
-          <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad} onElegir={setFamilia} />
+          <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad}
+            terminosCustom={terminosCustom} propuestaLocal={propuestaLocal} onElegir={setFamilia} />
         </div>
         <div style={{ flex: 1, minWidth: 110 }}>
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Unidad</label>

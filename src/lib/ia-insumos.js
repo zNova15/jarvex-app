@@ -20,6 +20,7 @@
 // razonamiento y la persona decide.
 // ═══════════════════════════════════════════════════════════════════
 import { apiFetch, apiParse } from './api-client.js';
+import { evidenciaDiccionario } from './indices-unificados-iupc.js';
 
 const ENDPOINT = '/api/sugerir-cuenta-pcge';
 
@@ -114,20 +115,40 @@ async function postIA(payload) {
  * contra qué validar.
  * → { result: {codigo_sugerido, alternativas} | null, confianza, razonamiento, _cached? }
  */
-export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos }) {
+export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos, terminosCustom = null, propuestaLocal = null }) {
   const desc = String(descripcion || '').trim();
   if (!desc || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
   }
-  const clave = `clasif::${norm(desc)}`;
+  // 🔴 `clasif2`, no `clasif` (15-sep). Las respuestas de la versión anterior
+  // se dieron SIN el diccionario oficial delante y son justo las que Gabriel
+  // reportó como disparates ("alambre de amarre" → maquinaria liviana).
+  // Dejarlas en la caché 30 días sería seguir mostrando el error arreglado.
+  const clave = `clasif2::${norm(desc)}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
+
+  // La EVIDENCIA del Anexo 2 para esta descripción — ver `evidenciaDiccionario`.
+  // Se calcula acá (el diccionario viaja en el bundle, no en el server) y se
+  // manda junto con la pregunta.
+  const evidencia = evidenciaDiccionario(desc, { terminosCustom });
 
   const v = await postIA({
     action: 'clasificar_insumo_iupc',
     descripcion: desc,
     unidad: unidad || '',
     candidatos: candidatos.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
+    evidencia: evidencia.map(g => ({
+      codigo: String(g.codigo),
+      terminos: g.terminos.map(t => String(t).slice(0, 80)).slice(0, 6),
+    })),
+    // Lo que ya propuso el motor local leyendo ese mismo diccionario: la IA
+    // tiene que CONFIRMARLO o corregirlo con un argumento, no ignorarlo.
+    propuesta_local: propuestaLocal?.codigo ? {
+      codigo: String(propuestaLocal.codigo),
+      nombre: String(propuestaLocal.nombre || ''),
+      motivo: String((propuestaLocal.motivos || []).join(', ')).slice(0, 200),
+    } : null,
   });
   cacheGuardar(clave, v);
   return v;

@@ -190,6 +190,33 @@ export async function agregarAlCatalogoYDecidir(fila, { companyId = null, famili
 }
 
 /** Deshace una decisión: la descripción vuelve a la lista de pendientes. */
+/**
+ * Deshace MUCHAS decisiones de un golpe — pedido de Gabriel, 15-sep-2026:
+ * «quiero que tengamos una manera para desclasificar todos los insumos
+ * también, o seleccionando un grupo». Después de un recorrido con IA que
+ * aplicó de más, deshacer de a una no es una opción.
+ *
+ * Todo dentro de UNA transacción: si algo falla a la mitad, no queda medio
+ * lote reabierto y medio decidido. Devuelve cuántas filas se borraron.
+ */
+export async function reabrirEnLote(norms, { companyId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  const buscados = new Set((norms || []).filter(Boolean));
+  if (!buscados.size) return 0;
+  let n = 0;
+  await db.transaction('rw', db.insumo_categoria, async () => {
+    const previas = await db.insumo_categoria
+      .filter(r => !r.deleted_at && buscados.has(r.norm)
+        && (r.company_id || null) === (companyId || null) && filaDelModo(r, esPrueba)).toArray();
+    for (const prev of previas) {
+      if (prev.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) await db.insumo_categoria.delete(prev.id);
+      else await db.insumo_categoria.update(prev.id, { deleted_at: ahora(), sync_status: SYNC_STATUS.PENDING_DELETE });
+      n++;
+    }
+  });
+  return n;
+}
+
 export async function reabrir(norm, { companyId = null } = {}) {
   const esPrueba = esModoPrueba();
   const previas = await db.insumo_categoria

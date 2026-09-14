@@ -186,7 +186,7 @@ function RecomendacionesListas({ n, seccion, ambito, onVer }) {
  * Igual en las tres secciones: qué propone, con cuánta confianza, por qué, y
  * dos botones — aceptar (lo guarda una persona) o descartar.
  */
-function RecomendacionIA({ titulo, confianza, razonamiento, onAceptar, onDescartar, textoAceptar = 'Aceptar esta' }) {
+function RecomendacionIA({ titulo, confianza, razonamiento, extra = null, onAceptar, onDescartar, textoAceptar = 'Aceptar esta' }) {
   const pct = Math.round((confianza || 0) * 100);
   return (
     <div style={{
@@ -197,6 +197,7 @@ function RecomendacionIA({ titulo, confianza, razonamiento, onAceptar, onDescart
       <span style={{ marginLeft: 6 }}>{titulo}</span>
       <span className="badge b-gray" style={{ marginLeft: 4, fontSize: 9 }}>{pct}%</span>
       {razonamiento && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{razonamiento}</div>}
+      {extra}
       <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
         {onAceptar && (
           <button type="button" className="btn btn-xs btn-green"

@@ -1528,6 +1528,63 @@ for (const item of DICCIONARIO_SERVICIOS_INDEXADO) {
 }
 
 /**
+ * LO QUE EL DICCIONARIO OFICIAL DICE SOBRE ESTE TEXTO (15-sep-2026).
+ *
+ * EL DEFECTO, CONTADO POR GABRIEL: «veo una barbaridad de errores en las
+ * recomendaciones de la IA, y creo que hace las recomendaciones sin base en
+ * los índices unificados y el diccionario que propone el Estado peruano».
+ * Tenía razón y era literal: al modelo se le mandaban los 95 códigos con su
+ * NOMBRE y nada más. Sin el Anexo 2 a la vista, "ALAMBRE DE AMARRE #8" le
+ * salía [48] Maquinaria liviana, cuando el diccionario tiene los alambres
+ * bajo acero; y el motor local —que sí lee el Anexo 2— acertaba.
+ *
+ * Esto arma la EVIDENCIA que hay que ponerle delante: los términos del
+ * diccionario (el oficial del INEI, el de servicios y el propio de la
+ * empresa) que comparten palabras con la descripción, agrupados por el código
+ * al que apuntan y ordenados por qué tanto se parecen. Es el mismo índice con
+ * el que decide `clasificarConIUPC`, así que la IA discute contra la norma en
+ * vez de contra su memoria.
+ *
+ * Exige compartir una palabra de 4 letras o más: con tokens de 2-3 letras
+ * ("de", "x", "8") matchearía medio diccionario y la evidencia sería ruido.
+ */
+export function evidenciaDiccionario(texto, { terminosCustom = null, maxCodigos = 10, maxPorCodigo = 6 } = {}) {
+  const toks = tokensDeTexto(normIUPC(texto));
+  if (!toks.length) return [];
+  const fuertes = new Set(toks.filter(t => t.length >= 4));
+  if (!fuertes.size) return [];
+
+  const porCodigo = new Map();
+  const mirar = (item, codigo, origen) => {
+    if (!codigo) return;
+    // Al menos una palabra larga en común: si no, no es evidencia de nada.
+    if (!item.tokens.some(t => fuertes.has(t))) return;
+    const score = simTokens(toks, item.tokens);
+    if (score <= 0) return;
+    const prev = porCodigo.get(codigo) || { codigo, score: 0, terminos: [] };
+    prev.score = Math.max(prev.score, score);
+    prev.terminos.push({ termino: item.nombre, score, origen });
+    porCodigo.set(codigo, prev);
+  };
+
+  for (const it of DICCIONARIO_INDEXADO) mirar(it, REAGRUPACIONES_IUPC[it.iupc] || it.iupc, 'inei');
+  for (const it of DICCIONARIO_SERVICIOS_INDEXADO) mirar(it, it.cod, 'servicios');
+  for (const it of indexarCustom(terminosCustom).lista) mirar(it, it.cod, 'propio');
+
+  return [...porCodigo.values()]
+    .sort((a, b) => b.score - a.score || b.terminos.length - a.terminos.length)
+    .slice(0, maxCodigos)
+    .map(g => ({
+      codigo: g.codigo,
+      score: g.score,
+      terminos: g.terminos
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxPorCodigo)
+        .map(t => t.termino),
+    }));
+}
+
+/**
  * ¿El código pertenece a la base oficial que viaja en el bundle?
  * Es lo que una clasificación propia NO puede pisar: si lo hiciera, una fila
  * del catálogo apuntaría a dos clasificaciones distintas según qué capa gane.

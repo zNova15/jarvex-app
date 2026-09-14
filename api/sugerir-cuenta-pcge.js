@@ -396,26 +396,64 @@ async function clasificarInsumoIUPC(req, res, body) {
     `${i + 1}. [${sanitizeForPrompt(String(c.codigo), 20)}] ${sanitizeForPrompt(c.nombre, 100)}`
   ).join('\n');
 
-  const sys = `Eres un experto en insumos y servicios de construcción civil en Perú, clasificando según el estándar oficial IUPC del INEI (Índices Unificados de Precios de la Construcción).
+  // ── La evidencia del Diccionario Oficial (Anexo 2 de la R.J. 016-2026) ──
+  // La arma el cliente con `evidenciaDiccionario()` y la manda: son los
+  // términos de la NORMA que comparten palabras con esta descripción, con el
+  // código al que apuntan. Sin esto el modelo clasificaba de memoria y salían
+  // los disparates que reportó Gabriel el 15-sep ("alambre de amarre" →
+  // maquinaria liviana). Solo se aceptan códigos de la lista de candidatos:
+  // una evidencia que apunte afuera se descarta en vez de ampliar la lista.
+  const evidencia = (Array.isArray(body.evidencia) ? body.evidencia : [])
+    .slice(0, 12)
+    .map(g => ({
+      codigo: sanitizeForPrompt(String(g?.codigo || ''), 20),
+      terminos: (Array.isArray(g?.terminos) ? g.terminos : [])
+        .slice(0, 6).map(t => sanitizeForPrompt(t, 80)).filter(Boolean),
+    }))
+    .filter(g => g.codigo && codigosValidos.has(g.codigo) && g.terminos.length);
+  const bloqueEvidencia = evidencia.length
+    ? evidencia.map(g => `- [${g.codigo}] ← ${g.terminos.map(t => `"${t}"`).join(', ')}`).join('\n')
+    : '(ninguno: el Diccionario Oficial no tiene ningún término que se parezca a esta descripción)';
 
-Te dan una DESCRIPCIÓN tal como aparece en una factura, y una lista numerada de CLASIFICACIONES POSIBLES (código + nombre). Elegí la que corresponda de verdad al SIGNIFICADO de la descripción, no solo a palabras parecidas.
+  const pl = body.propuesta_local;
+  const bloqueLocal = pl?.codigo && codigosValidos.has(String(pl.codigo))
+    ? `\n\nPROPUESTA DEL MOTOR LOCAL (ya leyó ese mismo diccionario): [${sanitizeForPrompt(String(pl.codigo), 20)}] ${sanitizeForPrompt(pl.nombre, 100)}${pl.motivo ? ` — motivo: ${sanitizeForPrompt(pl.motivo, 200)}` : ''}`
+    : '';
 
-Pistas de criterio que un simple parecido de texto suele fallar:
-- Ropa de trabajo, cascos, guantes, botas, chalecos, arneses, lentes, tapones de oído, cinta reflectiva → casi siempre son EPP / implementos de seguridad, aunque diga "obrero" o una marca que suene a herramienta.
+  const sys = `Eres un experto en insumos y servicios de construcción civil en Perú, clasificando según el estándar oficial IUPC del INEI (Índices Unificados de Precios de la Construcción, R.J. 016-2026) y su Diccionario Oficial de Elementos de Construcción (Anexo 2).
+
+Te dan una DESCRIPCIÓN tal como aparece en una factura, una lista numerada de CLASIFICACIONES POSIBLES (código + nombre) y, cuando existe, la EVIDENCIA DEL DICCIONARIO OFICIAL: los términos de la norma que se parecen a esa descripción y a qué código apunta cada uno.
+
+🔴 LA NORMA MANDA, NO TU INTUICIÓN. La evidencia del diccionario es texto de la R.J. 016-2026 y le gana a cualquier razonamiento propio:
+- Si algún término de la evidencia describe el MISMO objeto que la descripción, elegí ese código. "Alambre de amarre" contra la evidencia "[02] ← Alambre negro recocido, Alambre de púas" es acero, no maquinaria.
+- La PROPUESTA DEL MOTOR LOCAL, cuando viene, salió de leer ese mismo diccionario. Confirmala salvo que tengas un argumento concreto para cambiarla, y si la cambiás decí en el razonamiento POR QUÉ la norma dice otra cosa. Cambiarla sin argumento es el error más caro que podés cometer acá.
+- Si la evidencia está vacía, el objeto NO está en el diccionario de construcción. Eso es información, no permiso para forzarlo: un mueble de oficina, un servicio bancario o un artículo de escritorio van a las categorías complementarias (administrativos / consumos de oficina / servicios), NO al material del que están hechos. Una MESA DE MELAMINE es mobiliario de oficina, no "madera terciada"; un cobro de un banco o una inmobiliaria es un gasto administrativo o financiero, no un insumo.
+
+Otras pistas donde el parecido de texto suele fallar:
+- Ropa de trabajo, cascos, guantes, botas, chalecos, arneses, lentes, tapones de oído, cinta reflectiva → EPP / implementos de seguridad, aunque diga "obrero" o una marca que suene a herramienta.
 - Herramienta MANUAL es lo que se opera a mano sin motor (llave, combo, pala); con motor, hidráulico o eléctrico portátil suele ser maquinaria liviana.
 - Un servicio de alquiler, flete, transporte, mantenimiento o capacitación NO es un insumo físico — va al árbol de SERVICIOS (códigos que empiezan con S).
-- Si la descripción no encaja claramente en ninguna, elegí la más razonable igual pero con confianza baja — nunca inventes un código que no esté en la lista.
+- Nunca inventes un código que no esté en la lista.
 
 Devolvés SOLO JSON válido (sin markdown):
 {
   "codigo_sugerido": "<código EXACTO de la lista, sin corchetes>",
   "confianza": 0.9,
-  "razonamiento": "una frase corta y concreta, en español, dirigida a quien va a decidir",
-  "alternativas": [{"codigo": "<código de la lista>", "motivo": "breve"}]
+  "razonamiento": "una frase corta y concreta, en español, dirigida a quien va a decidir. Si te apoyaste en la evidencia, nombrá el término del diccionario que usaste.",
+  "alternativas": [{"codigo": "<código de la lista>", "motivo": "breve"}],
+  "clasificacion_nueva": "<opcional: si NINGUNA de la lista le queda bien de verdad, el nombre corto de la clasificación que habría que crear (ej. 'Gastos financieros e intereses'). Si alguna sirve, omitilo>"
 }
-Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revise una persona. Máximo 2 alternativas.`;
+Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revise una persona. Si proponés "clasificacion_nueva", la confianza del código elegido debe ser menor a 0.6. Máximo 2 alternativas.`;
 
-  const usr = `DESCRIPCIÓN: "${descripcion}"${unidad ? `\nUnidad de la factura: ${unidad}` : ''}\n\nCLASIFICACIONES POSIBLES:\n${lista}\n\nDevolvé el JSON.`;
+  const usr = `DESCRIPCIÓN: "${descripcion}"${unidad ? `\nUnidad de la factura: ${unidad}` : ''}
+
+EVIDENCIA DEL DICCIONARIO OFICIAL (Anexo 2) para esta descripción:
+${bloqueEvidencia}${bloqueLocal}
+
+CLASIFICACIONES POSIBLES:
+${lista}
+
+Devolvé el JSON.`;
 
   try {
     const { parsed, data } = await pedirJsonALaIA({ sys, usr, maxTokens: 1200, modo: 'clasificar_insumo_iupc' });
@@ -433,8 +471,13 @@ Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revis
           .filter(a => codigosValidos.has(a.codigo) && a.codigo !== codigoSugerido)
           .slice(0, 2)
       : [];
+    // «Podría recomendar una clasificación nueva» (Gabriel, 15-sep, sobre
+    // "LA INMOBILIARIA BCP", que es el interés de un préstamo y no encaja en
+    // nada de la lista). Es SOLO un texto para que lo lea una persona: acá no
+    // se crea ninguna clasificación, eso se hace desde el Catálogo.
+    const nueva = String(parsed.clasificacion_nueva || '').trim().slice(0, 80);
     return res.status(200).json({
-      result: { codigo_sugerido: codigoSugerido, alternativas },
+      result: { codigo_sugerido: codigoSugerido, alternativas, clasificacion_nueva: nueva || null },
       confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
       razonamiento: String(parsed.razonamiento || '').slice(0, 300),
       _model: data.model, _usage: data.usage,
