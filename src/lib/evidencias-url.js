@@ -41,7 +41,12 @@ export function pathDeEvidencia(url) {
 // Con 24h, cada día se firmaba una URL nueva → cache miss → re-descarga del
 // PDF entero en cada dispositivo. Egress puro desperdiciado.
 const _SIGNED_TTL = 7 * 86400;
-const _SIGNED_LS_KEY = 'jx_signed_urls';
+// v2 (14-set-2026): al terminar la migración a R2 (docs/migracion-r2.md,
+// Paso 5) se cambia la clave a propósito. Antes de vaciar Supabase Storage,
+// esto invalida DE UNA todas las URLs de Supabase que los dispositivos ya
+// tenían cacheadas hasta 7 días — sin el bump, un equipo con caché tibia
+// vería la foto rota hasta que esa URL vieja expirara sola.
+const _SIGNED_LS_KEY = 'jx_signed_urls_v2';
 let _signedCache = null;
 function _loadSigned() {
   if (_signedCache) return _signedCache;
