@@ -55,15 +55,44 @@ import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { useChart } from "../lib/chart-loader.js";
 import {
   resolverPares, construirGrupos, sugerirPares, sugerirClusters, crearParesDeCluster, normInsumo,
+  resaltarDiferencias,
 } from "../lib/insumo-correlacion.js";
 import {
   extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
+import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
+
+// Si un nombre clasifica como SERVICIO (árbol S01…S13) o como INSUMO (IUPC +
+// complementarias). Reusa el MISMO clasificador que "Clasificación de insumos
+// y servicios" — es la misma pregunta, una sola respuesta (pedido de Gabriel,
+// 14-sep: «dividir entre las sugerencias de insumos, y las de servicios»).
+const tipoDeNombre = (nombre) => (tipoDeCategoria(clasificarConIUPC(nombre).codigo) === 'servicio' ? 'servicio' : 'insumo');
+
+// Un nombre con las diferencias contra `otro` resaltadas — mismo criterio que
+// decide el motor (resaltarDiferencias usa tokenMatch, el mismo de
+// scoreNombres): lo que queda en ámbar es EXACTAMENTE lo que no matcheó.
+// Pedido de Gabriel, 14-sep, tras ver "REDUCCION 1\" X 1/2" al lado de
+// "REDUCCION 2 1/2\" A 1"": «marcá de un color distinto las diferencias».
+function NombreConDiferencias({ nombre, otro }) {
+  const partes = uM(() => resaltarDiferencias(nombre, otro).a, [nombre, otro]);
+  return (
+    <>
+      {partes.map((p, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && ' '}
+          {p.distinto
+            ? <span style={{ background: 'rgba(242,183,5,.28)', borderRadius: 3, padding: '0 2px' }}>{p.texto}</span>
+            : p.texto}
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
 
 const fmtPrecio = (n, moneda) =>
   `${moneda === 'USD' ? 'US$' : 'S/'} ${Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -208,16 +237,48 @@ function AnalisisInsumosPage({ showToast }) {
   const resueltos = uM(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uM(() => construirGrupos(resueltos), [resueltos]);
   const porInsumo = uM(() => agruparComprasPorInsumo(compras, grupoDe, grupos), [compras, grupoDe, grupos]);
-  // Sugerir pares cruzando tanto compras como ventas registradas:
-  const sugerencias = uM(
-    () => sugerirPares(lineasEntidad.map(c => c.nombre), resueltos, grupoDe),
-    [lineasEntidad, resueltos, grupoDe]
+  // Insumos y servicios son preguntas DISTINTAS para correlacionar — pedido
+  // de Gabriel, 14-sep: «dividir entre las sugerencias de insumos y las de
+  // servicios». Un solo nombre único clasificado una vez (memoizado: son
+  // potencialmente miles de líneas, clasificar de más sería regalado).
+  const tipoPorNombre = uM(() => {
+    const m = new Map();
+    for (const l of lineasEntidad) {
+      if (!m.has(l.nombreNorm)) m.set(l.nombreNorm, tipoDeNombre(l.nombre));
+    }
+    return m;
+  }, [lineasEntidad]);
+  const nombresInsumos = uM(
+    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) !== 'servicio').map(c => c.nombre),
+    [lineasEntidad, tipoPorNombre]
   );
-  // Sugerir clusters multi-variantes (N a N):
-  const clustersSugeridos = uM(
-    () => sugerirClusters(lineasEntidad.map(c => c.nombre), resueltos, grupoDe),
-    [lineasEntidad, resueltos, grupoDe]
+  const nombresServicios = uM(
+    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) === 'servicio').map(c => c.nombre),
+    [lineasEntidad, tipoPorNombre]
   );
+  // Sugerir pares cruzando tanto compras como ventas registradas, cada árbol
+  // por separado — un "REDUCCION PVC" nunca compite contra un "ALQUILER DE
+  // VOLQUETE" por una raíz común.
+  const sugerenciasInsumos = uM(
+    () => sugerirPares(nombresInsumos, resueltos, grupoDe),
+    [nombresInsumos, resueltos, grupoDe]
+  );
+  const sugerenciasServicios = uM(
+    () => sugerirPares(nombresServicios, resueltos, grupoDe),
+    [nombresServicios, resueltos, grupoDe]
+  );
+  // Sugerir clusters multi-variantes (N a N), también por árbol:
+  const clustersInsumos = uM(
+    () => sugerirClusters(nombresInsumos, resueltos, grupoDe),
+    [nombresInsumos, resueltos, grupoDe]
+  );
+  const clustersServicios = uM(
+    () => sugerirClusters(nombresServicios, resueltos, grupoDe),
+    [nombresServicios, resueltos, grupoDe]
+  );
+  const [subTabCorr, setSubTabCorr] = uS('insumos');
+  const sugerencias = subTabCorr === 'servicios' ? sugerenciasServicios : sugerenciasInsumos;
+  const clustersSugeridos = subTabCorr === 'servicios' ? clustersServicios : clustersInsumos;
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
     [resueltos]
@@ -418,7 +479,7 @@ function AnalisisInsumosPage({ showToast }) {
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
-          🤝 Correlaciones{sugerencias.length ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{sugerencias.length}</span> : null}
+          🤝 Correlaciones{(sugerenciasInsumos.length + sugerenciasServicios.length) ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{sugerenciasInsumos.length + sugerenciasServicios.length}</span> : null}
         </button>
         <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
           🎯 Mapeo al presupuesto
@@ -547,6 +608,10 @@ function AnalisisInsumosPage({ showToast }) {
           <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
             El sistema propone nombres que PARECEN el mismo insumo facturado distinto por cada proveedor (cruzando compras y ventas).
             Tu decisión queda grabada y <strong>no se vuelve a preguntar</strong>: "mismo" los une en el comparador y en el inventario; "distintos" descarta la sugerencia para siempre.
+            <div style={{ marginTop: 4 }}>
+              Mira <strong>solo</strong> las compras y ventas de {empresaVista ? <>«{nombreEmpresa || 'esta entidad'}»</> : 'todo el grupo (sin entidad elegida arriba)'}
+              {' '}— los movimientos de otra empresa quedan afuera de este cálculo.
+            </div>
           </div>
 
           {/* Unir dos insumos manualmente */}
@@ -628,6 +693,30 @@ function AnalisisInsumosPage({ showToast }) {
             </div>
           </div>
 
+          {/* Insumos y servicios son preguntas distintas — pedido de Gabriel,
+              14-sep: un "codo PVC" nunca debería competir por atención contra
+              un "alquiler de volquete" en la misma lista. */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button className={`btn btn-sm ${subTabCorr === 'insumos' ? 'btn-blue' : 'btn-ghost'}`}
+              onClick={() => setSubTabCorr('insumos')}>
+              🧱 Insumos
+              {(sugerenciasInsumos.length + clustersInsumos.length) > 0 && (
+                <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
+                  {sugerenciasInsumos.length + clustersInsumos.length}
+                </span>
+              )}
+            </button>
+            <button className={`btn btn-sm ${subTabCorr === 'servicios' ? 'btn-blue' : 'btn-ghost'}`}
+              onClick={() => setSubTabCorr('servicios')}>
+              🛠 Servicios
+              {(sugerenciasServicios.length + clustersServicios.length) > 0 && (
+                <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
+                  {sugerenciasServicios.length + clustersServicios.length}
+                </span>
+              )}
+            </button>
+          </div>
+
           {/* ── Clusters Multi-Insumo (N a N) ────────────────── */}
           {clustersSugeridos.length > 0 && (
             <div className="card card-p" style={{ borderLeft: '3px solid var(--green)' }}>
@@ -705,7 +794,7 @@ function AnalisisInsumosPage({ showToast }) {
                               ? 'Fuera del grupo — tocá para volver a incluirla'
                               : `Tocá para sacarla del grupo${m ? ` · ${m.doc} · ${m.proveedorNombre}` : ''}`}
                           >
-                            {off ? '＋' : '✓'} «{v}» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
+                            {off ? '＋' : '✓'} «<NombreConDiferencias nombre={v} otro={canon} />» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
                           </button>
                         );
                       })}
@@ -717,17 +806,24 @@ function AnalisisInsumosPage({ showToast }) {
             </div>
           )}
           <div className="card card-p">
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Sugerencias individuales ({sugerencias.length})</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>Sugerencias individuales ({sugerencias.length})</div>
+            {sugerencias.length > 0 && (
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 8 }}>
+                Lo resaltado en <span style={{ background: 'rgba(242,183,5,.28)', borderRadius: 3, padding: '0 2px' }}>ámbar</span> es
+                {' '}lo que NO tienen en común — mirá eso primero para decidir rápido.
+              </div>
+            )}
             {sugerencias.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay pares nuevos para revisar — al registrar más facturas aparecerán acá.</div>}
             <div style={{ display: 'grid', gap: 8 }}>
               {sugerencias.map(par => {
                 const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
+                const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
                 return (
                   <div key={`${par.nombre_a}|${par.nombre_b}`} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
-                      <strong>{ma?.nombre || par.nombre_a}</strong>
+                      <strong><NombreConDiferencias nombre={nombreA} otro={nombreB} /></strong>
                       <span style={{ color: 'var(--tm)' }}>≈</span>
-                      <strong>{mb?.nombre || par.nombre_b}</strong>
+                      <strong><NombreConDiferencias nombre={nombreB} otro={nombreA} /></strong>
                       <span className="badge b-gray" style={{ fontSize: 9 }}>{Math.round(par.score * 100)}% parecido</span>
                     </div>
                     <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>

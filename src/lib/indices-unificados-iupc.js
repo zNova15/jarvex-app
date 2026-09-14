@@ -1204,6 +1204,27 @@ export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
   return [...iupc, ...servicios, ...complementarias, ...customs];
 }
 
+/**
+ * Las categorías que se OFRECEN para ELEGIR en un desplegable — la lista
+ * completa MENOS `sin_clasificar` (pedido de Gabriel, 14-sep-2026: «que no
+ * exista ninguna opción sin propuesta»). Elegirla a mano de una lista, mezclada
+ * entre las 95 categorías reales como si fuera una más, es lo mismo que no
+ * clasificar nada — la misma razón por la que ya no se ofrece como SUGERENCIA
+ * (ver `BANDA_SIN_PROPUESTA` en bandeja-categorizacion.js).
+ *
+ * NO se toca `listarCategoriasDisponibles()`: sigue siendo la base completa
+ * que usan `FAMILIAS_CATALOGO` / `esFamiliaCanonica()` en catalogo-canonico.js
+ * para RESOLVER filas que YA tienen `familia:'sin_clasificar'` (filas viejas,
+ * o las que el clasificador dejó así). Sacarla de ahí las volvería "no
+ * canónicas" y las mandaría por caminos pensados para categorías propias de
+ * una entidad, que es un bug distinto. Esta función es solo para pintar
+ * desplegables de elección.
+ */
+export function categoriasParaElegir(categoriasPersonalizadas = []) {
+  return listarCategoriasDisponibles(categoriasPersonalizadas)
+    .filter(c => c.codigo !== 'sin_clasificar');
+}
+
 const LEGACY_LABELS = {
   tuberia_accesorios: 'Tubería y accesorios',
   ferreteria: 'Material de ferretería',

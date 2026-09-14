@@ -164,9 +164,14 @@ describe('lo que dibuja', () => {
   });
 
   it('el avance sale en plata y en descripciones', () => {
+    // 14-sep-2026: el % de arriba SIEMPRE es plata (con el rótulo GASTO
+    // puesto, para no leerse como un error al lado del conteo de filas de
+    // abajo, que trae su propio %).
     const h = conTodo();
-    expect(h).toContain('del gasto ya categorizado');
+    expect(h).toContain('GASTO');
+    expect(h).toContain('ya categorizado');
     expect(h).toMatch(/S\/\s?[\d.,]+/);
+    expect(h).toContain('descripciones decididas');
   });
 
   it('lo ya decidido sale de la lista de pendientes y suma al contador', () => {

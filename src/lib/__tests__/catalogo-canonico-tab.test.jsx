@@ -231,20 +231,25 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
   it('las opciones del desplegable de categoría NO salen vacías', () => {
     // El JSX pedía `c.nombreCompleto`, un campo que nunca existió en
     // `listarCategoriasDisponibles()` → 80 opciones en blanco y el
-    // desplegable inservible. Esto lo agarra si vuelve a pasar.
+    // desplegable inservible. Esto lo agarra si vuelve a pasar. (14-sep-2026:
+    // el <select><optgroup> se reemplazó por un <input list> + <datalist>
+    // con búsqueda — ver jx-selector-clasificacion.jsx.)
     const h = conDatos(MAL, []);
     expect(h).toContain('Acero de construcción corrugado');
-    expect(h).toMatch(/<optgroup[^>]*label="[^"]*IUPC del Estado Peruano"/);
-    expect(h).not.toMatch(/<option value="[^"]+"><\/option>/);
+    // El value ES la etiqueta (<option value={label} />): la clase de bug
+    // original —value con código pero SIN texto visible— ya no puede pasar
+    // con esta estructura.
+    expect(h).toMatch(/<option value="\[03\] Acero de construcción corrugado">/);
   });
 
-  it('la fila con familia vieja MUESTRA cuál tiene, deshabilitada', () => {
+  it('la fila con familia vieja MUESTRA cuál tiene, en el propio campo', () => {
     // Las 413 filas sin reclasificar tienen un valor que ya no está entre las
-    // opciones: sin esto el <select> se vería en blanco y se perdería de vista
-    // qué categoría tienen puesta hoy. Se lee, pero no se puede volver a elegir.
+    // opciones: sin esto el selector se vería en blanco y se perdería de vista
+    // qué categoría tienen puesta hoy. Se lee (precargado en el campo), pero
+    // hay que escribir y elegir una opción real de la lista para cambiarlo.
     const h = conDatos(MAL, []);
-    expect(h).toContain('Categoría actual (vocabulario viejo)');
-    expect(h).toMatch(/<option value="ferreteria" disabled/);
+    expect(h).toContain('Material de ferretería');
+    expect(h).toMatch(/value="Material de ferretería"/);
   });
 
   it('lo que está bien puesto con su código oficial NO aparece como recomendación', () => {

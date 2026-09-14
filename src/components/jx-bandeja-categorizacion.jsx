@@ -44,55 +44,18 @@ import {
   equivalenciasDe,
 } from "../lib/catalogo-canonico.js";
 import {
-  listarCategoriasDisponibles, etiquetaCategoria, bandaConfianza,
+  categoriasParaElegir, etiquetaCategoria, bandaConfianza,
 } from "../lib/indices-unificados-iupc.js";
+import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 
-const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
-// Se calcula UNA vez: son 80+ categorías y este componente se renderiza en
-// cada fila de la tabla. Recalcular el agrupado 60 veces por render es gratis
-// de escribir y caro de correr.
-const CATEGORIAS_AGRUPADAS = (() => {
-  const g = new Map();
-  for (const c of listarCategoriasDisponibles()) {
-    if (!g.has(c.grupo)) g.set(c.grupo, []);
-    g.get(c.grupo).push(c);
-  }
-  return [...g.entries()];
-})();
-const CODIGOS_OFRECIDOS = new Set(listarCategoriasDisponibles().map(c => c.codigo));
-
-/**
- * Las categorías del desplegable, agrupadas por origen (IUPC del Estado /
- * Complementarias / Personalizadas). `c.label` y NO `c.nombreCompleto` — ese
- * campo nunca existió en `listarCategoriasDisponibles()` y dejaba las 80
- * opciones EN BLANCO.
- *
- * `actual` es la categoría que la fila tiene HOY. Si es del vocabulario viejo
- * ya no está entre las opciones, y sin esto el <select> se vería vacío en las
- * 413 filas sin reclasificar — se perdería de vista qué tienen puesto. Se
- * muestra arriba y DESHABILITADA: se lee, no se vuelve a elegir. La migración
- * al estándar es de ida.
- */
-function OpcionesCategoria({ actual = null, placeholder = null }) {
-  const legacy = actual && !CODIGOS_OFRECIDOS.has(actual);
-  return (
-    <>
-      {placeholder && <option value="">{placeholder}</option>}
-      {legacy && (
-        <optgroup label="Categoría actual (vocabulario viejo)">
-          <option value={actual} disabled>{etiquetaCategoria(actual)}</option>
-        </optgroup>
-      )}
-      {CATEGORIAS_AGRUPADAS.map(([g, cs]) => (
-        <optgroup key={g} label={g}>
-          {cs.map(c => <option key={c.codigo} value={c.codigo}>{c.label}</option>)}
-        </optgroup>
-      ))}
-    </>
-  );
-}
+// Se calcula UNA vez: son 95 categorías y este componente se renderiza en
+// cada fila de la tabla. `sin_clasificar` queda AFUERA a propósito (pedido de
+// Gabriel, 14-sep): elegirla a mano de una lista es lo mismo que no elegir
+// nada — ver `categoriasParaElegir()`.
+const OPCIONES_CLASIFICACION = categoriasParaElegir();
 
 const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
 
@@ -127,6 +90,10 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // Anti doble-click (regla crítica 2): ref SÍNCRONO. Un doble tap en «Aceptar»
   // no puede escribir dos filas para la misma descripción.
   const guardandoRef = uR(false);
+  // Un solo <datalist> para TODA la pantalla (rendimiento — ver el
+  // encabezado de jx-selector-clasificacion.jsx): cada fila solo pone un
+  // <input list={listId}> liviano.
+  const listId = uId();
 
   const empresas = uM(() => (compHook.data || []).filter(c => !c.deleted_at), [compHook.data]);
   // `ambitoExterno`: la bandeja vive DENTRO de la sección de clasificación
@@ -320,6 +287,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
 
   return (
     <>
+      <ClasificacionDatalist id={listId} opciones={OPCIONES_CLASIFICACION} />
       <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
         Acá se dice <strong>qué insumo del catálogo</strong> es cada cosa que aparece en las facturas.
         Se decide <strong>por texto, no por factura</strong>: vale para todas las que digan lo mismo y no se vuelve a preguntar.
@@ -357,16 +325,28 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         </div>
 
         {/* El avance se mide en PLATA: decidir las 20 más caras vale más que
-            decidir 200 de la cola, y el número tiene que decir eso. */}
+            decidir 200 de la cola, y el número tiene que decir eso.
+            🔴 OJO (14-sep-2026, Gabriel vio "138 de 886 … 76%" y pensó que
+            estaba mal calculado): antes esta misma línea mezclaba el % por
+            plata con el conteo por filas, y con dos escalas distintas en una
+            sola oración parece un error aunque no lo sea. Ahora van
+            separados: arriba el % SIEMPRE es plata (con el rótulo puesto),
+            abajo el conteo de filas trae SU PROPIO % — que es un número
+            distinto a propósito, y acá se explica por qué. */}
         <div style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{avance.pct.toFixed(0)}%</div>
           <div style={{ fontSize: 12, color: 'var(--ts)' }}>
-            del gasto ya categorizado — <strong>{avance.decididas}</strong> de {avance.total} descripciones
-            {' '}({soles(avance.plataDecidida)} de {soles(avance.totalPlata)})
+            del <strong>GASTO</strong> ya categorizado ({soles(avance.plataDecidida)} de {soles(avance.totalPlata)})
           </div>
         </div>
         <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--bg-s)', marginTop: 6 }}>
           <div style={{ width: `${Math.min(100, avance.pct)}%`, background: 'var(--green)' }} />
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>
+          Se mide por plata, no por cantidad de filas — decidir lo caro rinde más que decidir muchas descripciones
+          baratas. Por eso <strong>{avance.decididas}</strong> de <strong>{avance.total}</strong> descripciones decididas
+          {' '}({avance.total > 0 ? Math.round((avance.decididas * 100) / avance.total) : 0}% de las filas) es
+          {' '}<strong> otro número</strong>, y va a avanzar distinto que el de arriba: es normal, no es un error.
         </div>
         <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--tm)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <span>✓ en el catálogo: <strong>{avance.enCatalogo}</strong> ({soles(avance.plataEnCatalogo)})</span>
@@ -443,6 +423,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
           <FilaBandeja
             key={f.norm} f={f} activa={i === cursor}
             catFila={catalogoDe(f)}
+            listId={listId}
             marcada={marcadas.has(f.norm)}
             onFocus={() => setCursor(i)}
             onMarcar={() => setMarcadas(m => {
@@ -464,7 +445,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         )}
       </div>
 
-      {altaDe && <AltaEnCatalogo fila={altaDe} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
+      {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
     </>
   );
 }
@@ -475,7 +456,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -560,24 +541,23 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
                 {bInfo.lbl}
               </span>
 
-              {/* Modificación directa de categoría en la misma fila */}
+              {/* Modificación directa de categoría en la misma fila — con
+                  búsqueda: escribí un par de letras y aparece, en vez de
+                  desplazar 95 opciones (pedido de Gabriel, 14-sep). */}
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}>
                 <label style={{ fontSize: 10, color: 'var(--tm)' }}>Clasificación:</label>
-                <select
-                  className="fi"
+                <SelectorClasificacion
+                  listId={listId}
+                  opciones={OPCIONES_CLASIFICACION}
+                  value={categoriaSel}
+                  onChange={setCategoriaSel}
+                  placeholder={sinPropuesta ? '— Escribí para elegir —' : 'Escribí para buscar…'}
                   style={{
-                    fontSize: 11, height: 22, padding: '0 4px', maxWidth: 240,
+                    fontSize: 11, height: 22, padding: '0 4px', width: 200,
                     ...(sinPropuesta && !categoriaSel ? { borderColor: 'var(--amber)' } : null),
                   }}
-                  value={categoriaSel}
-                  onChange={e => setCategoriaSel(e.target.value)}
                   onClick={e => e.stopPropagation()}
-                >
-                  <OpcionesCategoria
-                    actual={categoriaSel}
-                    placeholder={sinPropuesta ? '— Elegí la clasificación —' : null}
-                  />
-                </select>
+                />
               </span>
 
               {rec?.inclinacion && (
@@ -629,7 +609,7 @@ function FilaBandeja({ f, activa, catFila, marcada, onFocus, onMarcar, onAceptar
  * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
  * Todo es corregible antes de guardar.
  */
-function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
+function AltaEnCatalogo({ fila, listId, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
   // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
   // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
@@ -651,9 +631,14 @@ function AltaEnCatalogo({ fila, onCancel, onGuardar }) {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ flex: 2, minWidth: 220 }}>
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Clasificación (IUPC / Servicios / Complementaria)</label>
-          <select className="fi" value={familia} onChange={e => setFamilia(e.target.value)}>
-            <OpcionesCategoria actual={familia} placeholder="— Elegí la clasificación —" />
-          </select>
+          <SelectorClasificacion
+            listId={listId}
+            opciones={OPCIONES_CLASIFICACION}
+            value={familia}
+            onChange={setFamilia}
+            placeholder="Escribí para buscar…"
+            style={{ width: '100%' }}
+          />
           {!familia && (
             <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
               El estándar no reconoció esta descripción: elegila vos.

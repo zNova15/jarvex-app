@@ -39,7 +39,11 @@ import {
   entidadesConCatalogo, revisarCategoriasCatalogo,
 } from "../lib/catalogo-canonico.js";
 import {
-  listarCategoriasDisponibles, etiquetaCategoria, bandaConfianza,
+  // listarCategoriasDisponibles: la base COMPLETA (incluida sin_clasificar),
+  // para PanelClasificaciones — necesita poder resolver filas viejas que ya
+  // quedaron así. categoriasParaElegir: la misma base MENOS sin_clasificar,
+  // para los selectores donde se ELIGE una categoría (ver su comentario).
+  listarCategoriasDisponibles, categoriasParaElegir, etiquetaCategoria, bandaConfianza,
   terminosDeClasificacion, normIUPC,
 } from "../lib/indices-unificados-iupc.js";
 import {
@@ -54,8 +58,9 @@ import {
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { agruparDescripciones, resolverCategorias } from "../lib/bandeja-categorizacion.js";
 import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
+import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 
-const { useState: uS, useMemo: uM, useRef: uR } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useId: uId } = React;
 
 // El orden en que conviene despachar la reclasificación: de lo que el estándar
 // reconoce mejor a lo que apenas intuye. No hay lote para las bandas flojas a
@@ -64,49 +69,6 @@ const BANDAS_LOTE = [
   ['alta', 'coincidencia alta'],
   ['media', 'coincidencia media'],
 ];
-
-// Se calcula UNA vez: son 80+ categorías y este componente se renderiza en
-// cada fila de la tabla. Recalcular el agrupado 60 veces por render es gratis
-// de escribir y caro de correr.
-const CATEGORIAS_AGRUPADAS = (() => {
-  const g = new Map();
-  for (const c of listarCategoriasDisponibles()) {
-    if (!g.has(c.grupo)) g.set(c.grupo, []);
-    g.get(c.grupo).push(c);
-  }
-  return [...g.entries()];
-})();
-const CODIGOS_OFRECIDOS = new Set(listarCategoriasDisponibles().map(c => c.codigo));
-
-/**
- * Las categorías del desplegable, agrupadas por origen (IUPC del Estado /
- * Complementarias / Personalizadas). `c.label` y NO `c.nombreCompleto` — ese
- * campo nunca existió en `listarCategoriasDisponibles()` y dejaba las 80
- * opciones EN BLANCO.
- *
- * `actual` es la categoría que la fila tiene HOY. Si es del vocabulario viejo
- * ya no está entre las opciones, y sin esto el <select> se vería vacío en las
- * 413 filas sin reclasificar — se perdería de vista qué tienen puesto. Se
- * muestra arriba y DESHABILITADA: se lee, no se vuelve a elegir. La migración
- * al estándar es de ida.
- */
-function OpcionesCategoria({ actual = null }) {
-  const legacy = actual && !CODIGOS_OFRECIDOS.has(actual);
-  return (
-    <>
-      {legacy && (
-        <optgroup label="Categoría actual (vocabulario viejo)">
-          <option value={actual} disabled>{etiquetaCategoria(actual)}</option>
-        </optgroup>
-      )}
-      {CATEGORIAS_AGRUPADAS.map(([g, cs]) => (
-        <optgroup key={g} label={g}>
-          {cs.map(c => <option key={c.codigo} value={c.codigo}>{c.label}</option>)}
-        </optgroup>
-      ))}
-    </>
-  );
-}
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 const TIPO_DESTINO = {
@@ -159,6 +121,13 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
   const [eqElegida, setEqElegida] = uS({});    // familia local → slug canónico
   const clasHook = window.__hooks.useClasificaciones();
   const terHook = window.__hooks.useClasificacionTerminos();
+  // Las opciones que se OFRECEN en los selectores con búsqueda de esta
+  // pantalla (14-sep-2026): la base IUPC/Servicios/Complementarias + las
+  // clasificaciones propias que Gabriel ya creó, MENOS `sin_clasificar`
+  // (ver categoriasParaElegir). Un solo <datalist> compartido — ver el
+  // encabezado de jx-selector-clasificacion.jsx.
+  const opcionesClasificacion = uM(() => categoriasParaElegir(clasHook.data || []), [clasHook.data]);
+  const listId = uId();
   // Catálogo = las CLASIFICACIONES y su diccionario. La lista plana de los 483
   // insumos queda como segunda vista: con ese volumen, buscar y corregir en
   // lote sigue siendo la forma más rápida de arreglar muchas filas a la vez.
@@ -420,6 +389,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
+      <ClasificacionDatalist id={listId} opciones={opcionesClasificacion} />
 
       {/* ── El ámbito ───────────────────────────────────────────── */}
       <div className="card card-p" style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -665,14 +635,13 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                             )}
                           </td>
                           <td>
-                            <select
-                              className="fi"
-                              style={{ fontSize: 11, padding: '1px 6px', height: 24, maxWidth: 220 }}
+                            <SelectorClasificacion
+                              listId={listId}
+                              opciones={opcionesClasificacion}
                               value={catElegida}
-                              onChange={e => setCatOverride(p => ({ ...p, [r.id]: e.target.value }))}
-                            >
-                              <OpcionesCategoria />
-                            </select>
+                              onChange={cod => setCatOverride(p => ({ ...p, [r.id]: cod }))}
+                              style={{ fontSize: 11, padding: '1px 6px', height: 24, width: 200 }}
+                            />
                           </td>
                           <td style={{ color: 'var(--tm)', fontSize: 11 }}>{r.motivo}</td>
                           <td style={{ whiteSpace: 'nowrap' }}>
@@ -763,10 +732,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
               </div>
               <div>
                 <label className="flabel" style={{ fontSize: 10.5 }}>Cambiar la categoría a</label>
-                <select className="fi" style={{ fontSize: 12, maxWidth: 240 }} value={famLote} onChange={e => setFamLote(e.target.value)}>
-                  <option value="">— elegir categoría —</option>
-                  <OpcionesCategoria />
-                </select>
+                <SelectorClasificacion
+                  listId={listId}
+                  opciones={opcionesClasificacion}
+                  value={famLote}
+                  onChange={setFamLote}
+                  placeholder="— elegir categoría —"
+                  style={{ fontSize: 12, width: 240 }}
+                />
               </div>
               <button className="btn btn-amber btn-sm" disabled={!famLote} onClick={() => corregirLote({ familia: famLote })}>
                 Aplicar categoría
@@ -831,21 +804,20 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                       <td>{r.nombre}</td>
                       <td style={{ fontFamily: 'monospace' }}>{r.unidad || '—'}</td>
                       <td style={{ minWidth: 200 }} title={propia ? 'Categoría propia de esta entidad' : undefined}>
-                        <select
-                          className="fi"
-                          style={{ fontSize: 11, height: 24, padding: '1px 4px', maxWidth: 240 }}
+                        <SelectorClasificacion
+                          listId={listId}
+                          opciones={opcionesClasificacion}
                           value={r.familia || 'otros'}
-                          onChange={async (e) => {
-                            const nuevaCat = e.target.value;
+                          actualLabel={etiquetaCategoria(r.familia || 'otros')}
+                          onChange={async (nuevaCat) => {
                             if (nuevaCat === r.familia) return;
                             await corregirEnLote([r.id], { familia: nuevaCat }, { userId });
                             await refrescar();
                             showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(nuevaCat)}`, 'green');
                           }}
+                          style={{ fontSize: 11, height: 24, padding: '1px 4px', width: 200 }}
                           title="Cambiar categoría de este insumo directamente"
-                        >
-                          <OpcionesCategoria actual={r.familia} />
-                        </select>
+                        />
                         {(() => {
                           const rec = recPorId.get(r.id);
                           if (!rec) return null;
@@ -921,11 +893,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                         : <span className="badge b-amber" style={{ fontSize: 9 }}>sin decidir</span>}
                   </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    <select className="fi" style={{ fontSize: 11 }} value={eqElegida[f.familia_local] || ''}
-                      onChange={e => setEqElegida(p => ({ ...p, [f.familia_local]: e.target.value }))}>
-                      <option value="">— equivale a —</option>
-                      <OpcionesCategoria />
-                    </select>
+                    <SelectorClasificacion
+                      listId={listId}
+                      opciones={opcionesClasificacion}
+                      value={eqElegida[f.familia_local] || ''}
+                      onChange={cod => setEqElegida(p => ({ ...p, [f.familia_local]: cod }))}
+                      placeholder="— equivale a —"
+                      style={{ fontSize: 11, width: 190 }}
+                    />
                     <button className="btn btn-xs btn-amber" style={{ marginLeft: 4 }}
                       disabled={!eqElegida[f.familia_local]}
                       onClick={() => guardarEquivalencia(f.familia_local, 'mapeada')}>Guardar</button>

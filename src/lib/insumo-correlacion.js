@@ -20,6 +20,31 @@ export const normInsumo = (s) => String(s || '')
   .replace(/\s+/g, ' ')
   .trim();
 
+// Normalización PARA COMPARAR (nunca para guardar — ver `normInsumo` arriba,
+// «no cambiarla sin migrar datos»). Igual que normInsumo, pero conserva las
+// FRACCIONES «N/M» (1/2, 3/4, 5/8…) como un solo token en vez de partirlas en
+// dos números sueltos.
+//
+// 🔴 EL CASO REAL (Gabriel, 14-sep-2026): "REDUCCION 1\" X 1/2" (de 1 a 1/2)
+// se sugería como el mismo insumo que "REDUCCION 2 1/2\" A 1" (de 2-1/2 a 1)
+// — son dos reducciones DISTINTAS, solo comparten los dígitos 1 y 2 sueltos.
+// normInsumo() convierte "1/2" en dos tokens "1" y "2" (la "/" se pierde en el
+// `[^a-z0-9]+` → espacio), así que el chequeo de MEDIDAS de scoreTokens —que
+// compara por PERTENENCIA a un conjunto, no por posición— veía {1,1,2} contra
+// {2,1,2,1}: mismos dígitos, conjuntos "compatibles", score alto. Conservando
+// "1/2" como el token atómico "1∕2" (barra de fracción U+2215, sobrevive al
+// filtro alfanumérico y no es un slash normal), la reducción de 1 a 1/2 no
+// comparte NINGÚN número con la de 2-1/2 a 1 y el chequeo de medidas las
+// anula — que es lo que un maestro de obra ve a simple vista.
+const normParaScore = (s) => String(s || '')
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[̀-ͯ]/g, '')
+  .replace(/(\d)\s*\/\s*(\d)/g, '$1∕$2')
+  .replace(/[^a-z0-9∕]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
 // Par canónico: ordenado para que (a,b) y (b,a) sean la misma clave.
 export function parClave(a, b) {
   const [x, y] = [normInsumo(a), normInsumo(b)].sort();
@@ -117,8 +142,8 @@ const tokenMatch = (t, u) => {
 };
 
 export function scoreNombres(a, b) {
-  const ta = tokensDe(normInsumo(a));
-  const tb = tokensDe(normInsumo(b));
+  const ta = tokensDe(normParaScore(a));
+  const tb = tokensDe(normParaScore(b));
   if (!ta.length || !tb.length) return 0;
   // MEDIDAS: si AMBOS nombres traen números y difieren → 0 (clavo de 8 ≠ clavo
   // de 4). Si solo UNO trae números ("Cemento Sol" vs "Cemento Sol x 42.5kg")
@@ -136,6 +161,37 @@ export function scoreNombres(a, b) {
     if (j >= 0) { usados.add(j); m++; }
   }
   return m / Math.max(ta.length, tb.length);
+}
+
+// Para PINTAR la diferencia entre dos nombres candidatos a "mismo insumo"
+// (pedido de Gabriel, 14-sep-2026, tras ver "REDUCCION 1\" X 1/2" sugerido
+// junto a "REDUCCION 2 1/2\" A 1"": «marcá de un color distinto las
+// diferencias, para agilizar la decisión»).
+//
+// Usa el MISMO tokenMatch() que scoreNombres()/scoreTokens(): lo que queda
+// resaltado es EXACTAMENTE lo que el motor no pudo emparejar, nunca una
+// sorpresa distinta de por qué se sugirió el par. Devuelve las palabras en su
+// forma ORIGINAL (con tildes y mayúsculas, tal como las escribió cada
+// proveedor) — normParaScore es solo para DECIDIR, no para mostrar.
+// → { a: [{texto, distinto}], b: [{texto, distinto}] }
+export function resaltarDiferencias(a, b) {
+  const crudoA = String(a || '').split(/\s+/).filter(Boolean);
+  const crudoB = String(b || '').split(/\s+/).filter(Boolean);
+  const tA = crudoA.map(w => normParaScore(w));
+  const tB = crudoB.map(w => normParaScore(w));
+
+  const marcar = (crudos, propios, otros) => {
+    const usados = new Set();
+    return crudos.map((texto, i) => {
+      const n = propios[i];
+      if (!n || STOPWORDS.has(n)) return { texto, distinto: false };
+      const j = otros.findIndex((u, k) => !usados.has(k) && u && tokenMatch(n, u));
+      if (j >= 0) { usados.add(j); return { texto, distinto: false }; }
+      return { texto, distinto: true };
+    });
+  };
+
+  return { a: marcar(crudoA, tA, tB), b: marcar(crudoB, tB, tA) };
 }
 
 // Score sobre tokens YA precomputados (camino caliente del sugeridor: evita
@@ -169,7 +225,16 @@ function scoreTokens(ta, tb) {
 export function sugerirPares(nombres, paresResueltos, grupoDe, opts = {}) {
   const { umbral = 0.55, max = 60, maxBucket = 150, maxEnum = 40000 } = opts;
   const unicos = [...new Set((nombres || []).map(normInsumo).filter(Boolean))];
-  const toks = unicos.map(n => tokensDe(n));
+  // Un CRUDO representante por identidad normalizada, solo para tokenizar
+  // preservando fracciones — `unicos` (la identidad que se guarda y se
+  // devuelve en las sugerencias) ya perdió la "/" y no se puede recuperar de
+  // ahí. Ver `normParaScore` arriba.
+  const crudoPorNorm = new Map();
+  for (const n of (nombres || [])) {
+    const k = normInsumo(n);
+    if (k && !crudoPorNorm.has(k)) crudoPorNorm.set(k, n);
+  }
+  const toks = unicos.map(u => tokensDe(normParaScore(crudoPorNorm.get(u) ?? u)));
 
   // Frecuencia de cada raíz de 4 letras (solo palabras, no medidas).
   const raicesDe = (ts) => [...new Set(ts.filter(t => !/^\d/.test(t)).map(t => t.slice(0, 4)))];

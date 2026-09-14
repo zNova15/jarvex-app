@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normInsumo, parClave, resolverPares, construirGrupos, claveGrupoDe,
   scoreNombres, sugerirPares, sugerirClusters, crearParesDeCluster,
+  resaltarDiferencias,
 } from '../insumo-correlacion';
 
 describe('normInsumo / parClave', () => {
@@ -64,6 +65,46 @@ describe('scoreNombres', () => {
   it('prefijo corto no matchea (tub ≠ tuerca), plural sí (tubo ≈ tubos)', () => {
     expect(scoreNombres('tubo pvc', 'tubos pvc')).toBe(1);
     expect(scoreNombres('tue', 'tuerca')).toBe(0);
+  });
+
+  // Regresión 14-sep-2026 (Gabriel, capturas de pantalla): "REDUCCION 1" X
+  // 1/2" (de 1 a 1/2) se sugería como el mismo insumo que "REDUCCION 2 1/2"
+  // A 1" (de 2-1/2 a 1) — son reducciones DISTINTAS, solo comparten los
+  // dígitos 1 y 2 sueltos. normInsumo() parte "1/2" en dos tokens "1" y "2",
+  // así que el chequeo de medidas (por PERTENENCIA a un conjunto) los veía
+  // compatibles. Ver `normParaScore` en la lib.
+  it('fracciones distintas NO son el mismo insumo aunque compartan los dígitos sueltos', () => {
+    expect(scoreNombres('REDUCCION 1" X 1/2', 'REDUCCION 2 1/2" A 1')).toBe(0);
+    expect(scoreNombres('Fierro de 3/4', 'Fierro de 4/3')).toBe(0);
+  });
+  it('la MISMA fracción sigue matcheando (no rompió el caso normal)', () => {
+    expect(scoreNombres('Tubo PVC 1/2 pulgada', 'Tubos PVC 1/2" pulg')).toBeGreaterThanOrEqual(0.55);
+  });
+});
+
+describe('resaltarDiferencias — para pintar el par en la UI (14-sep-2026)', () => {
+  it('resalta solo las palabras SIN contraparte en el otro nombre', () => {
+    const r = resaltarDiferencias('Clavo 8 pulg', "Clavos de 8''");
+    // "Clavo"≈"Clavos" y "8"="8" matchean; "pulg" y "de" no tienen contraparte
+    // ("de" es stopword, no se marca aunque no matchee nada).
+    expect(r.a.find(t => t.texto === 'Clavo').distinto).toBe(false);
+    expect(r.a.find(t => t.texto === '8').distinto).toBe(false);
+    expect(r.a.find(t => t.texto === 'pulg').distinto).toBe(true);
+    expect(r.b.find(t => t.texto === 'de').distinto).toBe(false);
+  });
+  it('la medida que sobra en un lado queda resaltada (no todo el nombre)', () => {
+    const r = resaltarDiferencias('REDUCCION 1" X 1/2', 'REDUCCION 2 1/2" A 1');
+    // "REDUCCION" es común: nunca se resalta.
+    expect(r.a.find(t => t.texto === 'REDUCCION').distinto).toBe(false);
+    expect(r.b.find(t => t.texto === 'REDUCCION').distinto).toBe(false);
+    // El "2" de "2 1/2\"" no tiene ninguna contraparte del otro lado —
+    // es justo la medida que hace que NO sean el mismo insumo.
+    expect(r.b.find(t => t.texto === '2').distinto).toBe(true);
+  });
+  it('nombres idénticos no marcan nada como distinto', () => {
+    const r = resaltarDiferencias('Cemento Sol tipo I', 'Cemento Sol tipo I');
+    expect(r.a.every(t => !t.distinto)).toBe(true);
+    expect(r.b.every(t => !t.distinto)).toBe(true);
   });
 });
 
