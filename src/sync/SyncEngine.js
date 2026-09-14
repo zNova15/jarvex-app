@@ -157,16 +157,19 @@ const TRANSACTIONAL_TABLES = [
   'puente_consultas',
   // Correlación de insumos supervisada (mig 154). FK-less, global (sin obra).
   // Como puente_consultas, NO va en TABLA_TO_MODULO: las filas solo nacen del
-  // panel de Análisis de Insumos (gate duro admin/gerente en la UI).
+  // panel de Análisis de Insumos (gate de UI: admin/gerente/contador). La RLS
+  // acá es la más abierta de las tres (cualquier autenticado) a propósito —
+  // no tiene precios, solo dice "estos dos nombres son el mismo insumo".
   'insumo_correlaciones',
   // Mapeo factura→catálogo canónico (mig 183). Igual que insumo_correlaciones:
   // FK-less, global, y FUERA de TABLA_TO_MODULO — las filas solo nacen del
-  // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente.
+  // panel de Análisis de Insumos (gate admin/gerente/contador). Ya no se le
+  // agregan filas nuevas desde ese panel (ver mig 206); queda de solo lectura.
   'insumo_mapeo',
   // Qué insumo del presupuesto de un trabajo es cada insumo del catálogo de
   // una empresa (mig 206). Mismo criterio que insumo_mapeo: solo nace del
-  // panel de Análisis de Insumos, que ya tiene gate duro admin/gerente, y la
-  // RLS repite ese gate en el server. Todos la LEEN.
+  // panel de Análisis de Insumos (gate admin/gerente/contador en la UI, y la
+  // RLS repite ese mismo gate en el server — mig 211). Todos la LEEN.
   'insumo_trabajo_mapeo',
   // A qué factura se aplica cada anticipo a proveedores (mig 207). Va DESPUÉS
   // de accounting_movements: las dos FKs apuntan ahí y si sale primero el hijo
@@ -174,20 +177,24 @@ const TRANSACTIONAL_TABLES = [
   'anticipo_aplicaciones',
   // Catálogo canónico de insumos y servicios (mig 192, tanda 14). Igual que
   // los dos de arriba: FK-less, global (sin obra ni empresa) y FUERA de
-  // TABLA_TO_MODULO — solo se escribe desde la pestaña «Catálogo» de Análisis
-  // de Insumos, que ya tiene gate duro admin/gerente, y en el server la RLS
-  // repite ese mismo gate. Todos los roles lo LEEN: el catálogo tiene que
-  // proponerle nombres a la almacenera y al ingeniero igual que al contador.
+  // TABLA_TO_MODULO — solo se escribe desde la sección «Clasificación de
+  // insumos y servicios» de Análisis de Insumos, que deja entrar a
+  // admin/gerente/contador (es el trabajo de la Contadora Jefe), y en el
+  // server la RLS repite ese mismo gate (mig 211 — antes solo admin/gerente,
+  // por eso a la contadora le rebotaba el push con permiso denegado). Todos
+  // los roles lo LEEN: el catálogo tiene que proponerle nombres a la
+  // almacenera y al ingeniero igual que al contador.
   'catalogo_insumos',
   'catalogo_disgregacion',
   // Mapeo de categorías entre entidades (mig 193): la familia local de una
-  // empresa contra la familia canónica del grupo.
+  // empresa contra la familia canónica del grupo. Mismo gate que arriba.
   'catalogo_familia_mapeo',
   'clasificaciones',
   'clasificacion_terminos',
   // Qué insumo del catálogo es cada descripción de factura (mig 195). Mismo
   // criterio que el catálogo: todos la LEEN (es lo que hace que la propuesta
-  // aparezca en Almacén y en las órdenes), y el gate de escritura lo pone RLS.
+  // aparezca en Almacén y en las órdenes), y el gate de escritura lo pone la
+  // RLS: admin/gerente/contador (mig 211).
   'insumo_categoria',
   // El cotejo contra SUNAT y el escáner (mig 196, tanda 14 entregas 5 y 6).
   // A diferencia del catálogo, acá SÍ hay plata: el gate de escritura lo pone

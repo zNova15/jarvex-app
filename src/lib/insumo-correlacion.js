@@ -243,6 +243,19 @@ export function sugerirClusters(nombres, paresResueltos, grupoDe, opts = {}) {
   for (const p of pares) {
     const k = parClave(p.nombre_a, p.nombre_b);
     if (paresResueltos && paresResueltos.get(k)?.relacion === 'distinto') continue;
+    // 🔴 Si CUALQUIERA de los dos ya quedó en un grupo resuelto (aceptado en
+    // una vuelta anterior), no lo unás de nuevo acá — armaría un cluster
+    // FANTASMA que vuelve a mezclar gente ya decidida con la nueva variante.
+    // Caso real (14-sep-2026): grupo {A,B,C,D}, se saca D y se aceptan A,B,C
+    // (crearParesDeCluster resuelve TODOS los pares entre A,B,C). Sin este
+    // corte, sugerirPares sigue proponiendo A-D/B-D/C-D sueltos (correcto: D
+    // no está decidido con nadie) y el union-find de ACÁ los volvía a fusionar
+    // transitivamente en un cluster {A,B,C,D} idéntico al que se acababa de
+    // aceptar — la tarjeta "no se iba nunca" con el mismo botón de Aceptar,
+    // aunque el push ya había guardado la decisión. D tiene que reaparecer
+    // como PAR SUELTO (sugerencias individuales, contra A/B/C uno por vez),
+    // no reabrir el grupo entero.
+    if (grupoDe && (grupoDe.get(p.nombre_a) || grupoDe.get(p.nombre_b))) continue;
     union(p.nombre_a, p.nombre_b);
   }
 

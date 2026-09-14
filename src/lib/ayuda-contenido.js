@@ -105,7 +105,7 @@ const AYUDA = {
   },
   'analisis-insumos': {
     titulo: 'Análisis de Insumos',
-    que: 'Panel de admin/gerencia: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto. Es también la BASE DE INSUMOS de cada empresa: su catálogo, sus proveedores y sus precios.',
+    que: 'Panel de admin/gerencia/contabilidad: compara qué proveedor vende cada insumo más barato y unifica los nombres distintos con que facturan el mismo producto. Es también la BASE DE INSUMOS de cada empresa: su catálogo, sus proveedores y sus precios.',
     como: [
       'DE QUIÉN ES LA BASE: el selector de arriba de la pantalla elige entre todo el grupo y UNA entidad, y gobierna las cuatro secciones de abajo — comparador, correlaciones, mapeo al presupuesto y clasificación. Si entraste por el Panel de una empresa (Contabilidad → Base de insumos) queda clavado en ella y ya no se puede cambiar desde acá: estás adentro de SU contabilidad.',
       'COMPARADOR: buscá el insumo (sin tildes) → ves cada proveedor con su último precio, mínimo, máximo y el gráfico de evolución, más todas las facturas donde apareció.',

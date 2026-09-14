@@ -149,3 +149,47 @@ describe('sacar una variante del grupo antes de aceptarlo', () => {
     expect(pares.every(p => p.canonico === normInsumo('clavos de 3'))).toBe(true);
   });
 });
+
+describe('sugerirClusters no reabre un grupo ya aceptado (regresión 14-sep-2026)', () => {
+  // Bug real reportado por la Contadora Jefe: la tarjeta deja sacar una
+  // variante del grupo antes de aceptar (commit del 13-sep). Si la que se
+  // saca sigue pareciéndose a CADA una de las que se aceptaron, el
+  // union-find volvía a fusionarlas transitivamente en un cluster idéntico
+  // al recién resuelto — la tarjeta "no se iba nunca" con el mismo botón de
+  // Aceptar, aunque el push ya había guardado la decisión.
+  const A = 'Clavos de 3 pulgadas';
+  const B = 'Clavo de 3 pulgada';
+  const C = 'Clavos 3 pulg';
+  const D = 'Clavo numero 3';   // se saca del grupo antes de aceptar
+
+  it('sin nada resuelto, las 4 forman un solo cluster', () => {
+    const clusters = sugerirClusters([A, B, C, D], new Map(), new Map());
+    expect(clusters.length).toBe(1);
+    expect(clusters[0].totalVariantes).toBe(4);
+  });
+
+  it('tras aceptar A,B,C y dejar fuera a D, D no reabre el grupo', () => {
+    // Lo que hace decidirCluster() al aceptar "las 3 marcadas":
+    // crearParesDeCluster arma los C(3,2)=3 enlaces entre A, B y C.
+    const pares = crearParesDeCluster([A, B, C], A, 'mismo');
+    expect(pares).toHaveLength(3);
+    const filas = pares.map((p, i) => ({
+      id: `p${i}`, nombre_a: p.nombre_a, nombre_b: p.nombre_b, relacion: p.relacion,
+      canonico: p.canonico, fuente: 'manual', deleted_at: null, updated_at: `2026-09-14T00:0${i}:00Z`,
+    }));
+    const resueltos = resolverPares(filas);
+    const { grupoDe } = construirGrupos(resueltos);
+
+    // D sigue pareciéndose a cada una de A, B, C — justo lo que reproducía
+    // el bug: sugerirPares las vuelve a proponer sueltas (correcto, D no
+    // está decidida con nadie) y ANTES el union-find las refusionaba.
+    expect(scoreNombres(D, A)).toBeGreaterThanOrEqual(0.52);
+    expect(scoreNombres(D, B)).toBeGreaterThanOrEqual(0.52);
+    expect(scoreNombres(D, C)).toBeGreaterThanOrEqual(0.52);
+
+    const clusters = sugerirClusters([A, B, C, D], resueltos, grupoDe);
+    // Nada de un cluster {A,B,C,D} de nuevo: A, B y C ya están decididos —
+    // D tiene que aparecer suelta (sugerencias individuales), no reabrir el grupo.
+    expect(clusters.some(cl => cl.totalVariantes >= 3)).toBe(false);
+  });
+});

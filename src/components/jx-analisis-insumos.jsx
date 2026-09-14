@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
-// JARVEX — Análisis de Insumos (mejora 1, sep-2026). Panel de ADMIN/GERENTE.
+// JARVEX — Análisis de Insumos (mejora 1, sep-2026). Panel de ADMIN/GERENTE
+// y CONTADOR (la Contadora Jefe es quien clasifica insumos y servicios).
 //
 // Dos pestañas:
 //  · 🔍 Comparador: buscá un insumo → sus variantes de nombre (según las
@@ -29,8 +30,13 @@
 //    volver a preguntar — pedido explícito de Gabriel. Captura Mágica no se
 //    toca: esto es una capa de análisis posterior.
 //
-// Visibilidad: gate duro admin/gerente (la vista muestra COSTOS por proveedor;
-// la regla de la casa es que almacén/campo no ven costos).
+// Visibilidad: gate duro admin/gerente/contador (la vista muestra COSTOS por
+// proveedor; la regla de la casa es que almacén/campo no ven costos, pero
+// contabilidad sí — es quien clasifica y necesita ver a qué precio compró
+// cada uno). Mig 211 (14-sep-2026) alineó la RLS de escritura de las tablas
+// que esta pantalla toca con este mismo gate: antes solo admin/gerente podían
+// insertar/actualizar del lado del server y a la contadora le rebotaba el
+// push con "sin permiso" apenas intentaba clasificar algo.
 //
 // ── TANDA 18, ENTREGA C: LA PUERTA DESDE LA EMPRESA ───────────────
 // Gabriel pidió «la base de datos de insumos por empresa». La pieza estaba
