@@ -294,6 +294,130 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
   }
 }
 
+// ── CLASIFICACIÓN CON RAZONAMIENTO: insumo/servicio → código IUPC/Servicios ──
+// Gabriel, 14-sep-2026: con solo parecido de palabras, "PANTALON Y CAMISACO DE
+// DRILL OBRERO AZUL CON CINTA REFLECTIVA" salía sugerido como [37] Herramienta
+// manual — la palabra "obrero" pesó más que el hecho de que es ropa de
+// trabajo con cinta reflectiva, es decir EPP. Con 700+ descripciones por
+// decidir en la primera empresa, este botón le da al motor local un segundo
+// opinión que SÍ entiende el significado, no solo el texto. Nunca se aplica
+// sola — el resultado llega al panel y la persona decide, igual que
+// clasificarCostoGasto de acá arriba.
+//
+// Anti-alucinación: `candidatos` lo manda el cliente (la MISMA lista que
+// ofrece el selector — categoriasParaElegir()), y la respuesta se valida
+// contra esos códigos exactos. Si la IA propone algo fuera de la lista, se
+// descarta — no se inventa un código plausible (misma filosofía que
+// "sin_clasificar" en indices-unificados-iupc.js).
+async function clasificarInsumoIUPC(req, res, apiKey, body) {
+  const descripcion = sanitizeForPrompt(body.descripcion, 300);
+  const unidad = sanitizeForPrompt(body.unidad, 20);
+  const candidatos = Array.isArray(body.candidatos) ? body.candidatos.slice(0, 120) : [];
+  if (!descripcion || candidatos.length === 0) {
+    return res.status(422).json({ error: 'Se requiere descripcion y candidatos[]' });
+  }
+  const codigosValidos = new Set(candidatos.map(c => String(c.codigo)));
+  const lista = candidatos.map((c, i) =>
+    `${i + 1}. [${sanitizeForPrompt(String(c.codigo), 20)}] ${sanitizeForPrompt(c.nombre, 100)}`
+  ).join('\n');
+
+  const sys = `Eres un experto en insumos y servicios de construcción civil en Perú, clasificando según el estándar oficial IUPC del INEI (Índices Unificados de Precios de la Construcción).
+
+Te dan una DESCRIPCIÓN tal como aparece en una factura, y una lista numerada de CLASIFICACIONES POSIBLES (código + nombre). Elegí la que corresponda de verdad al SIGNIFICADO de la descripción, no solo a palabras parecidas.
+
+Pistas de criterio que un simple parecido de texto suele fallar:
+- Ropa de trabajo, cascos, guantes, botas, chalecos, arneses, lentes, tapones de oído, cinta reflectiva → casi siempre son EPP / implementos de seguridad, aunque diga "obrero" o una marca que suene a herramienta.
+- Herramienta MANUAL es lo que se opera a mano sin motor (llave, combo, pala); con motor, hidráulico o eléctrico portátil suele ser maquinaria liviana.
+- Un servicio de alquiler, flete, transporte, mantenimiento o capacitación NO es un insumo físico — va al árbol de SERVICIOS (códigos que empiezan con S).
+- Si la descripción no encaja claramente en ninguna, elegí la más razonable igual pero con confianza baja — nunca inventes un código que no esté en la lista.
+
+Devolvés SOLO JSON válido (sin markdown):
+{
+  "codigo_sugerido": "<código EXACTO de la lista, sin corchetes>",
+  "confianza": 0.9,
+  "razonamiento": "una frase corta y concreta, en español, dirigida a quien va a decidir",
+  "alternativas": [{"codigo": "<código de la lista>", "motivo": "breve"}]
+}
+Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revise una persona. Máximo 2 alternativas.`;
+
+  const usr = `DESCRIPCIÓN: "${descripcion}"${unidad ? `\nUnidad de la factura: ${unidad}` : ''}\n\nCLASIFICACIONES POSIBLES:\n${lista}\n\nDevolvé el JSON.`;
+
+  try {
+    // Mismo criterio que clasificarCostoGasto: gratis primero (OpenRouter),
+    // Claude de respaldo — importa acá más que en ningún otro lado: son 700+
+    // llamadas posibles para una sola empresa, y si costara nadie lo usaría.
+    const cfgOR = leerConfigOR();
+    const deadline = Date.now() + 30000;
+    let data = null;
+    let motor = 'claude';
+    if (cfgOR.activo) {
+      try {
+        const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+          modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+          system: sys, user: usr, maxTokens: 1200, razonamiento: 'bajo',
+        }), Math.min(deadline, Date.now() + 18000));
+        data = normalizarRespuestaOR(cruda);
+        motor = 'openrouter';
+      } catch (e) {
+        console.warn('[clasificar-insumo-iupc] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e);
+      }
+    }
+    if (!data) {
+      if (!apiKey) return res.status(503).json({ error: 'No hay motor de IA configurado' });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 30000);
+      const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', signal: ctrl.signal,
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 700, system: sys, messages: [{ role: 'user', content: usr }] }),
+      });
+      clearTimeout(timer);
+      if (!upstream.ok) {
+        const t = await upstream.text();
+        console.error('[clasificar-insumo-iupc] upstream', upstream.status, t.slice(0, 200));
+        return res.status(upstream.status).json({ error: `El servicio de IA respondió ${upstream.status}` });
+      }
+      data = await upstream.json();
+    }
+    const text = data.content?.[0]?.text || '';
+    const jm = text.match(/\{[\s\S]*\}/);
+    if (!jm) return res.status(502).json({ error: 'La IA no devolvió JSON', rawText: text.slice(0, 300) });
+    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'La IA devolvió un JSON inválido', detail: e.message }); }
+
+    const codigoSugerido = String(parsed.codigo_sugerido || '').trim();
+    if (!codigosValidos.has(codigoSugerido)) {
+      return res.status(200).json({
+        result: null,
+        razonamiento: `La IA propuso un código fuera de la lista ("${codigoSugerido || 'vacío'}") — no se aplicó nada.`,
+        _model: data.model, _usage: data.usage, _motor: motor,
+      });
+    }
+    const alternativas = Array.isArray(parsed.alternativas)
+      ? parsed.alternativas
+          .map(a => ({ codigo: String(a.codigo || ''), motivo: String(a.motivo || '').slice(0, 150) }))
+          .filter(a => codigosValidos.has(a.codigo) && a.codigo !== codigoSugerido)
+          .slice(0, 2)
+      : [];
+
+    try {
+      console.log('[ia-uso]', JSON.stringify({
+        endpoint: 'sugerir-cuenta-pcge', modo: 'clasificar_insumo_iupc', engine: motor,
+        model: data.model, in: data.usage?.input_tokens ?? null, out: data.usage?.output_tokens ?? null,
+      }));
+    } catch {}
+
+    return res.status(200).json({
+      result: { codigo_sugerido: codigoSugerido, alternativas },
+      confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
+      razonamiento: String(parsed.razonamiento || '').slice(0, 300),
+      _model: data.model, _usage: data.usage, _motor: motor,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') return res.status(504).json({ error: 'La IA tardó demasiado (>30s)' });
+    return res.status(502).json({ error: 'Error consultando la IA', detail: e.message });
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Solo POST' });
@@ -345,6 +469,12 @@ export default async function handler(req, res) {
   // (Misma función serverless — Vercel Hobby está en 12/12.)
   if (body.action === 'clasificar_costo_gasto') {
     return await clasificarCostoGasto(req, res, apiKey, body);
+  }
+
+  // ── Acción 'clasificar_insumo_iupc': clasificación de insumo/servicio CON
+  // RAZONAMIENTO (botón "🤖 Preguntale a la IA" de la bandeja, 14-sep-2026).
+  if (body.action === 'clasificar_insumo_iupc') {
+    return await clasificarInsumoIUPC(req, res, apiKey, body);
   }
 
   const type = ['income', 'cost', 'expense'].includes(body.type) ? body.type : 'expense';

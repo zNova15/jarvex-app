@@ -47,6 +47,7 @@ import {
   categoriasParaElegir, etiquetaCategoria, bandaConfianza,
 } from "../lib/indices-unificados-iupc.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
+import { clasificarInsumoConIA } from "../lib/clasificar-insumo-ia.js";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -62,6 +63,62 @@ const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFract
 const COLOR_ESTADO = {
   propuesto: 'b-green', revisar: 'b-amber', falta: 'b-blue', decididas: 'b-gray',
 };
+
+/**
+ * Botón "🤖 Preguntale a la IA" — segunda opinión CON RAZONAMIENTO (14-sep).
+ * El parecido de palabras del motor local se equivoca con cosas como ropa de
+ * trabajo con cinta reflectiva saliendo "herramienta manual". No reemplaza al
+ * motor local (sigue siendo el primero, gratis y sin red) ni se aplica sola:
+ * el resultado se muestra y `onElegir(codigo)` es un click aparte.
+ */
+function AyudaClasificacionIA({ descripcion, unidad, onElegir }) {
+  const [sugerencia, setSugerencia] = uS(null);
+  const [cargando, setCargando] = uS(false);
+  const [error, setError] = uS(null);
+
+  const preguntar = async (e) => {
+    e.stopPropagation();
+    if (cargando) return;
+    setCargando(true); setError(null);
+    try {
+      const r = await clasificarInsumoConIA({ descripcion, unidad, candidatos: OPCIONES_CLASIFICACION });
+      if (!r?.result?.codigo_sugerido) {
+        setError(r?.razonamiento || 'No encontró una clasificación clara para esto.');
+        return;
+      }
+      const opt = OPCIONES_CLASIFICACION.find(o => o.codigo === r.result.codigo_sugerido);
+      setSugerencia({
+        codigo: r.result.codigo_sugerido, nombre: opt?.label || r.result.codigo_sugerido,
+        confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached,
+      });
+    } catch (e2) {
+      setError(e2?.message || 'No se pudo consultar la IA.');
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 6 }} onClick={e => e.stopPropagation()}>
+      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
+        {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
+      </button>
+      {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
+      {sugerencia && (
+        <div style={{ marginTop: 4, padding: '5px 8px', background: 'rgba(58,163,255,.08)', border: '1px solid rgba(58,163,255,.3)', borderRadius: 5, fontSize: 10.5, maxWidth: 360 }}>
+          🤖 Sugiere <strong>{sugerencia.nombre}</strong>
+          <span className="badge b-blue" style={{ marginLeft: 4, fontSize: 9 }}>{Math.round((sugerencia.confianza || 0) * 100)}%</span>
+          {sugerencia.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
+          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{sugerencia.razonamiento}</div>
+          <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
+            onClick={(e) => { e.stopPropagation(); onElegir(sugerencia.codigo); }}>
+            Usar esta clasificación
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambitoExterno = false }) {
   const catHook = window.__hooks.useCatalogoInsumos();
@@ -560,6 +617,12 @@ function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, o
                 />
               </span>
 
+              <AyudaClasificacionIA
+                descripcion={f.muestra}
+                unidad={[...(f.unidades || [])][0] || ''}
+                onElegir={setCategoriaSel}
+              />
+
               {rec?.inclinacion && (
                 <div style={{ fontSize: 11, color: '#d97706', marginTop: 3, fontWeight: 500 }}>
                   🛠 Servicio con inclinación: <strong>{rec.inclinacion}</strong>
@@ -644,6 +707,7 @@ function AltaEnCatalogo({ fila, listId, onCancel, onGuardar }) {
               El estándar no reconoció esta descripción: elegila vos.
             </div>
           )}
+          <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad} onElegir={setFamilia} />
         </div>
         <div style={{ flex: 1, minWidth: 110 }}>
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Unidad</label>
