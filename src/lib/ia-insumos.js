@@ -19,9 +19,21 @@
 // uno nuevo) y NINGUNA aplica nada sola: devuelven una propuesta con su
 // razonamiento y la persona decide.
 // ═══════════════════════════════════════════════════════════════════
-import { apiFetch } from './api-client.js';
+import { apiFetch, apiParse } from './api-client.js';
 
 const ENDPOINT = '/api/sugerir-cuenta-pcge';
+
+// Espeja `sanitizeForPrompt` del server (lib/api-helpers.js): el server lo
+// aplica igual, así que mandar ya saneado hace que los nombres que VUELVEN
+// sean idénticos a los que se mandaron. Sin esto, la respuesta de
+// correlacionar traía "A  B" colapsado a "A B" y el cliente no lo reconocía
+// al mapearlo de vuelta a sus variantes — sacaba del grupo justo las que la
+// IA había dejado adentro.
+const saneado = (s, max = 160) => String(s || '')
+  .replace(/[\n\r\t]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, max);
 
 // La misma pregunta no cambia de respuesta: cachear evita repetir el viaje
 // (y la espera) por algo ya preguntado. localStorage, por dispositivo.
@@ -41,7 +53,15 @@ function cacheLeer(clave) {
   return (hit && (Date.now() - hit.t) < TTL) ? hit.v : null;
 }
 
+/**
+ * 🔴 SOLO SE CACHEA UNA RESPUESTA ÚTIL. Un `result: null` es «la IA no dio
+ * nada usable» (propuso un código fuera de la lista, o no encontró
+ * equivalente): guardarlo 30 días convierte el «tocá el botón otra vez» en
+ * una mentira — el botón devolvería para siempre la misma no-respuesta sin
+ * volver a preguntar.
+ */
 function cacheGuardar(clave, v) {
+  if (!v || !v.result) return;
   const c = readCache();
   c[clave] = { t: Date.now(), v };
   const keys = Object.keys(c);
@@ -57,11 +77,13 @@ async function postIA(payload) {
     method: 'POST', timeout: 35000, headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!resp.ok) {
-    let e; try { e = await resp.json(); } catch {}
-    throw new Error(e?.error || `HTTP ${resp.status}`);
-  }
-  return resp.json();
+  // apiParse y NO resp.json(): cuando la plataforma contesta antes que la
+  // función (402 en texto plano con la cuenta de Vercel suspendida), .json()
+  // explota con «Unexpected token 'P'» y el usuario ve eso en vez de la causa
+  // real. Es la regla que documenta api-client.js.
+  const data = await apiParse(resp);
+  if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+  return data;
 }
 
 // ── 1. CLASIFICAR ─────────────────────────────────────────────────
@@ -98,7 +120,10 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
  * `fuera` siempre es el complemento exacto de `mismas` (lo arma el server).
  */
 export async function correlacionarConIA({ variantes }) {
-  const lista = [...new Set((variantes || []).map(v => String(v || '').trim()).filter(Boolean))];
+  // Saneado ANTES de mandar (ver `saneado`): así lo que vuelve en `mismas` es
+  // carácter por carácter lo que se mandó, y el llamador puede mapearlo de
+  // vuelta a sus variantes sin sorpresas.
+  const lista = [...new Set((variantes || []).map(v => saneado(v)).filter(Boolean))];
   if (lista.length < 2) return { result: null, razonamiento: '' };
 
   // La pregunta es el CONJUNTO, no el orden en que llegó.
@@ -125,7 +150,13 @@ export async function mapearInsumoConIA({ insumo, unidad = '', clasificacion = '
   // El presupuesto es por obra: la misma pregunta en otra obra es otra pregunta.
   const clave = `mapeo::${obraId || ''}::${norm(nombre)}`;
   const hit = cacheLeer(clave);
-  if (hit) return { ...hit, _cached: true };
+  // Y el presupuesto de una obra SE REIMPORTA: si el código guardado ya no
+  // existe entre los candidatos de hoy, la respuesta vieja no sirve — se
+  // vuelve a preguntar en vez de mostrar «no encontró equivalente» con un
+  // razonamiento que dice lo contrario.
+  if (hit && candidatos.some(c => String(c.codigo) === String(hit?.result?.codigo_sugerido))) {
+    return { ...hit, _cached: true };
+  }
 
   const v = await postIA({
     action: 'mapear_insumo_presupuesto',

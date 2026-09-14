@@ -68,11 +68,26 @@ import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
-// Si un nombre clasifica como SERVICIO (árbol S01…S13) o como INSUMO (IUPC +
-// complementarias). Reusa el MISMO clasificador que "Clasificación de insumos
-// y servicios" — es la misma pregunta, una sola respuesta (pedido de Gabriel,
-// 14-sep: «dividir entre las sugerencias de insumos, y las de servicios»).
-const tipoDeNombre = (nombre) => (tipoDeCategoria(clasificarConIUPC(nombre).codigo) === 'servicio' ? 'servicio' : 'insumo');
+// Si un nombre clasifica como SERVICIO (árbol S01…S13), como INSUMO (IUPC +
+// complementarias) o como DESCONOCIDO. Reusa el MISMO clasificador que
+// "Clasificación de insumos y servicios" — es la misma pregunta, una sola
+// respuesta (pedido de Gabriel, 14-sep: «dividir entre las sugerencias de
+// insumos, y las de servicios»).
+//
+// 🔴 `terminosCustom` NO es opcional: el diccionario propio LE GANA a la base
+// (regla 8 del CLAUDE.md) y sin pasarlo esta pantalla clasificaría distinto
+// que todas las demás.
+//
+// 🔴 Y «sin_clasificar» devuelve 'desconocido', no 'insumo'. Si cayera del
+// lado de insumos, una forma de escribir un servicio que el estándar todavía
+// no reconoce quedaría en la pestaña de Insumos y su gemela reconocida en la
+// de Servicios: nunca más se podrían correlacionar entre sí, que es
+// justamente el par que más falta hace unir.
+const tipoDeNombre = (nombre, terminosCustom) => {
+  const cod = clasificarConIUPC(nombre, { terminosCustom }).codigo;
+  if (!cod || cod === 'sin_clasificar') return 'desconocido';
+  return tipoDeCategoria(cod) === 'servicio' ? 'servicio' : 'insumo';
+};
 
 // Un nombre con las diferencias contra `otro` resaltadas — mismo criterio que
 // decide el motor (resaltarDiferencias usa tokenMatch, el mismo de
@@ -233,6 +248,11 @@ function AnalisisInsumosPage({ showToast }) {
   const movsHook = window.__hooks.useAccountingMovements();
   const corrHook = window.__hooks.useInsumoCorrelaciones();
   const compHook = window.__hooks.useCompanies();
+  // El diccionario propio: le GANA a la base oficial al clasificar (regla 8
+  // del CLAUDE.md), así que el corte insumo/servicio de las correlaciones
+  // tiene que mirarlo igual que lo mira la sección de Clasificación.
+  const terHook = window.__hooks.useClasificacionTerminos();
+  const terminosCustom = terHook.data || null;
   // ÁMBITO, no filtro: con una empresa activa ésta es SU base de insumos y el
   // selector va clavado — el mismo corte que usan las 15 pantallas contables.
   const empresaFija = useEmpresaBloqueada();
@@ -324,16 +344,19 @@ function AnalisisInsumosPage({ showToast }) {
   const tipoPorNombre = uM(() => {
     const m = new Map();
     for (const l of lineasEntidad) {
-      if (!m.has(l.nombreNorm)) m.set(l.nombreNorm, tipoDeNombre(l.nombre));
+      if (!m.has(l.nombreNorm)) m.set(l.nombreNorm, tipoDeNombre(l.nombre, terminosCustom));
     }
     return m;
-  }, [lineasEntidad]);
+  }, [lineasEntidad, terminosCustom]);
+  // Las que el estándar NO reconoce entran a las DOS listas: su gemela puede
+  // estar de cualquiera de los dos lados, y dejarlas en una sola las
+  // condenaría a no poder correlacionarse nunca (ver `tipoDeNombre`).
   const nombresInsumos = uM(
     () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) !== 'servicio').map(c => c.nombre),
     [lineasEntidad, tipoPorNombre]
   );
   const nombresServicios = uM(
-    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) === 'servicio').map(c => c.nombre),
+    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) !== 'insumo').map(c => c.nombre),
     [lineasEntidad, tipoPorNombre]
   );
   // Sugerir pares cruzando tanto compras como ventas registradas, cada árbol
@@ -887,9 +910,16 @@ function AnalisisInsumosPage({ showToast }) {
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
                       onAplicar={(mismas) => {
-                        const crudoDe = (v) => muestraDe.get(normInsumo(v))?.nombre || v;
+                        // Se comparan NORMALIZADOS: el nombre que vuelve pasó
+                        // por el saneado del server (espacios colapsados,
+                        // corte a 160) y un === contra el crudo dejaba afuera
+                        // justo las que la IA había dejado adentro.
+                        const dentroNorm = new Set(mismas.map(normInsumo));
                         setExcluidasCluster(p => ({
-                          ...p, [c.id]: c.variantes.filter(v => !mismas.includes(crudoDe(v))),
+                          ...p,
+                          [c.id]: c.variantes.filter(v => !dentroNorm.has(
+                            normInsumo(muestraDe.get(normInsumo(v))?.nombre || v)
+                          )),
                         }));
                       }}
                     />

@@ -607,6 +607,11 @@ function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, o
                   listId={listId}
                   opciones={OPCIONES_CLASIFICACION}
                   value={categoriaSel}
+                  // Sin esto, una fila que cae en el fallback 'otros' (o en una
+                  // categoría vieja) mostraba el campo VACÍO y «Aceptar» igual
+                  // guardaba ese valor: se aceptaba a ciegas algo que no se veía.
+                  actualLabel={categoriaSel ? etiquetaCategoria(categoriaSel) : null}
+                  permitirVacio
                   onChange={setCategoriaSel}
                   placeholder={sinPropuesta ? '— Escribí para elegir —' : 'Escribí para buscar…'}
                   style={{
@@ -698,6 +703,8 @@ function AltaEnCatalogo({ fila, listId, onCancel, onGuardar }) {
             listId={listId}
             opciones={OPCIONES_CLASIFICACION}
             value={familia}
+            actualLabel={familia ? etiquetaCategoria(familia) : null}
+            permitirVacio
             onChange={setFamilia}
             placeholder="Escribí para buscar…"
             style={{ width: '100%' }}

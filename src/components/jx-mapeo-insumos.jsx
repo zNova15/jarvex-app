@@ -68,20 +68,27 @@ const SearchableSelect = (p) => (window.SearchableSelect ? <window.SearchableSel
  * Nunca decide sola: deja el insumo elegido en el selector y la decisión
  * sigue siendo tocar "Es este".
  */
-function AyudaMapeoIA({ fila, candidatos, obraId, onElegir }) {
+function AyudaMapeoIA({ fila, candidatosIA, obraId, onElegir }) {
   const [res, setRes] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
+  const [candidatos, setCandidatos] = uS([]);
 
   const preguntar = async () => {
     if (cargando) return;
     setCargando(true); setError(null); setRes(null);
     try {
+      // Los candidatos se arman ACÁ, recién al tocar el botón: hacerlo en un
+      // memo de la fila tokenizaba el presupuesto entero por cada una de las
+      // 60 filas en pantalla, aunque nadie preguntara nada.
+      const lista = candidatosIA(fila);
+      setCandidatos(lista);
+      if (!lista.length) { setError('No hay insumos del presupuesto contra los que preguntar.'); return; }
       const r = await mapearInsumoConIA({
         insumo: fila.nombre,
         unidad: fila.unidad || '',
         clasificacion: fila.clasificacionNombre || '',
-        candidatos,
+        candidatos: lista,
         obraId,
       });
       setRes({
@@ -101,9 +108,7 @@ function AyudaMapeoIA({ fila, candidatos, obraId, onElegir }) {
 
   return (
     <div style={{ marginTop: 6 }}>
-      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando || !candidatos.length}
-        title={!candidatos.length ? 'No hay insumos del presupuesto contra los que preguntar' : undefined}
-        onClick={preguntar}>
+      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
         {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
       </button>
       {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
@@ -588,11 +593,6 @@ function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, desti
   const banda = cand ? bandaDe(cand.score) : null;
   const fac = destino ? factorPropuesto(f, destino) : null;
   const et = fac?.fuente ? ETIQUETA_FUENTE[fac.fuente] : null;
-  // Se arma solo cuando la fila está pendiente (las decididas no preguntan).
-  const candIA = uM(
-    () => (candidatosIA && f.estado !== 'decididas' && f.estado !== 'sin_clasificar' ? candidatosIA(f) : []),
-    [candidatosIA, f],
-  );
 
   return (
     <div style={{ borderTop: '1px solid var(--border)', padding: '9px 8px', display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -666,7 +666,7 @@ function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, desti
                 {et && <span className={`badge ${et.color}`} style={{ marginLeft: 6 }} title={et.ayuda}>{et.txt}</span>}
               </div>
             )}
-            <AyudaMapeoIA fila={f} candidatos={candIA} obraId={obraId} onElegir={onElegir} />
+            {candidatosIA && <AyudaMapeoIA fila={f} candidatosIA={candidatosIA} obraId={obraId} onElegir={onElegir} />}
           </div>
         )}
       </div>

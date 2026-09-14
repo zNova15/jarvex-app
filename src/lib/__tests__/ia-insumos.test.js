@@ -11,6 +11,12 @@ function setupLocalStorage() {
   };
 }
 
+
+// apiParse() (la regla de api-client.js) lee resp.text(), no resp.json():
+// los mocks tienen que espejar eso.
+const respOk = (obj) => ({ ok: true, status: 200, text: async () => JSON.stringify(obj) });
+const respErr = (status, obj) => ({ ok: false, status, text: async () => JSON.stringify(obj) });
+
 const CANDIDATOS = [
   { codigo: '37', nombre: '[37] Herramienta manual' },
   { codigo: '83', nombre: '[83] Implemento y accesorio de seguridad' },
@@ -35,7 +41,7 @@ describe('clasificarInsumoConIA', () => {
       confianza: 0.92,
       razonamiento: 'Es ropa de trabajo con cinta reflectiva: EPP, no herramienta.',
     };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     const r = await clasificarInsumoConIA({
       descripcion: 'PANTALON Y CAMISACO DE DRILL OBRERO AZUL CON CINTA REFLECTIVA',
       candidatos: CANDIDATOS,
@@ -50,7 +56,7 @@ describe('clasificarInsumoConIA', () => {
 
   it('cachea por descripción: segunda llamada no repite el request', async () => {
     const respMock = { result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.7, razonamiento: 'ok' };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     const r1 = await clasificarInsumoConIA({ descripcion: 'Llave stillson', candidatos: CANDIDATOS });
     expect(r1._cached).toBeUndefined();
     const r2 = await clasificarInsumoConIA({ descripcion: '  LLAVE STILLSON  ', candidatos: CANDIDATOS });
@@ -59,10 +65,9 @@ describe('clasificarInsumoConIA', () => {
   });
 
   it('propaga el error del endpoint (para poder reintentar con el botón)', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false, status: 503,
-      json: async () => ({ error: 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.' }),
-    });
+    globalThis.fetch = vi.fn().mockResolvedValue(respErr(503, {
+      error: 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.',
+    }));
     await expect(
       clasificarInsumoConIA({ descripcion: 'Cemento', candidatos: CANDIDATOS })
     ).rejects.toThrow(/gratuito no respondió/i);
@@ -70,10 +75,23 @@ describe('clasificarInsumoConIA', () => {
 
   it('cuando la IA propone algo fuera de la lista, result viene null (no se inventa nada)', async () => {
     const respMock = { result: null, razonamiento: 'La IA propuso un código fuera de la lista ("99") — no se aplicó nada.' };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     const r = await clasificarInsumoConIA({ descripcion: 'Algo raro', candidatos: CANDIDATOS });
     expect(r.result).toBeNull();
     expect(r.razonamiento).toMatch(/fuera de la lista/);
+  });
+
+  it('una NO-respuesta no se cachea: el botón puede volver a preguntar', async () => {
+    // Cachear un `result: null` 30 días convierte el «tocá el botón otra vez»
+    // en mentira: devolvería la misma no-respuesta para siempre.
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(respOk({ result: null, razonamiento: 'nada usable' }))
+      .mockResolvedValueOnce(respOk({ result: { codigo_sugerido: '83', alternativas: [] }, confianza: 0.9, razonamiento: 'ahora sí' }));
+    const r1 = await clasificarInsumoConIA({ descripcion: 'Casco', candidatos: CANDIDATOS });
+    expect(r1.result).toBeNull();
+    const r2 = await clasificarInsumoConIA({ descripcion: 'Casco', candidatos: CANDIDATOS });
+    expect(r2.result?.codigo_sugerido).toBe('83');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -90,7 +108,7 @@ describe('correlacionarConIA', () => {
       result: { mismas: ['Clavo N3', 'Clavo numero 3'], fuera: ['Clavo de 4'], canonico: 'Clavo numero 3' },
       confianza: 0.9, razonamiento: 'Mismo clavo, distinta escritura; el de 4 es otra medida.',
     };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     const r = await correlacionarConIA({ variantes: ['Clavo N3', 'Clavo numero 3', 'Clavo de 4'] });
     expect(r.result.mismas).toHaveLength(2);
     expect(r.result.fuera).toEqual(['Clavo de 4']);
@@ -102,7 +120,7 @@ describe('correlacionarConIA', () => {
 
   it('la clave de cache es el CONJUNTO, no el orden', async () => {
     const respMock = { result: { mismas: [], fuera: ['a', 'b'], canonico: null }, confianza: 0.4, razonamiento: 'distintos' };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     await correlacionarConIA({ variantes: ['Tubo A', 'Tubo B'] });
     const r2 = await correlacionarConIA({ variantes: ['Tubo B', 'Tubo A'] });
     expect(r2._cached).toBe(true);
@@ -125,7 +143,7 @@ describe('mapearInsumoConIA', () => {
 
   it('manda el insumo con sus candidatos del presupuesto', async () => {
     const respMock = { result: { codigo_sugerido: 'I001', alternativas: [] }, confianza: 0.88, razonamiento: 'Mismo fierro de 1/2.' };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     const r = await mapearInsumoConIA({
       insumo: 'FIERRO CORRUGADO 1/2', unidad: 'var', clasificacion: '[03] Acero corrugado',
       candidatos: PRESU, obraId: 'obra-1',
@@ -137,9 +155,19 @@ describe('mapearInsumoConIA', () => {
     expect(body.candidatos[0]).toEqual({ codigo: 'I001', nombre: PRESU[0].nombre, unidad: 'kg', clasificacion: PRESU[0].clasificacion });
   });
 
+  it('si el presupuesto se reimportó y el código guardado ya no existe, se vuelve a preguntar', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk({ result: { codigo_sugerido: 'I001', alternativas: [] }, confianza: 0.9, razonamiento: 'ok' }));
+    await mapearInsumoConIA({ insumo: 'FIERRO 1/2', candidatos: PRESU, obraId: 'o1' });
+    // Mismo insumo, misma obra, pero el presupuesto ya no tiene I001.
+    const otroPresu = [{ codigo: 'Z999', nombre: 'OTRA COSA', unidad: 'und', clasificacion: '' }];
+    const r = await mapearInsumoConIA({ insumo: 'FIERRO 1/2', candidatos: otroPresu, obraId: 'o1' });
+    expect(r._cached).toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('la cache distingue por obra: el mismo insumo en otro presupuesto se pregunta de nuevo', async () => {
     const respMock = { result: { codigo_sugerido: 'I001', alternativas: [] }, confianza: 0.8, razonamiento: 'ok' };
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => respMock });
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(respMock));
     await mapearInsumoConIA({ insumo: 'FIERRO 1/2', candidatos: PRESU, obraId: 'obra-1' });
     const r2 = await mapearInsumoConIA({ insumo: 'FIERRO 1/2', candidatos: PRESU, obraId: 'obra-1' });
     expect(r2._cached).toBe(true);

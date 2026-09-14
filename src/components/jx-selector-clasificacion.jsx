@@ -43,10 +43,17 @@ function ClasificacionDatalist({ id, opciones }) {
  * vocabulario viejo), la etiqueta a mostrar igual — el campo no se ve vacío,
  * pero para cambiarlo hay que escribir y elegir una opción real de la lista.
  */
+/**
+ * `permitirVacio`: dejar el campo en blanco BORRA la selección (onChange('')).
+ * Va apagado por defecto a propósito — en las filas que escriben al instante
+ * (la lista de insumos llama a corregirEnLote en cada cambio) un campo vacío
+ * guardaría una categoría vacía. Se prende donde el vacío YA significa algo:
+ * el selector de lote, el de equivalencias y las filas sin propuesta.
+ */
 function SelectorClasificacion({
   listId, opciones, value, onChange, actualLabel = null,
   placeholder = 'Escribí para buscar…', disabled = false, style, className = 'fi',
-  onClick, title,
+  onClick, title, permitirVacio = false,
 }) {
   const porCodigo = uM(() => new Map(opciones.map(o => [o.codigo, o])), [opciones]);
   const porLabelNorm = uM(() => new Map(opciones.map(o => [normIUPC(o.label), o])), [opciones]);
@@ -60,6 +67,11 @@ function SelectorClasificacion({
   uE(() => { setTexto(labelActual); }, [labelActual]);
 
   const commit = (crudo) => {
+    if (permitirVacio && !String(crudo || '').trim()) {
+      setTexto('');
+      if (value) onChange?.('');
+      return;
+    }
     const hit = porLabelNorm.get(normIUPC(crudo));
     if (hit) {
       setTexto(hit.label);

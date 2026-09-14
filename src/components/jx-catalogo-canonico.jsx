@@ -737,6 +737,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                   opciones={opcionesClasificacion}
                   value={famLote}
                   onChange={setFamLote}
+                  permitirVacio
                   placeholder="— elegir categoría —"
                   style={{ fontSize: 12, width: 240 }}
                 />
@@ -898,6 +899,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                       opciones={opcionesClasificacion}
                       value={eqElegida[f.familia_local] || ''}
                       onChange={cod => setEqElegida(p => ({ ...p, [f.familia_local]: cod }))}
+                      permitirVacio
                       placeholder="— equivale a —"
                       style={{ fontSize: 11, width: 190 }}
                     />

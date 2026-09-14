@@ -45,6 +45,9 @@ describe('Verificación dentro de la aplicación (E2E Component & Logic)', () =>
     window.__hooks = {
       useAccountingMovements: () => ({ data: [] }),
       useInsumoCorrelaciones: () => ({ data: [] }),
+      // El corte insumo/servicio de Correlaciones mira el diccionario propio
+      // (regla 8 del CLAUDE.md: le gana a la base oficial).
+      useClasificacionTerminos: () => ({ data: [] }),
       useCompanies: () => ({ data: [{ id: 'emp-1', name: 'Constructora Alfa', tipo_entidad: 'propia' }] }),
     };
 
