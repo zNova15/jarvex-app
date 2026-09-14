@@ -206,3 +206,58 @@ export function candidatasDeNota(nota, movimientos, { tolerancia = 0.05, maximo 
       || String(b.fecha).localeCompare(String(a.fecha)))
     .slice(0, maximo);
 }
+
+/** Las notas de crédito HUÉRFANAS (sin `related_movement_id`, o apuntando a
+ *  algo que ya no existe / a otra nota). Mismo criterio que usa el Escáner. */
+function notasHuerfanas(movimientos) {
+  const vivos = (movimientos || []).filter(m => m && !m.deleted_at);
+  const porId = new Map(vivos.map(m => [m.id, m]));
+  return vivos.filter(n => {
+    if (!esNotaCredito(n)) return false;
+    const destino = n.related_movement_id ? porId.get(n.related_movement_id) : null;
+    return !destino || esNota(destino);
+  });
+}
+
+/**
+ * Al confirmar una factura NUEVA, ¿había una nota de crédito huérfana
+ * ESPERÁNDOLA?
+ *
+ * ── EL CASO REAL (MILIAN SANCHEZ BENJAMIN, GASOMI, 13-set-2026) ────
+ * Gabriel: «puede que ocurra el caso donde una factura se inserte en el
+ * programa después que la nota de crédito y entonces no se vinculan». Medido:
+ * la nota E001-13 se cargó SIETE HORAS antes que la factura E001-61 que
+ * anula — a esa hora la factura no existía todavía, así que el match de
+ * Captura Mágica (que solo mira lo YA cargado) no tenía contra qué resolver,
+ * y `related_movement_id` quedó vacío PARA SIEMPRE: nada volvía a intentarlo
+ * cuando la factura por fin llegó. Mismo agujero que `resolverGuiasPendientes`
+ * tapa para las guías de remisión, del lado de las notas.
+ *
+ * SOLO se auto-vincula sin ambigüedad: mismo RUC y empresa, importe EXACTO
+ * (una rebaja PARCIAL la decide una persona, no esta función) y la factura
+ * tiene que ser la ÚNICA candidata exacta de esa nota — reusa exactamente
+ * `candidatasDeNota`, así que el criterio de "candidata" nunca diverge entre
+ * el auto-vínculo y lo que el Escáner le propone a la persona. Con más de un
+ * candidato exacto (dos facturas del mismo importe al mismo proveedor) NO se
+ * adivina: la nota se deja para que el Escáner la proponga y se elija mirando
+ * el PDF — ver la cabecera de `candidatasDeNota`.
+ *
+ * @returns el movimiento de la nota a vincular, o null si no hay ninguna
+ *          esperando (sin ambigüedad) por esta factura.
+ */
+export function notaEsperandoEstaFactura(factura, movimientos) {
+  if (!factura || esNota(factura)) return null;
+  const rucFactura = String(factura.third_party_ruc ?? '').replace(/\D/g, '');
+  if (!rucFactura || !factura.company_id) return null;
+
+  const vivos = (movimientos || []).filter(m => m && !m.deleted_at);
+  const huerfanas = notasHuerfanas(vivos).filter(n =>
+    n.company_id === factura.company_id
+    && String(n.third_party_ruc ?? '').replace(/\D/g, '') === rucFactura);
+
+  for (const nota of huerfanas) {
+    const exactas = candidatasDeNota(nota, vivos).filter(c => c.exacta);
+    if (exactas.length === 1 && exactas[0].id === factura.id) return nota;
+  }
+  return null;
+}

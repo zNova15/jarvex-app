@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   esNota, esNotaCredito, motivoEsAnulacion, motivoDeNota,
   notasPorFactura, anulaFacturaCompleta, avisoSerieRepetida, candidatasDeNota,
+  notaEsperandoEstaFactura,
 } from '../notas-credito.js';
 
 const FAC = (id, document_number, amount, extra = {}) =>
@@ -192,5 +193,74 @@ describe('notas-credito — candidatasDeNota', () => {
     ];
     const r = candidatasDeNota(nota(-100, '2026-05-12'), movs);
     expect(r[0].documento).toBe('F748-2');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LA FACTURA LLEGA DESPUÉS QUE LA NOTA (13-set-2026)
+//
+// Caso real: MILIAN SANCHEZ BENJAMIN (GASOMI) — la nota de crédito E001-13 se
+// cargó SIETE HORAS antes que la factura E001-61 que anula. A esa hora la
+// factura no existía todavía, así que el match de Captura Mágica no tenía
+// contra qué resolver y `related_movement_id` quedó vacío para siempre: nada
+// volvía a intentarlo cuando la factura por fin llegó.
+// ═══════════════════════════════════════════════════════════════════
+describe('notas-credito — notaEsperandoEstaFactura (la nota llegó primero)', () => {
+  const EMP = 'gasomi';
+  const RUC = '10434481100';
+  const fac = (id, doc, amount, date, extra = {}) => ({
+    id, document_number: doc, amount, date, company_id: EMP,
+    third_party_ruc: RUC, document_type: 'factura', ...extra,
+  });
+  const nc = (id, doc, amount, date, related_movement_id = null, extra = {}) => ({
+    id, document_number: doc, amount, date, company_id: EMP,
+    third_party_ruc: RUC, document_type: 'nota_credito', related_movement_id, ...extra,
+  });
+
+  it('🔴 el caso MILIAN SANCHEZ: la factura recién llegada cierra el vínculo de la nota huérfana', () => {
+    // Orden real: la nota (E001-13, 27-jun) ya estaba cargada; la factura
+    // (E001-61, 26-jun, importe EXACTO) recién se confirma.
+    const notaHuerfana = nc('n1', 'E001-13', -1800, '2026-06-27');
+    const facturaNueva = fac('f1', 'E001-61', 1800, '2026-06-26');
+    const encontrada = notaEsperandoEstaFactura(facturaNueva, [notaHuerfana, facturaNueva]);
+    expect(encontrada?.id).toBe('n1');
+  });
+
+  it('con DOS candidatas de importe exacto, no adivina — deja la nota para el Escáner', () => {
+    const notaHuerfana = nc('n1', 'E001-13', -1800, '2026-06-27');
+    const facturaNueva = fac('f1', 'E001-61', 1800, '2026-06-26');
+    const otraFacturaIgual = fac('f2', 'E001-60', 1800, '2026-06-25');
+    expect(notaEsperandoEstaFactura(facturaNueva, [notaHuerfana, facturaNueva, otraFacturaIgual])).toBe(null);
+  });
+
+  it('una rebaja PARCIAL (importe distinto) no se auto-vincula: la decide una persona', () => {
+    const notaHuerfana = nc('n1', 'E001-13', -900, '2026-06-27');   // no cubre el total
+    const facturaNueva = fac('f1', 'E001-61', 1800, '2026-06-26');
+    expect(notaEsperandoEstaFactura(facturaNueva, [notaHuerfana, facturaNueva])).toBe(null);
+  });
+
+  it('una nota que YA tiene vínculo vivo no se toca', () => {
+    const notaLigada = nc('n1', 'E001-13', -1800, '2026-06-27', 'f-otra');
+    const facturaOtra = fac('f-otra', 'E001-1', 1800, '2026-06-01');
+    const facturaNueva = fac('f1', 'E001-61', 1800, '2026-06-26');
+    expect(notaEsperandoEstaFactura(facturaNueva, [notaLigada, facturaOtra, facturaNueva])).toBe(null);
+  });
+
+  it('distinto RUC o distinta empresa no cruza', () => {
+    const notaHuerfana = nc('n1', 'E001-13', -1800, '2026-06-27');
+    const facturaOtroRuc = fac('f1', 'E001-61', 1800, '2026-06-26', { third_party_ruc: '20999999999' });
+    expect(notaEsperandoEstaFactura(facturaOtroRuc, [notaHuerfana, facturaOtroRuc])).toBe(null);
+    const facturaOtraEmpresa = fac('f2', 'E001-61', 1800, '2026-06-26', { company_id: 'otra-empresa' });
+    expect(notaEsperandoEstaFactura(facturaOtraEmpresa, [notaHuerfana, facturaOtraEmpresa])).toBe(null);
+  });
+
+  it('una nota de crédito nunca se propone a sí misma como "factura esperada"', () => {
+    const nota1 = nc('n1', 'E001-13', -1800, '2026-06-27');
+    expect(notaEsperandoEstaFactura(nota1, [nota1])).toBe(null);
+  });
+
+  it('sin ninguna huérfana pendiente, no hace nada', () => {
+    const facturaNueva = fac('f1', 'E001-61', 1800, '2026-06-26');
+    expect(notaEsperandoEstaFactura(facturaNueva, [facturaNueva])).toBe(null);
   });
 });

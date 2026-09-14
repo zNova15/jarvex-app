@@ -49,6 +49,12 @@ const ALLOWED_MIME = [
   'image/jpeg',
   'image/png',
   'image/webp',
+  // HEIC/HEIF (13-set-2026): las fotos que salen de "Tomar foto" en un iPhone
+  // cuando el sistema no las convirtió solo a JPEG. Se aceptan acá y se
+  // CONVIERTEN a JPEG más abajo (donde se validan los magic bytes) antes de mandarlas a
+  // Mistral OCR o a Claude visión — ninguno de los dos motores lee HEIC.
+  'image/heic',
+  'image/heif',
 ];
 
 // Máximo 8 MB de string base64 (≈6 MB binario)
@@ -228,6 +234,9 @@ exacta es la siguiente (se muestra indentada SOLO para que la leas, tu salida va
 }`;
 
 import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib/api-helpers.js';
+// HEIC/HEIF → JPEG. Puro JS/WASM (heic-decode usa libheif-js): sin binario
+// nativo que compilar, corre igual en cualquier función de Vercel.
+import heicConvert from 'heic-convert';
 import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
 import { estimarItems } from '../lib/ocr-items.js';
 import { modeloOcr, textoPaginadoSctr } from '../lib/mistral-ocr.js';
@@ -673,6 +682,12 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const file = typeof body.file === 'string' ? body.file.trim() : '';
   const mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim() : '';
+  // El tipo con el que de verdad se procesa el archivo de acá en adelante.
+  // Empieza igual a `mimeType` (lo que declaró el cliente) pero cambia a
+  // 'image/jpeg' si resultó ser un HEIC — ver la conversión más abajo.
+  // `mimeType` queda intacto para los mensajes de error que hablan del
+  // archivo ORIGINAL que subió la persona.
+  let mimeEfectivo = mimeType;
 
   // ── Multiplex: RELECTURA DE ÍTEMS ────────────────────────────────
   // Es el ÚNICO modo que puede venir SIN archivo: cuando el navegador ya tiene
@@ -717,13 +732,35 @@ export default async function handler(req, res) {
 
     // Validar magic bytes — no confiar en mimeType declarado por el cliente.
     // Un attacker puede mandar un .exe disfrazado como image/png.
+    let buf;
     try {
-      const buf = Buffer.from(cleanBase64, 'base64');
+      buf = Buffer.from(cleanBase64, 'base64');
       const v = validateFileBytes(buf, mimeType);
       if (!v.ok) {
         return res.status(415).json({
           error: v.reason || `El contenido del archivo no coincide con el tipo declarado (${mimeType}). Real: ${v.actualType || 'desconocido'}.`,
         });
+      }
+      // ── HEIC/HEIF → JPEG ─────────────────────────────────────────────
+      // Gabriel, 13-set-2026: «captura mágica no me deja procesar evidencia
+      // .heic, que subieron por captura rápido algunas personas». Ni Mistral
+      // OCR ni Claude visión leen HEIC — hay que convertirlo ACÁ, en el
+      // servidor, para que no importe si el teléfono que subió la foto podía
+      // decodificar HEIC en su propio navegador o no (muchos Android y
+      // Windows no pueden; esta conversión no depende de ninguno de los dos).
+      if (v.actualType === 'heic') {
+        try {
+          const jpegBuf = await heicConvert({ buffer: buf, format: 'JPEG', quality: 0.85 });
+          buf = Buffer.from(jpegBuf);
+          cleanBase64 = buf.toString('base64');
+          mimeEfectivo = 'image/jpeg';
+        } catch (eHeic) {
+          console.error('[captura-magica] conversión HEIC falló:', eHeic?.message || eHeic);
+          return res.status(422).json({
+            error: 'No se pudo convertir esta foto HEIC a un formato legible. Probá exportarla como JPEG desde el teléfono (en Fotos: Compartir → "Opciones" → Formato "Más compatible") y volvé a subirla.',
+            code: 'heic_no_convertido',
+          });
+        }
       }
     } catch (e) {
       return res.status(422).json({ error: 'No se pudo decodificar base64' });
@@ -735,7 +772,7 @@ export default async function handler(req, res) {
   // ── Multiplex: modo paquete SCTR (cotización + constancia + pago + factura
   // en un solo PDF — clasifica páginas y extrae asegurados/vigencia). ──
   const esSctr = body.tipo === 'sctr_paquete';
-  if (esSctr && mimeType !== 'application/pdf') {
+  if (esSctr && mimeEfectivo !== 'application/pdf') {
     return res.status(422).json({ error: 'El modo sctr_paquete requiere un PDF' });
   }
   let requisito = null;
@@ -769,16 +806,16 @@ export default async function handler(req, res) {
   // completo (ni el prompt grande, ni el rescate de cabecera, ni la visión).
   if (esItems) {
     return await estructurarItems({
-      res, isProd, deadline, mistralKey, cleanBase64, mimeType,
+      res, isProd, deadline, mistralKey, cleanBase64, mimeType: mimeEfectivo,
       textoOcr: textoOcrCliente, elegidoOcr, elegidoTexto, cfgOR, apiKey,
     });
   }
 
   // Bloque de contenido para el fallback de visión (PDF vs imagen).
-  const isPdf = mimeType === 'application/pdf';
+  const isPdf = mimeEfectivo === 'application/pdf';
   const fileBlock = isPdf
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: cleanBase64 } }
-    : { type: 'image', source: { type: 'base64', media_type: mimeType, data: cleanBase64 } };
+    : { type: 'image', source: { type: 'base64', media_type: mimeEfectivo, data: cleanBase64 } };
   const systemPrompt = esSctr ? SYSTEM_PROMPT_SCTR : (esCert ? SYSTEM_PROMPT_CERTIFICADO : SYSTEM_PROMPT);
   const reqTexto = esCert
     ? `REQUISITO DEL EXPEDIENTE TÉCNICO:\n- Insumo: ${requisito.insumo}\n${requisito.norma ? `- Norma: ${requisito.norma}\n` : ''}- Especificación mínima: ${requisito.especificacion}`
@@ -814,7 +851,7 @@ export default async function handler(req, res) {
   // Si el OCR falla o devuelve pocas páginas, se cae a la visión de siempre.
   if (mistralKey) {
     try {
-      const r = await mistralOcr(cleanBase64, mimeType, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : elegidoOcr.modelo);
+      const r = await mistralOcr(cleanBase64, mimeEfectivo, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : elegidoOcr.modelo);
       // Para SCTR el texto no alcanza: lo que se pide es en QUÉ PÁGINA está
       // cada documento, así que sin `paginas` el OCR no sirve y hay que ir por
       // visión igual que antes.

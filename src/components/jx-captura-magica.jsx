@@ -13,7 +13,8 @@ import { valeLaPenaConsultar, compararSugerencia } from "../lib/sugerencia-clasi
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { etiquetaMotorIa } from "../lib/ia-motor.js";
 import { totalesConModoIgv, precioSinIgv } from "../lib/precios-igv.js";
-import { avisoSerieRepetida, anulaFacturaCompleta, motivoEsAnulacion } from "../lib/notas-credito.js";
+import { avisoSerieRepetida, anulaFacturaCompleta, motivoEsAnulacion, notaEsperandoEstaFactura } from "../lib/notas-credito.js";
+import { ALLOWED_MIME_CAPTURA, mimeEfectivoDeArchivo } from "../lib/captura-magica-archivos.js";
 // Guías: import ESTÁTICO. guias.js ya era un chunk propio por el import()
 // dinámico de confirmarGuia y lo comparte con jx-guias, así que traerlo acá no
 // suma chunks y permite calcular las facturas candidatas en un useMemo (la
@@ -128,7 +129,10 @@ const fmtCurMagic = (n, cur = 'PEN') => {
   return sym + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
-const ALLOWED_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+// Qué archivos acepta Captura Mágica y con qué mimeType se mandan — incluido
+// el HEIC/HEIF de iPhone, que el servidor convierte a JPEG antes de leerlo
+// (ver api/captura-magica.js). Lib pura con tests: src/lib/captura-magica-archivos.js.
+const ALLOWED_MIME = ALLOWED_MIME_CAPTURA;
 // 3 MB BINARIOS: al enviarse en base64 crece ×1.334 (~4.0 MB de body) y la
 // plataforma corta en ~4.5 MB. Antes el tope era 6 MB (≈8 MB de body): todo lo
 // que pesaba entre ~3.3 y 6 MB pasaba este control y moría en el servidor con
@@ -367,12 +371,12 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       if (!resp.ok) throw new Error(`descarga falló (${resp.status})`);
       const blob = await resp.blob();
       const file = new File([blob], ev.nombre_archivo || 'factura-campo.jpg', { type: ev.mime_type || blob.type || 'image/jpeg' });
-      // La foto de campo ya se optimizó al subirse; pero si venía en HEIC de un
-      // iPhone que este equipo no pudo convertir, llega pesada y con mime no
-      // aceptado por handleFiles → aviso accionable en vez del error genérico.
-      const mimeOk = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(file.type);
+      // El HEIC de iPhone (13-set) ya lo convierte el SERVER antes de mandarlo
+      // a leer (ver api/captura-magica.js) — acá solo queda filtrar lo que de
+      // verdad no se puede procesar, o lo que pesa demasiado.
+      const mimeOk = ALLOWED_MIME.includes(mimeEfectivoDeArchivo(file));
       if (!mimeOk || file.size > 3 * 1024 * 1024) {
-        showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee (HEIC de iPhone)' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
+        showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
         return;
       }
       const resultados = await onInyectar([file]);
@@ -878,8 +882,9 @@ function CapturaMagicaPage({ showToast }) {
     const files = Array.from(fileList || []);
     const nuevos = [];
     for (const f of files) {
-      if (!ALLOWED_MIME.includes(f.type)) {
-        showToast(`"${f.name}": tipo no soportado (solo PDF, JPG, PNG, WEBP)`, 'red');
+      const mimeEfectivo = mimeEfectivoDeArchivo(f);
+      if (!ALLOWED_MIME.includes(mimeEfectivo)) {
+        showToast(`"${f.name}": tipo no soportado (solo PDF, JPG, PNG, WEBP, HEIC)`, 'red');
         continue;
       }
       if (f.size > MAX_FILE_BYTES) {
@@ -891,7 +896,10 @@ function CapturaMagicaPage({ showToast }) {
         file: f,
         name: f.name,
         size: f.size,
-        mimeType: f.type,
+        // Normalizado (no `f.type` crudo): un HEIC de iPhone con `file.type`
+        // vacío necesita este valor bien puesto para que el server sepa qué
+        // convertir — ver mimeEfectivoDeArchivo().
+        mimeType: mimeEfectivo,
         user_id: userId,
         status: 'pendiente',
         base64: null,
@@ -954,7 +962,9 @@ function CapturaMagicaPage({ showToast }) {
         method: 'POST',
         timeout: 90000,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: base64, mimeType: file.type, ...modelosIA }),
+        // mimeEfectivoDeArchivo(), no file.type crudo: un HEIC con file.type
+        // vacío (quirk de Safari/iOS) llegaría al server sin decir qué es.
+        body: JSON.stringify({ file: base64, mimeType: mimeEfectivoDeArchivo(file), ...modelosIA }),
       });
       // apiParse NUNCA explota con respuestas no-JSON: traduce el 402
       // "Payment required" de la plataforma (deployment deshabilitado por
@@ -1488,6 +1498,37 @@ function CapturaMagicaPage({ showToast }) {
 
   // ── Confirmar e insertar en DB ──────────────────────────────
   const enProcesoRef = uRCM(new Set());   // ids de items en confirmación (anti doble-submit)
+  // ── NOTAS DE CRÉDITO QUE ESTABAN ESPERANDO esta factura ─────────────────
+  // Gabriel, 13-set-2026: «puede que ocurra el caso donde una factura se
+  // inserte en el programa después que la nota de crédito y entonces no se
+  // vinculan». Confirmado contra la base: la nota E001-13 de MILIAN SANCHEZ
+  // se cargó SIETE HORAS antes que la factura E001-61 que anula — a esa hora
+  // Captura Mágica no tenía contra qué resolver el vínculo (solo mira lo YA
+  // cargado) y quedó vacío para siempre. Mismo agujero que
+  // `resolverGuiasPendientes` (más abajo) tapa para las guías, del lado de
+  // las notas — la lógica de "sin ambigüedad" vive en notas-credito.js, con tests.
+  const resolverNotasPendientes = async (mov, esPrueba) => {
+    try {
+      const movsDB = await window.__db.accounting_movements
+        .filter(m => !m.deleted_at && m.company_id === mov.company_id && !!m.demo === !!esPrueba).toArray();
+      const nota = notaEsperandoEstaFactura(mov, movsDB);
+      if (!nota) return;
+      const ahora = new Date().toISOString();
+      await window.__db.accounting_movements.update(nota.id, {
+        related_movement_id: mov.id,
+        updated_at: ahora, updated_by: userId,
+        version: (Number(nota.version) || 1) + 1,
+        sync_status: nota.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { await window.__logAudit?.({ action: 'update', table: 'accounting_movements', recordId: nota.id,
+        reason: `Factura ${mov.document_number || ''} cerró el vínculo pendiente de la nota de crédito ${nota.document_number || ''} (Captura Mágica)` }); } catch {}
+      window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } }));
+      showToast(`🔗 La nota de crédito ${nota.document_number || 's/n'} estaba esperando esta factura — quedó vinculada.`, 'green');
+    } catch (e) {
+      console.warn('[captura-magica] resolver notas pendientes', e?.message);
+    }
+  };
+
   // Cierra los pendientes del sentido guía → factura: al entrar una factura
   // nueva, busca las guías que la referenciaban y no podían vincularse porque
   // todavía no existía, y las vincula. Aplica los mismos cercos que el resto
@@ -2355,6 +2396,15 @@ function CapturaMagicaPage({ showToast }) {
           materiales_creados: materialesCreados.length,
           movs_creados: movsMatCreados.length,
           oc_vinculada: r.vincular_a_oc || null,
+          // NOTA DE CRÉDITO/DÉBITO: el texto que la IA leyó del propio papel
+          // ("Documento que modifica") se guardaba SOLO en memoria del modal —
+          // si no había con qué resolver `nota_ref_mov_id` en el momento (la
+          // factura todavía no estaba cargada), el dato se perdía para
+          // siempre y nada podía volver a intentar el vínculo después. Ahora
+          // queda en `notas` aunque haya resuelto sola, para que una
+          // corrección manual (Movimientos o el Escáner) tenga el original a
+          // la vista en vez de un campo en blanco.
+          ...(esNota ? { nota_doc_modifica: r.nota_doc_modifica || null, nota_motivo: r.nota_motivo || null } : {}),
           // Entrega en 0 cubierta por un anticipo (src/lib/anticipos.js): queda
           // acá aunque no se haya vinculado todavía, para que el Inventario de
           // la empresa sepa por cuánto es la entrega real al vincularla después.
@@ -2403,7 +2453,14 @@ function CapturaMagicaPage({ showToast }) {
         // Las NC/ND NO cierran pendientes: el OCR a veces deja como serie el
         // número de la FACTURA que modifican y la guía se vincularía a la nota.
         const movFresh = await window.__db.accounting_movements.get(accId);
-        if (movFresh && !esNota) await resolverGuiasPendientes(movFresh, esPruebaCM);
+        if (movFresh && !esNota) {
+          await resolverGuiasPendientes(movFresh, esPruebaCM);
+          // La MISMA factura recién cargada puede ser lo que una NOTA de
+          // crédito huérfana estaba esperando (ver la cabecera de
+          // resolverNotasPendientes) — independiente de las guías, así que
+          // corre siempre que se confirme algo que no sea una nota.
+          await resolverNotasPendientes(movFresh, esPruebaCM);
+        }
       } catch (e) { console.warn('[guias pendientes]', e?.message); }
 
       // Cierre del reemplazo: la VENTA interna NO se re-apunta al movimiento
@@ -2937,13 +2994,13 @@ function CapturaMagicaPage({ showToast }) {
             Arrastrá facturas aquí o click para seleccionar
           </div>
           <div style={{ fontSize:11.5, color:'var(--tm)', marginTop:5 }}>
-            PDF · JPG · PNG · WEBP — máx 3 MB cada uno · podés subir varios a la vez
+            PDF · JPG · PNG · WEBP · HEIC — máx 3 MB cada uno · podés subir varios a la vez
           </div>
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,image/jpeg,image/png,image/webp"
+            accept=".pdf,image/jpeg,image/png,image/webp,.heic,.heif,image/heic,image/heif"
             style={{ display:'none' }}
             onChange={e => {
               // Materializar la lista ANTES de limpiar el value (Chromium vacía
