@@ -49,6 +49,8 @@ import {
 import { decidirMapeo, decidirMapeoEnLote, reabrirMapeo } from "../lib/mapeo-trabajo-db.js";
 import { etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
 import { mapearInsumoConIA } from "../lib/ia-insumos.js";
+import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { BarridoIA } from "./jx-barrido-ia.jsx";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { TIPO_TRABAJO_LBL } from "../lib/tipos-trabajo.js";
 
@@ -292,11 +294,16 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
   }, [presupuesto, porCodigo]);
 
   // ── Acciones ─────────────────────────────────────────────────────
+  // Mismo criterio que la bandeja: con `{ silencioso: true }` de último
+  // argumento (el barrido de IA), el error se relanza en vez de tragarse —
+  // así ejecutarBarridoIA lo cuenta como error del ítem y no como aplicado.
   const conGuard = (fn) => async (...args) => {
     if (guardandoRef.current) return;
     guardandoRef.current = true;
+    const opts = args[args.length - 1];
+    const silencioso = !!(opts && typeof opts === 'object' && opts.silencioso);
     try { await fn(...args); }
-    catch (e) { showToast?.('Error: ' + (e?.message || e), 'red'); }
+    catch (e) { if (silencioso) throw e; showToast?.('Error: ' + (e?.message || e), 'red'); }
     finally { guardandoRef.current = false; }
   };
 
@@ -305,9 +312,13 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
     return cod ? porCodigo.get(cod) || null : null;
   };
 
-  const aceptar = conGuard(async (f) => {
-    const destino = insumoElegidoDe(f);
-    if (!destino) { showToast?.('Elegí primero el insumo del presupuesto.', 'amber'); return; }
+  // `codigoOverride`: para el barrido de IA, que decide programáticamente sin
+  // pasar por el estado `elegido` (evita la carrera de leer un state recién
+  // seteado en el mismo tick — setElegido() es async). `silencioso`: sin
+  // toast — el barrido recorre cientos de filas y muestra su propio progreso.
+  const aceptar = conGuard(async (f, codigoOverride = null, { silencioso = false } = {}) => {
+    const destino = codigoOverride ? (porCodigo.get(codigoOverride) || null) : insumoElegidoDe(f);
+    if (!destino) { if (!silencioso) showToast?.('Elegí primero el insumo del presupuesto.', 'amber'); return; }
     const fac = factorPropuesto(f, destino);
     await decidirMapeo(decisionDeMapeo(f, destino, {
       obraId, companyId,
@@ -315,7 +326,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
       score: f.sug?.candidatos?.[0]?.score ?? null,
     }), { userId });
     await mapHook.refresh?.();
-    showToast?.(`✓ «${f.nombre}» → ${destino.nombre}`, 'green');
+    if (!silencioso) showToast?.(`✓ «${f.nombre}» → ${destino.nombre}`, 'green');
   });
 
   const noEsta = conGuard(async (f) => {
@@ -345,6 +356,32 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
     const n = await decidirMapeoEnLote(cuerpos, { userId });
     await mapHook.refresh?.();
     showToast?.(`✓ ${n} insumos mapeados de una`, 'green');
+  });
+
+  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // «Lo mismo para mapeo»: recorre TODOS los pendientes del trabajo elegido
+  // (no solo los que ya tenían candidato local). Conservador con el "no
+  // encontró equivalente": solo aplica cuando la IA SÍ propone un código con
+  // confianza alta — un "no está" mal puesto esconde un mapeo real, así que
+  // esa respuesta se deja para revisar a mano.
+  const pendientesMapeo = uM(
+    () => filas.filter(f => f.estado !== 'decididas' && f.estado !== 'sin_clasificar'),
+    [filas],
+  );
+  const barrerMapeoConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+    items: pendientesMapeo,
+    onProgreso, debeCancelar,
+    procesarItem: async (f) => {
+      const lista = candidatosIA(f);
+      if (!lista.length) return 'saltada';
+      const r = await mapearInsumoConIA({
+        insumo: f.nombre, unidad: f.unidad || '', clasificacion: f.clasificacionNombre || '',
+        candidatos: lista, obraId,
+      });
+      if (!r?.result?.codigo_sugerido || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
+      await aceptar(f, r.result.codigo_sugerido, { silencioso: true });
+      return 'aplicada';
+    },
   });
 
   // ── Render ───────────────────────────────────────────────────────
@@ -519,6 +556,13 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                     </span>
                   </div>
                 )}
+                <div style={{ marginTop: 10 }}>
+                  <BarridoIA
+                    etiqueta="lo pendiente"
+                    cantidadPendiente={pendientesMapeo.length}
+                    onEjecutar={barrerMapeoConIA}
+                  />
+                </div>
               </div>
 
               {/* ── Filtros ──────────────────────────────────────── */}

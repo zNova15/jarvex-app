@@ -137,3 +137,55 @@ export async function moverTermino(id, clasificacionCodigo, { userId = null } = 
     parcheDeUpdate({ clasificacion_codigo: String(clasificacionCodigo) }, prev, esPrueba, userId));
   return true;
 }
+
+/**
+ * Enseña al diccionario lo que UNA DECISIÓN de clasificación decidió — pedido
+ * de Gabriel, 14-sep-2026: «quiero que aprenda del descarte y de la
+ * aceptación de las propuestas [...] agregar o quitar del diccionario».
+ *
+ * Es una sola operación para las dos cosas que pidió, porque a nivel de datos
+ * son la misma: "aceptar" una propuesta y "descartarla para elegir otra cosa"
+ * ambas terminan en UNA decisión final, y lo que hay que enseñar es SIEMPRE
+ * esa decisión final — nunca la propuesta que no se usó.
+ *   · Si la descripción no tenía término → lo CREA apuntando al código final.
+ *   · Si ya tenía uno apuntando a OTRO código (la propuesta que se descartó)
+ *     → lo MUEVE al código correcto (mismo mecanismo que el botón "↺ Cambiar"
+ *     del panel de Clasificaciones) en vez de dejar dos entradas peleando.
+ *   · Si ya apuntaba al mismo código → no hace nada (ya estaba enseñado).
+ *
+ * El término es la descripción CRUDA completa, no palabras sueltas:
+ * clasificarConIUPC() matchea por EXACTO (0.99) y por PARECIDO de tokens
+ * (hasta 0.97, umbral 0.55 — ver `mejorDe()`), así que una frase entera
+ * generaliza sola a las que compartan varias palabras, no solo a la repetida.
+ *
+ * Nunca lanza: enseñar es un efecto de lado de la decisión, jamás debe
+ * bloquearla ni mostrarle un error a quien solo quería clasificar una fila.
+ * Devuelve null si no hizo nada.
+ */
+export async function enseñarDiccionario({ descripcion, clasificacionCodigo, companyId = null }, { userId = null } = {}) {
+  try {
+    const txt = String(descripcion || '').trim();
+    const cod = String(clasificacionCodigo || '').trim();
+    // 'sin_clasificar' es la ausencia de clasificación (regla 8 del
+    // CLAUDE.md) — enseñarla sería entrenar al diccionario a decir «no sé».
+    if (!txt || !cod || cod === 'sin_clasificar') return null;
+    const norm = normIUPC(txt);
+    if (!norm) return null;
+    const esPrueba = esModoPrueba();
+    const existente = await db.clasificacion_terminos
+      .filter(r => !r.deleted_at && r.norm === norm && filaDelModo(r, esPrueba)).first();
+    if (existente) {
+      if (String(existente.clasificacion_codigo) === cod) return null; // ya enseñado
+      await moverTermino(existente.id, cod, { userId });
+      return { accion: 'movido', termino: txt, desde: existente.clasificacion_codigo, hacia: cod };
+    }
+    const fila = filaNueva({
+      termino: txt, norm, clasificacion_codigo: cod, company_id: companyId || null, deleted_at: null,
+    }, 'clasificacion_terminos', esPrueba, userId);
+    await db.clasificacion_terminos.add(fila);
+    return { accion: 'creado', termino: txt, hacia: cod };
+  } catch (e) {
+    console.warn('[enseñarDiccionario] no se pudo enseñar (no bloquea la decisión):', e?.message || e);
+    return null;
+  }
+}

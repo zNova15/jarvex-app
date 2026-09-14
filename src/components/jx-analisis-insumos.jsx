@@ -62,6 +62,8 @@ import {
 } from "../lib/analisis-insumos.js";
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
+import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { BarridoIA } from "./jx-barrido-ia.jsx";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
@@ -418,8 +420,11 @@ function AnalisisInsumosPage({ showToast }) {
     return <div className="card card-p" style={{ color: 'var(--tm)' }}>Panel exclusivo de administración, gerencia y contabilidad.</div>;
   }
 
-  const decidir = async (par, relacion) => {
-    if (decidiendoRef.current) return;
+  // `silencioso`: para el barrido de IA (14-sep) — sin toast por ítem, y sin
+  // el confirm() de contradicción (bloquearía el recorrido con un diálogo
+  // nativo): si hay contradicción, ese par se salta y queda para revisar a mano.
+  const decidir = async (par, relacion, { silencioso = false } = {}) => {
+    if (decidiendoRef.current) return 'saltada';
     decidiendoRef.current = true;
     try {
       // Contradicción: unir dos nombres cuyos grupos tienen un "distinto"
@@ -433,9 +438,12 @@ function AnalisisInsumosPage({ showToast }) {
             const gb = grupoDe.get(normInsumo(f.nombre_b)) || normInsumo(f.nombre_b);
             return (ga === gA && gb === gB) || (ga === gB && gb === gA);
           })());
-        if (contradice && !confirm('Ojo: una decisión anterior dice que estos grupos son DISTINTOS. ¿Unirlos igual?')) {
-          decidiendoRef.current = false;
-          return;
+        if (contradice) {
+          if (silencioso) { decidiendoRef.current = false; return 'saltada'; }
+          if (!confirm('Ojo: una decisión anterior dice que estos grupos son DISTINTOS. ¿Unirlos igual?')) {
+            decidiendoRef.current = false;
+            return 'saltada';
+          }
         }
       }
       // Canónico con el nombre CRUDO de la factura (los normalizados en
@@ -450,10 +458,13 @@ function AnalisisInsumosPage({ showToast }) {
         nombre_a: par.nombre_a, nombre_b: par.nombre_b,
         relacion, canonico, fuente: 'manual', deleted_at: null,
       });
-      showToast?.(relacion === 'mismo'
-        ? '✓ Correlacionados — no se volverá a preguntar por este par'
-        : '✓ Marcados como distintos — no se volverá a preguntar', 'green');
-    } catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
+      if (!silencioso) {
+        showToast?.(relacion === 'mismo'
+          ? '✓ Correlacionados — no se volverá a preguntar por este par'
+          : '✓ Marcados como distintos — no se volverá a preguntar', 'green');
+      }
+      return 'aplicada';
+    } catch (e) { if (!silencioso) showToast?.('Error: ' + (e.message || e), 'red'); throw e; }
     finally { decidiendoRef.current = false; }
   };
 
@@ -468,8 +479,8 @@ function AnalisisInsumosPage({ showToast }) {
     finally { decidiendoRef.current = false; }
   };
 
-  const decidirCluster = async (cluster, relacion = 'mismo', soloEstas = null) => {
-    if (decidiendoRef.current) return;
+  const decidirCluster = async (cluster, relacion = 'mismo', soloEstas = null, { silencioso = false } = {}) => {
+    if (decidiendoRef.current) return 'saltada';
     decidiendoRef.current = true;
     try {
       // `soloEstas` son las variantes que quedaron marcadas en la tarjeta: se
@@ -492,7 +503,7 @@ function AnalisisInsumosPage({ showToast }) {
         ? (muestraDe.get(normInsumo(cluster.canonico))?.nombre || cluster.canonico)
         : null;
       const pares = crearParesDeCluster(cluster.variantes, canonicoCrudo, relacion);
-      if (!pares.length) return;
+      if (!pares.length) return 'saltada';
       for (const p of pares) {
         await corrHook.create({
           id: window.__newId(),
@@ -504,15 +515,58 @@ function AnalisisInsumosPage({ showToast }) {
           deleted_at: null,
         });
       }
-      showToast?.(relacion === 'mismo'
-        ? `✓ ${cluster.variantes.length} variantes correlacionadas bajo «${canonicoCrudo}» (${pares.length} enlaces)`
-        : `✓ Grupo de ${cluster.variantes.length} variantes marcado como distintos`, 'green');
+      if (!silencioso) {
+        showToast?.(relacion === 'mismo'
+          ? `✓ ${cluster.variantes.length} variantes correlacionadas bajo «${canonicoCrudo}» (${pares.length} enlaces)`
+          : `✓ Grupo de ${cluster.variantes.length} variantes marcado como distintos`, 'green');
+      }
+      return 'aplicada';
     } catch (e) {
-      showToast?.('Error: ' + (e.message || e), 'red');
+      if (!silencioso) showToast?.('Error: ' + (e.message || e), 'red');
+      throw e;
     } finally {
       decidiendoRef.current = false;
     }
   };
+
+  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // «Lo mismo para correlaciones»: recorre los grupos de variantes y las
+  // sugerencias individuales de la pestaña actual (Insumos o Servicios,
+  // ya que `sugerencias`/`clustersSugeridos` apuntan a la que está activa).
+  // Los clusters van primero — resuelven varios nombres de un golpe.
+  const barrerCorrelacionesConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+    items: [
+      ...clustersSugeridos.map(item => ({ tipo: 'cluster', item })),
+      ...sugerencias.map(item => ({ tipo: 'par', item })),
+    ],
+    onProgreso, debeCancelar,
+    procesarItem: async (t) => {
+      if (t.tipo === 'cluster') {
+        const c = t.item;
+        const variantes = c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v);
+        const r = await correlacionarConIA({ variantes });
+        if (!r?.result || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
+        // Mismo mapeo normalizado que "Usar esta" del botón individual —
+        // ver el comentario de AyudaCorrelacionIA sobre por qué NO comparar
+        // los nombres crudos (el server los devuelve ya saneados).
+        const dentroNorm = new Set((r.result.mismas || []).map(normInsumo));
+        const dentro = c.variantes.filter(v => dentroNorm.has(normInsumo(muestraDe.get(normInsumo(v))?.nombre || v)));
+        if (dentro.length < 2) return 'saltada';
+        const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
+        return res === 'aplicada' ? 'aplicada' : 'saltada';
+      }
+      const par = t.item;
+      const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
+      const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
+      const r = await correlacionarConIA({ variantes: [nombreA, nombreB] });
+      if (!r?.result || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
+      // Acá "distinto" con confianza alta TAMBIÉN se aplica: descartar la
+      // sugerencia es una decisión válida, y sacarla de la cola es el punto.
+      const relacion = r.result.mismas.length >= 2 ? 'mismo' : 'distinto';
+      const res = await decidir(par, relacion, { silencioso: true });
+      return res === 'aplicada' ? 'aplicada' : 'saltada';
+    },
+  });
 
   const insumoSel = sel ? porInsumo.get(sel) : null;
   const masBarato = insumoSel ? proveedorMasBarato(insumoSel) : null;
@@ -763,14 +817,20 @@ function AnalisisInsumosPage({ showToast }) {
                   className="btn btn-green btn-sm"
                   disabled={!manualA.trim() || !manualB.trim() || normInsumo(manualA) === normInsumo(manualB)}
                   onClick={async () => {
-                    await decidir({
-                      nombre_a: normInsumo(manualA),
-                      nombre_b: normInsumo(manualB),
-                      crudoA: manualA.trim(),
-                      crudoB: manualB.trim(),
-                    }, 'mismo');
-                    setManualA('');
-                    setManualB('');
+                    // decidir() ya avisa por toast si falla y relanza el error
+                    // (lo necesita el barrido de IA); acá solo hace falta no
+                    // dejarlo sin atrapar, y no limpiar el formulario si no
+                    // se guardó nada — así la persona no reescribe de cero.
+                    try {
+                      await decidir({
+                        nombre_a: normInsumo(manualA),
+                        nombre_b: normInsumo(manualB),
+                        crudoA: manualA.trim(),
+                        crudoB: manualB.trim(),
+                      }, 'mismo');
+                      setManualA('');
+                      setManualB('');
+                    } catch {}
                   }}
                 >
                   ✓ Unir como mismo insumo
@@ -780,14 +840,16 @@ function AnalisisInsumosPage({ showToast }) {
                   className="btn btn-ghost btn-sm"
                   disabled={!manualA.trim() || !manualB.trim() || normInsumo(manualA) === normInsumo(manualB)}
                   onClick={async () => {
-                    await decidir({
-                      nombre_a: normInsumo(manualA),
-                      nombre_b: normInsumo(manualB),
-                      crudoA: manualA.trim(),
-                      crudoB: manualB.trim(),
-                    }, 'distinto');
-                    setManualA('');
-                    setManualB('');
+                    try {
+                      await decidir({
+                        nombre_a: normInsumo(manualA),
+                        nombre_b: normInsumo(manualB),
+                        crudoA: manualA.trim(),
+                        crudoB: manualB.trim(),
+                      }, 'distinto');
+                      setManualA('');
+                      setManualB('');
+                    } catch {}
                   }}
                 >
                   ✗ Marcar como distintos
@@ -819,6 +881,12 @@ function AnalisisInsumosPage({ showToast }) {
               )}
             </button>
           </div>
+
+          <BarridoIA
+            etiqueta={subTabCorr === 'servicios' ? 'los servicios' : 'los insumos'}
+            cantidadPendiente={clustersSugeridos.length + sugerencias.length}
+            onEjecutar={barrerCorrelacionesConIA}
+          />
 
           {/* ── Clusters Multi-Insumo (N a N) ────────────────── */}
           {clustersSugeridos.length > 0 && (
@@ -866,14 +934,14 @@ function AnalisisInsumosPage({ showToast }) {
                           style={{ fontWeight: 600 }}
                           disabled={dentro.length < 2}
                           title={dentro.length < 2 ? 'Hacen falta al menos dos variantes para unir' : undefined}
-                          onClick={() => decidirCluster(c, 'mismo', dentro)}
+                          onClick={() => decidirCluster(c, 'mismo', dentro).catch(() => {})}
                         >
                           ✓ Unir {dentro.length === c.variantes.length ? `las ${dentro.length} variantes` : `las ${dentro.length} marcadas`}
                         </button>
                         <button
                           className="btn btn-ghost btn-xs"
                           disabled={dentro.length < 2}
-                          onClick={() => decidirCluster(c, 'distinto', dentro)}
+                          onClick={() => decidirCluster(c, 'distinto', dentro).catch(() => {})}
                         >
                           ✗ Son distintos
                         </button>
@@ -955,13 +1023,13 @@ function AnalisisInsumosPage({ showToast }) {
                       {mb && <>«{mb.nombre}» visto en {mb.doc} · {mb.proveedorNombre} · {fmtPrecio(mb.precio, mb.moneda)}.</>}
                     </div>
                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                      <button className="btn btn-green btn-xs" onClick={() => decidir(par, 'mismo')}>✓ Mismo insumo</button>
-                      <button className="btn btn-ghost btn-xs" onClick={() => decidir(par, 'distinto')}>✗ Son distintos</button>
+                      <button className="btn btn-green btn-xs" onClick={() => decidir(par, 'mismo').catch(() => {})}>✓ Mismo insumo</button>
+                      <button className="btn btn-ghost btn-xs" onClick={() => decidir(par, 'distinto').catch(() => {})}>✗ Son distintos</button>
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
-                      onAplicar={(mismas) => decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto')}
+                      onAplicar={(mismas) => decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto').catch(() => {})}
                     />
                   </div>
                 );

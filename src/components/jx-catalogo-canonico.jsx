@@ -59,6 +59,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import { agruparDescripciones, resolverCategorias } from "../lib/bandeja-categorizacion.js";
 import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
+import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
 
 const { useState: uS, useMemo: uM, useRef: uR, useId: uId } = React;
 
@@ -328,6 +329,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
           familiaSugerida: catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida,
         }));
       const n = await moverDeFamilia(recs, { userId });
+      // Cada aceptación (tal cual la propuesta, o con la categoría que se
+      // eligió en su lugar) enseña al diccionario — pedido de Gabriel, 14-sep.
+      // SECUENCIAL: enseñarDiccionario lee-antes-de-escribir; dos filas con
+      // la misma descripción normalizada bajo un Promise.all duplicarían el
+      // término en vez de que la segunda vea el que acaba de crear la primera.
+      for (const r of recs) {
+        await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: r.familiaSugerida, companyId }, { userId });
+      }
       await refrescar(); setRecMarcadas({}); setCatOverride({});
       showToast?.(`${n} ${n === 1 ? 'insumo reclasificado' : 'insumos reclasificados'} exitosamente.`, 'success');
     } catch (err) { showToast?.(`No se pudo reclasificar: ${err?.message || err}`, 'error'); }
@@ -340,6 +349,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
     try {
       const destino = catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida;
       const n = await moverDeFamilia([{ ...r, familiaSugerida: destino }], { userId });
+      await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: destino, companyId }, { userId });
       await refrescar();
       showToast?.(`✓ «${r.nombre}» clasificado como ${etiquetaCategoria(destino)}`, 'success');
     } catch (err) { showToast?.(`No se pudo reclasificar: ${err?.message || err}`, 'error'); }
@@ -813,6 +823,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                           onChange={async (nuevaCat) => {
                             if (nuevaCat === r.familia) return;
                             await corregirEnLote([r.id], { familia: nuevaCat }, { userId });
+                            await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: nuevaCat, companyId }, { userId });
                             await refrescar();
                             showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(nuevaCat)}`, 'green');
                           }}
@@ -831,6 +842,7 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
                               <button className="btn btn-xs" style={{ padding: '0 6px' }}
                                 onClick={async () => {
                                   await corregirEnLote([r.id], { familia: rec.familiaSugerida }, { userId });
+                                  await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: rec.familiaSugerida, companyId }, { userId });
                                   await refrescar();
                                   showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(rec.familiaSugerida)}`, 'green');
                                 }}>
@@ -1108,6 +1120,7 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
 
   const traerAca = conGuard(async (r) => {
     await corregirEnLote([r.id], { familia: cat.codigo }, { userId });
+    await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: cat.codigo, companyId }, { userId });
     await refrescar();
     showToast?.(`✓ «${r.nombre}» pasó a ${etiquetaCategoria(cat.codigo)}`, 'green');
   });

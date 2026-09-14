@@ -46,8 +46,11 @@ import {
 import {
   categoriasParaElegir, etiquetaCategoria, bandaConfianza,
 } from "../lib/indices-unificados-iupc.js";
+import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA } from "../lib/ia-insumos.js";
+import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { BarridoIA } from "./jx-barrido-ia.jsx";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -216,22 +219,32 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   };
 
   // ── Acciones ─────────────────────────────────────────────────────
+  // Si el último argumento trae `{ silencioso: true }` (el barrido de IA,
+  // 14-sep), el error NO se traga acá — se relanza para que ejecutarBarridoIA
+  // lo cuente como error de ese ítem y siga con el siguiente, en vez de
+  // reportarlo como "aplicada" y encima mostrar un toast en medio de un
+  // recorrido que se pidió silencioso.
   const conGuard = (fn) => async (...args) => {
     if (guardandoRef.current) return;
     guardandoRef.current = true;
+    const opts = args[args.length - 1];
+    const silencioso = !!(opts && typeof opts === 'object' && opts.silencioso);
     try { await fn(...args); }
-    catch (e) { showToast?.('Error: ' + (e.message || e), 'red'); }
+    catch (e) { if (silencioso) throw e; showToast?.('Error: ' + (e.message || e), 'red'); }
     finally { guardandoRef.current = false; }
   };
 
-  const aceptar = conGuard(async (fila, categoriaElegida = null) => {
+  // `silencioso`: para el barrido de IA (14-sep) — recorre cientos de filas
+  // solo, y un toast por cada una sería una lluvia de carteles. El barrido
+  // muestra su propio progreso; acá alcanza con no interrumpir.
+  const aceptar = conGuard(async (fila, categoriaElegida = null, { silencioso = false } = {}) => {
     const cand = fila?.sug?.candidatos?.[0];
     const catFila = catalogoDe(fila);
     // Sin propuesta no se puede «aceptar» nada: guardar 'sin_clasificar' sería
     // sacar la fila de la cola sin haberla clasificado. El botón ya viene
     // apagado; esto es el cinturón por si alguien llega por el atajo «A».
     if (fila?.sinPropuesta && !categoriaElegida) {
-      showToast?.('Elegí primero una clasificación: el sistema no tiene ninguna que proponer.', 'amber');
+      if (!silencioso) showToast?.('Elegí primero una clasificación: el sistema no tiene ninguna que proponer.', 'amber');
       return;
     }
     const catFinal = categoriaElegida
@@ -252,8 +265,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         unidad: [...(fila.unidades || [])][0] || 'und',
       });
       await enseñarALaContadora([{ fila, catalogoFila: creado }], { userId, equivalencias });
+      // Enseña la clasificación IUPC — sea que se haya aceptado la propuesta
+      // TAL CUAL, o que se haya elegido otra cosa a mano (un descarte): lo que
+      // se enseña es SIEMPRE la decisión final (ver enseñarDiccionario).
+      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
       await Promise.all([decHook.refresh?.(), catHook.refresh?.()]);
-      showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
+      if (!silencioso) showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
       return;
     }
 
@@ -265,8 +282,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       categoria: catFinal,
     }), { userId });
     await enseñarALaContadora([{ fila, catalogoFila: { ...catFila, familia: catFinal } }], { userId, equivalencias });
+    await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
     await decHook.refresh?.();
-    showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
+    if (!silencioso) showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
   });
 
   const noEsInsumo = conGuard(async (fila) => {
@@ -291,6 +309,16 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     }));
     const n = await decidirEnLote(cuerpos, { userId });
     await enseñarALaContadora(grupo.filas.map(f => ({ fila: f, catalogoFila: catFila })), { userId, equivalencias });
+    // Un término por descripción del lote — todas terminan en la MISMA
+    // clasificación (la del insumo del catálogo al que se aceptó el lote).
+    // SECUENCIAL a propósito: enseñarDiccionario lee-antes-de-escribir, y dos
+    // filas del lote con la misma descripción normalizada bajo un Promise.all
+    // verían ambas "no hay término todavía" y crearían un duplicado.
+    if (catFila.familia) {
+      for (const f of grupo.filas) {
+        await enseñarDiccionario({ descripcion: f.muestra, clasificacionCodigo: catFila.familia, companyId }, { userId });
+      }
+    }
     await decHook.refresh?.();
     showToast?.(`✓ ${n} descripciones → ${catFila.nombre}`, 'green');
   });
@@ -306,9 +334,32 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
 
   const crearEnCatalogo = conGuard(async (fila, campos) => {
     const creado = await agregarAlCatalogoYDecidir(fila, { ...campos, companyId, userId });
+    if (campos.familia) {
+      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: campos.familia, companyId }, { userId });
+    }
     setAltaDe(null);
     await Promise.all([catHook.refresh?.(), decHook.refresh?.()]);
     showToast?.(`✓ «${creado.nombre}» agregado al catálogo y mapeado`, 'green');
+  });
+
+  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // «Un botón que se encargue de dar una pasada completa a todos los
+  // insumos sin clasificar» — TODO lo pendiente (no solo lo que se ve con
+  // el filtro actual), una descripción a la vez.
+  const pendientesTotal = uM(() => filas.filter(f => f.estado !== 'decididas'), [filas]);
+  const barrerConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+    items: pendientesTotal,
+    onProgreso, debeCancelar,
+    procesarItem: async (f) => {
+      const r = await clasificarInsumoConIA({
+        descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
+      });
+      if (r?.result?.codigo_sugerido && (r.confianza || 0) >= UMBRAL_BARRIDO_IA) {
+        await aceptar(f, r.result.codigo_sugerido, { silencioso: true });
+        return 'aplicada';
+      }
+      return 'saltada';
+    },
   });
 
   // ── Teclado ──────────────────────────────────────────────────────
@@ -416,6 +467,13 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
               · sin propuesta: <strong>{avance.sin_propuesta}</strong> ({soles(avance.plataSinPropuesta)})
             </span>
           )}
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <BarridoIA
+            etiqueta="lo pendiente"
+            cantidadPendiente={pendientesTotal.length}
+            onEjecutar={barrerConIA}
+          />
         </div>
       </div>
 
