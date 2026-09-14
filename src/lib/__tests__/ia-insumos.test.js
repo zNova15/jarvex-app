@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { clasificarInsumoConIA, correlacionarConIA, mapearInsumoConIA } from '../ia-insumos.js';
+import { clasificarInsumoConIA, correlacionarConIA, mapearInsumoConIA, notaDeIA, esDecisionDeIA, MARCA_IA } from '../ia-insumos.js';
 
 function setupLocalStorage() {
   const store = new Map();
@@ -174,5 +174,33 @@ describe('mapearInsumoConIA', () => {
     const r3 = await mapearInsumoConIA({ insumo: 'FIERRO 1/2', candidatos: PRESU, obraId: 'obra-2' });
     expect(r3._cached).toBeUndefined();
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── La marca «Recomendado por IA» ─────────────────────────────────
+// Pedido de Gabriel (14-sep): «quiero saber qué insumo he aceptado como
+// recomendación yo». Va en `nota` y no en `fuente` — ver MARCA_IA.
+describe('notaDeIA / esDecisionDeIA', () => {
+  it('la nota lleva la marca y el porcentaje, y se reconoce después', () => {
+    const nota = notaDeIA(0.87);
+    expect(nota.startsWith(MARCA_IA)).toBe(true);
+    expect(nota).toMatch(/87%/);
+    expect(esDecisionDeIA({ nota })).toBe(true);
+  });
+
+  it('sin confianza no inventa un porcentaje', () => {
+    expect(notaDeIA(null)).toBe(`${MARCA_IA} Aceptado de la recomendación de IA`);
+  });
+
+  // La marca tiene que sobrevivir a que se le pegue algo atrás: el alta
+  // desde la bandeja concatena su propia nota después.
+  it('reconoce la marca aunque la nota siga con otra cosa', () => {
+    expect(esDecisionDeIA({ nota: `${notaDeIA(0.9)} · Alta desde la bandeja` })).toBe(true);
+  });
+
+  it('una decisión de siempre NO queda marcada', () => {
+    expect(esDecisionDeIA({ nota: 'Alta desde la bandeja' })).toBe(false);
+    expect(esDecisionDeIA({ nota: null })).toBe(false);
+    expect(esDecisionDeIA(null)).toBe(false);
   });
 });

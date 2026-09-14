@@ -246,6 +246,18 @@ describe('las decisiones ya tomadas', () => {
     expect(d.familia).toBeNull();
   });
 
+  // La marca «Recomendado por IA» viaja en `nota`, NO en `fuente`: el CHECK
+  // de la mig 195 solo acepta 'regla'/'manual' y quien acepta sigue siendo
+  // una persona (ver MARCA_IA en ia-insumos.js).
+  it('lleva la nota que le pasen y `fuente` sigue siendo manual', () => {
+    const catFila = { id: 'c1', nombre: 'ACERO', unidad: 'und', familia: '03' };
+    const d = decisionDeCatalogo(fila, catFila, { nota: '[IA] Aceptado de la recomendación de IA (90%)' });
+    expect(d.nota).toMatch(/^\[IA\]/);
+    expect(d.fuente).toBe('manual');
+    // Sin nota, null — no una cadena vacía que después parezca una nota.
+    expect(decisionDeCatalogo(fila, catFila).nota).toBeNull();
+  });
+
   it('el factor solo se guarda cuando las unidades DIFIEREN de verdad', () => {
     const enKg = { ...fila, unidades: new Set(['kg']) };
     const catFila = { id: 'c1', nombre: 'ACERO', unidad: 'var', familia: 'ferreteria' };

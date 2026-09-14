@@ -62,8 +62,9 @@ import {
 } from "../lib/analisis-insumos.js";
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
-import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
-import { BarridoIA } from "./jx-barrido-ia.jsx";
+import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
+import { BarridoIA, useBarridoIA } from "./jx-barrido-ia.jsx";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
@@ -128,10 +129,14 @@ function NombreConDiferencias({ nombre, otro }) {
  * `textoAplicar(mismas)` puede devolver null para no ofrecer botón (ej. la IA
  * dice que ninguna es la misma: para eso ya está "Son distintos").
  */
-function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar }) {
+function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null }) {
+  // `inicial`: lo que dejó el recorrido completo (barrido-store). Se muestra
+  // sin volver a preguntar —ya se pagó— y con el sello de que vino de ahí.
   const [res, setRes] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
+  const mostrado = res || inicial;
+  const deRecorrido = !res && !!inicial;
 
   const preguntar = async (e) => {
     e?.stopPropagation?.();
@@ -149,44 +154,55 @@ function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar }) {
   };
 
   const esPar = variantes.length === 2;
-  const sonElMismo = !!res && res.mismas.length >= 2;
-  const etiqueta = res ? (textoAplicar ? textoAplicar(res.mismas) : null) : null;
+  const sonElMismo = !!mostrado && (mostrado.mismas || []).length >= 2;
+  const etiqueta = mostrado ? (textoAplicar ? textoAplicar(mostrado.mismas || []) : null) : null;
 
   return (
     <div style={{ marginTop: 6 }} onClick={e => e.stopPropagation()}>
-      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
-        {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
-      </button>
+      {!mostrado && (
+        <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
+          {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
+        </button>
+      )}
       {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
-      {res && (
+      {mostrado && (() => { const res = mostrado; return (
         <div style={{
           marginTop: 4, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
           background: sonElMismo ? 'rgba(46,204,113,.09)' : 'rgba(231,76,60,.08)',
           border: `1px solid ${sonElMismo ? 'rgba(46,204,113,.35)' : 'rgba(231,76,60,.3)'}`,
         }}>
-          🤖 {esPar
+          {deRecorrido
+            ? <span className="badge b-blue" style={{ fontSize: 9, marginRight: 4 }}>🤖 Recomendado por IA</span>
+            : '🤖 '}
+          {esPar
             ? (sonElMismo ? <strong>Son el mismo insumo</strong> : <strong>NO son el mismo insumo</strong>)
             : (sonElMismo
-              ? <>Uniría <strong>{res.mismas.length}</strong> de {variantes.length}</>
+              ? <>Uniría <strong>{(res.mismas || []).length}</strong> de {variantes.length}</>
               : <strong>Ninguna es la misma que otra</strong>)}
           <span className={`badge ${sonElMismo ? 'b-green' : 'b-red'}`} style={{ marginLeft: 4, fontSize: 9 }}>
             {Math.round((res.confianza || 0) * 100)}%
           </span>
           {res.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
           <div style={{ color: 'var(--tm)', marginTop: 2 }}>{res.razonamiento}</div>
-          {!esPar && sonElMismo && res.fuera.length > 0 && (
+          {!esPar && sonElMismo && (res.fuera || []).length > 0 && (
             <div style={{ color: 'var(--tm)', marginTop: 2 }}>
               Deja afuera: {res.fuera.map(f => `«${f}»`).join(', ')}
             </div>
           )}
-          {etiqueta && (
-            <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
-              onClick={(e) => { e.stopPropagation(); onAplicar?.(res.mismas, res.fuera); }}>
-              {etiqueta}
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
+            {etiqueta && (
+              <button type="button" className="btn btn-xs btn-blue"
+                onClick={(e) => { e.stopPropagation(); onAplicar?.(res.mismas || [], res.fuera || []); }}>
+                {etiqueta}
+              </button>
+            )}
+            {deRecorrido && onDescartar && (
+              <button type="button" className="btn btn-xs btn-ghost"
+                onClick={(e) => { e.stopPropagation(); onDescartar(); }}>Descartar</button>
+            )}
+          </div>
         </div>
-      )}
+      ); })()}
     </div>
   );
 }
@@ -384,6 +400,10 @@ function AnalisisInsumosPage({ showToast }) {
   const [subTabCorr, setSubTabCorr] = uS('insumos');
   const sugerencias = subTabCorr === 'servicios' ? sugerenciasServicios : sugerenciasInsumos;
   const clustersSugeridos = subTabCorr === 'servicios' ? clustersServicios : clustersInsumos;
+  // Las propuestas del recorrido se guardan por ENTIDAD y por sub-pestaña:
+  // insumos y servicios son dos listas distintas y no se mezclan.
+  const ambitoIA = `${empresaVista || 'grupo'}::${subTabCorr}`;
+  const { recomendaciones: recsIA } = useBarridoIA('correlaciones', ambitoIA);
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
     [resueltos]
@@ -458,6 +478,8 @@ function AnalisisInsumosPage({ showToast }) {
         nombre_a: par.nombre_a, nombre_b: par.nombre_b,
         relacion, canonico, fuente: 'manual', deleted_at: null,
       });
+      // El par quedó resuelto: la propuesta de la IA ya no espera a nadie.
+      olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`);
       if (!silencioso) {
         showToast?.(relacion === 'mismo'
           ? '✓ Correlacionados — no se volverá a preguntar por este par'
@@ -515,6 +537,7 @@ function AnalisisInsumosPage({ showToast }) {
           deleted_at: null,
         });
       }
+      olvidarRecomendacion('correlaciones', ambitoIA, `cl::${cluster.id}`);
       if (!silencioso) {
         showToast?.(relacion === 'mismo'
           ? `✓ ${cluster.variantes.length} variantes correlacionadas bajo «${canonicoCrudo}» (${pares.length} enlaces)`
@@ -529,42 +552,62 @@ function AnalisisInsumosPage({ showToast }) {
     }
   };
 
-  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // ── El recorrido completo con IA (14-sep) ─────────────────────────
   // «Lo mismo para correlaciones»: recorre los grupos de variantes y las
   // sugerencias individuales de la pestaña actual (Insumos o Servicios,
   // ya que `sugerencias`/`clustersSugeridos` apuntan a la que está activa).
   // Los clusters van primero — resuelven varios nombres de un golpe.
-  const barrerCorrelacionesConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+  //
+  // 🔴 NO DECIDE NADA en el modo por defecto: deja el veredicto de la IA en
+  // la tarjeta de cada grupo/par, y el botón de siempre («Unir las N», «Son
+  // distintos») lo sigue apretando una persona. Ver barrido-ia.js.
+  const construirBarrido = (modo) => ({
     items: [
       ...clustersSugeridos.map(item => ({ tipo: 'cluster', item })),
       ...sugerencias.map(item => ({ tipo: 'par', item })),
     ],
-    onProgreso, debeCancelar,
     procesarItem: async (t) => {
       if (t.tipo === 'cluster') {
         const c = t.item;
         const variantes = c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v);
         const r = await correlacionarConIA({ variantes });
-        if (!r?.result || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
+        if (!r?.result) return 'saltada';
+        const conf = r.confianza || 0;
         // Mismo mapeo normalizado que "Usar esta" del botón individual —
         // ver el comentario de AyudaCorrelacionIA sobre por qué NO comparar
         // los nombres crudos (el server los devuelve ya saneados).
         const dentroNorm = new Set((r.result.mismas || []).map(normInsumo));
         const dentro = c.variantes.filter(v => dentroNorm.has(normInsumo(muestraDe.get(normInsumo(v))?.nombre || v)));
-        if (dentro.length < 2) return 'saltada';
-        const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
-        return res === 'aplicada' ? 'aplicada' : 'saltada';
+        if (modo === 'aplicar') {
+          if (conf < UMBRAL_BARRIDO_IA || dentro.length < 2) return 'saltada';
+          const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
+          return res === 'aplicada' ? 'aplicada' : 'saltada';
+        }
+        guardarRecomendacion('correlaciones', ambitoIA, `cl::${c.id}`, {
+          mismas: r.result.mismas || [], fuera: r.result.fuera || [],
+          confianza: conf, razonamiento: r.razonamiento || '',
+        });
+        return 'recomendada';
       }
       const par = t.item;
       const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
       const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
       const r = await correlacionarConIA({ variantes: [nombreA, nombreB] });
-      if (!r?.result || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
-      // Acá "distinto" con confianza alta TAMBIÉN se aplica: descartar la
-      // sugerencia es una decisión válida, y sacarla de la cola es el punto.
-      const relacion = r.result.mismas.length >= 2 ? 'mismo' : 'distinto';
-      const res = await decidir(par, relacion, { silencioso: true });
-      return res === 'aplicada' ? 'aplicada' : 'saltada';
+      if (!r?.result) return 'saltada';
+      const conf = r.confianza || 0;
+      if (modo === 'aplicar') {
+        if (conf < UMBRAL_BARRIDO_IA) return 'saltada';
+        // Acá "distinto" con confianza alta TAMBIÉN se aplica: descartar la
+        // sugerencia es una decisión válida, y sacarla de la cola es el punto.
+        const relacion = (r.result.mismas || []).length >= 2 ? 'mismo' : 'distinto';
+        const res = await decidir(par, relacion, { silencioso: true });
+        return res === 'aplicada' ? 'aplicada' : 'saltada';
+      }
+      guardarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`, {
+        mismas: r.result.mismas || [], fuera: r.result.fuera || [],
+        confianza: conf, razonamiento: r.razonamiento || '',
+      });
+      return 'recomendada';
     },
   });
 
@@ -883,9 +926,11 @@ function AnalisisInsumosPage({ showToast }) {
           </div>
 
           <BarridoIA
+            seccion="correlaciones"
+            ambito={ambitoIA}
             etiqueta={subTabCorr === 'servicios' ? 'los servicios' : 'los insumos'}
             cantidadPendiente={clustersSugeridos.length + sugerencias.length}
-            onEjecutar={barrerCorrelacionesConIA}
+            construir={construirBarrido}
           />
 
           {/* ── Clusters Multi-Insumo (N a N) ────────────────── */}
@@ -976,6 +1021,8 @@ function AnalisisInsumosPage({ showToast }) {
                         la medida ("1/2") es justo lo que hay que juzgar. */}
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
+                      inicial={recsIA[`cl::${c.id}`] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, `cl::${c.id}`)}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
                       onAplicar={(mismas) => {
                         // Se comparan NORMALIZADOS: el nombre que vuelve pasó
@@ -1028,8 +1075,13 @@ function AnalisisInsumosPage({ showToast }) {
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
+                      inicial={recsIA[`pa::${par.nombre_a}|${par.nombre_b}`] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`)}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
-                      onAplicar={(mismas) => decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto').catch(() => {})}
+                      onAplicar={(mismas) => {
+                        olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`);
+                        decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto').catch(() => {});
+                      }}
                     />
                   </div>
                 );

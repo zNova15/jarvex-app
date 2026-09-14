@@ -356,7 +356,7 @@ export function cobertura(presupuesto, mapeosVivos) {
 
 /** El cuerpo de la fila de `insumo_trabajo_mapeo` para «es este insumo del
  *  presupuesto». */
-export function decisionDeMapeo(fila, insumoPresupuesto, { obraId, companyId = null, factor = null, factorFuente = null, score = null, fuente = 'manual' } = {}) {
+export function decisionDeMapeo(fila, insumoPresupuesto, { obraId, companyId = null, factor = null, factorFuente = null, score = null, fuente = 'manual', nota = null } = {}) {
   // 🔴 EL INVARIANTE QUE LA BASE EXIGE Y DEXIE NO VALIDA (mismo caso que
   // insumo_categoria): el CHECK `insumo_trabajo_mapeo_coherente` obliga a que
   // decision='mapeado' venga con `insumo_codigo`. Una fila sin código se
@@ -384,7 +384,11 @@ export function decisionDeMapeo(fila, insumoPresupuesto, { obraId, companyId = n
     factor_fuente: (difieren && factor != null) ? factorFuente : null,
     fuente,
     score: score == null ? null : Number(score),
-    nota: null,
+    // Acá aterriza la marca «aceptado de una recomendación de IA»
+    // (`notaDeIA`, en ia-insumos.js). Va en `nota` y NO en `fuente` porque
+    // quien acepta es una persona, y 'ia' pierde contra 'manual' en RANGO —
+    // ver el comentario de MARCA_IA.
+    nota: nota || null,
     deleted_at: null,
   };
 }

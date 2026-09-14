@@ -262,6 +262,16 @@ describe('lo que se escribe', () => {
     expect(c.catalogo_insumo_id).toBe('c1');
   });
 
+  // La marca «Recomendado por IA» va en `nota` y no en `fuente`: 'ia' perdería
+  // contra 'manual' en RANGO aunque fuera la decisión más nueva, y quien
+  // acepta la propuesta es una persona.
+  it('lleva la nota que le pasen y `fuente` sigue siendo manual', () => {
+    const c = decisionDeMapeo(fila, insumo, { obraId: OBRA, nota: '[IA] Aceptado de la recomendación de IA (80%)' });
+    expect(c.nota).toMatch(/^\[IA\]/);
+    expect(c.fuente).toBe('manual');
+    expect(decisionDeMapeo(fila, insumo, { obraId: OBRA }).nota).toBeNull();
+  });
+
   it('🔴 sin insumo del presupuesto NO fabrica una decisión sin destino', () => {
     // El CHECK de la mig 206 lo prohíbe: una fila así se guardaría local y
     // rebotaría en el push con 23514, dejando el sync en reintento eterno.

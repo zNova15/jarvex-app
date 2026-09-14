@@ -145,7 +145,7 @@ export async function enseñarALaContadora(pares, { userId = null, equivalencias
  * su decisión dejaría la descripción igual de pendiente y nadie entendería por
  * qué apareció un insumo nuevo que no resolvió nada.
  */
-export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null } = {}) {
+export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null, nota = null } = {}) {
   const esPrueba = esModoPrueba();
   const nueva = filaNuevaDeCatalogo(fila, { companyId, familia, unidad, nombre });
   let creado = null;
@@ -174,7 +174,10 @@ export async function agregarAlCatalogoYDecidir(fila, { companyId = null, famili
       unidad_origen: [...(fila.unidades || [])][0] || null,
       unidad_destino: creado.unidad || null,
       factor: null, factor_fuente: null,
-      fuente: 'manual', score: null, nota: 'Alta desde la bandeja',
+      // `nota` la usa la marca «aceptado de una recomendación de IA»
+      // (`notaDeIA`, en ia-insumos.js) — va acá y no en `fuente` porque quien
+      // acepta sigue siendo una persona; ver el comentario de MARCA_IA.
+      fuente: 'manual', score: null, nota: nota || 'Alta desde la bandeja',
       company_id: companyId || null, deleted_at: null,
     };
     const yaDecidida = await db.insumo_categoria

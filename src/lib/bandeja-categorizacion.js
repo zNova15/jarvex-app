@@ -381,7 +381,7 @@ export function resumenAvance(filas) {
 // ── 6. LO QUE SE ESCRIBE ───────────────────────────────────────────
 
 /** El cuerpo de la fila de `insumo_categoria` para «es este insumo del catálogo». */
-export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFuente = null, score = null, companyId = null, categoria = null } = {}) {
+export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFuente = null, score = null, companyId = null, categoria = null, nota = null } = {}) {
   // 🔴 EL INVARIANTE QUE LA BASE EXIGE Y DEXIE NO VALIDA.
   // CHECK `insumo_categoria_catalogo_coherente`: decision='catalogo' obliga a
   // `catalogo_insumo_id NOT NULL`. Una fila sin id se guardaba local sin
@@ -408,6 +408,11 @@ export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFu
     factor_fuente: (factor != null && normUnidad(unidadOrigen) !== normUnidad(unidadDestino)) ? factorFuente : null,
     fuente: 'manual',
     score: score == null ? (fila?.recomendacionIUPC?.score ?? null) : Number(score),
+    // `nota` es donde queda la marca «aceptado de una recomendación de IA»
+    // (`notaDeIA`, en ia-insumos.js). NO se usa `fuente` para eso: quien
+    // acepta sigue siendo una persona, y el CHECK de la mig 195 solo admite
+    // 'regla'/'manual' — ver el comentario de MARCA_IA.
+    nota: nota || null,
     company_id: companyId || null,
     deleted_at: null,
   };

@@ -48,9 +48,10 @@ import {
 } from "../lib/mapeo-trabajo.js";
 import { decidirMapeo, decidirMapeoEnLote, reabrirMapeo } from "../lib/mapeo-trabajo-db.js";
 import { etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
-import { mapearInsumoConIA } from "../lib/ia-insumos.js";
-import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
-import { BarridoIA } from "./jx-barrido-ia.jsx";
+import { mapearInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
+import { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { TIPO_TRABAJO_LBL } from "../lib/tipos-trabajo.js";
 
@@ -255,14 +256,20 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
     [presupuesto, mapHook.data, obraId, esPrueba],
   );
 
+  // Las propuestas de IA se guardan por OBRA: los códigos del presupuesto son
+  // de un trabajo, así que la misma fila en otra obra es otra pregunta.
+  const ambitoIA = obraId || 'sin-obra';
+  const { recomendaciones: recsIA } = useBarridoIA('mapeo', ambitoIA);
+
   const visibles = uM(() => {
     const t = busca.trim().toLowerCase();
     return filas.filter(f => {
       if (t && !String(f.nombre || '').toLowerCase().includes(t)) return false;
+      if (filtro === 'ia') return f.estado !== 'decididas' && f.estado !== 'sin_clasificar' && !!recsIA[f.norm];
       if (filtro === 'pendientes') return f.estado !== 'decididas' && f.estado !== 'sin_clasificar';
       return f.estado === filtro;
     });
-  }, [filas, filtro, busca]);
+  }, [filas, filtro, busca, recsIA]);
 
   const enPantalla = uM(() => visibles.slice(0, limite), [visibles, limite]);
 
@@ -316,7 +323,9 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
   // pasar por el estado `elegido` (evita la carrera de leer un state recién
   // seteado en el mismo tick — setElegido() es async). `silencioso`: sin
   // toast — el barrido recorre cientos de filas y muestra su propio progreso.
-  const aceptar = conGuard(async (f, codigoOverride = null, { silencioso = false } = {}) => {
+  // `desdeIA`: la confianza de la recomendación, cuando lo que se acepta salió
+  // del recorrido con IA. Deja la marca «Recomendado por IA» en `nota`.
+  const aceptar = conGuard(async (f, codigoOverride = null, { silencioso = false, desdeIA = null } = {}) => {
     const destino = codigoOverride ? (porCodigo.get(codigoOverride) || null) : insumoElegidoDe(f);
     if (!destino) { if (!silencioso) showToast?.('Elegí primero el insumo del presupuesto.', 'amber'); return; }
     const fac = factorPropuesto(f, destino);
@@ -324,13 +333,16 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
       obraId, companyId,
       factor: fac?.factor ?? null, factorFuente: fac?.fuente ?? null,
       score: f.sug?.candidatos?.[0]?.score ?? null,
+      nota: desdeIA != null ? notaDeIA(desdeIA) : null,
     }), { userId });
+    olvidarRecomendacion('mapeo', ambitoIA, f.norm);
     await mapHook.refresh?.();
     if (!silencioso) showToast?.(`✓ «${f.nombre}» → ${destino.nombre}`, 'green');
   });
 
   const noEsta = conGuard(async (f) => {
     await decidirMapeo(decisionNoEsta(f, { obraId, companyId }), { userId });
+    olvidarRecomendacion('mapeo', ambitoIA, f.norm);
     await mapHook.refresh?.();
     showToast?.('✓ Marcado: no está en este presupuesto — no se vuelve a preguntar', 'green');
   });
@@ -354,23 +366,23 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
       });
     });
     const n = await decidirMapeoEnLote(cuerpos, { userId });
+    for (const f of conPropuesta) olvidarRecomendacion('mapeo', ambitoIA, f.norm);
     await mapHook.refresh?.();
     showToast?.(`✓ ${n} insumos mapeados de una`, 'green');
   });
 
-  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // ── El recorrido completo con IA (14-sep) ─────────────────────────
   // «Lo mismo para mapeo»: recorre TODOS los pendientes del trabajo elegido
-  // (no solo los que ya tenían candidato local). Conservador con el "no
-  // encontró equivalente": solo aplica cuando la IA SÍ propone un código con
-  // confianza alta — un "no está" mal puesto esconde un mapeo real, así que
-  // esa respuesta se deja para revisar a mano.
+  // (no solo los que ya tenían candidato local) y deja la propuesta al lado
+  // de cada fila, para aceptarla mirándola. Conservador con el "no encontró
+  // equivalente": solo propone cuando la IA SÍ da un código — un "no está"
+  // mal puesto esconde un mapeo real.
   const pendientesMapeo = uM(
     () => filas.filter(f => f.estado !== 'decididas' && f.estado !== 'sin_clasificar'),
     [filas],
   );
-  const barrerMapeoConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+  const construirBarrido = uC((modo) => ({
     items: pendientesMapeo,
-    onProgreso, debeCancelar,
     procesarItem: async (f) => {
       const lista = candidatosIA(f);
       if (!lista.length) return 'saltada';
@@ -378,14 +390,25 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
         insumo: f.nombre, unidad: f.unidad || '', clasificacion: f.clasificacionNombre || '',
         candidatos: lista, obraId,
       });
-      if (!r?.result?.codigo_sugerido || (r.confianza || 0) < UMBRAL_BARRIDO_IA) return 'saltada';
-      await aceptar(f, r.result.codigo_sugerido, { silencioso: true });
-      return 'aplicada';
+      const cod = r?.result?.codigo_sugerido;
+      if (!cod) return 'saltada';
+      const conf = r.confianza || 0;
+      if (modo === 'aplicar') {
+        if (conf < UMBRAL_BARRIDO_IA) return 'saltada';
+        await aceptar(f, cod, { silencioso: true, desdeIA: conf });
+        return 'aplicada';
+      }
+      guardarRecomendacion('mapeo', ambitoIA, f.norm, {
+        codigo: cod, nombre: porCodigo.get(cod)?.nombre || cod,
+        confianza: conf, razonamiento: r.razonamiento || '',
+      });
+      return 'recomendada';
     },
-  });
+  }), [pendientesMapeo, candidatosIA, obraId, ambitoIA, porCodigo, aceptar]);
 
   // ── Render ───────────────────────────────────────────────────────
   const sinPresupuesto = !!obraId && !ipsHook.loading && presupuesto.length === 0;
+  const nRecomendadasIA = pendientesMapeo.filter(f => recsIA[f.norm]).length;
 
   return (
     <>
@@ -558,9 +581,12 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                 )}
                 <div style={{ marginTop: 10 }}>
                   <BarridoIA
+                    seccion="mapeo"
+                    ambito={ambitoIA}
                     etiqueta="lo pendiente"
                     cantidadPendiente={pendientesMapeo.length}
-                    onEjecutar={barrerMapeoConIA}
+                    construir={construirBarrido}
+                    onVerRecomendadas={() => setFiltro('ia')}
                   />
                 </div>
               </div>
@@ -586,6 +612,13 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                       </button>
                     );
                   })}
+                  {(nRecomendadasIA > 0 || filtro === 'ia') && (
+                    <button className={`btn btn-sm ${filtro === 'ia' ? 'btn-amber' : 'btn-ghost'}`}
+                      title="Lo que dejó propuesto el recorrido con IA. Se aceptan de a una, mirándolas."
+                      onClick={() => setFiltro('ia')}>
+                      🤖 Recomendadas por IA ({nRecomendadasIA})
+                    </button>
+                  )}
                 </div>
 
                 {!visibles.length && (
@@ -601,6 +634,9 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                     opciones={opcionesPresupuesto}
                     candidatosIA={candidatosIA}
                     obraId={obraId}
+                    recIA={recsIA[f.norm] || null}
+                    onAceptarIA={(rec) => aceptar(f, rec.codigo, { desdeIA: rec.confianza })}
+                    onDescartarIA={() => olvidarRecomendacion('mapeo', ambitoIA, f.norm)}
                     elegido={elegido[f.norm] || ''}
                     onElegir={(cod) => setElegido(e => ({ ...e, [f.norm]: cod }))}
                     destino={insumoElegidoDe(f)}
@@ -632,7 +668,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
  * un `f.decision.decision` sobre un null explotaría en la obra y pasaría el
  * green gate en verde.
  */
-function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
+function FilaMapeo({ f, opciones, candidatosIA, obraId, recIA = null, onAceptarIA, onDescartarIA, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || null;
   const banda = cand ? bandaDe(cand.score) : null;
   const fac = destino ? factorPropuesto(f, destino) : null;
@@ -653,6 +689,7 @@ function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, desti
               ? <>→ <strong>{f.presupuesto?.nombre || f.decision.insumo_nombre || '(insumo del presupuesto)'}</strong>
                   {f.decision.factor ? <span className="badge b-gray" style={{ marginLeft: 6 }}>× {cant(f.decision.factor)} {f.decision.unidad_destino}</span> : null}</>
               : <span style={{ color: 'var(--tm)' }}>✗ No está en el presupuesto de este trabajo</span>}
+            {esDecisionDeIA(f.decision) && <SelloIA titulo={f.decision?.nota} />}
           </div>
         ) : f.estado === 'sin_clasificar' ? (
           <div style={{ fontSize: 11.5, marginTop: 4, color: 'var(--tm)' }}>
@@ -687,7 +724,19 @@ function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, desti
                 <em>Nada parecido en este presupuesto.</em> Elegilo a mano si igual está, o marcá que no está.
               </div>
             )}
-            <div style={{ maxWidth: 460 }}>
+            {/* Lo que dejó el recorrido con IA. Va APARTE del desplegable a
+                propósito: meterlo adentro haría que «Aceptar» guardara una
+                elección que nadie hizo. */}
+            {recIA?.codigo && (
+              <RecomendacionIA
+                titulo={<>Mapearlo a <strong>{recIA.nombre || recIA.codigo}</strong></>}
+                confianza={recIA.confianza}
+                razonamiento={recIA.razonamiento}
+                onAceptar={() => onAceptarIA?.(recIA)}
+                onDescartar={() => onDescartarIA?.()}
+              />
+            )}
+            <div style={{ maxWidth: 460, marginTop: 5 }}>
               {SearchableSelect ? (
                 <SearchableSelect
                   value={elegido || cand?.cat?.codigo || ''}

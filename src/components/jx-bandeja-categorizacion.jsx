@@ -48,11 +48,12 @@ import {
 } from "../lib/indices-unificados-iupc.js";
 import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
-import { clasificarInsumoConIA } from "../lib/ia-insumos.js";
-import { ejecutarBarridoIA, UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
-import { BarridoIA } from "./jx-barrido-ia.jsx";
+import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
+import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
+import { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
 
-const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId, useCallback: uC } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 // Se calcula UNA vez: son 95 categorías y este componente se renderiza en
@@ -168,6 +169,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // crudas con clave «empresa|familia» y no sirve para esto.
   const equivalencias = uM(() => equivalenciasDe(eqHook.data || [], companyId), [eqHook.data, companyId]);
 
+  // Las propuestas de IA se guardan por ENTIDAD: la misma descripción en otra
+  // empresa es otra pregunta (otro catálogo, otras clasificaciones propias).
+  const ambitoIA = companyId || 'grupo';
+  const { recomendaciones: recsIA } = useBarridoIA('clasificacion', ambitoIA);
+
   // El catálogo y su índice se calculan DURANTE EL RENDER (useMemo), no en un
   // efecto: así el test de montaje ve la tabla dibujada de verdad. Con
   // `useEffect` el cuerpo no se renderiza nunca en el gate —renderToString no
@@ -200,13 +206,16 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     const t = busca.trim().toLowerCase();
     return filas.filter(f => {
       if (t && !f.muestra.toLowerCase().includes(t)) return false;
+      // «Recomendadas por IA»: lo que dejó el recorrido y todavía nadie miró.
+      // Es la lista con la que Gabriel «va pasando y dando un vistazo».
+      if (filtro === 'ia') return f.estado !== 'decididas' && !!recsIA[f.norm];
       if (filtro === 'pendientes') return f.estado !== 'decididas';
       if (['alta', 'media', 'baja', 'rara', 'extrema_baja'].includes(filtro)) {
         return f.estado !== 'decididas' && f.banda === filtro;
       }
       return f.estado === filtro;
     });
-  }, [filas, filtro, busca]);
+  }, [filas, filtro, busca, recsIA]);
 
   const enPantalla = uM(() => visibles.slice(0, limite), [visibles, limite]);
 
@@ -237,7 +246,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // `silencioso`: para el barrido de IA (14-sep) — recorre cientos de filas
   // solo, y un toast por cada una sería una lluvia de carteles. El barrido
   // muestra su propio progreso; acá alcanza con no interrumpir.
-  const aceptar = conGuard(async (fila, categoriaElegida = null, { silencioso = false } = {}) => {
+  // `desdeIA`: la confianza de la recomendación cuando lo que se acepta salió
+  // del recorrido con IA. Deja la marca «Recomendado por IA» en la decisión
+  // (en `nota` — ver MARCA_IA) para que después se pueda ver de dónde vino.
+  const aceptar = conGuard(async (fila, categoriaElegida = null, { silencioso = false, desdeIA = null } = {}) => {
+    const notaIA = desdeIA != null ? notaDeIA(desdeIA) : null;
     const cand = fila?.sug?.candidatos?.[0];
     const catFila = catalogoDe(fila);
     // Sin propuesta no se puede «aceptar» nada: guardar 'sin_clasificar' sería
@@ -263,12 +276,14 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       const creado = await agregarAlCatalogoYDecidir(fila, {
         companyId, familia: catFinal, userId,
         unidad: [...(fila.unidades || [])][0] || 'und',
+        nota: notaIA ? `${notaIA} · Alta desde la bandeja` : null,
       });
       await enseñarALaContadora([{ fila, catalogoFila: creado }], { userId, equivalencias });
       // Enseña la clasificación IUPC — sea que se haya aceptado la propuesta
       // TAL CUAL, o que se haya elegido otra cosa a mano (un descarte): lo que
       // se enseña es SIEMPRE la decisión final (ver enseñarDiccionario).
       await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
+      olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
       await Promise.all([decHook.refresh?.(), catHook.refresh?.()]);
       if (!silencioso) showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
       return;
@@ -280,15 +295,20 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       score: cand?.score ?? fila?.recomendacionIUPC?.score ?? null,
       companyId,
       categoria: catFinal,
+      nota: notaIA,
     }), { userId });
     await enseñarALaContadora([{ fila, catalogoFila: { ...catFila, familia: catFinal } }], { userId, equivalencias });
     await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
+    olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     await decHook.refresh?.();
     if (!silencioso) showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
   });
 
   const noEsInsumo = conGuard(async (fila) => {
     await decidir(decisionNoInsumo(fila, { companyId }), { userId });
+    // Decir «no es un insumo» también resuelve la fila: la propuesta de la IA
+    // ya no tiene a quién esperar.
+    olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     await decHook.refresh?.();
     showToast?.('✓ Marcado: no es un insumo del catálogo — no se vuelve a preguntar', 'green');
   });
@@ -319,6 +339,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         await enseñarDiccionario({ descripcion: f.muestra, clasificacionCodigo: catFila.familia, companyId }, { userId });
       }
     }
+    for (const f of grupo.filas) olvidarRecomendacion('clasificacion', ambitoIA, f.norm);
     await decHook.refresh?.();
     showToast?.(`✓ ${n} descripciones → ${catFila.nombre}`, 'green');
   });
@@ -337,30 +358,40 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     if (campos.familia) {
       await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: campos.familia, companyId }, { userId });
     }
+    olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     setAltaDe(null);
     await Promise.all([catHook.refresh?.(), decHook.refresh?.()]);
     showToast?.(`✓ «${creado.nombre}» agregado al catálogo y mapeado`, 'green');
   });
 
-  // ── El barrido completo con IA (14-sep) ───────────────────────────
+  // ── El recorrido completo con IA (14-sep) ─────────────────────────
   // «Un botón que se encargue de dar una pasada completa a todos los
   // insumos sin clasificar» — TODO lo pendiente (no solo lo que se ve con
   // el filtro actual), una descripción a la vez.
+  //
+  // 🔴 NO GUARDA NADA en el modo por defecto: deja la propuesta al lado de
+  // cada fila y quien clasifica la acepta. Ver el encabezado de barrido-ia.js.
   const pendientesTotal = uM(() => filas.filter(f => f.estado !== 'decididas'), [filas]);
-  const barrerConIA = async ({ onProgreso, debeCancelar }) => ejecutarBarridoIA({
+  const construirBarrido = uC((modo) => ({
     items: pendientesTotal,
-    onProgreso, debeCancelar,
     procesarItem: async (f) => {
       const r = await clasificarInsumoConIA({
         descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
       });
-      if (r?.result?.codigo_sugerido && (r.confianza || 0) >= UMBRAL_BARRIDO_IA) {
-        await aceptar(f, r.result.codigo_sugerido, { silencioso: true });
+      const cod = r?.result?.codigo_sugerido;
+      if (!cod) return 'saltada';
+      const conf = r.confianza || 0;
+      if (modo === 'aplicar') {
+        if (conf < UMBRAL_BARRIDO_IA) return 'saltada';
+        await aceptar(f, cod, { silencioso: true, desdeIA: conf });
         return 'aplicada';
       }
-      return 'saltada';
+      guardarRecomendacion('clasificacion', ambitoIA, f.norm, {
+        codigo: cod, nombre: etiquetaCategoria(cod), confianza: conf, razonamiento: r.razonamiento || '',
+      });
+      return 'recomendada';
     },
-  });
+  }), [pendientesTotal, ambitoIA, aceptar]);
 
   // ── Teclado ──────────────────────────────────────────────────────
   // Es la mitad de por qué esta pantalla se puede terminar. Se apaga mientras
@@ -392,6 +423,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // ── Render ───────────────────────────────────────────────────────
   const sinCatalogo = filasCatalogo.length === 0;
   const nMarcadas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado !== 'decididas').length;
+  // Solo las que siguen pendientes: una recomendación sobre algo ya decidido
+  // no es nada que revisar (y se olvida sola al aceptar).
+  const nRecomendadasIA = filas.filter(f => f.estado !== 'decididas' && recsIA[f.norm]).length;
 
   return (
     <>
@@ -470,9 +504,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         </div>
         <div style={{ marginTop: 10 }}>
           <BarridoIA
+            seccion="clasificacion"
+            ambito={ambitoIA}
             etiqueta="lo pendiente"
             cantidadPendiente={pendientesTotal.length}
-            onEjecutar={barrerConIA}
+            construir={construirBarrido}
+            onVerRecomendadas={() => { setFiltro('ia'); setCursor(0); }}
           />
         </div>
       </div>
@@ -518,6 +555,16 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
               </button>
             );
           })}
+          {/* El filtro del recorrido: solo lo que la IA propuso y todavía
+              nadie miró. Aparece únicamente cuando hay algo — si no, sería
+              un botón que nunca muestra nada. */}
+          {(nRecomendadasIA > 0 || filtro === 'ia') && (
+            <button className={`btn btn-sm ${filtro === 'ia' ? 'btn-amber' : 'btn-ghost'}`}
+              title="Lo que dejó propuesto el recorrido con IA. Se aceptan de a una, mirándolas."
+              onClick={() => { setFiltro('ia'); setCursor(0); }}>
+              🤖 Recomendadas por IA ({nRecomendadasIA})
+            </button>
+          )}
         </div>
 
         {nMarcadas > 0 && (
@@ -539,6 +586,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             key={f.norm} f={f} activa={i === cursor}
             catFila={catalogoDe(f)}
             listId={listId}
+            recIA={recsIA[f.norm] || null}
+            onAceptarIA={(rec) => aceptar(f, rec.codigo, { desdeIA: rec.confianza })}
+            onDescartarIA={() => olvidarRecomendacion('clasificacion', ambitoIA, f.norm)}
             marcada={marcadas.has(f.norm)}
             onFocus={() => setCursor(i)}
             onMarcar={() => setMarcadas(m => {
@@ -571,7 +621,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -642,6 +692,9 @@ function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, o
                 ? <>→ <strong>{f.cat?.nombre || '(insumo del catálogo)'}</strong>
                     {f.decision.familia && <span className="badge b-gray" style={{ marginLeft: 6 }}>{etiquetaCategoria(f.decision.familia)}</span>}</>
                 : <span style={{ color: 'var(--tm)' }}>✗ No es un insumo del catálogo</span>}
+              {/* «Quiero saber qué insumo he aceptado como recomendación yo»
+                  (Gabriel, 14-sep): el sello queda en la fila ya decidida. */}
+              {esDecisionDeIA(f.decision) && <SelloIA titulo={f.decision?.nota} />}
             </div>
           ) : (
             <div style={{ fontSize: 11.5, marginTop: 4 }}>
@@ -679,6 +732,20 @@ function FilaBandeja({ f, activa, catFila, listId, marcada, onFocus, onMarcar, o
                   onClick={e => e.stopPropagation()}
                 />
               </span>
+
+              {/* Lo que dejó el recorrido con IA. Se muestra APARTE del
+                  desplegable a propósito: si se metiera solo en el campo,
+                  «Aceptar» guardaría una elección que nadie hizo — que es
+                  justo lo que había que corregir. */}
+              {recIA?.codigo && (
+                <RecomendacionIA
+                  titulo={<>Clasificarlo como <strong>{recIA.nombre || etiquetaCategoria(recIA.codigo)}</strong></>}
+                  confianza={recIA.confianza}
+                  razonamiento={recIA.razonamiento}
+                  onAceptar={() => onAceptarIA?.(recIA)}
+                  onDescartar={() => onDescartarIA?.()}
+                />
+              )}
 
               <AyudaClasificacionIA
                 descripcion={f.muestra}

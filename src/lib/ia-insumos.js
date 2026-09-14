@@ -23,6 +23,26 @@ import { apiFetch, apiParse } from './api-client.js';
 
 const ENDPOINT = '/api/sugerir-cuenta-pcge';
 
+// ── LA MARCA «esto salió de una recomendación de IA» ──────────────
+// Gabriel, 14-sep: «quiero saber qué insumo he aceptado como recomendación
+// yo, algo así como cuando vea diga "Recomendado por IA"».
+//
+// 🔴 VA EN `nota`, NO EN `fuente`. Dos motivos:
+//   · `fuente` contesta QUIÉN decidió, y la respuesta sigue siendo una
+//     PERSONA: en el diseño nuevo nadie guarda nada sin que alguien acepte.
+//     Ponerle 'ia' la haría perder contra 'manual' al resolver duplicados
+//     (ver RANGO en mapeo-trabajo.js) aunque fuera la decisión más nueva.
+//   · Los CHECK de `insumo_categoria.fuente` (mig 195) solo aceptan
+//     'regla'/'manual'. Dexie no valida CHECKs: una fila con 'ia' se guardaba
+//     local y REBOTABA en el push con 23514, que es exactamente el error de
+//     sincronización que la contadora reportó la semana pasada. `nota` es
+//     texto libre y ya existe en las dos tablas.
+export const MARCA_IA = '[IA]';
+export const notaDeIA = (confianza) =>
+  `${MARCA_IA} Aceptado de la recomendación de IA${confianza ? ` (${Math.round(confianza * 100)}%)` : ''}`;
+/** ¿Esta decisión se aceptó desde una propuesta de la IA? */
+export const esDecisionDeIA = (decision) => String(decision?.nota || '').startsWith(MARCA_IA);
+
 // Espeja `sanitizeForPrompt` del server (lib/api-helpers.js): el server lo
 // aplica igual, así que mandar ya saneado hace que los nombres que VUELVEN
 // sean idénticos a los que se mandaron. Sin esto, la respuesta de
