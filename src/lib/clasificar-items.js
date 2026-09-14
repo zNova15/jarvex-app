@@ -21,6 +21,12 @@ import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { apiFetch } from './api-client.js';
 import { getCurrentMode } from './app-mode-core.js';
 
+// 🔴 Este vocabulario tiene un ESPEJO server-side: el CHECK
+// `clasificacion_catalogo_categoria_check` (mig 210). Dexie no valida CHECKs,
+// así que agregar una categoría ACÁ sin agregarla también en una migración
+// nueva guarda la fila local sin aviso y recién revienta al hacer push
+// (23514, sync en reintento eterno) — es justo el bug que arregló la mig 210
+// ('servicios' y 'anticipo' llevaban tiempo acá y nunca en el CHECK).
 export const CATEGORIAS_ITEM = [
   'materiales', 'herramientas', 'maquinaria', 'epp',
   'insumos_emergencia', 'gastos_generales', 'servicios', 'anticipo', 'otros',
