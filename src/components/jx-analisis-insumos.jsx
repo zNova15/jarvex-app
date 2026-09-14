@@ -404,6 +404,22 @@ function AnalisisInsumosPage({ showToast }) {
   // insumos y servicios son dos listas distintas y no se mezclan.
   const ambitoIA = `${empresaVista || 'grupo'}::${subTabCorr}`;
   const { recomendaciones: recsIA } = useBarridoIA('correlaciones', ambitoIA);
+  // 🔴 LA CLAVE DE UN GRUPO SON SUS VARIANTES, NO SU `id`. `sugerirClusters`
+  // arma el id con la raíz del union-find, que no cambia cuando entra una
+  // variante nueva: un grupo {A,B,C} con la propuesta «uní A y B» seguía
+  // mostrándola después de que una factura sumara D, y «Marcar solo esas 2»
+  // dejaba afuera a D sin que la IA la hubiera visto jamás. Con la clave por
+  // contenido, un grupo que cambió simplemente no tiene propuesta y se vuelve
+  // a preguntar.
+  const claveCluster = (c) => `cl::${[...(c?.variantes || [])].sort().join('|')}`;
+  const clavePar = (par) => `pa::${par.nombre_a}|${par.nombre_b}`;
+  // Solo las que siguen apuntando a algo que hoy está en pantalla.
+  const nRecomendadasIA = uM(
+    () => clustersSugeridos.filter(c => recsIA[claveCluster(c)]).length
+      + sugerencias.filter(p => recsIA[clavePar(p)]).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [clustersSugeridos, sugerencias, recsIA],
+  );
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
     [resueltos]
@@ -479,7 +495,7 @@ function AnalisisInsumosPage({ showToast }) {
         relacion, canonico, fuente: 'manual', deleted_at: null,
       });
       // El par quedó resuelto: la propuesta de la IA ya no espera a nadie.
-      olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`);
+      olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par));
       if (!silencioso) {
         showToast?.(relacion === 'mismo'
           ? '✓ Correlacionados — no se volverá a preguntar por este par'
@@ -504,6 +520,10 @@ function AnalisisInsumosPage({ showToast }) {
   const decidirCluster = async (cluster, relacion = 'mismo', soloEstas = null, { silencioso = false } = {}) => {
     if (decidiendoRef.current) return 'saltada';
     decidiendoRef.current = true;
+    // La clave de la propuesta se calcula ANTES de recortar el cluster: abajo
+    // `cluster` se reemplaza por el de las variantes marcadas y la clave del
+    // recortado no es la del grupo que se propuso.
+    const claveIA = claveCluster(cluster);
     try {
       // `soloEstas` son las variantes que quedaron marcadas en la tarjeta: se
       // puede sacar alguna del grupo antes de aceptarlo. La que se saca NO se
@@ -537,7 +557,7 @@ function AnalisisInsumosPage({ showToast }) {
           deleted_at: null,
         });
       }
-      olvidarRecomendacion('correlaciones', ambitoIA, `cl::${cluster.id}`);
+      olvidarRecomendacion('correlaciones', ambitoIA, claveIA);
       if (!silencioso) {
         showToast?.(relacion === 'mismo'
           ? `✓ ${cluster.variantes.length} variantes correlacionadas bajo «${canonicoCrudo}» (${pares.length} enlaces)`
@@ -583,7 +603,7 @@ function AnalisisInsumosPage({ showToast }) {
           const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
           return res === 'aplicada' ? 'aplicada' : 'saltada';
         }
-        guardarRecomendacion('correlaciones', ambitoIA, `cl::${c.id}`, {
+        guardarRecomendacion('correlaciones', ambitoIA, claveCluster(c), {
           mismas: r.result.mismas || [], fuera: r.result.fuera || [],
           confianza: conf, razonamiento: r.razonamiento || '',
         });
@@ -603,7 +623,7 @@ function AnalisisInsumosPage({ showToast }) {
         const res = await decidir(par, relacion, { silencioso: true });
         return res === 'aplicada' ? 'aplicada' : 'saltada';
       }
-      guardarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`, {
+      guardarRecomendacion('correlaciones', ambitoIA, clavePar(par), {
         mismas: r.result.mismas || [], fuera: r.result.fuera || [],
         confianza: conf, razonamiento: r.razonamiento || '',
       });
@@ -930,6 +950,7 @@ function AnalisisInsumosPage({ showToast }) {
             ambito={ambitoIA}
             etiqueta={subTabCorr === 'servicios' ? 'los servicios' : 'los insumos'}
             cantidadPendiente={clustersSugeridos.length + sugerencias.length}
+            cantidadRecomendadas={nRecomendadasIA}
             construir={construirBarrido}
           />
 
@@ -1021,8 +1042,8 @@ function AnalisisInsumosPage({ showToast }) {
                         la medida ("1/2") es justo lo que hay que juzgar. */}
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
-                      inicial={recsIA[`cl::${c.id}`] || null}
-                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, `cl::${c.id}`)}
+                      inicial={recsIA[claveCluster(c)] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, claveCluster(c))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
                       onAplicar={(mismas) => {
                         // Se comparan NORMALIZADOS: el nombre que vuelve pasó
@@ -1075,11 +1096,11 @@ function AnalisisInsumosPage({ showToast }) {
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
-                      inicial={recsIA[`pa::${par.nombre_a}|${par.nombre_b}`] || null}
-                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`)}
+                      inicial={recsIA[clavePar(par)] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
                       onAplicar={(mismas) => {
-                        olvidarRecomendacion('correlaciones', ambitoIA, `pa::${par.nombre_a}|${par.nombre_b}`);
+                        olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par));
                         decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto').catch(() => {});
                       }}
                     />

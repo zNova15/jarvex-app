@@ -23,7 +23,9 @@ const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR, useCallback: uC } 
 function useBarridoIA(seccion, ambito) {
   const [tic, setTic] = uS(0);
   uE(() => suscribir(seccion, () => setTic(t => t + 1)), [seccion]);
-  const estado = estadoBarrido(seccion);
+  // El estado se pide por sección Y ámbito: el recorrido de otra obra (u otra
+  // entidad, u otra sub-pestaña) no se dibuja acá ni tapa el botón propio.
+  const estado = estadoBarrido(seccion, ambito);
   const recomendaciones = uM(
     () => leerRecomendaciones(seccion, ambito),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,7 +42,7 @@ function useBarridoIA(seccion, ambito) {
  * `onVerRecomendadas()`: opcional, para que el cartel pueda llevar al filtro
  * «solo las recomendadas por IA» de la pantalla.
  */
-function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, construir, onVerRecomendadas, disabled = false }) {
+function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, construir, onVerRecomendadas, cantidadRecomendadas = null, disabled = false }) {
   const { estado, recomendaciones } = useBarridoIA(seccion, ambito);
   const [modo, setModo] = uS('recomendar');
   // Anti-doble-click (regla crítica 2 del CLAUDE.md): el guard por ESTADO se
@@ -48,10 +50,17 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
   // dos recorridos. El ref síncrono corta el segundo en el mismo tick.
   const arrancandoRef = uR(false);
 
-  const nRecomendadas = Object.keys(recomendaciones || {}).length;
+  // 🔴 EL CONTADOR LO MANDA LA PANTALLA cuando puede (`cantidadRecomendadas`).
+  // Contar las guardadas a secas incluiría propuestas sobre filas que YA se
+  // decidieron —por un lote, o desde la otra PC y bajadas por el sync— y el
+  // badge decía «180 recomendadas» mientras el filtro de abajo mostraba 140.
+  // Solo la pantalla sabe qué filas siguen pendientes.
+  const nRecomendadas = cantidadRecomendadas != null
+    ? cantidadRecomendadas
+    : Object.keys(recomendaciones || {}).length;
 
   const empezar = uC(() => {
-    if (arrancandoRef.current || barridoActivo(seccion)) return;
+    if (arrancandoRef.current || barridoActivo(seccion, ambito)) return;
     arrancandoRef.current = true;
     try {
       const { items, procesarItem } = construir(modo) || {};
@@ -62,7 +71,7 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
     } finally {
       // Si `construir` tiró o no había nada, el ref se suelta acá mismo; si
       // arrancó, lo suelta el `.finally` de arriba.
-      if (!barridoActivo(seccion)) arrancandoRef.current = false;
+      if (!barridoActivo(seccion, ambito)) arrancandoRef.current = false;
     }
   }, [seccion, ambito, etiqueta, modo, construir]);
 
@@ -97,7 +106,7 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
         </strong>
         {estado.activo ? (
           <>
-            <button type="button" className="btn btn-xs btn-ghost" onClick={() => cancelarBarrido(seccion)}>
+            <button type="button" className="btn btn-xs btn-ghost" onClick={() => cancelarBarrido(seccion, ambito)}>
               Cancelar
             </button>
             <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>
@@ -105,7 +114,7 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
             </span>
           </>
         ) : (
-          <button type="button" className="btn btn-xs btn-ghost" onClick={() => cerrarBarrido(seccion)}>Cerrar</button>
+          <button type="button" className="btn btn-xs btn-ghost" onClick={() => cerrarBarrido(seccion, ambito)}>Cerrar</button>
         )}
       </div>
       <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: 'var(--bg-s)', marginTop: 6 }}>

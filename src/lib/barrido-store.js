@@ -60,7 +60,7 @@ function cargar() {
   return mapa;
 }
 
-function bajarADisco() {
+function escribirAhora() {
   try {
     const m = cargar();
     const keys = Object.keys(m);
@@ -70,6 +70,33 @@ function bajarADisco() {
     }
     localStorage.setItem(CLAVE_LS, JSON.stringify(m));
   } catch { /* sin localStorage el recorrido sigue, solo que no sobrevive al refresco */ }
+}
+
+// 🔴 EL DISCO NO SE TOCA EN CADA ÍTEM. `localStorage.setItem` es SÍNCRONO y
+// serializa el mapa entero: con 2.000 propuestas son ~400 KB por ítem, y un
+// recorrido de 1.885 descripciones los escribiría 1.885 veces, trabando el
+// hilo principal justo mientras alguien intenta ir aceptando las que ya
+// llegaron. La memoria se actualiza de inmediato (la pantalla ve todo al
+// instante); el disco se pone al día a lo sumo cada `ESPERA_DISCO_MS`, y se
+// fuerza al terminar el recorrido y en cada olvido/limpieza, que son las
+// operaciones sueltas donde perder el último cambio sí se notaría.
+const ESPERA_DISCO_MS = 1500;
+let timerDisco = null;
+let pendienteDisco = false;
+
+function bajarADisco({ yaMismo = false } = {}) {
+  if (yaMismo) {
+    if (timerDisco) { clearTimeout(timerDisco); timerDisco = null; }
+    pendienteDisco = false;
+    escribirAhora();
+    return;
+  }
+  if (timerDisco) { pendienteDisco = true; return; }   // ya hay una bajada en camino
+  escribirAhora();                                      // la primera del tramo baja de una
+  timerDisco = setTimeout(() => {
+    timerDisco = null;
+    if (pendienteDisco) { pendienteDisco = false; bajarADisco(); }
+  }, ESPERA_DISCO_MS);
 }
 
 // ── Los avisos ────────────────────────────────────────────────────
@@ -119,7 +146,7 @@ export function olvidarRecomendacion(seccion, ambito, id) {
   const k = clave(seccion, ambito, id);
   if (!(k in m)) return;
   delete m[k];
-  bajarADisco();
+  bajarADisco({ yaMismo: true });   // olvido suelto: que no lo resucite un refresco
   avisar(seccion);
 }
 
@@ -129,48 +156,61 @@ export function limpiarRecomendaciones(seccion, ambito) {
   const pre = `${seccion}::${ambito || '-'}::`;
   let n = 0;
   for (const k of Object.keys(m)) if (k.startsWith(pre)) { delete m[k]; n++; }
-  if (n) { bajarADisco(); avisar(seccion); }
+  if (n) { bajarADisco({ yaMismo: true }); avisar(seccion); }
   return n;
 }
 
 // ── El recorrido ──────────────────────────────────────────────────
-const enCurso = new Map();   // seccion → { estado, cancelar, promesa }
+// 🔴 LA CLAVE ES SECCIÓN + ÁMBITO, NO SOLO LA SECCIÓN. Las tres pantallas
+// cambian de ámbito sin cambiar de sección: el selector de Trabajo en mapeo,
+// el de entidad en clasificación, las sub-pestañas Insumos/Servicios en
+// correlaciones. Con la clave por sección sola, el recorrido de la obra
+// «Puente Nuevo» aparecía dibujado sobre la obra «Colegio X» —«Recorriendo…
+// 132 de 400», números de otra obra— y encima tapaba el botón para lanzar el
+// propio. Cada ámbito tiene el suyo; el ritmo lo siguen compartiendo todos
+// por `turnoIA`, así que dos a la vez no saturan nada.
+const enCurso = new Map();   // `${seccion}::${ambito}` → { estado, cancelar, promesa }
 
-/** El estado visible de la sección, o null si nunca corrió (o ya se cerró). */
-export function estadoBarrido(seccion) {
-  return enCurso.get(seccion)?.estado || null;
+const claveCorrida = (seccion, ambito) => `${seccion}::${ambito || '-'}`;
+
+/** El estado visible de ESTE ámbito, o null si nunca corrió (o ya se cerró). */
+export function estadoBarrido(seccion, ambito = null) {
+  return enCurso.get(claveCorrida(seccion, ambito))?.estado || null;
 }
 
 /** ¿Está corriendo AHORA? Lo usa el guard anti-doble-arranque. */
-export function barridoActivo(seccion) {
-  return !!enCurso.get(seccion)?.estado?.activo;
+export function barridoActivo(seccion, ambito = null) {
+  return !!enCurso.get(claveCorrida(seccion, ambito))?.estado?.activo;
 }
 
 /** Pide que pare. El ítem en vuelo termina; lo hecho hasta acá queda. */
-export function cancelarBarrido(seccion) {
-  const r = enCurso.get(seccion);
+export function cancelarBarrido(seccion, ambito = null) {
+  const r = enCurso.get(claveCorrida(seccion, ambito));
   if (r) r.cancelar = true;
 }
 
 /** Saca el cartel de «terminado» de la pantalla. No borra recomendaciones. */
-export function cerrarBarrido(seccion) {
-  const r = enCurso.get(seccion);
+export function cerrarBarrido(seccion, ambito = null) {
+  const k = claveCorrida(seccion, ambito);
+  const r = enCurso.get(k);
   if (r && r.estado?.activo) return;      // no se cierra algo que sigue corriendo
-  enCurso.delete(seccion);
+  enCurso.delete(k);
   avisar(seccion);
 }
 
 /**
- * Arranca el recorrido de una sección. Si ya hay uno corriendo AHÍ, no hace
- * nada (dos recorridos sobre la misma lista se pisarían); en OTRA sección sí
- * puede haber otro a la vez — el ritmo lo comparten por `turnoIA`.
+ * Arranca el recorrido de una sección+ámbito. Si ya hay uno corriendo AHÍ, no
+ * hace nada (dos recorridos sobre la misma lista se pisarían); en otra sección
+ * —o en la misma con otro ámbito— sí puede haber otro a la vez, y el ritmo lo
+ * comparten todos por `turnoIA`.
  *
  * `procesarItem` devuelve 'recomendada' | 'aplicada' | 'saltada'; en el modo
  * por defecto ('recomendar') NO debe escribir en la base: guarda con
  * `guardarRecomendacion` y listo.
  */
 export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items = [], procesarItem, modo = 'recomendar' }) {
-  if (barridoActivo(seccion)) return enCurso.get(seccion).promesa;
+  const kCorrida = claveCorrida(seccion, ambito);
+  if (barridoActivo(seccion, ambito)) return enCurso.get(kCorrida).promesa;
 
   const reg = {
     cancelar: false,
@@ -183,7 +223,7 @@ export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items =
     },
     promesa: null,
   };
-  enCurso.set(seccion, reg);
+  enCurso.set(kCorrida, reg);
   avisar(seccion);
 
   // El token de «trabajo largo»: mientras esté tomado, el cierre por
@@ -212,6 +252,8 @@ export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items =
       throw e;
     } finally {
       liberar();
+      // Se terminó: el disco se pone al día sí o sí, sin esperar el throttle.
+      bajarADisco({ yaMismo: true });
       avisar(seccion);
     }
   })();
@@ -223,6 +265,8 @@ export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items =
 export function _reiniciar() {
   enCurso.clear();
   oyentes.clear();
+  if (timerDisco) { clearTimeout(timerDisco); timerDisco = null; }
+  pendienteDisco = false;
   mapa = {};
   try { localStorage.removeItem(CLAVE_LS); } catch { /* sin localStorage no hay nada que limpiar */ }
 }

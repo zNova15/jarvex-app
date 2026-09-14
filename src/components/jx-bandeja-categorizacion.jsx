@@ -348,6 +348,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     const elegidas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado !== 'decididas');
     if (!elegidas.length) return;
     const n = await decidirEnLote(elegidas.map(f => decisionNoInsumo(f, { companyId })), { userId });
+    // También resuelve filas: sin esto sus propuestas de IA quedaban huérfanas
+    // en localStorage y el contador de arriba decía más que el filtro de abajo.
+    for (const f of elegidas) olvidarRecomendacion('clasificacion', ambitoIA, f.norm);
     setMarcadas(new Set());
     await decHook.refresh?.();
     showToast?.(`✓ ${n} marcadas como «no es un insumo» — no vuelven a preguntarse`, 'green');
@@ -508,6 +511,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             ambito={ambitoIA}
             etiqueta="lo pendiente"
             cantidadPendiente={pendientesTotal.length}
+            cantidadRecomendadas={nRecomendadasIA}
             construir={construirBarrido}
             onVerRecomendadas={() => { setFiltro('ia'); setCursor(0); }}
           />

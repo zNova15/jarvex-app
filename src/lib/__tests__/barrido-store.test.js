@@ -96,8 +96,49 @@ describe('el recorrido, que vive fuera de React', () => {
       procesarItem: async (x) => { procesados.push(x); return x === 3 ? 'saltada' : 'recomendada'; },
     });
     expect(procesados).toEqual([1, 2, 3]);
-    const e = estadoBarrido('clasificacion');
+    const e = estadoBarrido('clasificacion', 'emp1');
     expect(e).toMatchObject({ activo: false, total: 3, i: 3, recomendadas: 2, saltadas: 1, modo: 'recomendar' });
+  });
+
+  // 🔴 El recorrido de la obra A NO se dibuja sobre la obra B. Antes la clave
+  // era solo la sección: al cambiar de Trabajo se veía «Recorriendo… 132 de
+  // 400» con números de otra obra, y encima tapaba el botón propio.
+  it('el estado es por sección Y ámbito: no se ve desde otro ámbito', async () => {
+    let seguir;
+    const trabado = new Promise(res => { seguir = res; });
+    const p = arrancarBarrido({
+      seccion: 'mapeo', ambito: 'obraA', items: [1],
+      procesarItem: async () => { await trabado; return 'recomendada'; },
+    });
+    await Promise.resolve();
+    expect(barridoActivo('mapeo', 'obraA')).toBe(true);
+    expect(estadoBarrido('mapeo', 'obraB')).toBeNull();   // la otra obra ve su botón
+    expect(barridoActivo('mapeo', 'obraB')).toBe(false);
+    seguir(); await p;
+  });
+
+  it('dos ámbitos de la MISMA sección pueden correr a la vez', async () => {
+    const a = arrancarBarrido({ seccion: 'mapeo', ambito: 'obraA', items: [1], procesarItem: async () => 'recomendada' });
+    const b = arrancarBarrido({ seccion: 'mapeo', ambito: 'obraB', items: [1], procesarItem: async () => 'recomendada' });
+    expect(a).not.toBe(b);
+    await Promise.all([a, b]);
+    expect(estadoBarrido('mapeo', 'obraA').recomendadas).toBe(1);
+    expect(estadoBarrido('mapeo', 'obraB').recomendadas).toBe(1);
+  });
+
+  it('cancelar un ámbito no toca al otro', async () => {
+    const vistos = [];
+    const a = arrancarBarrido({
+      seccion: 'mapeo', ambito: 'obraA', items: [1, 2, 3],
+      procesarItem: async (x) => { vistos.push(`A${x}`); cancelarBarrido('mapeo', 'obraA'); return 'recomendada'; },
+    });
+    const b = arrancarBarrido({
+      seccion: 'mapeo', ambito: 'obraB', items: [1, 2],
+      procesarItem: async (x) => { vistos.push(`B${x}`); return 'recomendada'; },
+    });
+    await Promise.all([a, b]);
+    expect(estadoBarrido('mapeo', 'obraA').cancelado).toBe(true);
+    expect(estadoBarrido('mapeo', 'obraB')).toMatchObject({ cancelado: false, i: 2 });
   });
 
   // El defecto que originó todo esto: cambiar de pestaña desmontaba el
@@ -112,10 +153,10 @@ describe('el recorrido, que vive fuera de React', () => {
     });
     // "se desmonta la pantalla": nadie mira, nadie cancela
     await Promise.resolve();
-    expect(barridoActivo('mapeo')).toBe(true);
+    expect(barridoActivo('mapeo', 'obra1')).toBe(true);
     seguir();
     await p;
-    expect(estadoBarrido('mapeo')).toMatchObject({ activo: false, recomendadas: 2 });
+    expect(estadoBarrido('mapeo', 'obra1')).toMatchObject({ activo: false, recomendadas: 2 });
   });
 
   // Mientras corre, el cierre por inactividad de useAuth se posterga: si no,
@@ -181,6 +222,22 @@ describe('el recorrido, que vive fuera de React', () => {
     expect(estadoBarrido('clasificacion')).toBeNull();
   });
 
+  // El disco se escribe con freno (localStorage.setItem es síncrono y
+  // serializa el mapa entero), pero al terminar el recorrido se fuerza: nadie
+  // puede perder la última tanda de propuestas por el throttle.
+  it('al terminar, TODAS las propuestas están en disco (no solo la primera)', async () => {
+    await arrancarBarrido({
+      seccion: 'clasificacion', ambito: 'emp1', items: [1, 2, 3, 4, 5],
+      procesarItem: async (x) => {
+        guardarRecomendacion('clasificacion', 'emp1', `d${x}`, { codigo: String(x) });
+        return 'recomendada';
+      },
+    });
+    const crudo = JSON.parse(globalThis.localStorage.getItem('jx_ia_recomendaciones_v1'));
+    const enDisco = Object.keys(crudo).filter(k => k.startsWith('clasificacion::emp1::'));
+    expect(enDisco).toHaveLength(5);
+  });
+
   it('cerrar NO borra las recomendaciones que dejó', async () => {
     await arrancarBarrido({
       seccion: 'clasificacion', ambito: 'emp1', items: [1],
@@ -189,7 +246,7 @@ describe('el recorrido, que vive fuera de React', () => {
         return 'recomendada';
       },
     });
-    cerrarBarrido('clasificacion');
+    cerrarBarrido('clasificacion', 'emp1');
     expect(Object.keys(leerRecomendaciones('clasificacion', 'emp1'))).toEqual(['x']);
   });
 });

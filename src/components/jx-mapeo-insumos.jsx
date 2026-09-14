@@ -585,6 +585,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                     ambito={ambitoIA}
                     etiqueta="lo pendiente"
                     cantidadPendiente={pendientesMapeo.length}
+                    cantidadRecomendadas={nRecomendadasIA}
                     construir={construirBarrido}
                     onVerRecomendadas={() => setFiltro('ia')}
                   />

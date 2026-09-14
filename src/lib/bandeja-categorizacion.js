@@ -412,6 +412,13 @@ export function decisionDeCatalogo(fila, catalogoFila, { factor = null, factorFu
     // (`notaDeIA`, en ia-insumos.js). NO se usa `fuente` para eso: quien
     // acepta sigue siendo una persona, y el CHECK de la mig 195 solo admite
     // 'regla'/'manual' — ver el comentario de MARCA_IA.
+    //
+    // Va SIEMPRE, también en null, y eso es a propósito: `decidir()` hace un
+    // update con este cuerpo, así que volver a decidir la misma descripción a
+    // mano (o dentro de un lote) BORRA el sello. Es correcto — la decisión
+    // vigente es la nueva, y esa no salió de ninguna propuesta de IA. Si la
+    // nota se dejara afuera cuando es null, una fila re-decidida a mano
+    // seguiría mostrando «🤖 Recomendado por IA» para siempre.
     nota: nota || null,
     company_id: companyId || null,
     deleted_at: null,
