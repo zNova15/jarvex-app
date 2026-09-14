@@ -47,7 +47,7 @@ import {
   categoriasParaElegir, etiquetaCategoria, bandaConfianza,
 } from "../lib/indices-unificados-iupc.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
-import { clasificarInsumoConIA } from "../lib/clasificar-insumo-ia.js";
+import { clasificarInsumoConIA } from "../lib/ia-insumos.js";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);

@@ -61,6 +61,7 @@ import {
   extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
+import { correlacionarConIA } from "../lib/ia-insumos.js";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
@@ -91,6 +92,85 @@ function NombreConDiferencias({ nombre, otro }) {
         </React.Fragment>
       ))}
     </>
+  );
+}
+
+/**
+ * "🤖 Preguntale a la IA" para CORRELACIONAR (14-sep-2026, pedido de Gabriel:
+ * la misma ayuda que en clasificación pero enfocada en este módulo).
+ *
+ * Sirve igual para un PAR suelto (dos variantes) que para un GRUPO (N): la
+ * IA contesta cuáles son de verdad el mismo artículo y cuáles quedan afuera,
+ * mirando MEDIDAS y material en vez de parecido de texto — que es lo que
+ * proponía "REDUCCION 1\" X 1/2" junto a "REDUCCION 2 1/2\" A 1".
+ *
+ * Los nombres viajan CRUDOS a propósito: normInsumo() convierte "1/2" en dos
+ * números sueltos y justamente la medida es lo que hay que juzgar.
+ *
+ * Nunca decide sola: muestra el veredicto y `onAplicar` es un clic aparte.
+ * `textoAplicar(mismas)` puede devolver null para no ofrecer botón (ej. la IA
+ * dice que ninguna es la misma: para eso ya está "Son distintos").
+ */
+function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar }) {
+  const [res, setRes] = uS(null);
+  const [cargando, setCargando] = uS(false);
+  const [error, setError] = uS(null);
+
+  const preguntar = async (e) => {
+    e?.stopPropagation?.();
+    if (cargando) return;
+    setCargando(true); setError(null);
+    try {
+      const r = await correlacionarConIA({ variantes });
+      if (!r?.result) { setError(r?.razonamiento || 'La IA no pudo decidir esto.'); return; }
+      setRes({ ...r.result, confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached });
+    } catch (e2) {
+      setError(e2?.message || 'No se pudo consultar la IA.');
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const esPar = variantes.length === 2;
+  const sonElMismo = !!res && res.mismas.length >= 2;
+  const etiqueta = res ? (textoAplicar ? textoAplicar(res.mismas) : null) : null;
+
+  return (
+    <div style={{ marginTop: 6 }} onClick={e => e.stopPropagation()}>
+      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
+        {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
+      </button>
+      {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
+      {res && (
+        <div style={{
+          marginTop: 4, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+          background: sonElMismo ? 'rgba(46,204,113,.09)' : 'rgba(231,76,60,.08)',
+          border: `1px solid ${sonElMismo ? 'rgba(46,204,113,.35)' : 'rgba(231,76,60,.3)'}`,
+        }}>
+          🤖 {esPar
+            ? (sonElMismo ? <strong>Son el mismo insumo</strong> : <strong>NO son el mismo insumo</strong>)
+            : (sonElMismo
+              ? <>Uniría <strong>{res.mismas.length}</strong> de {variantes.length}</>
+              : <strong>Ninguna es la misma que otra</strong>)}
+          <span className={`badge ${sonElMismo ? 'b-green' : 'b-red'}`} style={{ marginLeft: 4, fontSize: 9 }}>
+            {Math.round((res.confianza || 0) * 100)}%
+          </span>
+          {res.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
+          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{res.razonamiento}</div>
+          {!esPar && sonElMismo && res.fuera.length > 0 && (
+            <div style={{ color: 'var(--tm)', marginTop: 2 }}>
+              Deja afuera: {res.fuera.map(f => `«${f}»`).join(', ')}
+            </div>
+          )}
+          {etiqueta && (
+            <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
+              onClick={(e) => { e.stopPropagation(); onAplicar?.(res.mismas, res.fuera); }}>
+              {etiqueta}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -799,6 +879,20 @@ function AnalisisInsumosPage({ showToast }) {
                         );
                       })}
                     </div>
+                    {/* La IA marca por vos cuáles quedan adentro: después
+                        seguís tocando "Unir las N marcadas", que es la
+                        decisión que se guarda. Los nombres van CRUDOS —
+                        la medida ("1/2") es justo lo que hay que juzgar. */}
+                    <AyudaCorrelacionIA
+                      variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
+                      textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
+                      onAplicar={(mismas) => {
+                        const crudoDe = (v) => muestraDe.get(normInsumo(v))?.nombre || v;
+                        setExcluidasCluster(p => ({
+                          ...p, [c.id]: c.variantes.filter(v => !mismas.includes(crudoDe(v))),
+                        }));
+                      }}
+                    />
                   </div>
                   );
                 })}
@@ -834,6 +928,11 @@ function AnalisisInsumosPage({ showToast }) {
                       <button className="btn btn-green btn-xs" onClick={() => decidir(par, 'mismo')}>✓ Mismo insumo</button>
                       <button className="btn btn-ghost btn-xs" onClick={() => decidir(par, 'distinto')}>✗ Son distintos</button>
                     </div>
+                    <AyudaCorrelacionIA
+                      variantes={[nombreA, nombreB]}
+                      textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
+                      onAplicar={(mismas) => decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto')}
+                    />
                   </div>
                 );
               })}

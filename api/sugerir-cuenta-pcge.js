@@ -294,22 +294,97 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
   }
 }
 
-// ── CLASIFICACIÓN CON RAZONAMIENTO: insumo/servicio → código IUPC/Servicios ──
+// ═══════════════════════════════════════════════════════════════════
+// LAS TRES AYUDAS DE IA DEL PANEL DE INSUMOS (14-sep-2026)
+//
+// Clasificar · Correlacionar · Mapear. Las tres contestan preguntas distintas
+// sobre lo mismo —qué ES esto, si DOS son lo mismo, y CONTRA QUÉ del
+// presupuesto va— y las tres comparten este motor.
+//
+// 🔴 SOLO OPENROUTER GRATIS, SIN RESPALDO PAGO. Pedido explícito de Gabriel:
+// «no quiero que esté de respaldo Haiku; si falla, que se pueda pulsar el
+// botón y reintentar, nada más». Estos botones se pueden disparar cientos de
+// veces mientras se despacha la cola de 700+ descripciones de UNA empresa: con
+// un respaldo pago, una racha de saturación del gratuito se convierte en
+// factura sin que nadie lo haya pedido. Si el gratuito no está, se dice y el
+// botón queda listo para reintentar — que es exactamente lo que se pidió.
+// (Las otras tres acciones de este endpoint —cuenta PCGE, sugerir_insumo,
+// costo/gasto— siguen como estaban, con Claude: son otro caudal.)
+//
+// Devuelve { parsed, data } o lanza un Error con .status y .mensaje listos
+// para responder.
+async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo }) {
+  const cfg = leerConfigOR();
+  if (!cfg.activo) {
+    const e = new Error('sin motor');
+    e.status = 503;
+    e.mensaje = 'La ayuda de IA no está configurada en el servidor (falta OPENROUTER_API_KEY).';
+    throw e;
+  }
+  let data;
+  try {
+    const cruda = await openrouterChat(cfg.apiKey, construirCuerpoOR({
+      modelo: cfg.modelo, respaldos: cfg.respaldos, politica: cfg.politica,
+      system: sys, user: usr, maxTokens, razonamiento: 'bajo',
+    }), Date.now() + 25000);
+    data = normalizarRespuestaOR(cruda);
+  } catch (err) {
+    console.warn(`[${modo}] OpenRouter falló:`, (err && (err.upstreamStatus || err.message)) || err);
+    const e = new Error('openrouter');
+    e.status = 503;
+    e.mensaje = err?.politicaImposible
+      ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
+      : 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
+    throw e;
+  }
+  const text = data.content?.[0]?.text || '';
+  const jm = text.match(/\{[\s\S]*\}/);
+  if (!jm) {
+    const e = new Error('sin json');
+    e.status = 502;
+    e.mensaje = 'La IA no devolvió una respuesta usable. Tocá el botón otra vez.';
+    throw e;
+  }
+  let parsed;
+  try { parsed = JSON.parse(jm[0]); } catch {
+    const e = new Error('json invalido');
+    e.status = 502;
+    e.mensaje = 'La IA devolvió una respuesta mal formada. Tocá el botón otra vez.';
+    throw e;
+  }
+  // Misma línea [ia-uso] que captura-magica: deja contar tokens por día desde
+  // los logs de Vercel sin instrumentar nada más.
+  try {
+    console.log('[ia-uso]', JSON.stringify({
+      endpoint: 'sugerir-cuenta-pcge', modo, engine: 'openrouter',
+      model: data.model, in: data.usage?.input_tokens ?? null, out: data.usage?.output_tokens ?? null,
+    }));
+  } catch {}
+  return { parsed, data };
+}
+
+/** Una sola forma de contestar el error de las tres ayudas. */
+function responderErrorIA(res, e) {
+  if (e?.mensaje) return res.status(e.status || 502).json({ error: e.mensaje });
+  if (e?.name === 'AbortError') return res.status(504).json({ error: 'La IA tardó demasiado. Tocá el botón otra vez.' });
+  return res.status(502).json({ error: 'No se pudo consultar la IA. Tocá el botón otra vez.' });
+}
+
+// ── 1. CLASIFICAR: insumo/servicio → código IUPC/Servicios ────────
 // Gabriel, 14-sep-2026: con solo parecido de palabras, "PANTALON Y CAMISACO DE
 // DRILL OBRERO AZUL CON CINTA REFLECTIVA" salía sugerido como [37] Herramienta
 // manual — la palabra "obrero" pesó más que el hecho de que es ropa de
 // trabajo con cinta reflectiva, es decir EPP. Con 700+ descripciones por
-// decidir en la primera empresa, este botón le da al motor local un segundo
+// decidir en la primera empresa, este botón le da al motor local una segunda
 // opinión que SÍ entiende el significado, no solo el texto. Nunca se aplica
-// sola — el resultado llega al panel y la persona decide, igual que
-// clasificarCostoGasto de acá arriba.
+// sola — el resultado llega al panel y la persona decide.
 //
 // Anti-alucinación: `candidatos` lo manda el cliente (la MISMA lista que
 // ofrece el selector — categoriasParaElegir()), y la respuesta se valida
 // contra esos códigos exactos. Si la IA propone algo fuera de la lista, se
 // descarta — no se inventa un código plausible (misma filosofía que
 // "sin_clasificar" en indices-unificados-iupc.js).
-async function clasificarInsumoIUPC(req, res, apiKey, body) {
+async function clasificarInsumoIUPC(req, res, body) {
   const descripcion = sanitizeForPrompt(body.descripcion, 300);
   const unidad = sanitizeForPrompt(body.unidad, 20);
   const candidatos = Array.isArray(body.candidatos) ? body.candidatos.slice(0, 120) : [];
@@ -343,53 +418,13 @@ Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revis
   const usr = `DESCRIPCIÓN: "${descripcion}"${unidad ? `\nUnidad de la factura: ${unidad}` : ''}\n\nCLASIFICACIONES POSIBLES:\n${lista}\n\nDevolvé el JSON.`;
 
   try {
-    // Mismo criterio que clasificarCostoGasto: gratis primero (OpenRouter),
-    // Claude de respaldo — importa acá más que en ningún otro lado: son 700+
-    // llamadas posibles para una sola empresa, y si costara nadie lo usaría.
-    const cfgOR = leerConfigOR();
-    const deadline = Date.now() + 30000;
-    let data = null;
-    let motor = 'claude';
-    if (cfgOR.activo) {
-      try {
-        const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
-          system: sys, user: usr, maxTokens: 1200, razonamiento: 'bajo',
-        }), Math.min(deadline, Date.now() + 18000));
-        data = normalizarRespuestaOR(cruda);
-        motor = 'openrouter';
-      } catch (e) {
-        console.warn('[clasificar-insumo-iupc] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e);
-      }
-    }
-    if (!data) {
-      if (!apiKey) return res.status(503).json({ error: 'No hay motor de IA configurado' });
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 30000);
-      const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST', signal: ctrl.signal,
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 700, system: sys, messages: [{ role: 'user', content: usr }] }),
-      });
-      clearTimeout(timer);
-      if (!upstream.ok) {
-        const t = await upstream.text();
-        console.error('[clasificar-insumo-iupc] upstream', upstream.status, t.slice(0, 200));
-        return res.status(upstream.status).json({ error: `El servicio de IA respondió ${upstream.status}` });
-      }
-      data = await upstream.json();
-    }
-    const text = data.content?.[0]?.text || '';
-    const jm = text.match(/\{[\s\S]*\}/);
-    if (!jm) return res.status(502).json({ error: 'La IA no devolvió JSON', rawText: text.slice(0, 300) });
-    let parsed; try { parsed = JSON.parse(jm[0]); } catch (e) { return res.status(502).json({ error: 'La IA devolvió un JSON inválido', detail: e.message }); }
-
+    const { parsed, data } = await pedirJsonALaIA({ sys, usr, maxTokens: 1200, modo: 'clasificar_insumo_iupc' });
     const codigoSugerido = String(parsed.codigo_sugerido || '').trim();
     if (!codigosValidos.has(codigoSugerido)) {
       return res.status(200).json({
         result: null,
         razonamiento: `La IA propuso un código fuera de la lista ("${codigoSugerido || 'vacío'}") — no se aplicó nada.`,
-        _model: data.model, _usage: data.usage, _motor: motor,
+        _model: data.model, _usage: data.usage,
       });
     }
     const alternativas = Array.isArray(parsed.alternativas)
@@ -398,23 +433,158 @@ Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revis
           .filter(a => codigosValidos.has(a.codigo) && a.codigo !== codigoSugerido)
           .slice(0, 2)
       : [];
-
-    try {
-      console.log('[ia-uso]', JSON.stringify({
-        endpoint: 'sugerir-cuenta-pcge', modo: 'clasificar_insumo_iupc', engine: motor,
-        model: data.model, in: data.usage?.input_tokens ?? null, out: data.usage?.output_tokens ?? null,
-      }));
-    } catch {}
-
     return res.status(200).json({
       result: { codigo_sugerido: codigoSugerido, alternativas },
       confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
       razonamiento: String(parsed.razonamiento || '').slice(0, 300),
-      _model: data.model, _usage: data.usage, _motor: motor,
+      _model: data.model, _usage: data.usage,
     });
   } catch (e) {
-    if (e.name === 'AbortError') return res.status(504).json({ error: 'La IA tardó demasiado (>30s)' });
-    return res.status(502).json({ error: 'Error consultando la IA', detail: e.message });
+    return responderErrorIA(res, e);
+  }
+}
+
+// ── 2. CORRELACIONAR: ¿estos nombres son el MISMO insumo? ─────────
+// La misma IA, para la pestaña de Correlaciones (pedido de Gabriel, 14-sep).
+// El motor local compara PALABRAS y por eso propuso "REDUCCION 1\" X 1/2"
+// junto a "REDUCCION 2 1/2\" A 1": escritas se parecen muchísimo y son dos
+// piezas distintas. Acá la IA mira las MEDIDAS y el material.
+//
+// UNA sola forma para los dos casos de la pantalla: un PAR son dos variantes,
+// un GRUPO son N. Contesta cuáles son de verdad la misma cosa (`mismas`) y
+// cuáles quedan afuera (`fuera`) — que es exactamente lo que la tarjeta ya
+// deja hacer a mano tocando cada variante.
+async function correlacionarInsumosIA(req, res, body) {
+  const variantes = Array.isArray(body.variantes)
+    ? [...new Set(body.variantes.map(v => sanitizeForPrompt(String(v), 160)).filter(Boolean))].slice(0, 20)
+    : [];
+  if (variantes.length < 2) {
+    return res.status(422).json({ error: 'Se requieren al menos 2 variantes' });
+  }
+  const validos = new Set(variantes);
+  const lista = variantes.map((v, i) => `${i + 1}. "${v}"`).join('\n');
+
+  const sys = `Eres un experto en insumos y servicios de construcción civil en Perú. Te dan una lista de NOMBRES tal como los escribieron distintos proveedores en sus facturas, y tenés que decir cuáles son EL MISMO artículo escrito distinto y cuáles no.
+
+Reglas de criterio:
+- El mismo artículo escrito distinto SÍ se une: "Clavo número 3" = "Clavos N3" = "Clavo de 3 pulgadas"; "Cemento Sol tipo I" = "Cemento Portland Tipo I".
+- Las MEDIDAS mandan y casi nunca perdonan: una "REDUCCION 1\\" X 1/2" NO es una "REDUCCION 2 1/2\\" A 1", aunque las palabras sean casi iguales. Lo mismo con diámetros, espesores, largos, potencias y capacidades distintas.
+- El MATERIAL manda: PVC no es fierro galvanizado aunque la pieza sea la misma.
+- Una MARCA distinta del mismo artículo con la misma medida SÍ es el mismo insumo.
+- El color, la presentación o el proveedor no hacen dos insumos distintos si el artículo y la medida son iguales.
+
+Devolvés SOLO JSON válido (sin markdown):
+{
+  "mismas": ["<nombre EXACTO de la lista>", "..."],
+  "canonico": "<el nombre más completo de los de 'mismas'>",
+  "confianza": 0.9,
+  "razonamiento": "una frase corta, en español, diciendo QUÉ los hace iguales o distintos (la medida, el material...)"
+}
+Reglas de salida:
+- Copiá los nombres EXACTAMENTE como están en la lista, sin el número ni las comillas.
+- En "mismas" van solo los que son el mismo artículo entre sí. Los demás se omiten (la app los deja afuera sola).
+- Si NINGUNO es el mismo que otro, devolvé "mismas": [].
+- "mismas" tiene sentido con 2 o más: nunca pongas uno solo ahí.`;
+
+  const usr = `NOMBRES:\n${lista}\n\nDevolvé el JSON.`;
+
+  try {
+    const { parsed, data } = await pedirJsonALaIA({ sys, usr, maxTokens: 1200, modo: 'correlacionar_insumos' });
+    // Anti-alucinación: solo nombres que estaban en la lista, sin repetir.
+    let mismas = [...new Set(
+      (Array.isArray(parsed.mismas) ? parsed.mismas : []).map(x => String(x || '')).filter(x => validos.has(x))
+    )];
+    // Una sola no es un grupo: unir necesita dos.
+    if (mismas.length < 2) mismas = [];
+    // `fuera` se deriva del complemento, no de lo que diga la IA: así la
+    // partición SIEMPRE es total y consistente aunque la respuesta olvide una.
+    const fuera = variantes.filter(v => !mismas.includes(v));
+    const canonicoIA = String(parsed.canonico || '');
+    const canonico = mismas.includes(canonicoIA)
+      ? canonicoIA
+      : (mismas.length ? mismas.reduce((m, n) => (n.length > m.length ? n : m), mismas[0]) : null);
+    return res.status(200).json({
+      result: { mismas, fuera, canonico },
+      confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
+      razonamiento: String(parsed.razonamiento || '').slice(0, 300),
+      _model: data.model, _usage: data.usage,
+    });
+  } catch (e) {
+    return responderErrorIA(res, e);
+  }
+}
+
+// ── 3. MAPEAR: ¿qué insumo del PRESUPUESTO es este de la empresa? ─
+// Tercera ayuda con el mismo motor (Gabriel, 14-sep). Acá NO se clasifica:
+// los dos lados ya tienen su clasificación y la pregunta es de EQUIVALENCIA
+// entre dos catálogos — el de la empresa y el del expediente técnico del
+// trabajo. "No está en este presupuesto" es una respuesta válida y útil.
+async function mapearInsumoPresupuestoIA(req, res, body) {
+  const insumo = sanitizeForPrompt(body.insumo, 200);
+  const unidad = sanitizeForPrompt(body.unidad, 20);
+  const clasificacion = sanitizeForPrompt(body.clasificacion, 80);
+  const candidatos = Array.isArray(body.candidatos) ? body.candidatos.slice(0, 60) : [];
+  if (!insumo || candidatos.length === 0) {
+    return res.status(422).json({ error: 'Se requiere insumo y candidatos[]' });
+  }
+  const codigosValidos = new Set(candidatos.map(c => String(c.codigo)));
+  const lista = candidatos.map((c, i) =>
+    `${i + 1}. [${sanitizeForPrompt(String(c.codigo), 40)}] ${sanitizeForPrompt(c.nombre, 140)}`
+    + `${c.unidad ? ` (${sanitizeForPrompt(c.unidad, 12)})` : ''}`
+    + `${c.clasificacion ? ` · ${sanitizeForPrompt(c.clasificacion, 60)}` : ''}`
+  ).join('\n');
+
+  const sys = `Eres un experto en presupuestos de obra y expedientes técnicos (S10 / Delfín) en Perú.
+
+Te dan UN INSUMO DEL CATÁLOGO DE UNA EMPRESA y la lista numerada de los INSUMOS DEL PRESUPUESTO de un trabajo. Decí cuál del presupuesto es EL MISMO insumo, aunque esté escrito distinto.
+
+Reglas de criterio:
+- Es el mismo si es el mismo material o artículo con la misma medida, aunque cambien el orden de las palabras, la marca o la abreviatura ("Fierro corrugado 1/2" = "Acero corrugado fy=4200 Ø 1/2").
+- Las MEDIDAS mandan: 1/2 no es 3/4, 8 mm no es 12 mm.
+- La UNIDAD puede diferir legítimamente (kg contra varilla, bolsa contra kg): eso NO descarta la coincidencia — después se aplica un factor de conversión.
+- Si el presupuesto NO tiene nada equivalente, decilo: es una respuesta válida y útil. Mejor eso que forzar un parecido.
+
+Devolvés SOLO JSON válido (sin markdown):
+{
+  "codigo_sugerido": "<código EXACTO de la lista, o null si ninguno corresponde>",
+  "confianza": 0.9,
+  "razonamiento": "una frase corta, en español",
+  "alternativas": [{"codigo": "<código de la lista>", "motivo": "breve"}]
+}
+Confianza: 0.85+ es claramente el mismo · 0.6-0.85 probable · <0.6 dudoso. Máximo 2 alternativas.`;
+
+  const usr = [
+    `INSUMO DE LA EMPRESA: "${insumo}"`,
+    unidad ? `Unidad: ${unidad}` : null,
+    clasificacion ? `Clasificación: ${clasificacion}` : null,
+    '',
+    'INSUMOS DEL PRESUPUESTO:',
+    lista,
+    '',
+    'Devolvé el JSON.',
+  ].filter(Boolean).join('\n');
+
+  try {
+    const { parsed, data } = await pedirJsonALaIA({ sys, usr, maxTokens: 1200, modo: 'mapear_insumo_presupuesto' });
+    const cod = String(parsed.codigo_sugerido ?? '').trim();
+    const valido = codigosValidos.has(cod) ? cod : null;
+    const alternativas = Array.isArray(parsed.alternativas)
+      ? parsed.alternativas
+          .map(a => ({ codigo: String(a.codigo || ''), motivo: String(a.motivo || '').slice(0, 150) }))
+          .filter(a => codigosValidos.has(a.codigo) && a.codigo !== valido)
+          .slice(0, 2)
+      : [];
+    const razonamiento = String(parsed.razonamiento || '').slice(0, 300);
+    return res.status(200).json({
+      result: valido ? { codigo_sugerido: valido, alternativas } : null,
+      confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
+      razonamiento: valido
+        ? razonamiento
+        : (razonamiento || 'La IA no encontró un insumo equivalente en este presupuesto.'),
+      _model: data.model, _usage: data.usage,
+    });
+  } catch (e) {
+    return responderErrorIA(res, e);
   }
 }
 
@@ -450,14 +620,28 @@ export default async function handler(req, res) {
     return res.status(403).json({ error: 'Tu rol no tiene habilitada la sugerencia con IA.' });
   }
 
+  const body = req.body || {};
+
+  // ── LAS TRES AYUDAS DEL PANEL DE INSUMOS (14-sep-2026) ───────────
+  // Van ANTES del chequeo de ANTHROPIC_API_KEY a propósito: corren SOLO con
+  // OpenRouter gratis y no tocan Claude, así que no tiene por qué frenarlas
+  // una key que no usan.
+  if (body.action === 'clasificar_insumo_iupc') {
+    return await clasificarInsumoIUPC(req, res, body);
+  }
+  if (body.action === 'correlacionar_insumos') {
+    return await correlacionarInsumosIA(req, res, body);
+  }
+  if (body.action === 'mapear_insumo_presupuesto') {
+    return await mapearInsumoPresupuestoIA(req, res, body);
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return res.status(503).json({
       error: 'ANTHROPIC_API_KEY no configurada en Vercel.',
     });
   }
-
-  const body = req.body || {};
 
   // ── Acción 'sugerir_insumo': matching SEMÁNTICO ítem comprado ↔ insumo presupuestado.
   // (Misma función serverless — el límite de Vercel es 12, así que no se agrega un endpoint.)
@@ -469,12 +653,6 @@ export default async function handler(req, res) {
   // (Misma función serverless — Vercel Hobby está en 12/12.)
   if (body.action === 'clasificar_costo_gasto') {
     return await clasificarCostoGasto(req, res, apiKey, body);
-  }
-
-  // ── Acción 'clasificar_insumo_iupc': clasificación de insumo/servicio CON
-  // RAZONAMIENTO (botón "🤖 Preguntale a la IA" de la bandeja, 14-sep-2026).
-  if (body.action === 'clasificar_insumo_iupc') {
-    return await clasificarInsumoIUPC(req, res, apiKey, body);
   }
 
   const type = ['income', 'cost', 'expense'].includes(body.type) ? body.type : 'expense';

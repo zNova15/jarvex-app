@@ -48,12 +48,94 @@ import {
 } from "../lib/mapeo-trabajo.js";
 import { decidirMapeo, decidirMapeoEnLote, reabrirMapeo } from "../lib/mapeo-trabajo-db.js";
 import { etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
+import { mapearInsumoConIA } from "../lib/ia-insumos.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { TIPO_TRABAJO_LBL } from "../lib/tipos-trabajo.js";
 
-const { useState: uS, useMemo: uM, useRef: uR } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useCallback: uC } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 const SearchableSelect = (p) => (window.SearchableSelect ? <window.SearchableSelect {...p} /> : null);
+
+/**
+ * "🤖 Preguntale a la IA" para MAPEAR (14-sep-2026, pedido de Gabriel: la
+ * misma ayuda de clasificación y correlaciones, pero para este módulo).
+ *
+ * Acá no se clasifica nada: los dos lados YA tienen clasificación y la
+ * pregunta es de equivalencia entre el catálogo de la empresa y el
+ * presupuesto del trabajo ("Fierro corrugado 1/2" ↔ "ACERO CORRUGADO
+ * fy=4200 Ø 1/2"). "No está en este presupuesto" es una respuesta válida.
+ *
+ * Nunca decide sola: deja el insumo elegido en el selector y la decisión
+ * sigue siendo tocar "Es este".
+ */
+function AyudaMapeoIA({ fila, candidatos, obraId, onElegir }) {
+  const [res, setRes] = uS(null);
+  const [cargando, setCargando] = uS(false);
+  const [error, setError] = uS(null);
+
+  const preguntar = async () => {
+    if (cargando) return;
+    setCargando(true); setError(null); setRes(null);
+    try {
+      const r = await mapearInsumoConIA({
+        insumo: fila.nombre,
+        unidad: fila.unidad || '',
+        clasificacion: fila.clasificacionNombre || '',
+        candidatos,
+        obraId,
+      });
+      setRes({
+        codigo: r?.result?.codigo_sugerido || null,
+        confianza: r?.confianza,
+        razonamiento: r?.razonamiento || '',
+        cached: !!r?._cached,
+      });
+    } catch (e) {
+      setError(e?.message || 'No se pudo consultar la IA.');
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  const destino = res?.codigo ? candidatos.find(c => c.codigo === res.codigo) : null;
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button type="button" className="btn btn-xs btn-ghost" disabled={cargando || !candidatos.length}
+        title={!candidatos.length ? 'No hay insumos del presupuesto contra los que preguntar' : undefined}
+        onClick={preguntar}>
+        {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
+      </button>
+      {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
+      {res && (
+        <div style={{
+          marginTop: 4, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+          background: destino ? 'rgba(58,163,255,.08)' : 'rgba(231,76,60,.08)',
+          border: `1px solid ${destino ? 'rgba(58,163,255,.3)' : 'rgba(231,76,60,.3)'}`,
+        }}>
+          {destino ? (
+            <>
+              🤖 Sugiere <strong>{destino.nombre}</strong>
+              <span className="badge b-blue" style={{ marginLeft: 4, fontSize: 9 }}>
+                {Math.round((res.confianza || 0) * 100)}%
+              </span>
+            </>
+          ) : (
+            <>🤖 <strong>No encontró un equivalente</strong> en este presupuesto</>
+          )}
+          {res.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
+          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{res.razonamiento}</div>
+          {destino && (
+            <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
+              onClick={() => onElegir(destino.codigo)}>
+              Usar este insumo
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const cant = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
 const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
@@ -181,6 +263,28 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
     value: p.codigo,
     label: `${p.nombre} — ${cant(p.cantidad)} ${p.unidad} · ${p.clasificacionNombre}`,
   })), [presupuesto]);
+
+  // Los candidatos que ve la IA, en este orden: lo que el motor local ya
+  // puntuó, después los de la MISMA clasificación (donde casi siempre está),
+  // y al final los que comparten alguna palabra. Tope 50: mandarle un
+  // presupuesto de miles de líneas no mejora la respuesta, y llenar con
+  // filas al azar solo invita a que elija cualquiera.
+  const candidatosIA = uC((f) => {
+    const vistos = new Set();
+    const out = [];
+    const push = (p) => {
+      if (!p || vistos.has(p.codigo) || out.length >= 50) return;
+      vistos.add(p.codigo);
+      out.push({ codigo: p.codigo, nombre: p.nombre, unidad: p.unidad, clasificacion: p.clasificacionNombre });
+    };
+    for (const c of (f?.sug?.candidatos || [])) push(porCodigo.get(c?.cat?.codigo));
+    for (const p of presupuesto) if (p.clasificacion && p.clasificacion === f?.clasificacion) push(p);
+    const tok = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .split(/[^a-z0-9]+/).filter(t => t.length > 2);
+    const propios = new Set(tok(f?.nombre));
+    if (propios.size) for (const p of presupuesto) if (tok(p.nombre).some(t => propios.has(t))) push(p);
+    return out;
+  }, [presupuesto, porCodigo]);
 
   // ── Acciones ─────────────────────────────────────────────────────
   const conGuard = (fn) => async (...args) => {
@@ -446,6 +550,8 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                     key={f.norm}
                     f={f}
                     opciones={opcionesPresupuesto}
+                    candidatosIA={candidatosIA}
+                    obraId={obraId}
                     elegido={elegido[f.norm] || ''}
                     onElegir={(cod) => setElegido(e => ({ ...e, [f.norm]: cod }))}
                     destino={insumoElegidoDe(f)}
@@ -477,11 +583,16 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
  * un `f.decision.decision` sobre un null explotaría en la obra y pasaría el
  * green gate en verde.
  */
-function FilaMapeo({ f, opciones, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
+function FilaMapeo({ f, opciones, candidatosIA, obraId, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || null;
   const banda = cand ? bandaDe(cand.score) : null;
   const fac = destino ? factorPropuesto(f, destino) : null;
   const et = fac?.fuente ? ETIQUETA_FUENTE[fac.fuente] : null;
+  // Se arma solo cuando la fila está pendiente (las decididas no preguntan).
+  const candIA = uM(
+    () => (candidatosIA && f.estado !== 'decididas' && f.estado !== 'sin_clasificar' ? candidatosIA(f) : []),
+    [candidatosIA, f],
+  );
 
   return (
     <div style={{ borderTop: '1px solid var(--border)', padding: '9px 8px', display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -555,6 +666,7 @@ function FilaMapeo({ f, opciones, elegido, onElegir, destino, onAceptar, onNoEst
                 {et && <span className={`badge ${et.color}`} style={{ marginLeft: 6 }} title={et.ayuda}>{et.txt}</span>}
               </div>
             )}
+            <AyudaMapeoIA fila={f} candidatos={candIA} obraId={obraId} onElegir={onElegir} />
           </div>
         )}
       </div>
