@@ -1,8 +1,35 @@
 # Mudar las evidencias de Supabase Storage a Cloudflare R2
 
-> Runbook operativo. Escrito el **13-set-2026** con los números medidos ese día.
-> Objetivo final: que Supabase quede en **~60 MB de base y 0 de Storage**, para
-> poder volver del plan **Pro (USD 25/mes)** al plan **Free**.
+> Runbook operativo. Escrito el **13-set-2026**, actualizado el mismo día con
+> el flujo optimizado. Objetivo final: que Supabase quede en **~60 MB de base
+> y 0 de Storage**, para poder volver del plan **Pro (USD 25/mes)** al **Free**.
+
+## Quién hace qué (actualizado)
+
+Gabriel preguntó si los 9 pasos de abajo son la única forma, o si se puede
+optimizar para que Claude haga la mayor parte. Se puede — y bastante:
+
+- **Los 6 valores que hacen falta (Paso 2) YA EXISTEN en Vercel**, porque R2
+  ya está funcionando en producción. No hay que crear ninguna credencial
+  nueva en Cloudflare: es copiar y pegar 6 líneas desde el dashboard de
+  Vercel a un archivo `.env.local` (la plantilla con los 6 nombres ya está
+  creada en la raíz del repo — solo faltan los valores).
+- **Una vez que ese archivo tiene los valores, Claude corre TODO lo demás**
+  (Pasos 3 a 6, y el 8) con el Bash de esta máquina: dry-run, migración,
+  segunda pasada de verificación, y el bump de `_SIGNED_LS_KEY` para no
+  esperar los 7 días de caché. Ningún valor del archivo necesita pegarse en
+  el chat — Claude solo corre el comando, no necesita leer el contenido.
+- **El Paso 7 (vaciar Supabase) ahora tiene script propio**
+  (`scripts/borrar-evidencias-migradas-r2.mjs`): verifica con un HEAD contra
+  R2 antes de borrar cada objeto de Supabase, y deja sin tocar cualquiera que
+  no pueda confirmar. Claude lo corre en `--dry-run` primero y muestra el
+  resultado; el `--apply` (borra de verdad, es irreversible) se hace recién
+  con el OK explícito de Gabriel en ese momento.
+- **Lo que queda irreductiblemente manual** (ninguna API lo expone): abrir
+  Vercel para copiar los 6 valores (Paso 2, ~2 minutos), y dos clics de
+  dashboard al final — bajar el plan de Supabase (Paso 9, botón de billing) y,
+  opcional, poner `R2_SKIP_HEAD=1` en Vercel (Paso 8b). Ninguna herramienta de
+  Claude puede tocar billing de Supabase ni las env vars de Vercel.
 
 ---
 
@@ -66,8 +93,11 @@ Si `ultimo` avanzó más allá del 7-set, alguien desactivó el flag: revisá
 
 ## 2. Requisitos antes de arrancar
 
-1. **`.env.local` en la máquina desde la que vas a correr el script** (está en
-   `.gitignore`, no viaja por git — hay que armarlo en cada máquina). Necesita:
+1. **Completar `.env.local`** (ya existe en la raíz del repo, con los 6
+   nombres puestos y los valores vacíos — está en `.gitignore`, nunca viaja
+   por git). Los 6 valores **ya están en Vercel** (jarvex-app → Settings →
+   Environment Variables) porque R2 ya funciona en producción: no hace falta
+   crear ninguna credencial nueva en Cloudflare, solo copiarlos de ahí:
 
    ```
    VITE_SUPABASE_URL=...
@@ -78,10 +108,8 @@ Si `ultimo` avanzó más allá del 7-set, alguien desactivó el flag: revisá
    R2_BUCKET=jarvex-evidencias
    ```
 
-   Los valores de R2 son los mismos que ya están en Vercel (Settings →
-   Environment Variables). Los de Cloudflare se sacan de R2 → Overview → API
-   Tokens → Manage → *Create Account API token* con permiso **Object Read &
-   Write** acotado al bucket.
+   Con el archivo completo, avisale a Claude — corre todo lo de abajo sin
+   necesitar que le pegues ningún valor en el chat.
 
 2. **`npm install`** hecho (el script usa `@supabase/supabase-js`).
 3. **Correr la migración estando todavía en Pro.** Bajar los 596 MB de Supabase
@@ -171,21 +199,22 @@ días, para no matar una subida en vuelo cuya fila todavía no sincronizó.
 
 **Solo después de que el Paso 3 diera 0 errores y el Paso 4 se viera bien.**
 
-⚠️ **No hay script para esto todavía.** El de huérfanos borra únicamente lo que
-nadie referencia; acá hay que borrar lo que **sí** se referencia pero ya vive en
-R2. Dos opciones:
+Script listo: `scripts/borrar-evidencias-migradas-r2.mjs`. Por cada objeto de
+Supabase hace un HEAD a R2 en la misma ruta y **solo borra si existe ahí Y el
+tamaño coincide** — cualquier otra cosa (no está, tamaño distinto, error de
+red) lo deja sin tocar y lo lista al final, nunca borra a ciegas. También
+respeta una gracia de 30 días por fecha de subida (`--dias`), para no pisar
+algo tan reciente que el último ciclo de migración no haya alcanzado a copiar.
 
-- **A mano** desde el dashboard de Supabase → Storage → `evidencias` →
-  seleccionar y borrar. Con 1.835 objetos en carpetas por obra/mes es tedioso
-  pero se puede.
-- **Con un script** que, para cada objeto, verifique con un HEAD que exista en
-  R2 y recién ahí lo borre de Supabase (borrar solo lo confirmado, nunca a
-  ciegas). Son ~40 líneas reusando el presign del script de migración; pedímelo
-  cuando llegues a este paso.
+```bash
+node --env-file=.env.local scripts/borrar-evidencias-migradas-r2.mjs             # dry-run: cuenta, no borra
+node --env-file=.env.local scripts/borrar-evidencias-migradas-r2.mjs --apply     # borra de verdad
+```
 
-Recomendado: borrar **por meses**, del más viejo al más nuevo, mirando la app
-entre tanda y tanda. Si algo saliera mal, lo que ya se borró está en R2 igual —
-el riesgo real es que un archivo no se haya copiado, y para eso está el Paso 3.
+Primero el dry-run — tiene que decir **todos** los objetos como "confirmados",
+0 "sin confirmar". Recién con eso a la vista, el `--apply`: es el paso
+irreversible del runbook entero, así que se corre con el OK explícito de
+Gabriel en el momento, no antes.
 
 Después de vaciar, confirmar:
 
