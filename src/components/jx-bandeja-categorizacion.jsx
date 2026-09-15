@@ -35,7 +35,7 @@ import { getCurrentMode } from "../lib/app-mode-core.js";
 import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
-  decisionDeCatalogo, decisionNoInsumo, ESTADOS,
+  decisionDeCatalogo, decisionNoInsumo, ESTADOS, ORDENES, ordenarFilasBandeja,
 } from "../lib/bandeja-categorizacion.js";
 import {
   decidir, decidirEnLote, agregarAlCatalogoYDecidir, reabrir, reabrirEnLote, enseñarALaContadora,
@@ -46,7 +46,7 @@ import {
 import {
   categoriasParaElegir, etiquetaCategoria, bandaConfianza,
 } from "../lib/indices-unificados-iupc.js";
-import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
+import { enseñarDiccionario, olvidarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
@@ -170,6 +170,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // clava, para que no puedan decir cosas distintas.
   const [entidad, setEntidad] = uS(() => empresaFija || '');
   const [filtro, setFiltro] = uS('pendientes');
+  // Por costo por defecto: es el orden que hace que 200 decisiones cubran el
+  // 83% del gasto. Los otros tres son para auditar (ver `ORDENES`).
+  const [orden, setOrden] = uS('costo');
   const [busca, setBusca] = uS('');
   const [limite, setLimite] = uS(40);
   const [cursor, setCursor] = uS(0);
@@ -222,16 +225,26 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     [compras, companyId],
   );
   const descripciones = uM(() => agruparDescripciones(comprasEnAlcance), [comprasEnAlcance]);
+
+  // 🔴 VA ANTES DE `filas` A PROPÓSITO: esta pantalla ENSEÑA términos y hasta
+  // la tanda 1 era la única que no los LEÍA — `filasDeBandeja` se llamaba sin
+  // `terminosCustom`, así que el aprendizaje acá era de solo escritura y lo
+  // aprendido aparecía en las otras vistas pero no en ésta.
+  const terminosCustom = uM(
+    () => (terHook.data || []).filter(t => !t.deleted_at && !!t.demo === esPrueba),
+    [terHook.data, esPrueba],
+  );
+
   const filas = uM(
-    () => filasDeBandeja(descripciones, { prep, porId, decisiones }),
-    [descripciones, prep, porId, decisiones],
+    () => filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom }),
+    [descripciones, prep, porId, decisiones, terminosCustom],
   );
   const avance = uM(() => resumenAvance(filas), [filas]);
   const lotes = uM(() => lotesPorPropuesta(filas), [filas]);
 
   const visibles = uM(() => {
     const t = busca.trim().toLowerCase();
-    return filas.filter(f => {
+    const filtradas = filas.filter(f => {
       if (t && !f.muestra.toLowerCase().includes(t)) return false;
       // «Recomendadas por IA»: lo que dejó el recorrido y todavía nadie miró.
       // Es la lista con la que Gabriel «va pasando y dando un vistazo».
@@ -242,7 +255,10 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       }
       return f.estado === filtro;
     });
-  }, [filas, filtro, busca, recsIA]);
+    // El orden lo elige quien mira (tanda 1): por costo para rendir, A-Z para
+    // auditar familias enteras, por probabilidad para despachar por banda.
+    return ordenarFilasBandeja(filtradas, orden);
+  }, [filas, filtro, busca, recsIA, orden]);
 
   const enPantalla = uM(() => visibles.slice(0, limite), [visibles, limite]);
 
@@ -253,11 +269,6 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     const cod = fila?.sug?.candidatos?.[0]?.cat?.codigo;
     return cod ? porId.get(cod) : null;
   };
-
-  const terminosCustom = uM(
-    () => (terHook.data || []).filter(t => !t.deleted_at && !!t.demo === esPrueba),
-    [terHook.data, esPrueba],
-  );
 
   /**
    * La clasificación que propone el motor LOCAL para esta fila — la misma que
@@ -299,6 +310,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // (en `nota` — ver MARCA_IA) para que después se pueda ver de dónde vino.
   const aceptar = conGuard(async (fila, categoriaElegida = null, { silencioso = false, desdeIA = null } = {}) => {
     const notaIA = desdeIA != null ? notaDeIA(desdeIA) : null;
+    // DE DÓNDE SALE EL TÉRMINO QUE SE VA A ENSEÑAR (tanda 1). `silencioso` es
+    // el recorrido en modo «aplicar»: guardó solo, sin que nadie lo mirara, así
+    // que lo que aprenda queda marcado 'ia' — no vuelve a la IA como evidencia
+    // ni le gana a la norma (mig 212). Lo que una persona aceptó mirándolo,
+    // aunque la propuesta venga de la IA, es una decisión y vale como tal.
+    const origenTermino = silencioso ? 'ia' : 'decision';
     const cand = fila?.sug?.candidatos?.[0];
     const catFila = catalogoDe(fila);
     // Sin propuesta no se puede «aceptar» nada: guardar 'sin_clasificar' sería
@@ -330,7 +347,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       // Enseña la clasificación IUPC — sea que se haya aceptado la propuesta
       // TAL CUAL, o que se haya elegido otra cosa a mano (un descarte): lo que
       // se enseña es SIEMPRE la decisión final (ver enseñarDiccionario).
-      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
+      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId, origen: origenTermino }, { userId });
       olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
       await Promise.all([decHook.refresh?.(), catHook.refresh?.()]);
       if (!silencioso) showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
@@ -346,7 +363,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       nota: notaIA,
     }), { userId });
     await enseñarALaContadora([{ fila, catalogoFila: { ...catFila, familia: catFinal } }], { userId, equivalencias });
-    await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId }, { userId });
+    await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId, origen: origenTermino }, { userId });
     olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     await decHook.refresh?.();
     if (!silencioso) showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
@@ -363,8 +380,14 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
 
   const deshacer = conGuard(async (fila) => {
     await reabrir(fila.norm, { companyId });
-    await decHook.refresh?.();
-    showToast?.('Decisión deshecha — vuelve a la lista', 'green');
+    // Deshacer una decisión también DESENSEÑA lo que esa decisión enseñó (ver
+    // `olvidarDiccionario`): dejar el término vivo era lo que fabricaba los
+    // 365 huérfanos. Lo escrito a mano en el panel no se toca.
+    const olvidados = await olvidarDiccionario([fila.muestra], { userId });
+    await Promise.all([decHook.refresh?.(), olvidados ? terHook.refresh?.() : null]);
+    showToast?.(olvidados
+      ? 'Decisión deshecha — vuelve a la lista y el diccionario la olvida'
+      : 'Decisión deshecha — vuelve a la lista', 'green');
   });
 
   const aceptarLote = conGuard(async (grupo) => {
@@ -402,18 +425,25 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
    * trabajo hecho) y dice cuántas son antes de tocar nada.
    */
   const desclasificar = conGuard(async (filasADeshacer, queEs) => {
-    const norms = [...new Set((filasADeshacer || []).map(f => f.norm).filter(Boolean))];
+    const elegidas = (filasADeshacer || []).filter(f => f?.norm);
+    const norms = [...new Set(elegidas.map(f => f.norm))];
     if (!norms.length) return;
     const ok = typeof confirm !== 'function' || confirm(
       `Se van a DESCLASIFICAR ${norms.length} ${norms.length === 1 ? 'descripción' : 'descripciones'} (${queEs}).\n\n`
       + 'Vuelven a la lista de pendientes y hay que volver a decidirlas. '
-      + 'Lo que le enseñaron al diccionario NO se borra.\n\n¿Seguir?',
+      + 'El diccionario también las OLVIDA (lo que hayas escrito a mano en '
+      + 'Clasificaciones no se toca).\n\n¿Seguir?',
     );
     if (!ok) return;
     const n = await reabrirEnLote(norms, { companyId });
+    // Desclasificar desenseña — ver `olvidarDiccionario`. Sin esto cada tanda
+    // arrancaba con los términos de la anterior, incluidos los que se
+    // deshicieron justamente porque estaban mal.
+    const olvidados = await olvidarDiccionario(elegidas.map(f => f.muestra), { userId });
     setMarcadas(new Set());
-    await decHook.refresh?.();
-    showToast?.(`↩ ${n} ${n === 1 ? 'decisión deshecha' : 'decisiones deshechas'} — vuelven a la lista`, 'green');
+    await Promise.all([decHook.refresh?.(), olvidados ? terHook.refresh?.() : null]);
+    showToast?.(`↩ ${n} ${n === 1 ? 'decisión deshecha' : 'decisiones deshechas'}`
+      + (olvidados ? ` · ${olvidados} ${olvidados === 1 ? 'término olvidado' : 'términos olvidados'}` : ''), 'green');
   });
 
   const noSonInsumoEnLote = conGuard(async () => {
@@ -550,6 +580,16 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             <label style={{ fontSize: 11, color: 'var(--tm)' }}>Buscar en las descripciones</label>
             <input className="fi" value={busca} onChange={e => { setBusca(e.target.value); setCursor(0); }} placeholder="cemento, fierro, tubo…" />
           </div>
+          {/* ORDEN (tanda 1) — el costo rinde, pero A-Z es lo que deja ver que
+              «ABRAZADERA», «ABRAZADERA 1/2"» y «ABRAZADERAS 2"» terminaron en
+              cinco códigos distintos. Auditar es otra tarea que decidir. */}
+          <div style={{ minWidth: 150, flex: 1 }}>
+            <label style={{ fontSize: 11, color: 'var(--tm)' }}>Ordenar por</label>
+            <select className="fi" value={orden}
+              onChange={e => { setOrden(e.target.value); setCursor(0); }}>
+              {ORDENES.map(([k, lbl]) => <option key={k} value={k}>{lbl}</option>)}
+            </select>
+          </div>
         </div>
 
         {/* El avance se mide en PLATA: decidir las 20 más caras vale más que
@@ -676,11 +716,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         {filtro === 'decididas' && decididasVisibles.length > 0 && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontSize: 11.5, color: 'var(--tm)' }}>
             <button className="btn btn-sm btn-amber"
-              title="Todas las decisiones de este ámbito vuelven a la lista de pendientes. Lo enseñado al diccionario no se borra."
+              title="Todas las decisiones de este ámbito vuelven a la lista de pendientes, y el diccionario olvida lo que le enseñaron."
               onClick={() => desclasificar(decididasVisibles, busca.trim() ? 'las que coinciden con la búsqueda' : 'todas las decididas')}>
               ↩ Desclasificar {busca.trim() ? `las ${decididasVisibles.length} de la búsqueda` : `las ${decididasVisibles.length}`}
             </button>
-            <span>Vuelven a pendientes. Lo que le enseñaron al diccionario <strong>no</strong> se borra.</span>
+            <span>Vuelven a pendientes y el diccionario las <strong>olvida</strong>. Lo que escribiste a mano en Clasificaciones no se toca.</span>
           </div>
         )}
 

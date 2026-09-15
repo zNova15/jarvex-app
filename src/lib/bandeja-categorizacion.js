@@ -188,6 +188,49 @@ export function agruparDescripciones(compras) {
  * (todo lo pendiente junto), las cinco bandas para ir por partes, y las ya
  * decididas.
  */
+/**
+ * CÓMO SE ORDENA LA LISTA (tanda 1, pedido de Gabriel: «ordena por costo, pero
+ * también quisiera por letra o por probabilidad de coincidencia»).
+ *
+ * El costo sigue siendo el orden por defecto —es el que hace que 200 decisiones
+ * cubran el 83% del gasto— pero no sirve para auditar: alfabético es lo que
+ * pone «ABRAZADERA SIN FIN», «ABRAZADERA 1/2"» y «ABRAZADERAS 2"» una debajo de
+ * la otra y deja ver que quedaron en cinco códigos distintos.
+ */
+export const ORDENES = [
+  ['costo', 'Costo'],
+  ['az', 'A-Z'],
+  ['probabilidad', 'Probabilidad'],
+  ['veces', 'Veces'],
+];
+
+/** La confianza con la que se está proponiendo esta fila (0 si no hay nada). */
+export function scoreDeFila(f) {
+  return f?.sug?.candidatos?.[0]?.score ?? f?.recomendacionIUPC?.score ?? 0;
+}
+
+/**
+ * Ordena SIN mutar. Todos los criterios desempatan por costo: dos filas con la
+ * misma letra inicial o la misma confianza se miran primero por la que mueve
+ * más plata.
+ */
+export function ordenarFilasBandeja(filas, orden = 'costo') {
+  const lista = [...(filas || [])];
+  const porImporte = (a, b) => (b.importe || 0) - (a.importe || 0);
+  if (orden === 'az') {
+    return lista.sort((a, b) =>
+      String(a.muestra || '').localeCompare(String(b.muestra || ''), 'es', { numeric: true, sensitivity: 'base' })
+      || porImporte(a, b));
+  }
+  if (orden === 'probabilidad') {
+    return lista.sort((a, b) => scoreDeFila(b) - scoreDeFila(a) || porImporte(a, b));
+  }
+  if (orden === 'veces') {
+    return lista.sort((a, b) => (b.veces || 0) - (a.veces || 0) || porImporte(a, b));
+  }
+  return lista.sort(porImporte);
+}
+
 export const ESTADOS = [
   ['pendientes', 'Por decidir'],
   ['alta', 'Coincidencia alta (≥70%)'],

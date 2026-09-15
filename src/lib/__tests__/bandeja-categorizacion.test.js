@@ -11,7 +11,7 @@ import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
   decisionDeCatalogo, decisionNoInsumo, filaNuevaDeCatalogo,
-  aprendizajeParaContadora, candidatoDe,
+  aprendizajeParaContadora, candidatoDe, ordenarFilasBandeja,
 } from '../bandeja-categorizacion.js';
 
 const cat = (id, nombre, unidad, familia, tipo = 'insumo', extra = {}) => ({
@@ -445,5 +445,69 @@ describe('cuando lo que se factura ES la obra', () => {
   it('un material que solo MENCIONA la obra no se contagia', () => {
     const { filas } = armar([compra('CEMENTO PORTLAND TIPO I PARA OBRA', 5000, { unidad: 'bolsa' })]);
     expect(filas[0].recomendacionIUPC.codigo).not.toBe('S14');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// EL ORDEN DE LA LISTA (tanda 1) — «ordena por costo, pero también quisiera
+// por letra o por probabilidad» (Gabriel, 15-set-2026).
+// ═══════════════════════════════════════════════════════════════════
+describe('ordenar la bandeja', () => {
+  const F = [
+    { muestra: 'ZAPATOS PUNTA DE ACERO', importe: 100, veces: 9, recomendacionIUPC: { score: 0.4 } },
+    { muestra: 'ABRAZADERA SIN FIN 2"', importe: 900, veces: 1, recomendacionIUPC: { score: 0.2 } },
+    { muestra: 'CEMENTO PORTLAND TIPO I', importe: 500, veces: 4, recomendacionIUPC: { score: 0.95 } },
+  ];
+
+  it('por costo es el orden por defecto (200 decisiones = 83% del gasto)', () => {
+    expect(ordenarFilasBandeja(F).map(f => f.importe)).toEqual([900, 500, 100]);
+    expect(ordenarFilasBandeja(F, 'cualquier-cosa').map(f => f.importe)).toEqual([900, 500, 100]);
+  });
+
+  it('A-Z junta las familias: es lo que deja ver las ABRAZADERAS repartidas', () => {
+    expect(ordenarFilasBandeja(F, 'az').map(f => f.muestra[0])).toEqual(['A', 'C', 'Z']);
+  });
+
+  it('por probabilidad primero lo que el motor tiene más claro', () => {
+    expect(ordenarFilasBandeja(F, 'probabilidad')[0].muestra).toBe('CEMENTO PORTLAND TIPO I');
+  });
+
+  it('por veces primero lo que más se repite en las facturas', () => {
+    expect(ordenarFilasBandeja(F, 'veces')[0].veces).toBe(9);
+  });
+
+  it('no muta el arreglo que recibe', () => {
+    const copia = [...F];
+    ordenarFilasBandeja(F, 'az');
+    expect(F).toEqual(copia);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// LA BANDEJA TAMBIÉN LEE EL DICCIONARIO (tanda 1).
+//
+// EL BUG: `filasDeBandeja` acepta `terminosCustom` desde siempre, pero la
+// pantalla nunca se lo pasaba. Enseñabas 368 términos desde ahí y esa misma
+// pantalla no aprendía nada — el aprendizaje era de solo escritura.
+// ═══════════════════════════════════════════════════════════════════
+describe('el diccionario propio llega a la propuesta de la bandeja', () => {
+  const compras = [compra('GEOMALLA TRIAXIAL TX160', 12000, { unidad: 'm2' })];
+  const terminosCustom = [{
+    id: 't1', termino: 'GEOMALLA TRIAXIAL TX160', norm: 'geomalla triaxial tx160',
+    clasificacion_codigo: 'PI-GEO', origen: 'decision', deleted_at: null,
+  }];
+
+  it('sin los términos, la bandeja no sabe qué es', () => {
+    const { filas } = armar(compras);
+    expect(filas[0].recomendacionIUPC.codigo).not.toBe('PI-GEO');
+  });
+
+  it('con los términos, propone lo que ya se decidió antes', () => {
+    const filasCat = catalogoParaProponer(CATALOGO, DISGREGACION, { companyId: null });
+    const { prep, porId } = indiceDePropuestas(filasCat);
+    const filas = filasDeBandeja(agruparDescripciones(compras), {
+      prep, porId, decisiones: new Map(), terminosCustom,
+    });
+    expect(filas[0].recomendacionIUPC.codigo).toBe('PI-GEO');
   });
 });

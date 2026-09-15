@@ -111,6 +111,9 @@ export async function agregarTermino({ termino, clasificacionCodigo, companyId =
     termino: txt,
     norm,
     clasificacion_codigo: String(clasificacionCodigo),
+    // Escrito a mano desde el panel: es la única capa propia que le gana al
+    // Anexo 2 y que desclasificar NO borra (mig 212). Ver `indexarCustom`.
+    origen: 'manual',
     company_id: companyId || null,
     deleted_at: null,
   }, 'clasificacion_terminos', esPrueba, userId);
@@ -162,7 +165,7 @@ export async function moverTermino(id, clasificacionCodigo, { userId = null } = 
  * bloquearla ni mostrarle un error a quien solo quería clasificar una fila.
  * Devuelve null si no hizo nada.
  */
-export async function enseñarDiccionario({ descripcion, clasificacionCodigo, companyId = null }, { userId = null } = {}) {
+export async function enseñarDiccionario({ descripcion, clasificacionCodigo, companyId = null, origen = 'decision' }, { userId = null } = {}) {
   try {
     const txt = String(descripcion || '').trim();
     const cod = String(clasificacionCodigo || '').trim();
@@ -180,12 +183,66 @@ export async function enseñarDiccionario({ descripcion, clasificacionCodigo, co
       return { accion: 'movido', termino: txt, desde: existente.clasificacion_codigo, hacia: cod };
     }
     const fila = filaNueva({
-      termino: txt, norm, clasificacion_codigo: cod, company_id: companyId || null, deleted_at: null,
+      termino: txt, norm, clasificacion_codigo: cod,
+      // Provisional por definición (mig 212): vale DESPUÉS de la norma y se
+      // borra si alguien desclasifica esa fila. 'manual' solo lo escribe el
+      // panel de Clasificaciones.
+      origen: origen === 'manual' ? 'manual' : (origen === 'ia' ? 'ia' : 'decision'),
+      company_id: companyId || null, deleted_at: null,
     }, 'clasificacion_terminos', esPrueba, userId);
     await db.clasificacion_terminos.add(fila);
     return { accion: 'creado', termino: txt, hacia: cod };
   } catch (e) {
     console.warn('[enseñarDiccionario] no se pudo enseñar (no bloquea la decisión):', e?.message || e);
     return null;
+  }
+}
+
+/**
+ * DESCLASIFICAR TIENE QUE DESENSEÑAR (tanda 1, 15-set-2026).
+ *
+ * EL DEFECTO: `reabrir`/`reabrirEnLote` borraban la decisión y dejaban vivo el
+ * término que esa decisión había enseñado. El cartel decía «lo que le enseñaron
+ * al diccionario NO se borra», que era describir el bug, no una decisión de
+ * producto. Medido en producción: Gabriel deshizo 649 decisiones y quedaron 365
+ * términos huérfanos, muchos mal, pisando el Anexo 2 con score 0,99. Cada tanda
+ * nueva arrancaba envenenada por la anterior.
+ *
+ * QUÉ NO BORRA: los `origen: 'manual'` — los que alguien escribió a mano en el
+ * panel de Clasificaciones. Esos no los puso una decisión de la bandeja, así
+ * que deshacer una decisión no tiene por qué llevárselos puestos. Se sacan con
+ * el ✕ de su propio panel.
+ *
+ * Nunca lanza: igual que enseñar, es un efecto de lado del deshacer y no puede
+ * dejar la decisión a medio borrar. Devuelve cuántos términos se olvidaron.
+ */
+export async function olvidarDiccionario(normsOTextos, { userId = null } = {}) {
+  try {
+    const buscados = new Set(
+      (normsOTextos || [])
+        .map(x => normIUPC(String(x || '')))
+        .filter(Boolean),
+    );
+    if (!buscados.size) return 0;
+    const esPrueba = esModoPrueba();
+    const candidatos = await db.clasificacion_terminos
+      .filter(r => !r.deleted_at && buscados.has(r.norm)
+        && r.origen !== 'manual' && filaDelModo(r, esPrueba)).toArray();
+    let n = 0;
+    for (const prev of candidatos) {
+      // Un término que nunca llegó al server se borra de verdad; el resto va
+      // por baja lógica para que el borrado viaje a los otros equipos.
+      if (prev.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) {
+        await db.clasificacion_terminos.delete(prev.id);
+      } else {
+        await db.clasificacion_terminos.update(prev.id,
+          parcheDeUpdate({ deleted_at: ahora() }, prev, esPrueba, userId));
+      }
+      n++;
+    }
+    return n;
+  } catch (e) {
+    console.warn('[olvidarDiccionario] no se pudo olvidar (no bloquea el deshacer):', e?.message || e);
+    return 0;
   }
 }

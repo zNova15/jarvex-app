@@ -120,17 +120,19 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
   if (!desc || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
   }
-  // 🔴 `clasif2`, no `clasif` (15-sep). Las respuestas de la versión anterior
-  // se dieron SIN el diccionario oficial delante y son justo las que Gabriel
-  // reportó como disparates ("alambre de amarre" → maquinaria liviana).
-  // Dejarlas en la caché 30 días sería seguir mostrando el error arreglado.
-  const clave = `clasif2::${norm(desc)}`;
+  // 🔴 `clasif3`, no `clasif2` (tanda 1). Las respuestas de la versión
+  // anterior se dieron con el diccionario aprendido de la empresa mezclado
+  // dentro de la «EVIDENCIA DEL DICCIONARIO OFICIAL», o sea con 365 términos
+  // huérfanos —muchos mal— pasando por norma peruana. Servirlas 30 días desde
+  // la caché sería seguir mostrando el error que esta tanda arregla.
+  // (`clasif` fue la versión sin diccionario alguno, 15-sep.)
+  const clave = `clasif3::${norm(desc)}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
-  // La EVIDENCIA del Anexo 2 para esta descripción — ver `evidenciaDiccionario`.
-  // Se calcula acá (el diccionario viaja en el bundle, no en el server) y se
-  // manda junto con la pregunta.
+  // La EVIDENCIA para esta descripción — ver `evidenciaDiccionario`. Se calcula
+  // acá (el diccionario viaja en el bundle, no en el server) y se manda junto
+  // con la pregunta, en dos bloques separados: la norma y lo propio.
   const evidencia = evidenciaDiccionario(desc, { terminosCustom });
 
   const v = await postIA({
@@ -138,10 +140,23 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
     descripcion: desc,
     unidad: unidad || '',
     candidatos: candidatos.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
-    evidencia: evidencia.map(g => ({
-      codigo: String(g.codigo),
-      terminos: g.terminos.map(t => String(t).slice(0, 80)).slice(0, 6),
-    })),
+    // DOS BLOQUES, no uno (tanda 1): `evidencia` es la NORMA (Anexo 2 + árbol
+    // de servicios) y `evidencia_propia` es el diccionario de la empresa,
+    // aprendido de decisiones. Iban mezclados y el prompt los presentaba a
+    // todos como «DICCIONARIO OFICIAL» — la IA leía su propio error de ayer
+    // con la autoridad de la R.J. 016-2026.
+    evidencia: evidencia
+      .filter(g => g.terminos.length)
+      .map(g => ({
+        codigo: String(g.codigo),
+        terminos: g.terminos.map(t => String(t).slice(0, 80)).slice(0, 6),
+      })),
+    evidencia_propia: evidencia
+      .filter(g => g.propios?.length)
+      .map(g => ({
+        codigo: String(g.codigo),
+        terminos: g.propios.map(t => String(t).slice(0, 80)).slice(0, 4),
+      })),
     // Lo que ya propuso el motor local leyendo ese mismo diccionario: la IA
     // tiene que CONFIRMARLO o corregirlo con un argumento, no ignorarlo.
     propuesta_local: propuestaLocal?.codigo ? {

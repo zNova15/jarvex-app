@@ -70,10 +70,11 @@ describe('evidenciaDiccionario', () => {
     expect(ev[0].score).toBeGreaterThanOrEqual(ev[ev.length - 1].score);
   });
 
-  // El diccionario PROPIO de la empresa es evidencia tan buena como el Anexo
-  // 2: es la corrección que ya enseñó la contadora. Si no viajara, la IA
-  // volvería a proponer lo mismo que le corrigieron ayer.
-  it('suma los términos propios de la empresa', () => {
+  // El diccionario PROPIO de la empresa viaja, porque es la corrección que ya
+  // enseñó la contadora — pero EN SU PROPIA BOLSA (tanda 1). Mezclarlo con el
+  // Anexo 2 era lo que hacía que la IA leyera su error de ayer como si fuera
+  // la R.J. 016-2026.
+  it('los términos propios van en `propios`, NUNCA en la evidencia de la norma', () => {
     const ev = evidenciaDiccionario('MESA DE MELAMINE MARCA QUADRA', {
       terminosCustom: [
         { termino: 'MESA DE MELAMINE', clasificacion_codigo: 'administrativos', deleted_at: null },
@@ -81,7 +82,20 @@ describe('evidenciaDiccionario', () => {
     });
     const g = ev.find(x => x.codigo === 'administrativos');
     expect(g).toBeTruthy();
-    expect(g.terminos).toContain('MESA DE MELAMINE');
+    expect(g.propios).toContain('MESA DE MELAMINE');
+    expect(g.terminos).not.toContain('MESA DE MELAMINE');
+  });
+
+  // Un término que dejó un recorrido automático NO se le devuelve a la IA:
+  // sería pedirle que discuta contra su propia respuesta vieja.
+  it('los términos de origen ia no se mandan como evidencia', () => {
+    const ev = evidenciaDiccionario('MESA DE MELAMINE MARCA QUADRA', {
+      terminosCustom: [
+        { termino: 'MESA DE MELAMINE', clasificacion_codigo: 'administrativos', origen: 'ia', deleted_at: null },
+      ],
+    });
+    const g = ev.find(x => x.codigo === 'administrativos');
+    expect(g?.propios || []).not.toContain('MESA DE MELAMINE');
   });
 
   it('ignora los términos propios borrados', () => {

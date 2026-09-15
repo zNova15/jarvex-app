@@ -86,7 +86,7 @@ describe('clasificar contra los dos árboles', () => {
 
 describe('el diccionario de cada clasificación', () => {
   it('junta la base del bundle con lo que se agregó a mano', () => {
-    const custom = [{ id: 't1', termino: 'Cemento cabezón', norm: 'cemento cabezon', clasificacion_codigo: '21' }];
+    const custom = [{ id: 't1', termino: 'Cemento cabezón', norm: 'cemento cabezon', clasificacion_codigo: '21', origen: 'manual' }];
     const d = terminosDeClasificacion('21', custom);
     expect(d.some(t => t.origen === 'inei')).toBe(true);
     expect(d.some(t => t.origen === 'manual' && t.termino === 'Cemento cabezón')).toBe(true);

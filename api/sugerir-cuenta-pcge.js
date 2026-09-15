@@ -415,6 +415,27 @@ async function clasificarInsumoIUPC(req, res, body) {
     ? evidencia.map(g => `- [${g.codigo}] ← ${g.terminos.map(t => `"${t}"`).join(', ')}`).join('\n')
     : '(ninguno: el Diccionario Oficial no tiene ningún término que se parezca a esta descripción)';
 
+  // ── El diccionario DE LA EMPRESA, que NO es la norma ──────────────
+  // Tanda 1 (15-sep-2026). Hasta acá los términos que la empresa había
+  // aprendido de sus propias decisiones viajaban DENTRO del bloque anterior,
+  // rotulados «DICCIONARIO OFICIAL». Medido en producción: 365 de 368 eran
+  // huérfanos de decisiones ya deshechas y ~70 estaban mal ("CUSQUEÑA" →
+  // cemento). El modelo leía su propio error de ayer como si fuera la R.J.
+  // 016-2026. Ahora va aparte y con el estatus que le corresponde: una pista
+  // de la casa, que pierde contra la norma cuando se contradicen.
+  const propios = (Array.isArray(body.evidencia_propia) ? body.evidencia_propia : [])
+    .slice(0, 12)
+    .map(g => ({
+      codigo: sanitizeForPrompt(String(g?.codigo || ''), 20),
+      terminos: (Array.isArray(g?.terminos) ? g.terminos : [])
+        .slice(0, 4).map(t => sanitizeForPrompt(t, 80)).filter(Boolean),
+    }))
+    .filter(g => g.codigo && codigosValidos.has(g.codigo) && g.terminos.length);
+  const bloquePropio = propios.length
+    ? `\n\nDICCIONARIO DE LA EMPRESA (aprendido de decisiones previas — NO es la norma, puede tener errores):\n${
+      propios.map(g => `- [${g.codigo}] ← ${g.terminos.map(t => `"${t}"`).join(', ')}`).join('\n')}`
+    : '';
+
   const pl = body.propuesta_local;
   const bloqueLocal = pl?.codigo && codigosValidos.has(String(pl.codigo))
     ? `\n\nPROPUESTA DEL MOTOR LOCAL (ya leyó ese mismo diccionario): [${sanitizeForPrompt(String(pl.codigo), 20)}] ${sanitizeForPrompt(pl.nombre, 100)}${pl.motivo ? ` — motivo: ${sanitizeForPrompt(pl.motivo, 200)}` : ''}`
@@ -422,12 +443,16 @@ async function clasificarInsumoIUPC(req, res, body) {
 
   const sys = `Eres un experto en insumos y servicios de construcción civil en Perú, clasificando según el estándar oficial IUPC del INEI (Índices Unificados de Precios de la Construcción, R.J. 016-2026) y su Diccionario Oficial de Elementos de Construcción (Anexo 2).
 
-Te dan una DESCRIPCIÓN tal como aparece en una factura, una lista numerada de CLASIFICACIONES POSIBLES (código + nombre) y, cuando existe, la EVIDENCIA DEL DICCIONARIO OFICIAL: los términos de la norma que se parecen a esa descripción y a qué código apunta cada uno.
+Te dan una DESCRIPCIÓN tal como aparece en una factura, una lista numerada de CLASIFICACIONES POSIBLES (código + nombre) y hasta tres bloques de apoyo, que NO tienen la misma autoridad:
 
-🔴 LA NORMA MANDA, NO TU INTUICIÓN. La evidencia del diccionario es texto de la R.J. 016-2026 y le gana a cualquier razonamiento propio:
+1. EVIDENCIA DEL DICCIONARIO OFICIAL (Anexo 2) — es LA LEY: texto de la R.J. 016-2026 del INEI. No se discute.
+2. DICCIONARIO DE LA EMPRESA — términos que esta empresa fue aprendiendo de sus propias decisiones. Es una PISTA, no la norma: puede tener errores, y de hecho los tuvo. Úsalo cuando la norma no dice nada sobre la descripción, o para desempatar entre códigos que la norma deja igual de plausibles. Si contradice a la EVIDENCIA OFICIAL, gana la oficial, y decilo en el razonamiento.
+3. PROPUESTA DEL MOTOR LOCAL — la respuesta que ya calculó el sistema leyendo esos mismos diccionarios.
+
+🔴 LA NORMA MANDA, NO TU INTUICIÓN. La evidencia del diccionario oficial le gana a cualquier razonamiento propio:
 - Si algún término de la evidencia describe el MISMO objeto que la descripción, elegí ese código. "Alambre de amarre" contra la evidencia "[02] ← Alambre negro recocido, Alambre de púas" es acero, no maquinaria.
 - La PROPUESTA DEL MOTOR LOCAL, cuando viene, salió de leer ese mismo diccionario. Confirmala salvo que tengas un argumento concreto para cambiarla, y si la cambiás decí en el razonamiento POR QUÉ la norma dice otra cosa. Cambiarla sin argumento es el error más caro que podés cometer acá.
-- Si la evidencia está vacía, el objeto NO está en el diccionario de construcción. Eso es información, no permiso para forzarlo: un mueble de oficina, un servicio bancario o un artículo de escritorio van a las categorías complementarias (administrativos / consumos de oficina / servicios), NO al material del que están hechos. Una MESA DE MELAMINE es mobiliario de oficina, no "madera terciada"; un cobro de un banco o una inmobiliaria es un gasto administrativo o financiero, no un insumo.
+- Si la evidencia OFICIAL está vacía, el objeto NO está en el diccionario de construcción (que el diccionario de la empresa diga algo no cambia eso). Eso es información, no permiso para forzarlo: un mueble de oficina, un servicio bancario o un artículo de escritorio van a las categorías complementarias (administrativos / consumos de oficina / servicios), NO al material del que están hechos. Una MESA DE MELAMINE es mobiliario de oficina, no "madera terciada"; un cobro de un banco o una inmobiliaria es un gasto administrativo o financiero, no un insumo.
 
 Otras pistas donde el parecido de texto suele fallar:
 - Ropa de trabajo, cascos, guantes, botas, chalecos, arneses, lentes, tapones de oído, cinta reflectiva → EPP / implementos de seguridad, aunque diga "obrero" o una marca que suene a herramienta.
@@ -439,7 +464,7 @@ Devolvés SOLO JSON válido (sin markdown):
 {
   "codigo_sugerido": "<código EXACTO de la lista, sin corchetes>",
   "confianza": 0.9,
-  "razonamiento": "una frase corta y concreta, en español, dirigida a quien va a decidir. Si te apoyaste en la evidencia, nombrá el término del diccionario que usaste.",
+  "razonamiento": "una frase corta y concreta, en español, dirigida a quien va a decidir. Si te apoyaste en un término, nombralo y decí de qué bloque salió (norma o diccionario de la empresa).",
   "alternativas": [{"codigo": "<código de la lista>", "motivo": "breve"}],
   "clasificacion_nueva": "<opcional: si NINGUNA de la lista le queda bien de verdad, el nombre corto de la clasificación que habría que crear (ej. 'Gastos financieros e intereses'). Si alguna sirve, omitilo>"
 }
@@ -447,8 +472,8 @@ Confianza: 0.85+ inequívoco · 0.6-0.85 razonable · <0.6 ambiguo, que lo revis
 
   const usr = `DESCRIPCIÓN: "${descripcion}"${unidad ? `\nUnidad de la factura: ${unidad}` : ''}
 
-EVIDENCIA DEL DICCIONARIO OFICIAL (Anexo 2) para esta descripción:
-${bloqueEvidencia}${bloqueLocal}
+EVIDENCIA DEL DICCIONARIO OFICIAL (Anexo 2 de la R.J. 016-2026 — esto ES la norma):
+${bloqueEvidencia}${bloquePropio}${bloqueLocal}
 
 CLASIFICACIONES POSIBLES:
 ${lista}

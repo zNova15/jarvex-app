@@ -1145,9 +1145,16 @@ export function terminosDeClasificacion(codigo, terminosCustom = []) {
     : ELEMENTOS_DICCIONARIO_INEI
       .filter(x => (REAGRUPACIONES_IUPC[x.iupc] || x.iupc) === real)
       .map(x => ({ termino: x.nombre, origen: 'inei' }));
+  // `origen` real de cada término propio (mig 212): la pantalla necesita poder
+  // distinguir lo que alguien escribió a mano de lo que dejó una decisión o un
+  // recorrido con IA. Las filas viejas, sin columna, se leen como 'decision'.
   const propios = (terminosCustom || [])
     .filter(t => t && !t.deleted_at && String(t.clasificacion_codigo) === c)
-    .map(t => ({ termino: t.termino, origen: 'manual', id: t.id }));
+    .map(t => ({
+      termino: t.termino,
+      origen: t.origen === 'manual' ? 'manual' : (t.origen === 'ia' ? 'ia' : 'decision'),
+      id: t.id,
+    }));
   return [...oficiales, ...propios]
     .sort((a, b) => String(a.termino).localeCompare(String(b.termino), 'es'));
 }
@@ -1539,11 +1546,17 @@ for (const item of DICCIONARIO_SERVICIOS_INDEXADO) {
  * bajo acero; y el motor local —que sí lee el Anexo 2— acertaba.
  *
  * Esto arma la EVIDENCIA que hay que ponerle delante: los términos del
- * diccionario (el oficial del INEI, el de servicios y el propio de la
- * empresa) que comparten palabras con la descripción, agrupados por el código
- * al que apuntan y ordenados por qué tanto se parecen. Es el mismo índice con
- * el que decide `clasificarConIUPC`, así que la IA discute contra la norma en
- * vez de contra su memoria.
+ * diccionario que comparten palabras con la descripción, agrupados por el
+ * código al que apuntan y ordenados por qué tanto se parecen. Es el mismo
+ * índice con el que decide `clasificarConIUPC`, así que la IA discute contra
+ * la norma en vez de contra su memoria.
+ *
+ * 🔴 DOS BOLSAS SEPARADAS (tanda 1, 15-set-2026), porque no tienen la misma
+ * autoridad y el prompt las presenta distinto:
+ *   · `terminos` — la LEY: Anexo 2 del INEI y el árbol de servicios.
+ *   · `propios`  — el diccionario de la empresa, aprendido de decisiones.
+ *     Puede tener errores; es una pista, no la norma. Los de origen 'ia' se
+ *     excluyen: devolvérselos al modelo es pedirle que discuta consigo mismo.
  *
  * Exige compartir una palabra de 4 letras o más: con tokens de 2-3 letras
  * ("de", "x", "8") matchearía medio diccionario y la evidencia sería ruido.
@@ -1555,32 +1568,45 @@ export function evidenciaDiccionario(texto, { terminosCustom = null, maxCodigos 
   if (!fuertes.size) return [];
 
   const porCodigo = new Map();
-  const mirar = (item, codigo, origen) => {
+  const mirar = (item, codigo, capa) => {
     if (!codigo) return;
     // Al menos una palabra larga en común: si no, no es evidencia de nada.
     if (!item.tokens.some(t => fuertes.has(t))) return;
     const score = simTokens(toks, item.tokens);
     if (score <= 0) return;
-    const prev = porCodigo.get(codigo) || { codigo, score: 0, terminos: [] };
+    const prev = porCodigo.get(codigo) || { codigo, score: 0, norma: [], propios: [] };
     prev.score = Math.max(prev.score, score);
-    prev.terminos.push({ termino: item.nombre, score, origen });
+    (capa === 'norma' ? prev.norma : prev.propios).push({ termino: item.nombre, score });
     porCodigo.set(codigo, prev);
   };
 
-  for (const it of DICCIONARIO_INDEXADO) mirar(it, REAGRUPACIONES_IUPC[it.iupc] || it.iupc, 'inei');
-  for (const it of DICCIONARIO_SERVICIOS_INDEXADO) mirar(it, it.cod, 'servicios');
-  for (const it of indexarCustom(terminosCustom).lista) mirar(it, it.cod, 'propio');
+  for (const it of DICCIONARIO_INDEXADO) mirar(it, REAGRUPACIONES_IUPC[it.iupc] || it.iupc, 'norma');
+  for (const it of DICCIONARIO_SERVICIOS_INDEXADO) mirar(it, it.cod, 'norma');
+  // 🔴 Los términos de la empresa van en SU PROPIA bolsa (tanda 1). Antes se
+  //    mezclaban con los del Anexo 2 y el prompt los presentaba a todos como
+  //    «EVIDENCIA DEL DICCIONARIO OFICIAL» — la IA leía lo que ella misma
+  //    había propuesto ayer como si fuera la R.J. 016-2026.
+  //    Los de origen 'ia' no entran ni acá: mandárselos de vuelta a la IA es
+  //    pedirle que discuta contra su propia respuesta vieja.
+  for (const it of indexarCustom(terminosCustom).lista) {
+    if (it.origen === 'ia') continue;
+    mirar(it, it.cod, 'propio');
+  }
+
+  const primeros = (arr) => arr
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxPorCodigo)
+    .map(t => t.termino);
 
   return [...porCodigo.values()]
-    .sort((a, b) => b.score - a.score || b.terminos.length - a.terminos.length)
+    .sort((a, b) => b.score - a.score
+      || (b.norma.length + b.propios.length) - (a.norma.length + a.propios.length))
     .slice(0, maxCodigos)
     .map(g => ({
       codigo: g.codigo,
       score: g.score,
-      terminos: g.terminos
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxPorCodigo)
-        .map(t => t.termino),
+      terminos: primeros(g.norma),
+      propios: primeros(g.propios),
     }));
 }
 
@@ -1645,22 +1671,49 @@ function recServicio({ cod, score, motivos, inclinacion = null }) {
 // array: `filasDeBandeja` clasifica cientos de descripciones seguidas con la
 // MISMA lista, y re-tokenizarla en cada una sería tirar el trabajo a la basura.
 // WeakMap para que se libere sola cuando el hook devuelve un array nuevo.
+//
+// 🔴 DOS BOLSAS, NO UNA (tanda 1, 15-set-2026). Hasta acá todos los términos
+// propios se trataban igual y le ganaban al Anexo 2 con score 0,99. Medido en
+// producción: de 368 términos vivos, 365 eran HUÉRFANOS —quedaron de
+// decisiones que Gabriel después deshizo— y ~70 estaban mal («CUSQUEÑA» →
+// [21] Cemento). O sea que el error de ayer pisaba la R.J. 016-2026 hoy.
+//   · `manual`    — lo escribió una persona en el panel de Clasificaciones. Es
+//                   una corrección deliberada sobre la norma y sigue ganándole.
+//   · `aprendido` — lo dejó una decisión de la bandeja o un recorrido con IA.
+//                   Vale, pero DESPUÉS de la ley (ver `clasificarConIUPC`).
+// `origen` puede faltar (filas anteriores a la mig 212): se leen como
+// aprendidas, que es el lado conservador.
+// Cuánto tiene que sacarle un término aprendido a la norma para pisarla
+// (paso 5b de `clasificarConIUPC`). 0,15 de similitud de tokens es, en la
+// práctica, una palabra más en común sobre una descripción corta.
+const VENTAJA_APRENDIDO = 0.15;
+
 const _cacheCustom = new WeakMap();
+const CUSTOM_VACIO = {
+  manual: { exacto: new Map(), lista: [] },
+  aprendido: { exacto: new Map(), lista: [] },
+  lista: [],
+};
 function indexarCustom(terminos) {
-  if (!Array.isArray(terminos) || !terminos.length) return { exacto: new Map(), lista: [] };
+  if (!Array.isArray(terminos) || !terminos.length) return CUSTOM_VACIO;
   const hit = _cacheCustom.get(terminos);
   if (hit) return hit;
-  const lista = [];
-  const exacto = new Map();
+  const idx = {
+    manual: { exacto: new Map(), lista: [] },
+    aprendido: { exacto: new Map(), lista: [] },
+    lista: [],
+  };
   for (const t of terminos) {
     if (!t || t.deleted_at || !t.termino || !t.clasificacion_codigo) continue;
     const norm = t.norm || normIUPC(t.termino);
     if (!norm) continue;
-    const item = { nombre: t.termino, cod: String(t.clasificacion_codigo), norm, tokens: tokensDeTexto(norm) };
-    lista.push(item);
-    if (!exacto.has(norm)) exacto.set(norm, item);
+    const origen = t.origen === 'manual' ? 'manual' : (t.origen === 'ia' ? 'ia' : 'decision');
+    const item = { nombre: t.termino, cod: String(t.clasificacion_codigo), norm, tokens: tokensDeTexto(norm), origen };
+    const bolsa = origen === 'manual' ? idx.manual : idx.aprendido;
+    bolsa.lista.push(item);
+    if (!bolsa.exacto.has(norm)) bolsa.exacto.set(norm, item);
+    idx.lista.push(item);
   }
-  const idx = { exacto, lista };
   _cacheCustom.set(terminos, idx);
   return idx;
 }
@@ -1684,18 +1737,22 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
     });
   }
 
-  // 0. EL DICCIONARIO QUE AGREGÓ LA CASA MANDA SOBRE TODO LO DEMÁS.
+  // 0. EL TÉRMINO QUE UNA PERSONA ESCRIBIÓ A MANO MANDA SOBRE TODO LO DEMÁS.
   //    Si alguien se tomó el trabajo de decir «‹cemento cabezón› es el IUPC
-  //    21», esa decisión no la puede pisar una heurística. Va antes incluso
-  //    que el Anexo 2, porque es una corrección deliberada sobre él.
+  //    21» desde el panel de Clasificaciones, esa decisión no la puede pisar
+  //    una heurística. Va antes incluso que el Anexo 2, porque es una
+  //    corrección deliberada sobre él.
+  //    🔴 SOLO los `origen: 'manual'` (tanda 1). Los que dejó una decisión de
+  //    la bandeja o un recorrido con IA son PROVISIONALES y entran más abajo,
+  //    después de la ley — ver el encabezado de `indexarCustom`.
   const custom = indexarCustom(terminosCustom);
-  const exactoCustom = custom.exacto.get(norm);
-  if (exactoCustom) {
+  const exactoManual = custom.manual.exacto.get(norm);
+  if (exactoManual) {
     return recIUPC({
-      codigo: exactoCustom.cod,
-      nombre: etiquetaCategoria(exactoCustom.cod),
+      codigo: exactoManual.cod,
+      nombre: etiquetaCategoria(exactoManual.cod),
       score: 0.99,
-      motivos: [`«${exactoCustom.nombre}» está en el diccionario que agregaste`],
+      motivos: [`«${exactoManual.nombre}» está en el diccionario que agregaste a mano`],
     });
   }
 
@@ -1722,6 +1779,21 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
     });
   }
 
+  // 2-bis. EXACTO EN EL DICCIONARIO APRENDIDO — la misma descripción, palabra
+  //     por palabra, ya la decidió alguien en la bandeja. Vale, y por eso está
+  //     alto; pero va DESPUÉS de los exactos de la norma (0,98) a propósito:
+  //     si el Anexo 2 tiene esa misma frase, manda el Anexo 2. Es toda la
+  //     diferencia entre «aprende» y «se envenena».
+  const exactoAprendido = custom.aprendido.exacto.get(norm);
+  if (exactoAprendido) {
+    return recIUPC({
+      codigo: exactoAprendido.cod,
+      nombre: etiquetaCategoria(exactoAprendido.cod),
+      score: 0.96,
+      motivos: [`Ya se decidió «${exactoAprendido.nombre}» así antes (diccionario de la empresa, no es la norma)`],
+    });
+  }
+
   // 2a. ¿LO QUE SE FACTURA ES LA OBRA? Va antes de los parecidos porque es una
   //     regla dura: «OBRA: REHABILITACION…» no se parece a un material, ES
   //     otra cosa. Después del diccionario propio y de los exactos, para que
@@ -1733,16 +1805,18 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
 
   const toks = tokensDeTexto(norm);
 
-  // 2b. Parecido fuerte a un término propio: también gana, con el mismo
-  //     criterio — es vocabulario que alguien cargó a mano para esta obra.
-  if (custom.lista.length) {
-    const mc = mejorDe(toks, custom.lista);
+  // 2b. Parecido fuerte a un término escrito A MANO: también gana, con el
+  //     mismo criterio — es vocabulario que alguien cargó deliberadamente.
+  //     El parecido a un término APRENDIDO no entra acá: compite contra la
+  //     norma más abajo (paso 5b), no antes que ella.
+  if (custom.manual.lista.length) {
+    const mc = mejorDe(toks, custom.manual.lista);
     if (mc.item && mc.score >= 0.55) {
       return recIUPC({
         codigo: mc.item.cod,
         nombre: etiquetaCategoria(mc.item.cod),
         score: Math.min(0.97, Math.round(mc.score * 100) / 100),
-        motivos: [`Similar a «${mc.item.nombre}», del diccionario que agregaste`],
+        motivos: [`Similar a «${mc.item.nombre}», del diccionario que agregaste a mano`],
       });
     }
   }
@@ -1795,6 +1869,25 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
     maxScore = mIupc.score;
     mejorMatch = { ...mIupc.item, iupc: REAGRUPACIONES_IUPC[mIupc.item.iupc] || mIupc.item.iupc };
     mejorMotivo = `Similar a «${mIupc.item.nombre}» en Diccionario Oficial INEI`;
+  }
+
+  // 5b. PARECIDO A ALGO YA DECIDIDO (diccionario aprendido) — acá, no antes.
+  //     Tiene que ganarle a la norma para pisarla, y por eso hay handicap:
+  //     entra solo si el Anexo 2 no llegó a su propio umbral (0,35) o si le
+  //     saca una ventaja clara. Sin el handicap volvemos al circuito de
+  //     realimentación que dejó «PL. GALV. 0.80» en petróleo diésel: un
+  //     parecido flojo con un término mal aprendido tapaba una coincidencia
+  //     buena de la R.J. 016-2026.
+  if (custom.aprendido.lista.length) {
+    const ma = mejorDe(toks, custom.aprendido.lista);
+    if (ma.item && ma.score >= 0.55 && (maxScore < 0.35 || ma.score >= maxScore + VENTAJA_APRENDIDO)) {
+      return recIUPC({
+        codigo: ma.item.cod,
+        nombre: etiquetaCategoria(ma.item.cod),
+        score: Math.min(0.85, Math.round(ma.score * 100) / 100),
+        motivos: [`Similar a «${ma.item.nombre}», que ya se decidió así (diccionario de la empresa, no es la norma)`],
+      });
+    }
   }
 
   // 6. Si hubo buen match en Diccionario INEI

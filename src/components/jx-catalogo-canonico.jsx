@@ -1147,7 +1147,17 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
     showToast?.(`«${codigo}» desactivada.`, 'green');
   });
 
-  const ORIGEN_BADGE = { inei: ['b-blue', 'INEI'], base: ['b-blue', 'base'], manual: ['b-green', 'tuyo'] };
+  // Las tres capas, cada una con su cartelito (tanda 1): la LEY (INEI / base de
+  // servicios) no se toca; lo que escribiste a mano manda sobre ella; lo que
+  // aprendió de una decisión —o peor, de un recorrido con IA— es provisional y
+  // tiene que verse como tal, porque es justo lo que hay que auditar.
+  const ORIGEN_BADGE = {
+    inei: ['b-blue', 'INEI'], base: ['b-blue', 'base'],
+    manual: ['b-green', 'tuyo'],
+    decision: ['b-amber', 'aprendido'],
+    ia: ['b-purple', 'de la IA'],
+  };
+  const ES_PROPIO = new Set(['manual', 'decision', 'ia']);
   const BADGE_BANDA_CAND = { alta: 'b-green', media: 'b-blue', baja: 'b-amber', rara: 'b-purple' };
 
   return (
@@ -1294,7 +1304,7 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
                         style={{ fontSize: 11, padding: '3px 7px', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                         {t.termino}
                         <span className={`badge ${par[0]}`} style={{ fontSize: 8 }}>{par[1]}</span>
-                        {t.origen === 'manual' && (
+                        {ES_PROPIO.has(t.origen) && (
                           <button className="btn btn-xs btn-ghost" style={{ padding: '0 3px', minWidth: 0 }}
                             title="Sacar del diccionario" onClick={() => delTermino(t)}>✕</button>
                         )}
