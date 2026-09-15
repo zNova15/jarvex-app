@@ -492,15 +492,39 @@ async function clasificarInsumoIUPC(req, res, body) {
 // un GRUPO son N. Contesta cuáles son de verdad la misma cosa (`mismas`) y
 // cuáles quedan afuera (`fuera`) — que es exactamente lo que la tarjeta ya
 // deja hacer a mano tocando cada variante.
+//
+// ── LA UNIDAD (tanda 2, 15-set-2026) ──────────────────────────────
+// Hasta hoy acá llegaban SOLO los nombres. Medido en producción: de los 160
+// pares ya decididos a mano, trece «mismo insumo» se facturan en unidades
+// incompatibles (alambre kg/und, tubo m/und, botas par/und, tarugo docena/und).
+// Con esas uniones el inventario deja dos cantidades que nadie puede sumar y
+// el comparador de precios se apaga solo. Ahora la unidad viaja como dato
+// junto a cada nombre y el criterio está en el prompt: es una SEÑAL, no un
+// veredicto — la misma regla que ya usa `mapear_insumo_presupuesto`.
 async function correlacionarInsumosIA(req, res, body) {
-  const variantes = Array.isArray(body.variantes)
-    ? [...new Set(body.variantes.map(v => sanitizeForPrompt(String(v), 160)).filter(Boolean))].slice(0, 20)
-    : [];
+  // 🔴 De-duplicar POR ÍNDICE, no con un Set suelto (tanda 2): `unidades` es
+  // paralelo a `variantes` y un Set reordenaría el nombre sin su unidad.
+  const crudas = Array.isArray(body.variantes) ? body.variantes : [];
+  const crudasU = Array.isArray(body.unidades) ? body.unidades : [];
+  const vistos = new Set();
+  const variantes = [];
+  const unidades = [];
+  for (let i = 0; i < crudas.length && variantes.length < 20; i++) {
+    const v = sanitizeForPrompt(String(crudas[i]), 160);
+    if (!v || vistos.has(v)) continue;
+    vistos.add(v);
+    variantes.push(v);
+    unidades.push(sanitizeForPrompt(String(crudasU[i] ?? ''), 24));
+  }
   if (variantes.length < 2) {
     return res.status(422).json({ error: 'Se requieren al menos 2 variantes' });
   }
   const validos = new Set(variantes);
-  const lista = variantes.map((v, i) => `${i + 1}. "${v}"`).join('\n');
+  // La unidad va como dato AL LADO del nombre, nunca pegada adentro: lo que
+  // la IA tiene que copiar en `mismas` es el nombre exacto y nada más.
+  const lista = variantes
+    .map((v, i) => `${i + 1}. "${v}"${unidades[i] ? `   [se factura en: ${unidades[i]}]` : ''}`)
+    .join('\n');
 
   const sys = `Eres un experto en insumos y servicios de construcción civil en Perú. Te dan una lista de NOMBRES tal como los escribieron distintos proveedores en sus facturas, y tenés que decir cuáles son EL MISMO artículo escrito distinto y cuáles no.
 
@@ -510,6 +534,8 @@ Reglas de criterio:
 - El MATERIAL manda: PVC no es fierro galvanizado aunque la pieza sea la misma.
 - Una MARCA distinta del mismo artículo con la misma medida SÍ es el mismo insumo.
 - El color, la presentación o el proveedor no hacen dos insumos distintos si el artículo y la medida son iguales.
+- La UNIDAD en la que se factura (cuando te la den entre corchetes) es un dato, no un veredicto: el mismo alambre puede venir en kilos y en unidades, y el mismo tubo en metros y en unidades. Una unidad distinta NO descarta por sí sola que sean el mismo insumo — después se aplica un factor de conversión.
+- Pero SÍ es una señal de alerta: si además de la unidad hay algo más que no cuadra (la medida, el material, el tipo de artículo), inclinate por separarlos. Y si dos nombres que parecen iguales se facturan en unidades que miden cosas distintas (peso contra largo, por ejemplo), decilo en el razonamiento para que la persona lo revise.
 
 Devolvés SOLO JSON válido (sin markdown):
 {

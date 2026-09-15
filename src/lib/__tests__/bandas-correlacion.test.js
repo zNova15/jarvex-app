@@ -130,3 +130,71 @@ describe('CONFIANZA_OBVIO', () => {
     expect(CONFIANZA_OBVIO).toBeLessThan(1);
   });
 });
+
+// ── TANDA 2: la unidad entra a decidir ────────────────────────────────
+// Los cuatro casos son REALES: salieron de medir los 160 pares ya decididos
+// en producción el 15-set-2026. Trece «mismo insumo» se facturan en unidades
+// incompatibles y varios de ellos caían en `obvio` — las palabras coinciden
+// al 100% — así que se proponían sin preguntarle a nadie.
+describe('bandaDePar — unidades (tanda 2)', () => {
+  it('mismas palabras pero kg contra und: deja de ser obvio', () => {
+    const sinUnidad = bandaDePar('ALAMBRE NEGRO 16', 'ALAMBRE NEGRO 16');
+    expect(sinUnidad.banda).toBe('obvio');
+    const r = bandaDePar('ALAMBRE NEGRO 16', 'ALAMBRE NEGRO 16', { unidadA: 'und', unidadB: 'kg' });
+    expect(r.banda).toBe('consultar');
+    expect(r.razon).toBe('unidad');
+    expect(r.motivo).toMatch(/kg/);
+  });
+
+  it('el caso del tubo: metros contra unidades', () => {
+    const r = bandaDePar('TUBO HDPE 110 MM', 'TUBO HDPE 110 MM', { unidadA: 'UND', unidadB: 'METROS' });
+    expect(r.banda).toBe('consultar');
+    expect(r.unidades).toEqual(expect.objectContaining({ a: 'und', b: 'm' }));
+  });
+
+  it('los sinónimos del OCR NO son un conflicto: und = unidad = each', () => {
+    expect(bandaDePar('CLAVO N 3', 'CLAVOS NRO 3', { unidadA: 'UNIDAD', unidadB: 'each' }).banda).toBe('obvio');
+  });
+
+  it('una unidad ausente no inventa una duda', () => {
+    expect(bandaDePar('CLAVO N 3', 'CLAVOS NRO 3', { unidadA: 'kg', unidadB: '' }).banda).toBe('obvio');
+    expect(bandaDePar('CLAVO N 3', 'CLAVOS NRO 3', { unidadA: '', unidadB: '' }).banda).toBe('obvio');
+  });
+
+  it('si además sobra una medida, la medida sigue siendo la razón principal', () => {
+    const r = bandaDePar('CEMENTO SOL', 'CEMENTO SOL X 42.5 KG', { unidadA: 'und', unidadB: 'bolsa' });
+    expect(r.razon).toBe('medida');
+    expect(r.unidades).not.toBe(null);
+    expect(r.motivo).toMatch(/bolsa/);
+  });
+
+  it('la unidad NO decide sola: sigue siendo "consultar", nunca "distintos"', () => {
+    // La lib no tiene una banda de rechazo a propósito — unir kg con und puede
+    // ser correcto y necesitar un factor de conversión.
+    const r = bandaDePar('ALAMBRE NEGRO 16', 'ALAMBRE NEGRO 16', { unidadA: 'und', unidadB: 'kg' });
+    expect(['obvio', 'consultar']).toContain(r.banda);
+    expect(r.banda).toBe('consultar');
+  });
+});
+
+describe('bandaDeGrupo — unidades (tanda 2)', () => {
+  const unidades = { 'BOTAS DE SEGURIDAD PUNTA DE ACERO': 'par', 'BOTAS SEGURIDAD PUNTA ACERO': 'und' };
+  const unidadDe = (n) => unidades[n] || '';
+
+  it('una sola variante en otra unidad manda el grupo entero a consultar', () => {
+    const vars = ['BOTAS DE SEGURIDAD PUNTA DE ACERO', 'BOTAS SEGURIDAD PUNTA ACERO'];
+    expect(bandaDeGrupo(vars).banda).toBe('obvio');
+    const r = bandaDeGrupo(vars, { unidadDe });
+    expect(r.banda).toBe('consultar');
+    expect(r.razon).toBe('unidad');
+  });
+
+  it('sin unidadDe se comporta igual que antes (retrocompatible)', () => {
+    expect(bandaDeGrupo(['CLAVO N 3', 'CLAVOS NRO 3', 'CLAVO NUMERO 3']).banda).toBe('obvio');
+  });
+
+  it('con todas en la misma unidad sigue siendo obvio', () => {
+    const mismas = () => 'kg';
+    expect(bandaDeGrupo(['CLAVO N 3', 'CLAVOS NRO 3'], { unidadDe: mismas }).banda).toBe('obvio');
+  });
+});

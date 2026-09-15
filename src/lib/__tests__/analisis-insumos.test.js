@@ -101,3 +101,31 @@ describe('agruparComprasPorInsumo + proveedorMasBarato', () => {
     expect(serie.map(s => s.fecha)).toEqual(['2026-07-10', '2026-08-20']);
   });
 });
+
+// ── TANDA 1: una compra deshecha no es un precio de mercado ───────────
+describe('extraerComprasDeFacturas — anuladas y canceladas fuera del comparador', () => {
+  const FAC = {
+    id: 'pa1', company_id: 'e1', date: '2026-09-01', type: 'cost', clase: 'compra',
+    currency: 'PEN', amount: 100, third_party_name: 'PROVEEDOR REGALADO', third_party_ruc: '20100000009',
+    document_number: 'F100-1',
+    notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 10, precio_unitario: 1 }] },
+  };
+  const NC = {
+    id: 'pnc1', company_id: 'e1', date: '2026-09-02', type: 'cost', clase: 'compra',
+    document_type: 'nota_credito', currency: 'PEN', amount: -100, third_party_ruc: '20100000009',
+    document_number: 'FC100-1', related_movement_id: 'pa1', nota_motivo: 'anulación',
+  };
+
+  it('la factura anulada por NC no entra al comparador de precios', () => {
+    expect(extraerComprasDeFacturas([FAC]).map(l => l.nombre)).toEqual(['Cemento Sol']);
+    expect(extraerComprasDeFacturas([FAC, NC])).toEqual([]);
+  });
+
+  it('la cancelada tampoco (antes entraba: solo el inventario la filtraba)', () => {
+    expect(extraerComprasDeFacturas([{ ...FAC, payment_status: 'cancelled' }])).toEqual([]);
+  });
+
+  it('una NC parcial no saca la compra del comparador', () => {
+    expect(extraerComprasDeFacturas([FAC, { ...NC, amount: -30 }])).toHaveLength(1);
+  });
+});

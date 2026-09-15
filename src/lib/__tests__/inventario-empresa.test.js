@@ -457,3 +457,74 @@ describe('filtrarPorFlujo y margen económico', () => {
   });
 });
 
+
+// ── TANDA 1: la factura que la nota de crédito anuló ──────────────────
+// Medido el 15-set-2026: 21 facturas cubiertas al 100% por su NC seguían
+// vivas (cero movimientos 'cancelled' en toda la base) y aportaban 86 líneas
+// a un inventario de mercadería que nunca entró.
+describe('inventarioDeEmpresa — facturas anuladas por nota de crédito', () => {
+  const FAC_ANULADA = {
+    id: 'fa1', company_id: EMP_A, date: '2026-09-01', type: 'cost', clase: 'compra',
+    currency: 'PEN', amount: 300, third_party_name: 'FERRETERIA C', third_party_ruc: '20100000001',
+    document_number: 'F009-9', payment_status: 'paid',
+    notas: { items_factura: [
+      { descripcion: 'Cemento Sol', unidad: 'und', cantidad: 100, precio_unitario: 3, tipo_insumo: 'material' },
+    ] },
+  };
+  const NC_TOTAL = {
+    id: 'nca1', company_id: EMP_A, date: '2026-09-05', type: 'cost', clase: 'compra',
+    document_type: 'nota_credito', currency: 'PEN', amount: -300, third_party_ruc: '20100000001',
+    document_number: 'FC09-1', related_movement_id: 'fa1', nota_motivo: 'ANULACION DE LA OPERACION',
+    notas: { items_factura: [{ descripcion: 'Cemento Sol', unidad: 'und', cantidad: 100, precio_unitario: 3 }] },
+  };
+
+  const conAnulada = () => extraerLineasDeFacturas([...MOVS, FAC_ANULADA, NC_TOTAL]);
+
+  it('las 100 unidades de la factura anulada NO entran al inventario', () => {
+    const base = invA();
+    const inv = inventarioDeEmpresa(conAnulada(), { companyId: EMP_A });
+    const cementoBase = insumo(base, 'cemento sol');
+    const cemento = insumo(inv, 'cemento sol');
+    // Mismo comprado que antes de existir la factura anulada: las 100 no suman.
+    expect(cemento.comprado.cantidades).toEqual(cementoBase.comprado.cantidades);
+  });
+
+  it('se cuentan para poder avisarlo (no desaparecen en silencio)', () => {
+    const inv = inventarioDeEmpresa(conAnulada(), { companyId: EMP_A });
+    expect(inv.totales.facturasAnuladas).toBe(1);
+    expect(inv.totales.lineasAnuladas).toBe(1);
+  });
+
+  it('la línea sale marcada del extractor: anular no es borrar', () => {
+    const l = conAnulada().find(x => x.movId === 'fa1');
+    expect(l.anulada).toBe(true);
+    expect(l.rebajada).toBe(false);
+    expect(l.notaEtiqueta).toContain('ANULADA');
+  });
+
+  it('una nota PARCIAL no saca la línea: la compra sigue siendo real', () => {
+    const lineas = extraerLineasDeFacturas([
+      ...MOVS, FAC_ANULADA, { ...NC_TOTAL, id: 'ncp', amount: -90, document_number: 'FC09-2' },
+    ]);
+    const inv = inventarioDeEmpresa(lineas, { companyId: EMP_A });
+    expect(inv.totales.facturasAnuladas).toBe(0);
+    expect(inv.totales.lineasRebajadas).toBe(1);
+    expect(insumo(inv, 'cemento sol').rebajadas).toBe(1);
+    // Y sus 100 unidades SÍ cuentan (rebajada ≠ anulada).
+    const cemento = insumo(inv, 'cemento sol');
+    expect(cemento.comprado.cantidades.find(c => c.unidad === 'und').cantidad).toBeGreaterThan(100);
+  });
+
+  it('una NC espejo (apunta a otra nota) no anula nada', () => {
+    const lineas = extraerLineasDeFacturas([
+      ...MOVS, FAC_ANULADA,
+      { ...NC_TOTAL, id: 'esp', related_movement_id: 'nc1', document_number: 'FC09-3' },
+    ]);
+    expect(lineas.find(x => x.movId === 'fa1').anulada).toBe(false);
+  });
+
+  it('sin la factura en la lista, la nota no rompe nada', () => {
+    const lineas = extraerLineasDeFacturas([...MOVS, NC_TOTAL]);
+    expect(lineas.every(l => l.anulada === false)).toBe(true);
+  });
+});

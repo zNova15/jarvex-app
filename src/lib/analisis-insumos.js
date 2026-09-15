@@ -9,6 +9,7 @@
 // necesita migración ni toca Captura Mágica.
 // ═══════════════════════════════════════════════════════════════════
 import { normInsumo, claveGrupoDe } from './insumo-correlacion.js';
+import { notasPorFactura } from './notas-credito.js';
 
 // Clase efectiva de un movimiento. `clase` manda; `type` es el fallback de las
 // filas viejas que nunca la tuvieron (22 en producción al 31-ago-2026). Es el
@@ -23,9 +24,35 @@ export const claseDeMov = (mv) => mv?.clase || (mv?.type === 'income' ? 'venta' 
 // movs: filas de accounting_movements (notas puede ser objeto o string JSON).
 // opts.demo espeja el modo prueba (el hook ya entrega solo filas del modo
 // activo; este flag mantiene la lib coherente cuando se le pasan filas crudas).
+//
+// ── LA FACTURA ANULADA POR NOTA DE CRÉDITO (tanda 1, 15-set-2026) ──
+// 🔴 Cada línea sale sabiendo si su factura se DESHIZO. Medido el 15-set en
+// producción: 21 facturas están cubiertas al 100% por su nota de crédito y las
+// 21 siguen vivas —en toda la base hay CERO movimientos con
+// `payment_status='cancelled'`, que hasta hoy era el único flag que sacaba una
+// línea del inventario—. Esas 21 aportaban 86 líneas a un inventario de
+// mercadería que nunca entró: 32 en GASOMI, 20 en JARVEX, 17 en NAMORA.
+//
+// Gabriel, 15-set-2026: «si una factura se llega a anular con una nota de
+// crédito, quiere decir que los insumos de dicha factura dejan de existir
+// también en nuestro inventario».
+//
+// Se calcula ACÁ y no en cada pantalla por la misma razón que todo lo demás de
+// este archivo: un solo lugar que mira `items_factura` y un solo criterio de
+// qué línea cuenta. `notasPorFactura` es la MISMA función que usa el escáner
+// para su aviso `factura_anulada_viva` — el inventario y el escáner no pueden
+// contar dos historias distintas de la misma factura.
+//
+// 🔴 ANULAR NO ES BORRAR. La línea sale igual, marcada: quien quiera contarla
+// (el escáner, un histórico) la tiene, y quien suma inventario la descarta por
+// `anulada`. Filtrarla acá dejaría al escáner sin nada que avisar.
+//
+// opts.notas permite inyectar el mapa ya calculado (evita recorrer los
+// movimientos dos veces cuando el llamador ya lo tiene).
 export function extraerLineasDeFacturas(movs, opts = {}) {
   const out = [];
   const demo = !!opts.demo;
+  const porFactura = opts.notas || notasPorFactura(movs || []);
   for (const mv of (movs || [])) {
     if (!mv || mv.deleted_at) continue;
     if (!!mv.demo !== demo) continue;
@@ -35,6 +62,7 @@ export function extraerLineasDeFacturas(movs, opts = {}) {
     if (!items) continue;
     const clase = claseDeMov(mv);
     const esNota = ['nota_credito', 'nota_debito'].includes(mv.document_type);
+    const nc = porFactura.get(mv.id) || null;
     items.forEach((it, idx) => {
       const nombre = String(it?.descripcion || '').trim();
       if (!nombre) return;
@@ -47,6 +75,14 @@ export function extraerLineasDeFacturas(movs, opts = {}) {
         obraId: mv.obra_id || null,
         interco: !!mv.is_intercompany,
         cancelado: mv.payment_status === 'cancelled',
+        // La operación se deshizo: las notas cubren la factura entera.
+        anulada: !!nc?.anulada,
+        // Hay notas, pero NO alcanzan a cubrirla: la factura sigue valiendo,
+        // rebajada. No se descarta (sería perder la compra entera por una
+        // devolución parcial) — se marca para que la pantalla lo diga.
+        rebajada: !!nc?.parcial,
+        notaEtiqueta: nc ? nc.etiqueta : null,
+        notaMonto: nc ? nc.totalNotas : 0,
         proveedorId: mv.proveedor_id || null,
         proveedorNombre: mv.third_party_name || null,
         fecha: mv.date || '',
@@ -73,9 +109,16 @@ export function extraerLineasDeFacturas(movs, opts = {}) {
 // Las VENTAS (third_party_name sería el CLIENTE) y las notas de crédito/débito
 // (ítems con precio positivo pero que restan) distorsionarían el "más barato"
 // — hallazgo de la revisión adversarial.
+//
+// 🔴 Y las ANULADAS tampoco (tanda 1): una compra que se deshizo por nota de
+// crédito no es un precio de mercado. Dejarla adentro le pone al gerente un
+// "más barato" que nadie le puede volver a vender —y, peor, arrastra al
+// proveedor entero al comparador por una operación que no existió—.
+// Las CANCELADAS ya estaban fuera del inventario por `l.cancelado`, pero acá
+// nunca se habían filtrado: entraban al comparador igual.
 export function extraerComprasDeFacturas(movs, opts = {}) {
   return extraerLineasDeFacturas(movs, opts)
-    .filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0);
+    .filter(l => l.clase === 'compra' && !l.esNota && !l.anulada && !l.cancelado && l.precio > 0);
 }
 
 // Agrupa las compras por insumo (clave = grupo de correlación, o el nombre

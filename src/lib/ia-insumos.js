@@ -200,22 +200,49 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
 // ── 2. CORRELACIONAR ──────────────────────────────────────────────
 /**
  * variantes: los nombres a comparar — DOS para un par suelto, N para un grupo.
+ * unidades:  las unidades de factura, PARALELAS a `variantes` (tanda 2). La
+ *            unidad es la señal que más le faltaba a esta pregunta: «ALAMBRE
+ *            DE AMARRE 16» en und y «ALAMBRE NEGRO 16» en kg tienen las
+ *            mismas palabras y no se pueden sumar. Se manda como dato aparte
+ *            y NO pegado al nombre: `mismas` tiene que volver con el nombre
+ *            EXACTO para que el cliente lo reconozca (ver `saneado`).
  * → { result: { mismas:[...], fuera:[...], canonico }, confianza, razonamiento }
  * `fuera` siempre es el complemento exacto de `mismas` (lo arma el server).
  */
-export async function correlacionarConIA({ variantes, modeloTexto = null }) {
+export async function correlacionarConIA({ variantes, unidades = null, modeloTexto = null }) {
   // Saneado ANTES de mandar (ver `saneado`): así lo que vuelve en `mismas` es
   // carácter por carácter lo que se mandó, y el llamador puede mapearlo de
   // vuelta a sus variantes sin sorpresas.
-  const lista = [...new Set((variantes || []).map(v => saneado(v)).filter(Boolean))];
+  //
+  // 🔴 El de-duplicado va por índice y no con un Set suelto: la unidad de cada
+  // nombre tiene que seguir apuntando al nombre correcto después de sacar los
+  // repetidos, o se le mandaría a la IA el kilo de otro insumo.
+  const vistos = new Set();
+  const lista = [];
+  const uni = [];
+  (variantes || []).forEach((v, i) => {
+    const s = saneado(v);
+    if (!s || vistos.has(s)) return;
+    vistos.add(s);
+    lista.push(s);
+    uni.push(saneado(Array.isArray(unidades) ? unidades[i] : '', 24));
+  });
   if (lista.length < 2) return { result: null, razonamiento: '' };
 
-  // La pregunta es el CONJUNTO, no el orden en que llegó.
-  const clave = `corr::${modeloTexto || 'auto'}::${[...lista].map(norm).sort().join('|')}`;
+  // La pregunta es el CONJUNTO, no el orden en que llegó. Y la UNIDAD entra en
+  // la clave: los mismos dos nombres con otra unidad son otra pregunta y
+  // pueden tener otra respuesta — cachearlos juntos devolvería el veredicto
+  // que se dio cuando las dos venían en kilos.
+  const clave = `corr2::${modeloTexto || 'auto'}::${lista.map((n, i) => `${norm(n)}~${norm(uni[i])}`).sort().join('|')}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
-  const v = await postIA({ action: 'correlacionar_insumos', variantes: lista, ...(modeloTexto ? { modelo_texto: modeloTexto } : {}) });
+  const v = await postIA({
+    action: 'correlacionar_insumos',
+    variantes: lista,
+    ...(uni.some(Boolean) ? { unidades: uni } : {}),
+    ...(modeloTexto ? { modelo_texto: modeloTexto } : {}),
+  });
   cacheGuardar(clave, v);
   return v;
 }

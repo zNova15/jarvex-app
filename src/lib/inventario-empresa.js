@@ -17,6 +17,12 @@
 //    cuentan aparte para avisarlo.
 //  · Movimientos anulados (payment_status 'cancelled') fuera, igual que el
 //    Consolidado.
+//  · Y las facturas que una nota de crédito ANULÓ POR COMPLETO también fuera
+//    (tanda 1, 15-set-2026), aunque nadie las haya marcado 'cancelled': la
+//    operación se deshizo y esa mercadería nunca entró. Medido: eran 21
+//    facturas y 86 líneas contando como stock. Ver `extraerLineasDeFacturas`.
+//    Una nota PARCIAL no saca la línea —la compra sigue siendo real— pero se
+//    cuenta en `lineasRebajadas` para poder decirlo.
 //  · Esto es inventario COMPRADO según facturas, NO stock: los consumos de obra
 //    viven en almacén por obra. La UI tiene que decirlo.
 // ═══════════════════════════════════════════════════════════════════
@@ -290,10 +296,13 @@ const cerrarLado = (lado) => ({
 export function inventarioDeEmpresa(lineas, opts = {}) {
   const { companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null } = opts;
   const porInsumo = new Map();
+  const facturasAnuladas = new Set();
   const totales = {
     insumos: 0, lineasCompra: 0, lineasVenta: 0, lineasSinPrecio: 0,
     lineasNota: 0, lineasAnticipo: 0, gastos: new Map(), ingresos: new Map(),
     anticipos: new Map(),
+    // Tanda 1: lo que la nota de crédito se llevó, y lo que solo rebajó.
+    lineasAnuladas: 0, facturasAnuladas: 0, lineasRebajadas: 0,
   };
 
   for (const l of (lineas || [])) {
@@ -306,6 +315,19 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     if (desde && l.fecha && l.fecha < desde) continue;
     if (hasta && l.fecha && l.fecha > hasta) continue;
     if (l.esNota) { totales.lineasNota++; continue; }
+    // ── LA FACTURA ANULADA POR NOTA DE CRÉDITO (tanda 1) ─────────────
+    // La operación se deshizo: esa mercadería nunca entró. Se descarta igual
+    // que una cancelada, pero se CUENTA — 86 líneas desaparecen de un saldo
+    // que la contadora venía leyendo como stock, y desaparecer en silencio
+    // sería cambiarle el número sin decirle por qué. La UI muestra el aviso.
+    if (l.anulada) {
+      totales.lineasAnuladas++;
+      if (l.movId) facturasAnuladas.add(l.movId);
+      continue;
+    }
+    // Rebajada por una nota PARCIAL: la compra sigue siendo real (no se
+    // descarta), pero la cantidad de acá está sin rebajar. Ver `lineasRebajadas`.
+    if (l.rebajada) totales.lineasRebajadas++;
 
     const clave = claveGrupoDe(l.nombre, grupoDe);
     if (!porInsumo.has(clave)) {
@@ -318,11 +340,13 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
         _compra: nuevoLado(),
         _venta: nuevoLado(),
         recepcion: { conDato: 0, recibido: 0 },
+        rebajadas: 0,
         lineas: [],
       });
     }
     const ins = porInsumo.get(clave);
     ins.variantes.add(l.nombre);
+    if (l.rebajada) ins.rebajadas++;
     // ── Override de tipo por texto (Tanda 3) ──────────────────────────
     // 'clasificarLineaPorTexto' detecta anticipos, valorizaciones de obra,
     // liquidaciones, alquileres, etc. y les asigna el tipo correcto antes
@@ -404,6 +428,9 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       totalVentaPen,
       margenEconomicoPen,
       margenPct,
+      // Cuántas de sus líneas vienen de una factura que una nota de crédito
+      // rebajó en parte: la cantidad de este insumo está SIN rebajar.
+      rebajadas: ins.rebajadas || 0,
       recepcion: ins.recepcion,
       lineas: ins.lineas.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)),
       // Solo para ORDENAR: el mayor gasto en UNA moneda (no se suman monedas).
@@ -412,6 +439,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   }).sort((a, b) => (b.orden - a.orden) || (b.comprado.veces - a.comprado.veces));
 
   totales.insumos = insumos.length;
+  totales.facturasAnuladas = facturasAnuladas.size;
   return {
     insumos,
     totales: {

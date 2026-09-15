@@ -630,6 +630,28 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         {inv.totales.lineasNota > 0 && <> {inv.totales.lineasNota} línea(s) de nota de crédito/débito quedan fuera de las cantidades.</>}
       </div>
 
+      {/* ── LO QUE LA NOTA DE CRÉDITO SE LLEVÓ (tanda 1, 15-set-2026) ──
+          Gabriel: «si una factura se llega a anular con una nota de crédito,
+          los insumos de dicha factura dejan de existir también en nuestro
+          inventario». Ya no cuentan — y se dice, porque un saldo que baja sin
+          explicación es un saldo que la contadora deja de creer. */}
+      {(inv.totales.facturasAnuladas > 0 || inv.totales.lineasRebajadas > 0) && (
+        <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--amber)', fontSize: 11.5, color: 'var(--ts)' }}>
+          <strong style={{ color: 'var(--amber)' }}>Notas de crédito aplicadas</strong>
+          {inv.totales.facturasAnuladas > 0 && (
+            <> — <strong>{inv.totales.facturasAnuladas} factura(s)</strong> quedaron anuladas por su nota de crédito:
+            sus <strong>{inv.totales.lineasAnuladas} línea(s)</strong> ya no cuentan en el inventario, porque esa
+            mercadería nunca entró.</>
+          )}
+          {inv.totales.lineasRebajadas > 0 && (
+            <> {inv.totales.facturasAnuladas > 0 ? 'Además, ' : '— '}
+            <strong>{inv.totales.lineasRebajadas} línea(s)</strong> vienen de facturas que una nota de crédito
+            rebajó <strong>en parte</strong>: la compra sigue siendo real y se cuenta entera, así que la cantidad
+            puede estar por encima de lo que finalmente quedó. Están marcadas con «NC parcial» en la lista.</>
+          )}
+        </div>
+      )}
+
       <div className="card" style={{ overflow: 'hidden' }}>
         {/* ── Selector de período (Tanda 3) ─────────────────────────────
             Permite ver el inventario comprado en un período específico: el año
@@ -848,6 +870,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {tieneSaldoNegativo(ins) && (
                               <span className="badge b-red" style={{ fontSize: 9 }} title="Vendió más de lo que compró: falta cargar la compra, está en otra empresa del grupo, o está escrita con otro nombre">
                                 stock negativo
+                              </span>
+                            )}
+                            {ins.rebajadas > 0 && (
+                              <span className="badge b-amber" style={{ fontSize: 9 }} title="Una nota de crédito rebajó en PARTE la factura de estas líneas. La compra sigue siendo real y se cuenta entera, así que la cantidad puede estar por encima de lo que quedó.">
+                                NC parcial ({ins.rebajadas})
                               </span>
                             )}
                           </div>

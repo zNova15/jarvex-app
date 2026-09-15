@@ -63,6 +63,7 @@ import {
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
 import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO } from "../lib/bandas-correlacion.js";
+import { normUnidad, labelUnidad } from "../lib/inventario-empresa.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
@@ -116,6 +117,32 @@ function NombreConDiferencias({ nombre, otro }) {
 }
 
 /**
+ * La unidad en la que se factura un nombre, al lado del nombre (tanda 2).
+ *
+ * Gabriel, 15-set: «no compara unidades». Antes de que la decida nadie —ni la
+ * persona ni la IA— hay que poder VERLA: «ALAMBRE DE AMARRE 16» y «ALAMBRE
+ * NEGRO 16» son la misma frase, pero uno se factura en unidades y el otro en
+ * kilos, y esa diferencia no estaba en ninguna parte de esta pantalla.
+ *
+ * `choca` la pinta en ámbar: es la señal de mirar, no de rechazar (unir un kg
+ * con una und puede ser correcto y necesitar un factor — ver bandas-correlacion).
+ */
+function BadgeUnidad({ unidad, choca = false }) {
+  if (!unidad) return null;
+  return (
+    <span
+      className={`badge ${choca ? 'b-amber' : 'b-gray'}`}
+      style={{ fontSize: 9, marginLeft: 4 }}
+      title={choca
+        ? 'Los dos nombres se facturan en unidades distintas: puede ser el mismo insumo en otra presentación (hace falta un factor de conversión) o dos cosas distintas.'
+        : 'Unidad en la que se factura este nombre'}
+    >
+      {choca ? '⚠ ' : ''}{labelUnidad(unidad)}
+    </span>
+  );
+}
+
+/**
  * "🤖 Preguntale a la IA" para CORRELACIONAR (14-sep-2026, pedido de Gabriel:
  * la misma ayuda que en clasificación pero enfocada en este módulo).
  *
@@ -131,7 +158,7 @@ function NombreConDiferencias({ nombre, otro }) {
  * `textoAplicar(mismas)` puede devolver null para no ofrecer botón (ej. la IA
  * dice que ninguna es la misma: para eso ya está "Son distintos").
  */
-function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null, banda = null, modeloTexto = null }) {
+function AyudaCorrelacionIA({ variantes, unidades = null, textoAplicar, onAplicar, inicial = null, onDescartar = null, banda = null, modeloTexto = null }) {
   // `inicial`: lo que dejó el recorrido completo (barrido-store). Se muestra
   // sin volver a preguntar —ya se pagó— y con el sello de que vino de ahí.
   const [res, setRes] = uS(null);
@@ -145,7 +172,7 @@ function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null
     if (cargando) return;
     setCargando(true); setError(null);
     try {
-      const r = await correlacionarConIA({ variantes, modeloTexto });
+      const r = await correlacionarConIA({ variantes, unidades, modeloTexto });
       if (!r?.result) { setError(r?.razonamiento || 'La IA no pudo decidir esto.'); return; }
       setRes({ ...r.result, confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached });
     } catch (e2) {
@@ -493,6 +520,39 @@ function AnalisisInsumosPage({ showToast }) {
     (v) => muestraDe.get(normInsumo(v))?.nombre || v,
     [muestraDe],
   );
+
+  // ── LA UNIDAD DE CADA NOMBRE (tanda 2, 15-set-2026) ──────────────
+  // Gabriel: «no compara unidades». Medido sobre los 160 pares ya decididos:
+  // trece «mismo insumo» se facturan en unidades incompatibles (alambre kg
+  // contra und, tubo m contra und, botas par contra und, tarugo docena contra
+  // und). Unir esos deja el inventario con dos cantidades que no se pueden
+  // sumar y apaga el comparador de precios sin avisar.
+  //
+  // 🔴 LA DOMINANTE, NO LA PRIMERA. `muestraDe` guarda la primera línea que
+  // apareció, y un nombre facturado 40 veces en kilos y una suelta en
+  // unidades (un error de tipeo del OCR) mandaría a la pantalla la unidad
+  // equivocada. Se cuenta y gana la que más veces se usó.
+  const unidadPorNombre = uM(() => {
+    const cuentas = new Map();   // nombreNorm → Map(unidadCanonica → veces)
+    for (const l of lineasEntidad) {
+      const u = normUnidad(l.unidad);
+      if (!u) continue;
+      if (!cuentas.has(l.nombreNorm)) cuentas.set(l.nombreNorm, new Map());
+      const m = cuentas.get(l.nombreNorm);
+      m.set(u, (m.get(u) || 0) + 1);
+    }
+    const out = new Map();
+    for (const [nombre, m] of cuentas) {
+      let mejor = '', veces = -1;
+      for (const [u, n] of m) if (n > veces) { mejor = u; veces = n; }
+      out.set(nombre, mejor);
+    }
+    return out;
+  }, [lineasEntidad]);
+  const unidadDe = uC(
+    (v) => unidadPorNombre.get(normInsumo(v)) || '',
+    [unidadPorNombre],
+  );
   // ── CON QUÉ MODELO PREGUNTA (15-set) ─────────────────────────────
   // 🔴 Correlaciones iba SIEMPRE en 'auto' —la cadena de modelos gratuitos de
   // OpenRouter— aunque el admin hubiera elegido uno en Administración →
@@ -505,14 +565,20 @@ function AnalisisInsumosPage({ showToast }) {
 
   const bandaDeCluster = uM(() => {
     const m = new Map();
-    for (const c of clustersSugeridos) m.set(c.id, bandaDeGrupo(c.variantes.map(crudoDe)));
+    for (const c of clustersSugeridos) {
+      m.set(c.id, bandaDeGrupo(c.variantes.map(crudoDe), { unidadDe }));
+    }
     return m;
-  }, [clustersSugeridos, crudoDe]);
+  }, [clustersSugeridos, crudoDe, unidadDe]);
   const bandaDeSugerencia = uM(() => {
     const m = new Map();
-    for (const p of sugerencias) m.set(clavePar(p), bandaDePar(crudoDe(p.nombre_a), crudoDe(p.nombre_b)));
+    for (const p of sugerencias) {
+      m.set(clavePar(p), bandaDePar(crudoDe(p.nombre_a), crudoDe(p.nombre_b), {
+        unidadA: unidadDe(p.nombre_a), unidadB: unidadDe(p.nombre_b),
+      }));
+    }
     return m;
-  }, [sugerencias, crudoDe]);
+  }, [sugerencias, crudoDe, unidadDe]);
   // Cuántas de las pendientes NO van a salir a la red. Es el número que el
   // botón muestra antes de arrancar.
   const nSinIA = uM(
@@ -695,7 +761,9 @@ function AnalisisInsumosPage({ showToast }) {
             aplicar: () => decidirCluster(c, 'mismo', c.variantes, { silencioso: true }),
           });
         }
-        const r = await correlacionarConIA({ variantes, modeloTexto: modeloTextoIA });
+        const r = await correlacionarConIA({
+          variantes, unidades: c.variantes.map(v => unidadDe(v)), modeloTexto: modeloTextoIA,
+        });
         if (!r?.result) return 'saltada';
         const conf = r.confianza || 0;
         // Mismo mapeo normalizado que "Usar esta" del botón individual —
@@ -724,7 +792,11 @@ function AnalisisInsumosPage({ showToast }) {
           aplicar: () => decidir(par, 'mismo', { silencioso: true }),
         });
       }
-      const r = await correlacionarConIA({ variantes: [nombreA, nombreB], modeloTexto: modeloTextoIA });
+      const r = await correlacionarConIA({
+        variantes: [nombreA, nombreB],
+        unidades: [unidadDe(par.nombre_a), unidadDe(par.nombre_b)],
+        modeloTexto: modeloTextoIA,
+      });
       if (!r?.result) return 'saltada';
       const conf = r.confianza || 0;
       if (modo === 'aplicar') {
@@ -1130,6 +1202,14 @@ function AnalisisInsumosPage({ showToast }) {
                       {c.variantes.map((v, vi) => {
                         const m = muestraDe.get(normInsumo(v));
                         const off = fuera.includes(v);
+                        const uV = unidadDe(v);
+                        // Choca si alguna OTRA variante del grupo se factura
+                        // en otra unidad: en un grupo la pregunta es del
+                        // conjunto, no de un par suelto.
+                        const chocaV = !!uV && c.variantes.some(o => {
+                          const uo = unidadDe(o);
+                          return uo && uo !== uV;
+                        });
                         return (
                           <button
                             key={vi}
@@ -1145,6 +1225,7 @@ function AnalisisInsumosPage({ showToast }) {
                               : `Tocá para sacarla del grupo${m ? ` · ${m.doc} · ${m.proveedorNombre}` : ''}`}
                           >
                             {off ? '＋' : '✓'} «<NombreConDiferencias nombre={v} otro={canon} />» {m && <span style={{ color: 'var(--tm)' }}>({m.proveedorNombre || 'factura'})</span>}
+                            <BadgeUnidad unidad={uV} choca={chocaV} />
                           </button>
                         );
                       })}
@@ -1155,6 +1236,7 @@ function AnalisisInsumosPage({ showToast }) {
                         la medida ("1/2") es justo lo que hay que juzgar. */}
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
+                      unidades={c.variantes.map(v => unidadDe(v))}
                       banda={bandaDeCluster.get(c.id) || null}
                       modeloTexto={modeloTextoIA}
                       inicial={recsIA[claveCluster(c)] || null}
@@ -1193,12 +1275,14 @@ function AnalisisInsumosPage({ showToast }) {
               {sugerencias.map(par => {
                 const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
                 const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
+                const uA = unidadDe(par.nombre_a), uB = unidadDe(par.nombre_b);
+                const chocaU = !!bandaDeSugerencia.get(clavePar(par))?.unidades;
                 return (
                   <div key={`${par.nombre_a}|${par.nombre_b}`} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
-                      <strong><NombreConDiferencias nombre={nombreA} otro={nombreB} /></strong>
+                      <span><strong><NombreConDiferencias nombre={nombreA} otro={nombreB} /></strong><BadgeUnidad unidad={uA} choca={chocaU} /></span>
                       <span style={{ color: 'var(--tm)' }}>≈</span>
-                      <strong><NombreConDiferencias nombre={nombreB} otro={nombreA} /></strong>
+                      <span><strong><NombreConDiferencias nombre={nombreB} otro={nombreA} /></strong><BadgeUnidad unidad={uB} choca={chocaU} /></span>
                       <span className="badge b-gray" style={{ fontSize: 9 }}>{Math.round(par.score * 100)}% parecido</span>
                     </div>
                     <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
@@ -1211,6 +1295,7 @@ function AnalisisInsumosPage({ showToast }) {
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
+                      unidades={[uA, uB]}
                       banda={bandaDeSugerencia.get(clavePar(par)) || null}
                       modeloTexto={modeloTextoIA}
                       inicial={recsIA[clavePar(par)] || null}
