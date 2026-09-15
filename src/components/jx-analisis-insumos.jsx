@@ -54,7 +54,7 @@ import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { useChart } from "../lib/chart-loader.js";
 import {
-  resolverPares, construirGrupos, sugerirPares, sugerirClusters, crearParesDeCluster, normInsumo,
+  resolverPares, construirGrupos, sugerirCandidatos, crearParesDeCluster, normInsumo,
   resaltarDiferencias,
 } from "../lib/insumo-correlacion.js";
 import {
@@ -164,7 +164,10 @@ function AyudaCorrelacionIA({ variantes, unidades = null, textoAplicar, onAplica
     try {
       const r = await correlacionarConIA({ variantes, unidades, modeloTexto });
       if (!r?.result) { setError(r?.razonamiento || 'La IA no pudo decidir esto.'); return; }
-      setRes({ ...r.result, confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached });
+      setRes({
+        ...r.result, confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached,
+        unidades: r.unidades || null, unidades_en_conflicto: !!r.unidades_en_conflicto,
+      });
     } catch (e2) {
       setError(e2?.message || 'No se pudo consultar la IA.');
     } finally {
@@ -233,6 +236,21 @@ function AyudaCorrelacionIA({ variantes, unidades = null, textoAplicar, onAplica
           </span>
           {res.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
           <div style={{ color: 'var(--tm)', marginTop: 2 }}>{res.razonamiento}</div>
+          {/* ── QUÉ UNIDADES VIO LA IA (15-set, tarde) ────────────────
+              Gabriel probó un par de unidades distintas: «la verdad no me
+              mencionó las unidades». Sin esta línea, «no lo mencionó» y «no
+              le llegaron» son indistinguibles desde afuera. Ahora se ve
+              exactamente lo que se mandó. */}
+          {Array.isArray(res.unidades) && res.unidades.some(u => u.unidad) && (
+            <div style={{ color: 'var(--tm)', marginTop: 2, fontSize: 10 }}>
+              Unidades que se le mandaron: {res.unidades
+                .map(u => `${u.unidad ? labelUnidad(u.unidad) : '—'}`)
+                .join(' · ')}
+              {res.unidades_en_conflicto && (
+                <span className="badge b-amber" style={{ fontSize: 9, marginLeft: 4 }}>⚠ distintas</span>
+              )}
+            </div>
+          )}
           {!esPar && sonElMismo && (res.fuera || []).length > 0 && (
             <div style={{ color: 'var(--tm)', marginTop: 2 }}>
               Deja afuera: {res.fuera.map(f => `«${f}»`).join(', ')}
@@ -437,59 +455,66 @@ function AnalisisInsumosPage({ showToast }) {
   const nombresInsumos = uM(() => nombresDe('insumo'), [nombresDe]);
   const nombresServicios = uM(() => nombresDe('servicio'), [nombresDe]);
   const nombresOtros = uM(() => nombresDe('otro'), [nombresDe]);
-  // Sugerir pares cruzando tanto compras como ventas registradas, cada árbol
-  // por separado — un "REDUCCION PVC" nunca compite contra un "ALQUILER DE
-  // VOLQUETE" por una raíz común.
-  const sugerenciasInsumos = uM(
-    () => sugerirPares(nombresInsumos, resueltos, grupoDe),
+  // ── UNA SOLA LISTA DE CANDIDATOS (tanda 4, 15-set) ───────────────
+  // Gabriel: «actualmente no entiendo las sugerencias individual y las
+  // múltiples». Eran DOS listas que salían de la misma función y ninguna
+  // excluía a la otra: el mismo par aparecía arriba dentro de un grupo y
+  // abajo suelto, y el recorrido con IA lo preguntaba y lo pagaba dos veces.
+  // Ahora un candidato es un conjunto de 2 o más nombres y un «par» es
+  // simplemente un candidato de dos — ver `sugerirCandidatos`.
+  //
+  // Cada árbol por separado: un "REDUCCION PVC" nunca compite contra un
+  // "ALQUILER DE VOLQUETE" por una raíz común.
+  const candidatosInsumos = uM(
+    () => sugerirCandidatos(nombresInsumos, resueltos, grupoDe),
     [nombresInsumos, resueltos, grupoDe]
   );
-  const sugerenciasServicios = uM(
-    () => sugerirPares(nombresServicios, resueltos, grupoDe),
+  const candidatosServicios = uM(
+    () => sugerirCandidatos(nombresServicios, resueltos, grupoDe),
     [nombresServicios, resueltos, grupoDe]
   );
-  const sugerenciasOtros = uM(
-    () => sugerirPares(nombresOtros, resueltos, grupoDe),
-    [nombresOtros, resueltos, grupoDe]
-  );
-  // Sugerir clusters multi-variantes (N a N), también por árbol:
-  const clustersInsumos = uM(
-    () => sugerirClusters(nombresInsumos, resueltos, grupoDe),
-    [nombresInsumos, resueltos, grupoDe]
-  );
-  const clustersServicios = uM(
-    () => sugerirClusters(nombresServicios, resueltos, grupoDe),
-    [nombresServicios, resueltos, grupoDe]
-  );
-  const clustersOtros = uM(
-    () => sugerirClusters(nombresOtros, resueltos, grupoDe),
+  const candidatosOtros = uM(
+    () => sugerirCandidatos(nombresOtros, resueltos, grupoDe),
     [nombresOtros, resueltos, grupoDe]
   );
   const [subTabCorr, setSubTabCorr] = uS('insumos');
   const [verDescartadas, setVerDescartadas] = uS(false);
-  const sugerencias = subTabCorr === 'servicios' ? sugerenciasServicios
-    : subTabCorr === 'otros' ? sugerenciasOtros : sugerenciasInsumos;
-  const clustersSugeridos = subTabCorr === 'servicios' ? clustersServicios
-    : subTabCorr === 'otros' ? clustersOtros : clustersInsumos;
+  // 'todos' | 'grupos' | 'pares' — el filtro reemplaza a las dos secciones.
+  const [formaCorr, setFormaCorr] = uS('todos');
+  const candidatosTodos = subTabCorr === 'servicios' ? candidatosServicios
+    : subTabCorr === 'otros' ? candidatosOtros : candidatosInsumos;
+  const candidatos = uM(() => {
+    if (formaCorr === 'grupos') return candidatosTodos.filter(c => c.esGrupo);
+    if (formaCorr === 'pares') return candidatosTodos.filter(c => !c.esGrupo);
+    return candidatosTodos;
+  }, [candidatosTodos, formaCorr]);
+  const nGrupos = uM(() => candidatosTodos.filter(c => c.esGrupo).length, [candidatosTodos]);
+  // El número de la pestaña «🤝 Correlaciones»: todo lo pendiente de los tres
+  // árboles junto, que es lo que hay para revisar sin importar dónde esté.
+  const pendientesCorr = candidatosInsumos.length + candidatosServicios.length + candidatosOtros.length;
   // Las propuestas del recorrido se guardan por ENTIDAD y por sub-pestaña:
   // insumos y servicios son dos listas distintas y no se mezclan.
   const ambitoIA = `${empresaVista || 'grupo'}::${subTabCorr}`;
   const { recomendaciones: recsIA } = useBarridoIA('correlaciones', ambitoIA);
-  // 🔴 LA CLAVE DE UN GRUPO SON SUS VARIANTES, NO SU `id`. `sugerirClusters`
-  // arma el id con la raíz del union-find, que no cambia cuando entra una
-  // variante nueva: un grupo {A,B,C} con la propuesta «uní A y B» seguía
-  // mostrándola después de que una factura sumara D, y «Marcar solo esas 2»
-  // dejaba afuera a D sin que la IA la hubiera visto jamás. Con la clave por
-  // contenido, un grupo que cambió simplemente no tiene propuesta y se vuelve
-  // a preguntar.
-  const claveCluster = (c) => `cl::${[...(c?.variantes || [])].sort().join('|')}`;
-  const clavePar = (par) => `pa::${par.nombre_a}|${par.nombre_b}`;
+  // 🔴 LA CLAVE DE UNA PROPUESTA SON SUS VARIANTES, NO UN id INVENTADO. Antes
+  // `sugerirClusters` armaba el id con la raíz del union-find, que no cambia
+  // cuando entra una variante nueva: un grupo {A,B,C} con la propuesta «uní A
+  // y B» seguía mostrándola después de que una factura sumara D, y «Marcar
+  // solo esas 2» dejaba afuera a D sin que la IA la hubiera visto jamás. Con
+  // la clave por contenido, un grupo que cambió simplemente no tiene
+  // propuesta y se vuelve a preguntar.
+  //
+  // Desde la tanda 4 el `id` del candidato YA ES el contenido ordenado (lo
+  // arma `sugerirCandidatos`), así que la clave es el id: una sola forma de
+  // nombrar una pregunta, en vez de las dos que había (`cl::` y `pa::`).
+  const claveDe = (c) => c?.id || '';
+  // La misma clave, para cuando solo se tienen los dos nombres sueltos (el
+  // camino de `decidir`, que recibe un par y no un candidato).
+  const claveDePar = (a, b) => `par:${[a, b].sort().join('|')}`;
   // Solo las que siguen apuntando a algo que hoy está en pantalla.
   const nRecomendadasIA = uM(
-    () => clustersSugeridos.filter(c => recsIA[claveCluster(c)]).length
-      + sugerencias.filter(p => recsIA[clavePar(p)]).length,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [clustersSugeridos, sugerencias, recsIA],
+    () => candidatosTodos.filter(c => recsIA[claveDe(c)]).length,
+    [candidatosTodos, recsIA],
   );
   const decisiones = uM(
     () => [...resueltos.values()].sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''))).slice(0, 100),
@@ -572,27 +597,26 @@ function AnalisisInsumosPage({ showToast }) {
   // cuarto ámbito solo para esto serían más perillas para la misma respuesta.
   const modeloTextoIA = uM(() => modelosDe(cfgIA || [], 'clasificacion').texto, [cfgIA]);
 
-  const bandaDeCluster = uM(() => {
+  // La banda de cada candidato, en UN solo índice (tanda 4). Un candidato de
+  // dos se mide con `bandaDePar` y uno de tres o más con `bandaDeGrupo` — la
+  // pregunta es distinta, pero la lista y la clave son una sola.
+  const bandaDe = uM(() => {
     const m = new Map();
-    for (const c of clustersSugeridos) {
-      m.set(c.id, bandaDeGrupo(c.variantes.map(crudoDe), { unidadDe }));
+    for (const c of candidatosTodos) {
+      const crudos = c.variantes.map(crudoDe);
+      m.set(c.id, c.variantes.length === 2
+        ? bandaDePar(crudos[0], crudos[1], {
+          unidadA: unidadDe(c.variantes[0]), unidadB: unidadDe(c.variantes[1]),
+        })
+        : bandaDeGrupo(crudos, { unidadDe }));
     }
     return m;
-  }, [clustersSugeridos, crudoDe, unidadDe]);
-  const bandaDeSugerencia = uM(() => {
-    const m = new Map();
-    for (const p of sugerencias) {
-      m.set(clavePar(p), bandaDePar(crudoDe(p.nombre_a), crudoDe(p.nombre_b), {
-        unidadA: unidadDe(p.nombre_a), unidadB: unidadDe(p.nombre_b),
-      }));
-    }
-    return m;
-  }, [sugerencias, crudoDe, unidadDe]);
+  }, [candidatosTodos, crudoDe, unidadDe]);
   // Cuántas de las pendientes NO van a salir a la red. Es el número que el
   // botón muestra antes de arrancar.
   const nSinIA = uM(
-    () => [...bandaDeCluster.values(), ...bandaDeSugerencia.values()].filter(b => b.banda === 'obvio').length,
-    [bandaDeCluster, bandaDeSugerencia],
+    () => [...bandaDe.values()].filter(b => b.banda === 'obvio').length,
+    [bandaDe],
   );
   // Serie del gráfico memoizada (identidad estable: sin ella, cada re-render
   // del padre destruía y recreaba el Chart completo). ANTES del early return
@@ -645,7 +669,9 @@ function AnalisisInsumosPage({ showToast }) {
         relacion, canonico, fuente: 'manual', deleted_at: null,
       });
       // El par quedó resuelto: la propuesta de la IA ya no espera a nadie.
-      olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par));
+      // La clave es la misma que arma `sugerirCandidatos` para un candidato
+      // de dos (tanda 4): el contenido ordenado, una sola forma de nombrarlo.
+      olvidarRecomendacion('correlaciones', ambitoIA, claveDePar(par.nombre_a, par.nombre_b));
       if (!silencioso) {
         showToast?.(relacion === 'mismo'
           ? '✓ Correlacionados — no se volverá a preguntar por este par'
@@ -719,7 +745,7 @@ function AnalisisInsumosPage({ showToast }) {
     // La clave de la propuesta se calcula ANTES de recortar el cluster: abajo
     // `cluster` se reemplaza por el de las variantes marcadas y la clave del
     // recortado no es la del grupo que se propuso.
-    const claveIA = claveCluster(cluster);
+    const claveIA = claveDe(cluster);
     try {
       // `soloEstas` son las variantes que quedaron marcadas en la tarjeta: se
       // puede sacar alguna del grupo antes de aceptarlo. La que se saca NO se
@@ -769,10 +795,15 @@ function AnalisisInsumosPage({ showToast }) {
   };
 
   // ── El recorrido completo con IA (14-sep) ─────────────────────────
-  // «Lo mismo para correlaciones»: recorre los grupos de variantes y las
-  // sugerencias individuales de la pestaña actual (Insumos o Servicios,
-  // ya que `sugerencias`/`clustersSugeridos` apuntan a la que está activa).
-  // Los clusters van primero — resuelven varios nombres de un golpe.
+  // «Lo mismo para correlaciones»: recorre los candidatos de la pestaña
+  // activa (Insumos, Servicios o Ni-uno-ni-otro). Los que resuelven más
+  // nombres van primero — ese orden ya viene de `sugerirCandidatos`.
+  //
+  // 🔴 UNA SOLA LISTA = UNA SOLA PREGUNTA POR PAR (tanda 4). Antes recorría
+  // `clusters + sugerencias`, que salen de la misma función y se pisaban: un
+  // par A–B dentro del grupo {A,B,C} se preguntaba DOS VECES y se pagaba dos
+  // veces. Con la tercera pestaña de la tanda 3 eso se habría multiplicado
+  // por tres. Ahora los candidatos vienen deduplicados de la lib.
   //
   // 🔴 NO DECIDE NADA en el modo por defecto: deja el veredicto de la IA en
   // la tarjeta de cada grupo/par, y el botón de siempre («Unir las N», «Son
@@ -796,75 +827,60 @@ function AnalisisInsumosPage({ showToast }) {
   };
 
   const construirBarrido = (modo) => ({
-    items: [
-      ...clustersSugeridos.map(item => ({ tipo: 'cluster', item, banda: bandaDeCluster.get(item.id) })),
-      ...sugerencias.map(item => ({ tipo: 'par', item, banda: bandaDeSugerencia.get(clavePar(item)) })),
-    ],
+    items: candidatosTodos.map(item => ({ item, banda: bandaDe.get(item.id) })),
     // 🔴 EL PRE-FILTRO DECIDE QUIÉN SALE A LA RED, no quién se decide. Los de
     // banda `obvio` se resuelven acá mismo y por eso no piden turno: hacerlos
     // esperar 1,1 s sería cobrarles el peaje de una autopista por la que no
     // pasaron. Igual dejan una propuesta que una persona tiene que aceptar.
     necesitaTurno: (t) => t?.banda?.banda !== 'obvio',
     procesarItem: async (t) => {
-      if (t.tipo === 'cluster') {
-        const c = t.item;
-        const variantes = c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v);
-        if (t.banda?.banda === 'obvio') {
-          return await resolverSinIA({
-            modo, variantes, confianza: CONFIANZA_OBVIO, motivo: t.banda.motivo,
-            claveRec: claveCluster(c),
-            aplicar: () => decidirCluster(c, 'mismo', c.variantes, { silencioso: true }),
-          });
-        }
-        const r = await correlacionarConIA({
-          variantes, unidades: c.variantes.map(v => unidadDe(v)), modeloTexto: modeloTextoIA,
+      const c = t.item;
+      const variantes = c.variantes.map(crudoDe);
+      const esPar = c.variantes.length === 2;
+      // `decidir` habla de pares y `decidirCluster` de conjuntos; un candidato
+      // de dos se guarda como par (una fila) y uno de N como cluster (todos
+      // sus pares). Es la única diferencia que queda entre las dos formas.
+      const parDe = () => ({ nombre_a: c.variantes[0], nombre_b: c.variantes[1] });
+
+      if (t.banda?.banda === 'obvio') {
+        return await resolverSinIA({
+          modo, variantes, confianza: CONFIANZA_OBVIO, motivo: t.banda.motivo,
+          claveRec: claveDe(c),
+          aplicar: () => (esPar
+            ? decidir(parDe(), 'mismo', { silencioso: true })
+            : decidirCluster(c, 'mismo', c.variantes, { silencioso: true })),
         });
-        if (!r?.result) return 'saltada';
-        const conf = r.confianza || 0;
+      }
+
+      const r = await correlacionarConIA({
+        variantes, unidades: c.variantes.map(v => unidadDe(v)), modeloTexto: modeloTextoIA,
+      });
+      if (!r?.result) return 'saltada';
+      const conf = r.confianza || 0;
+
+      if (modo === 'aplicar') {
+        if (conf < UMBRAL_BARRIDO_IA) return 'saltada';
+        if (esPar) {
+          // Acá "distinto" con confianza alta TAMBIÉN se aplica: descartar la
+          // sugerencia es una decisión válida, y sacarla de la cola es el punto.
+          const relacion = (r.result.mismas || []).length >= 2 ? 'mismo' : 'distinto';
+          const res = await decidir(parDe(), relacion, { silencioso: true });
+          return res === 'aplicada' ? 'aplicada' : 'saltada';
+        }
         // Mismo mapeo normalizado que "Usar esta" del botón individual —
         // ver el comentario de AyudaCorrelacionIA sobre por qué NO comparar
         // los nombres crudos (el server los devuelve ya saneados).
         const dentroNorm = new Set((r.result.mismas || []).map(normInsumo));
-        const dentro = c.variantes.filter(v => dentroNorm.has(normInsumo(muestraDe.get(normInsumo(v))?.nombre || v)));
-        if (modo === 'aplicar') {
-          if (conf < UMBRAL_BARRIDO_IA || dentro.length < 2) return 'saltada';
-          const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
-          return res === 'aplicada' ? 'aplicada' : 'saltada';
-        }
-        guardarRecomendacion('correlaciones', ambitoIA, claveCluster(c), {
-          mismas: r.result.mismas || [], fuera: r.result.fuera || [],
-          confianza: conf, razonamiento: r.razonamiento || '',
-        });
-        return 'recomendada';
-      }
-      const par = t.item;
-      const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
-      const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
-      if (t.banda?.banda === 'obvio') {
-        return await resolverSinIA({
-          modo, variantes: [nombreA, nombreB], confianza: CONFIANZA_OBVIO, motivo: t.banda.motivo,
-          claveRec: clavePar(par),
-          aplicar: () => decidir(par, 'mismo', { silencioso: true }),
-        });
-      }
-      const r = await correlacionarConIA({
-        variantes: [nombreA, nombreB],
-        unidades: [unidadDe(par.nombre_a), unidadDe(par.nombre_b)],
-        modeloTexto: modeloTextoIA,
-      });
-      if (!r?.result) return 'saltada';
-      const conf = r.confianza || 0;
-      if (modo === 'aplicar') {
-        if (conf < UMBRAL_BARRIDO_IA) return 'saltada';
-        // Acá "distinto" con confianza alta TAMBIÉN se aplica: descartar la
-        // sugerencia es una decisión válida, y sacarla de la cola es el punto.
-        const relacion = (r.result.mismas || []).length >= 2 ? 'mismo' : 'distinto';
-        const res = await decidir(par, relacion, { silencioso: true });
+        const dentro = c.variantes.filter(v => dentroNorm.has(normInsumo(crudoDe(v))));
+        if (dentro.length < 2) return 'saltada';
+        const res = await decidirCluster(c, 'mismo', dentro, { silencioso: true });
         return res === 'aplicada' ? 'aplicada' : 'saltada';
       }
-      guardarRecomendacion('correlaciones', ambitoIA, clavePar(par), {
+
+      guardarRecomendacion('correlaciones', ambitoIA, claveDe(c), {
         mismas: r.result.mismas || [], fuera: r.result.fuera || [],
         confianza: conf, razonamiento: r.razonamiento || '',
+        unidades: r.unidades || null, unidades_en_conflicto: !!r.unidades_en_conflicto,
       });
       return 'recomendada';
     },
@@ -938,7 +954,7 @@ function AnalisisInsumosPage({ showToast }) {
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
-          🤝 Correlaciones{(sugerenciasInsumos.length + sugerenciasServicios.length) ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{sugerenciasInsumos.length + sugerenciasServicios.length}</span> : null}
+          🤝 Correlaciones{pendientesCorr ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{pendientesCorr}</span> : null}
         </button>
         <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
           🎯 Mapeo al presupuesto
@@ -1167,18 +1183,18 @@ function AnalisisInsumosPage({ showToast }) {
             <button className={`btn btn-sm ${subTabCorr === 'insumos' ? 'btn-blue' : 'btn-ghost'}`}
               onClick={() => setSubTabCorr('insumos')}>
               🧱 Insumos
-              {(sugerenciasInsumos.length + clustersInsumos.length) > 0 && (
+              {candidatosInsumos.length > 0 && (
                 <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
-                  {sugerenciasInsumos.length + clustersInsumos.length}
+                  {candidatosInsumos.length}
                 </span>
               )}
             </button>
             <button className={`btn btn-sm ${subTabCorr === 'servicios' ? 'btn-blue' : 'btn-ghost'}`}
               onClick={() => setSubTabCorr('servicios')}>
               🛠 Servicios
-              {(sugerenciasServicios.length + clustersServicios.length) > 0 && (
+              {candidatosServicios.length > 0 && (
                 <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
-                  {sugerenciasServicios.length + clustersServicios.length}
+                  {candidatosServicios.length}
                 </span>
               )}
             </button>
@@ -1193,9 +1209,9 @@ function AnalisisInsumosPage({ showToast }) {
               onClick={() => setSubTabCorr('otros')}
               title="Ni insumo ni servicio: arbitrajes, seguros, detracciones, penalidades, anticipos. No es mercadería que entre o salga del inventario.">
               ❔ Ni uno ni otro
-              {(sugerenciasOtros.length + clustersOtros.length) > 0 && (
+              {candidatosOtros.length > 0 && (
                 <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
-                  {sugerenciasOtros.length + clustersOtros.length}
+                  {candidatosOtros.length}
                 </span>
               )}
             </button>
@@ -1252,26 +1268,53 @@ function AnalisisInsumosPage({ showToast }) {
             ambito={ambitoIA}
             etiqueta={subTabCorr === 'servicios' ? 'los servicios'
               : subTabCorr === 'otros' ? 'lo que no es insumo ni servicio' : 'los insumos'}
-            cantidadPendiente={clustersSugeridos.length + sugerencias.length}
+            cantidadPendiente={candidatosTodos.length}
             cantidadRecomendadas={nRecomendadasIA}
             sinIA={nSinIA}
             construir={construirBarrido}
           />
 
-          {/* ── Clusters Multi-Insumo (N a N) ────────────────── */}
-          {clustersSugeridos.length > 0 && (
-            <div className="card card-p" style={{ borderLeft: '3px solid var(--green)' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span>📦</span> Grupos de variantes sugeridos ({clustersSugeridos.length} {clustersSugeridos.length === 1 ? 'grupo multi-insumo' : 'grupos multi-insumo'})
+          {/* ── UNA SOLA LISTA DE CANDIDATOS (tanda 4, 15-set) ──────────
+              Gabriel: «actualmente no entiendo las sugerencias individual y
+              las múltiples». Eran dos secciones que salían de la misma
+              función y se pisaban — el mismo par arriba dentro de un grupo y
+              abajo suelto. Ahora es UNA lista: cada tarjeta es un conjunto de
+              nombres que parecen el mismo insumo, y un «par» es simplemente
+              un conjunto de dos. El filtro de abajo reemplaza a las dos
+              secciones. */}
+          <div className="card card-p" style={{ borderLeft: '3px solid var(--green)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🔗</span> Candidatos a unir ({candidatosTodos.length})
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
-                Las distintas formas en que cada proveedor escribe el mismo insumo, agrupadas de una.
-                <strong> Tocá una variante para sacarla del grupo</strong> antes de aceptarlo: la que saques no queda
-                marcada como distinta — vuelve a aparecer abajo, como par suelto, para decidirla mirándola.
-                Al aceptar, el grupo desaparece de acá y el resto se recalcula solo.
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[
+                  ['todos', `Todos (${candidatosTodos.length})`],
+                  ['grupos', `Grupos de 3+ (${nGrupos})`],
+                  ['pares', `Pares (${candidatosTodos.length - nGrupos})`],
+                ].map(([k, lbl]) => (
+                  <button key={k} className={`btn btn-xs ${formaCorr === k ? 'btn-blue' : 'btn-ghost'}`}
+                    onClick={() => setFormaCorr(k)}>{lbl}</button>
+                ))}
               </div>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
+              Las distintas formas en que cada proveedor escribe el mismo insumo. Primero van las que resuelven
+              más nombres de un golpe. En las de tres o más, <strong>tocá una variante para sacarla</strong> antes
+              de aceptar: la que saques no queda marcada como distinta — vuelve a aparecer sola, como par, para
+              decidirla mirándola. Lo resaltado en{' '}
+              <span style={{ background: 'rgba(242,183,5,.28)', borderRadius: 3, padding: '0 2px' }}>ámbar</span> es
+              lo que NO tienen en común: mirá eso primero.
+            </div>
+            {candidatos.length === 0 && (
+              <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>
+                {candidatosTodos.length === 0
+                  ? 'No hay candidatos nuevos para revisar — al registrar más facturas aparecerán acá.'
+                  : 'Ninguno con este filtro. Probá «Todos».'}
+              </div>
+            )}
               <div style={{ display: 'grid', gap: 10 }}>
-                {clustersSugeridos.map(c => {
+                {candidatos.filter(c => c.esGrupo).map(c => {
                   const fuera = excluidasCluster[c.id] || [];
                   const dentro = c.variantes.filter(v => !fuera.includes(v));
                   const canon = dentro.length
@@ -1371,10 +1414,10 @@ function AnalisisInsumosPage({ showToast }) {
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
                       unidades={c.variantes.map(v => unidadDe(v))}
-                      banda={bandaDeCluster.get(c.id) || null}
+                      banda={bandaDe.get(c.id) || null}
                       modeloTexto={modeloTextoIA}
-                      inicial={recsIA[claveCluster(c)] || null}
-                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, claveCluster(c))}
+                      inicial={recsIA[claveDe(c)] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, claveDe(c))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
                       onAplicar={(mismas) => {
                         // Se comparan NORMALIZADOS: el nombre que vuelve pasó
@@ -1393,24 +1436,16 @@ function AnalisisInsumosPage({ showToast }) {
                   </div>
                   );
                 })}
-              </div>
-            </div>
-          )}
-          <div className="card card-p">
-            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>Sugerencias individuales ({sugerencias.length})</div>
-            {sugerencias.length > 0 && (
-              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginBottom: 8 }}>
-                Lo resaltado en <span style={{ background: 'rgba(242,183,5,.28)', borderRadius: 3, padding: '0 2px' }}>ámbar</span> es
-                {' '}lo que NO tienen en común — mirá eso primero para decidir rápido.
-              </div>
-            )}
-            {sugerencias.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>No hay pares nuevos para revisar — al registrar más facturas aparecerán acá.</div>}
-            <div style={{ display: 'grid', gap: 8 }}>
-              {sugerencias.map(par => {
+                {/* Los candidatos de DOS, en la misma lista y con el mismo
+                    orden: lo que cambia es la tarjeta, porque la decisión es
+                    otra («son el mismo / son distintos» en vez de «sacá las
+                    que no van y uní el resto»). */}
+                {candidatos.filter(c => !c.esGrupo).map(cand => {
+                const par = { nombre_a: cand.variantes[0], nombre_b: cand.variantes[1], score: cand.score };
                 const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
                 const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
                 const uA = unidadDe(par.nombre_a), uB = unidadDe(par.nombre_b);
-                const chocaU = !!bandaDeSugerencia.get(clavePar(par))?.unidades;
+                const chocaU = !!bandaDe.get(cand.id)?.unidades;
                 return (
                   <div key={`${par.nombre_a}|${par.nombre_b}`} style={{ padding: '8px 10px', border: '1px solid var(--border)', borderRadius: 6 }}>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 12 }}>
@@ -1445,20 +1480,20 @@ function AnalisisInsumosPage({ showToast }) {
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
                       unidades={[uA, uB]}
-                      banda={bandaDeSugerencia.get(clavePar(par)) || null}
+                      banda={bandaDe.get(cand.id) || null}
                       modeloTexto={modeloTextoIA}
-                      inicial={recsIA[clavePar(par)] || null}
-                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par))}
+                      inicial={recsIA[cand.id] || null}
+                      onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, cand.id)}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
                       onAplicar={(mismas) => {
-                        olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par));
+                        olvidarRecomendacion('correlaciones', ambitoIA, cand.id);
                         decidir(par, mismas.length >= 2 ? 'mismo' : 'distinto').catch(() => {});
                       }}
                     />
                   </div>
                 );
-              })}
-            </div>
+                })}
+              </div>
           </div>
           <div className="card card-p">
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Decisiones tomadas ({decisiones.length})</div>

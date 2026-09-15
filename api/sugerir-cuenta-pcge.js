@@ -567,10 +567,34 @@ Reglas de salida:
     const canonico = mismas.includes(canonicoIA)
       ? canonicoIA
       : (mismas.length ? mismas.reduce((m, n) => (n.length > m.length ? n : m), mismas[0]) : null);
+
+    // ── EL AVISO DE UNIDAD NO SE LE DELEGA AL MODELO (15-set, tarde) ──
+    // Gabriel probó la IA en un par de unidades distintas: «la verdad no me
+    // mencionó las unidades». El prompt lo pide, pero pedirlo no es tenerlo:
+    // el razonamiento es UNA frase corta, el modelo gratuito no está obligado
+    // a obedecer y la información más cara de perder quedaba librada a eso.
+    //
+    // El server YA SABE si las unidades difieren —las recibió— así que el
+    // aviso lo arma él y va SIEMPRE. Lo que decide la IA sigue siendo qué es
+    // el mismo artículo; lo que no puede fallar es que la persona vea que
+    // está por unir kilos con unidades.
+    const unidadPorNombre = new Map(variantes.map((v, i) => [v, unidades[i]]));
+    const unidadesUnidas = [...new Set(mismas.map(n => unidadPorNombre.get(n)).filter(Boolean))];
+    const avisoUnidad = unidadesUnidas.length > 1
+      ? ` ⚠ Ojo: las que marca como iguales se facturan en ${unidadesUnidas.map(u => `«${u}»`).join(' y ')}.`
+        + ' Puede ser el mismo insumo en otra presentación, pero al unirlas sus cantidades quedan en filas separadas'
+        + ' en el inventario hasta que exista el factor de conversión.'
+      : '';
+
     return res.status(200).json({
       result: { mismas, fuera, canonico },
       confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
-      razonamiento: String(parsed.razonamiento || '').slice(0, 300),
+      razonamiento: String(parsed.razonamiento || '').slice(0, 300) + avisoUnidad,
+      // Las unidades TAL COMO SE MANDARON, para que la pantalla pueda mostrar
+      // qué vio la IA. Sin esto, «no mencionó las unidades» y «no le llegaron»
+      // son indistinguibles desde afuera.
+      unidades: variantes.map((v, i) => ({ nombre: v, unidad: unidades[i] || null })),
+      unidades_en_conflicto: unidadesUnidas.length > 1,
       _model: data.model, _usage: data.usage,
     });
   } catch (e) {

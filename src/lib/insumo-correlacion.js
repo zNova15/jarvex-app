@@ -382,6 +382,102 @@ export function sugerirClusters(nombres, paresResueltos, grupoDe, opts = {}) {
   return out.slice(0, maxClusters);
 }
 
+// ── UNA SOLA LISTA DE CANDIDATOS (tanda 4, 15-set-2026) ─────────────
+/**
+ * Los candidatos a unir, en UNA lista sin duplicados.
+ *
+ * ── EL PROBLEMA ───────────────────────────────────────────────────
+ * Gabriel, 15-set: «actualmente no entiendo las sugerencias individual y las
+ * múltiples».
+ *
+ * No era él: la pantalla mostraba DOS listas que salían de la misma función y
+ * ninguna excluía a la otra. `sugerirClusters` llama a `sugerirPares` por
+ * dentro, así que un par A–B que forma parte del grupo {A,B,C} aparecía
+ * ARRIBA dentro del grupo y ABAJO otra vez como par suelto. Peor que el
+ * desorden: el recorrido con IA recorre `clusters + sugerencias`, o sea que
+ * le preguntaba DOS VECES por el mismo par y lo pagaba dos veces. Con la
+ * tercera pestaña de la tanda 3, esa duplicación se multiplicaba por tres.
+ *
+ * ── LA SOLUCIÓN ───────────────────────────────────────────────────
+ * Un candidato es un conjunto de 2 o más nombres que parecen el mismo
+ * insumo. Un «par» es simplemente un candidato de dos. La lista se arma una
+ * vez y un par que ya vive dentro de un grupo NO se vuelve a listar solo.
+ *
+ * 🔴 UN PAR SE EXCLUYE SOLO SI SUS DOS NOMBRES ESTÁN EN EL MISMO GRUPO. Si
+ * A está en el grupo {A,B,C} y D quedó suelto, el par A–D SÍ tiene que
+ * listarse: es una pregunta que nadie contestó todavía, y esconderla sería
+ * perder la variante D para siempre.
+ *
+ * ── POR QUÉ SIGUE HABIENDO DOS UMBRALES ───────────────────────────
+ * Un grupo se arma desde 0,52 y un par suelto necesita 0,55, y eso NO es una
+ * inconsistencia: en un grupo la transitividad es evidencia extra. Si A~B da
+ * 0,53 pero B~C da 0,80 y A~C da 0,60, el conjunto se sostiene mucho mejor
+ * que el par A–B solo. Bajar el par a 0,52 llenaría la lista de ruido; subir
+ * el grupo a 0,55 partiría familias que están bien. Lo que se unificó es la
+ * LISTA y el conteo, que es lo que confundía — no el criterio, que tiene
+ * motivos distintos para cada forma.
+ *
+ * → [{ id, variantes:[norm], canonico, score, esGrupo, pares }]
+ *   ordenados: primero los que resuelven más nombres de un golpe, después por
+ *   score. `maxCandidatos` corta la lista final, no cada mitad por separado.
+ */
+export function sugerirCandidatos(nombres, paresResueltos, grupoDe, opts = {}) {
+  const {
+    umbralPar = 0.55, umbralGrupo = 0.52,
+    maxCandidatos = 60, maxClusters = 30, maxPares = 250,
+  } = opts;
+
+  const clusters = sugerirClusters(nombres, paresResueltos, grupoDe, {
+    ...opts, umbral: umbralGrupo, maxClusters, maxPares,
+  });
+  // A qué grupo pertenece cada nombre YA propuesto (no el grupo confirmado:
+  // ése lo filtra `sugerirPares` por su cuenta con `grupoDe`).
+  const grupoPropuesto = new Map();
+  for (const c of clusters) for (const v of c.variantes) grupoPropuesto.set(v, c.id);
+
+  const pares = sugerirPares(nombres, paresResueltos, grupoDe, {
+    ...opts, umbral: umbralPar, max: maxPares,
+  });
+
+  const sueltos = pares.filter(p => {
+    const ga = grupoPropuesto.get(p.nombre_a);
+    const gb = grupoPropuesto.get(p.nombre_b);
+    return !(ga && gb && ga === gb);          // ya se pregunta dentro del grupo
+  });
+
+  // 🔴 `esGrupo` SALE DEL TAMAÑO, NO DE QUÉ FUNCIÓN LO ENCONTRÓ. Salió de un
+  // test que falló al escribirlo: `sugerirClusters` arma «clusters» de dos
+  // miembros, que son pares con otro nombre. Lo que cambia la forma de
+  // decidirlo —y por lo tanto la tarjeta que se dibuja— es cuántos nombres
+  // hay adelante, no por qué camino llegaron. Un candidato de dos se contesta
+  // «son el mismo / son distintos»; uno de cinco se contesta sacando las que
+  // no van y uniendo el resto.
+  const armar = (variantes, canonico, score, pares) => ({
+    id: variantes.length === 2 ? `par:${[...variantes].sort().join('|')}` : `grp:${[...variantes].sort().join('|')}`,
+    variantes, canonico, score, pares,
+    esGrupo: variantes.length >= 3,
+  });
+
+  const out = [
+    ...clusters.map(c => armar(c.variantes, c.canonico, c.score, c.pares)),
+    ...sueltos.map(p => armar(
+      [p.nombre_a, p.nombre_b],
+      p.nombre_a.length >= p.nombre_b.length ? p.nombre_a : p.nombre_b,
+      p.score,
+      [p],
+    )),
+  ];
+
+  out.sort((a, b) => b.variantes.length - a.variantes.length || b.score - a.score);
+  // Red de seguridad: el id es el CONTENIDO ordenado, así que dos candidatos
+  // con los mismos nombres son el mismo candidato aunque hayan llegado por
+  // caminos distintos. El filtro de arriba ya los saca; esto garantiza que la
+  // lista no pueda repetir una pregunta ni aunque ese filtro cambie.
+  const vistos = new Set();
+  const unicos = out.filter(c => (vistos.has(c.id) ? false : (vistos.add(c.id), true)));
+  return unicos.slice(0, maxCandidatos);
+}
+
 // Genera los pares de correlación correspondientes a un cluster completo de N variantes
 export function crearParesDeCluster(variantes, canonico, relacion = 'mismo', opts = {}) {
   const normVars = [...new Set((variantes || []).map(normInsumo).filter(Boolean))];

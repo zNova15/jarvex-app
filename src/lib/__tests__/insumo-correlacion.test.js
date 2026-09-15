@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normInsumo, parClave, resolverPares, construirGrupos, claveGrupoDe,
   scoreNombres, sugerirPares, sugerirClusters, crearParesDeCluster,
-  resaltarDiferencias,
+  resaltarDiferencias, sugerirCandidatos,
 } from '../insumo-correlacion';
 
 describe('normInsumo / parClave', () => {
@@ -232,5 +232,101 @@ describe('sugerirClusters no reabre un grupo ya aceptado (regresión 14-sep-2026
     // Nada de un cluster {A,B,C,D} de nuevo: A, B y C ya están decididos —
     // D tiene que aparecer suelta (sugerencias individuales), no reabrir el grupo.
     expect(clusters.some(cl => cl.totalVariantes >= 3)).toBe(false);
+  });
+});
+
+// ── TANDA 4: una sola lista de candidatos ────────────────────────────
+// Gabriel, 15-set: «actualmente no entiendo las sugerencias individual y las
+// múltiples». No era él: las dos listas salían de la misma función y ninguna
+// excluía a la otra, así que el mismo par aparecía arriba dentro de un grupo
+// y abajo suelto — y el recorrido con IA lo preguntaba (y lo pagaba) dos veces.
+describe('sugerirCandidatos — sin duplicados entre grupos y pares', () => {
+  const VARIANTES = ['Clavos N3', 'Clavos numero 3', 'Clavo de 3', 'Clavo N 3'];
+
+  it('un par que vive dentro de un grupo NO se lista aparte', () => {
+    const cands = sugerirCandidatos(VARIANTES, new Map(), new Map());
+    const grupos = cands.filter(c => c.esGrupo);
+    expect(grupos.length).toBeGreaterThan(0);
+
+    // Todos los nombres del grupo, y ningún par suelto formado solo por ellos.
+    const dentro = new Set(grupos.flatMap(g => g.variantes));
+    for (const c of cands.filter(c => !c.esGrupo)) {
+      const [a, b] = c.variantes;
+      expect(dentro.has(a) && dentro.has(b)).toBe(false);
+    }
+  });
+
+  it('cada nombre aparece en UN solo candidato cuando todos son la misma familia', () => {
+    const cands = sugerirCandidatos(VARIANTES, new Map(), new Map());
+    const vistos = [];
+    for (const c of cands) vistos.push(...c.variantes);
+    expect(new Set(vistos).size).toBe(vistos.length);
+  });
+
+  it('un par entre DOS grupos distintos sí se lista (no se esconde la pregunta)', () => {
+    // Dos familias que no se mezclan entre sí.
+    const nombres = [
+      'Clavos N3', 'Clavos numero 3', 'Clavo de 3',
+      'Cemento Sol tipo I', 'Cemento Sol tipo 1', 'Cemento Sol I',
+    ];
+    const cands = sugerirCandidatos(nombres, new Map(), new Map());
+    // Los dos grupos existen y ningún candidato mezcla clavos con cemento.
+    for (const c of cands) {
+      const hayClavo = c.variantes.some(v => v.includes('clavo'));
+      const hayCemento = c.variantes.some(v => v.includes('cemento'));
+      expect(hayClavo && hayCemento).toBe(false);
+    }
+  });
+
+  it('un par es un candidato de dos, con la misma forma que un grupo', () => {
+    const cands = sugerirCandidatos(['Tubo PVC 1/2', 'Tuberia PVC 1/2'], new Map(), new Map());
+    expect(cands.length).toBeGreaterThan(0);
+    const c = cands[0];
+    expect(c.variantes).toHaveLength(2);
+    expect(typeof c.id).toBe('string');
+    expect(typeof c.canonico).toBe('string');
+    expect(typeof c.score).toBe('number');
+    // `esGrupo` sale del TAMAÑO, no de qué función lo encontró: un «cluster»
+    // de dos miembros es un par y se contesta como un par.
+    expect(c.esGrupo).toBe(false);
+  });
+
+  it('con tres o más variantes sí es un grupo', () => {
+    const cands = sugerirCandidatos(VARIANTES, new Map(), new Map());
+    const g = cands.find(c => c.variantes.length >= 3);
+    expect(g).toBeTruthy();
+    expect(g.esGrupo).toBe(true);
+  });
+
+  it('ningún candidato se repite: el id es el contenido ordenado', () => {
+    const nombres = [...VARIANTES, 'Tubo PVC 1/2', 'Tuberia PVC 1/2', 'Tubo P.V.C. 1/2'];
+    const cands = sugerirCandidatos(nombres, new Map(), new Map());
+    const ids = cands.map(c => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('los que resuelven más nombres van primero', () => {
+    const nombres = [...VARIANTES, 'Tubo PVC 1/2', 'Tuberia PVC 1/2'];
+    const cands = sugerirCandidatos(nombres, new Map(), new Map());
+    for (let i = 1; i < cands.length; i++) {
+      expect(cands[i - 1].variantes.length).toBeGreaterThanOrEqual(cands[i].variantes.length);
+    }
+  });
+
+  it('respeta las decisiones ya tomadas y el tope', () => {
+    const resueltos = resolverPares([
+      { nombre_a: 'clavos n3', nombre_b: 'clavos numero 3', relacion: 'distinto', fuente: 'manual' },
+    ]);
+    const cands = sugerirCandidatos(VARIANTES, resueltos, new Map());
+    for (const c of cands) {
+      const tieneAmbos = c.variantes.includes('clavos n3') && c.variantes.includes('clavos numero 3');
+      expect(tieneAmbos).toBe(false);
+    }
+    expect(sugerirCandidatos(VARIANTES, new Map(), new Map(), { maxCandidatos: 1 })).toHaveLength(1);
+  });
+
+  it('sin nombres no explota', () => {
+    expect(sugerirCandidatos([], new Map(), new Map())).toEqual([]);
+    expect(sugerirCandidatos(null, new Map(), new Map())).toEqual([]);
   });
 });

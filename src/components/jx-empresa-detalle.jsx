@@ -298,6 +298,12 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // scrolleando.
   const negativos = uMD(() => saldosNegativos(inv.insumos), [inv]);
   const [soloNegativos, setSoloNegativos] = uSD(false);
+  // Los insumos cuya factura una nota de crédito rebajó EN PARTE (15-set).
+  const rebajados = uMD(() => {
+    const ins = inv.insumos.filter(i => (i.rebajadas || 0) > 0);
+    return { insumos: ins, total: ins.length };
+  }, [inv]);
+  const [soloRebajados, setSoloRebajados] = uSD(false);
   const [flujoFiltro, setFlujoFiltro] = uSD('todos');
   const [modalCategorizar, setModalCategorizar] = uSD(null);
 
@@ -305,8 +311,10 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     const porTexto = filtrarInventario(inv.insumos, busca);
     const porTipo = tipoFiltro ? porTexto.filter(i => i.tipos.includes(tipoFiltro)) : porTexto;
     const porFlujo = filtrarPorFlujo(porTipo, flujoFiltro);
-    return soloNegativos ? porFlujo.filter(tieneSaldoNegativo) : porFlujo;
-  }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos]);
+    if (soloNegativos) return porFlujo.filter(tieneSaldoNegativo);
+    if (soloRebajados) return porFlujo.filter(i => (i.rebajadas || 0) > 0);
+    return porFlujo;
+  }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos, soloRebajados]);
 
   const guardarRecategorizacion = async (insumo, cat, subcat) => {
     const showToast = window.__showToast || (() => {});
@@ -377,6 +385,20 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       setTope(PASO_LISTA);
     } else {
       verNegativos();
+    }
+  };
+
+  // Lo mismo para las rebajadas por una nota de crédito parcial (15-set).
+  const toggleRebajados = () => {
+    if (soloRebajados) {
+      setSoloRebajados(false);
+      setTope(PASO_LISTA);
+    } else {
+      setBusca('');
+      setTipoFiltro('');
+      setSoloNegativos(false);        // los dos filtros a la vez no tienen sentido
+      setSoloRebajados(true);
+      setTope(Math.max(PASO_LISTA, rebajados.total));
     }
   };
 
@@ -755,6 +777,20 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               onClick={toggleNegativos}
               title="Vendió más de lo que compró: puede ser que la compra todavía no esté cargada, que esté en otra empresa del grupo, o que esté escrita con otro nombre">
               {soloNegativos ? 'ver todos' : `${negativos.total} en rojo`}
+            </button>
+          )}
+          {/* ── EL MISMO PROBLEMA CON LAS «NC PARCIAL» (15-set, tarde) ──
+              Gabriel, probando la tanda 1: «en inventario no pude percibir
+              ningún insumo con la notita de nota de crédito parcial». No era
+              un error: en TODA la base hay UNA sola factura rebajada en parte
+              (GASOMI E001-275, S/ 38.500 con una nota de S/ 690) y sus cinco
+              ítems estaban perdidos entre cientos de filas. Misma solución
+              que el botón rojo: un filtro que solo existe si hay algo. */}
+          {rebajados.total > 0 && (
+            <button className={`btn btn-xs ${soloRebajados ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={toggleRebajados}
+              title="Una nota de crédito rebajó en PARTE la factura de estas líneas: la compra sigue siendo real y se cuenta entera, así que la cantidad puede estar por encima de lo que finalmente quedó">
+              {soloRebajados ? 'ver todos' : `${rebajados.total} con NC parcial`}
             </button>
           )}
           <button
