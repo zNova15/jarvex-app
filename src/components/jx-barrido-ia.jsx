@@ -213,11 +213,18 @@ function RecomendacionesListas({ n, seccion, ambito, onVer }) {
  * la vez: el cuadro era angosto (520 px) y el texto venía cortado a cuchillo a
  * los 300 caracteres, en el medio de una palabra («…recubrimientos químicos o
  * p»). El server ahora manda hasta 600 cortando donde termina una palabra
- * (`razonamientoLimpio`), el cuadro es más ancho, y lo que igual no entra se
- * pliega con un «ver todo» en vez de desaparecer: el argumento es lo ÚNICO que
- * tiene quien decide para juzgar la propuesta.
+ * (`razonamientoLimpio`) y el cuadro es más ancho.
+ *
+ * 🔴 EL TOPE ES EL DEL SERVER, NO UNO MÁS CHICO (corregido el 15-set, mismo
+ * día). La primera versión plegaba a los 190 caracteres y el efecto neto fue
+ * EMPEORAR lo que se veía: antes se leían 300 corridos y después 190 con un
+ * «ver todo». Gabriel lo dijo derecho: «la descripción por la IA la redujiste
+ * cuando realmente lo que te pedí es que agregaras ese botón para ver más».
+ * El argumento se lee ENTERO; el pliegue queda solo como red de seguridad por
+ * si algún modelo se pasa del tope del server, no como la forma normal de
+ * mostrarlo.
  */
-function Razonamiento({ texto, tope = 190 }) {
+function Razonamiento({ texto, tope = 600 }) {
   const [abierto, setAbierto] = uS(false);
   const t = String(texto || '');
   if (!t) return null;

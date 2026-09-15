@@ -117,6 +117,24 @@ describe('el detalle (su propia rama, que el panel esconde hasta que se abre)', 
     expect(h).toContain('que una nota de crédito anuló');
   });
 
+  it('🔴 la entrega en CERO trae el importe leído de su detalle, editable (15-set)', () => {
+    // Ver `valorDeItems`: el total vino en 0 porque el descuento del anticipo
+    // ya estaba aplicado, pero las líneas conservan cantidad y precio. El
+    // número se muestra prellenado y se puede corregir contra el PDF; ya no
+    // hay que ir a buscarlo.
+    const h = pintarDetalle({
+      id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [],
+      propuestas: [{
+        facturaId: 'f4', documento: 'F003-3478', fecha: '2026-05-06',
+        monto: 16541.29, moneda: 'USD', origen: 'detalle', valorItems: 16541.29, nItems: 2,
+        pideMonto: false, motivo: 'F003-3478 vino en CERO: su detalle suma 16,541.29 en 2 ítems.',
+      }],
+    });
+    expect(h).toContain('F003-3478');
+    expect(h).toContain('16541.29');
+    expect(h).toContain('con el importe de su detalle');
+  });
+
   it('🔴 la entrega en CERO pide el importe en vez de inventarlo', () => {
     const h = pintarDetalle({
       id: 'a1', moneda: 'USD', cerrado: false, aplicaciones: [],

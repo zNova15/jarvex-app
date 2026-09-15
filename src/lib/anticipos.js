@@ -58,6 +58,45 @@ function itemsDe(mov) {
 }
 
 /**
+ * CUÁNTO VALE LA MERCADERÍA DE UNA FACTURA, LEÍDO DE SU PROPIO DETALLE
+ * (15-set-2026).
+ *
+ * EL PEDIDO. Gabriel, mirando el panel: «todas las facturas que subí en 0
+ * mencionan y están marcadas con anticipo y el monto, me encanta que tengan la
+ * fecha, el número de la factura pero hace falta más información, el monto por
+ * ejemplo, para poder vincular correctamente.»
+ *
+ * 🔴 EL DATO NUNCA ESTUVO EN EL PDF SOLAMENTE: ESTÁ EN LA BASE. La factura
+ * viene con TOTAL 0 porque el descuento del anticipo ya se aplicó en el pie,
+ * pero sus LÍNEAS conservan cantidad y precio unitario reales. Medido contra
+ * KOPLAST el 15-set-2026: de las 18 facturas en cero del grupo, 16 tienen el
+ * detalle completo y suman USD 94.037,52 — el panel le pedía a Gabriel abrir
+ * 16 PDFs para escribir a mano un número que la app ya tenía guardado.
+ *
+ * Las 2 restantes (una con el único ítem a precio 0, otra sin detalle) siguen
+ * pidiendo el importe a mano, y eso está bien: ahí el dato de verdad no está.
+ *
+ * Acepta las dos formas en que Captura Mágica guarda el precio de una línea
+ * (`precio_unitario` es la que escribe hoy; `precio` quedó de filas viejas) y
+ * un `total` por línea si alguna vez viniera. Devuelve 0 cuando no hay nada
+ * que sumar — nunca un número inventado.
+ */
+export function valorDeItems(mov) {
+  let total = 0;
+  for (const it of itemsDe(mov)) {
+    const cant = Number(it?.cantidad);
+    const pu = Number(it?.precio_unitario ?? it?.precio);
+    if (Number.isFinite(cant) && Number.isFinite(pu) && cant > 0 && pu > 0) {
+      total += cant * pu;
+      continue;
+    }
+    const tot = Number(it?.total ?? it?.importe);
+    if (Number.isFinite(tot) && tot > 0) total += tot;
+  }
+  return r2(total);
+}
+
+/**
  * ¿Este movimiento ES un anticipo a un proveedor?
  *
  * Se mira el TEXTO de sus ítems con el mismo clasificador que ya usa el
@@ -213,6 +252,9 @@ export function facturasCandidatas(anticipo, movimientos, { demo = false } = {})
       monto: r2(abs(m.amount)),
       moneda: String(m.currency || 'PEN').trim().toUpperCase(),
       enCero: abs(m.amount) <= TOLERANCIA,
+      // El movimiento entero: `proponerAplicaciones` le lee el detalle para
+      // sacar el importe de las facturas que vinieron en cero.
+      mov: m,
     }))
     .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
 }
@@ -257,6 +299,12 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
         propuestas.push({
           facturaId: c.id, documento: c.documento, fecha: c.fecha,
           monto: r2(monto), moneda: anticipo.moneda,
+          // DE DÓNDE SALE EL IMPORTE. Son dos señales distintas y la pantalla
+          // las despacha por separado: la nota de crédito es prueba dura (el
+          // comprobante se anuló por ese monto exacto), el detalle de una
+          // factura en cero es una LECTURA que conviene confirmar contra el PDF.
+          // Mezclarlas en un mismo botón de lote aplicaría a ciegas lo segundo.
+          origen: 'nota_credito',
           motivo: `Una nota de crédito anuló ${c.documento} por completo: la mercadería llegó y el anticipo la cubrió.`,
         });
         restante = r2(restante - monto);
@@ -265,12 +313,27 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
     }
 
     if (c.enCero) {
+      // EL IMPORTE SALE DEL DETALLE DE LA FACTURA, NO DEL PDF (15-set-2026).
+      // Ver `valorDeItems`: el total viene en 0 porque el descuento ya se
+      // aplicó, pero las líneas conservan cantidad y precio. Se propone ese
+      // valor, acotado al saldo que queda — igual que la rama de la nota de
+      // crédito, porque un anticipo no puede consumirse más de lo que tenía.
+      const valor = valorDeItems(c.mov);
+      const propuesto = valor > TOLERANCIA ? Math.min(valor, r2(restante)) : 0;
       propuestas.push({
         facturaId: c.id, documento: c.documento, fecha: c.fecha,
-        monto: 0, moneda: anticipo.moneda,
-        motivo: `${c.documento} vino en CERO: es una entrega ya descontada del anticipo. El importe está en el PDF — escribilo.`,
-        pideMonto: true,
+        monto: propuesto, moneda: anticipo.moneda,
+        // Cuánto sumaba el detalle ANTES de acotarlo al saldo: sin esto, un
+        // recorte por saldo insuficiente se vería como un importe mal leído.
+        valorItems: valor > TOLERANCIA ? valor : null,
+        nItems: itemsDe(c.mov).length,
+        origen: valor > TOLERANCIA ? 'detalle' : 'sin_dato',
+        motivo: propuesto > TOLERANCIA
+          ? `${c.documento} vino en CERO: es una entrega ya descontada del anticipo. Su detalle suma ${valor.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} en ${itemsDe(c.mov).length} ${itemsDe(c.mov).length === 1 ? 'ítem' : 'ítems'}— revisalo contra el PDF y confirmá.`
+          : `${c.documento} vino en CERO y su detalle tampoco trae precios: el importe está solo en el PDF — escribilo.`,
+        pideMonto: propuesto <= TOLERANCIA,
       });
+      if (propuesto > TOLERANCIA) restante = r2(restante - propuesto);
     }
   }
   return propuestas;

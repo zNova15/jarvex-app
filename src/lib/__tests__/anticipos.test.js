@@ -11,7 +11,7 @@ import {
   esMovimientoAnticipo, detectarAnticipos, resolverAplicaciones,
   saldoDeAnticipo, facturasCandidatas, proponerAplicaciones,
   panelAnticipos, aplicacionNueva, pareceCubiertaPorAnticipo,
-  facturasParaAplicarManualmente,
+  facturasParaAplicarManualmente, valorDeItems,
 } from '../anticipos.js';
 
 const GASOMI = 'gasomi-id';
@@ -196,9 +196,9 @@ describe('lo que la app propone', () => {
     expect(anuladas[0].motivo).toContain('nota de crédito');
   });
 
-  it('🔴 la factura en CERO se propone SIN monto y pide el importe', () => {
-    // El total es 0 justamente porque el descuento ya se aplicó: inventar un
-    // número sería peor que no proponer nada.
+  it('🔴 la factura en CERO SIN detalle sigue pidiendo el importe', () => {
+    // El total es 0 porque el descuento ya se aplicó, y acá tampoco hay líneas
+    // con precio: inventar un número sería peor que no proponer nada.
     const p = proponerAplicaciones(ant, TODOS, []);
     const cero = p.find(x => x.documento === 'F003-3478');
     expect(cero.monto).toBe(0);
@@ -385,5 +385,83 @@ describe('pareceCubiertaPorAnticipo (Captura Mágica, 13-set-2026)', () => {
   it('respeta la tolerancia de redondeo (±0.05) tanto en total como en las señales', () => {
     expect(pareceCubiertaPorAnticipo({ total: 0.03, montoAnticipoLeido: 100, sumaItems: 0 })).toBe(true);
     expect(pareceCubiertaPorAnticipo({ total: 0, montoAnticipoLeido: 0.04, sumaItems: 0.04 })).toBe(false);
+  });
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// EL IMPORTE DE UNA FACTURA EN CERO, LEÍDO DE SU PROPIO DETALLE (15-set-2026).
+//
+// Gabriel: «hace falta más información, el monto por ejemplo, para poder
+// vincular correctamente». El dato nunca estuvo solo en el PDF: el total viene
+// en 0 porque el descuento del anticipo ya se aplicó en el pie, pero las LÍNEAS
+// conservan cantidad y precio. Medido en producción ese día: de las 18 facturas
+// en cero del grupo, 16 tienen detalle y suman USD 94.037,52.
+// ═══════════════════════════════════════════════════════════════════
+describe('valorDeItems', () => {
+  it('suma cantidad × precio_unitario de cada línea', () => {
+    // F003-3480 de KOPLAST, textual: 155×32.383 + 422×4.628 + 237×2.773.
+    const m = mov('x1', 'F003-3480', '2026-05-06', 0, conItems([
+      { descripcion: 'TUBO PVC-U 200 mm S-25 UF ALCANTARILLADO', cantidad: 155, precio_unitario: 32.383 },
+      { descripcion: 'TUBO PVC-U 2" C-7.5 SP PRESION', cantidad: 422, precio_unitario: 4.628 },
+      { descripcion: 'TUBO PVC-U 1 1/2" C-7.5 SP PRESION', cantidad: 237, precio_unitario: 2.773 },
+    ]));
+    expect(valorDeItems(m)).toBeCloseTo(7629.58, 2);
+  });
+
+  it('acepta `precio` además de `precio_unitario` (filas viejas)', () => {
+    const m = mov('x2', 'F-1', '2026-05-06', 0, conItems([{ cantidad: 10, precio: 5 }]));
+    expect(valorDeItems(m)).toBe(50);
+  });
+
+  it('sin líneas con precio devuelve 0 — nunca un número inventado', () => {
+    expect(valorDeItems(mov('x3', 'F-2', '2026-05-06', 0))).toBe(0);
+    expect(valorDeItems(mov('x4', 'F-3', '2026-05-06', 0, conItems([
+      { descripcion: 'ALGO', cantidad: 3, precio_unitario: 0 },
+    ])))).toBe(0);
+  });
+});
+
+describe('la factura en CERO llega con su importe propuesto', () => {
+  const F_CERO_CON_DETALLE = mov('f5', 'F003-3481', '2026-05-07', 0, conItems([
+    { descripcion: 'TUBO PVC-U 250 mm', cantidad: 200, precio_unitario: 50.19365 },
+  ]));
+  const CON = [...TODOS, F_CERO_CON_DETALLE];
+  const [ant2] = detectarAnticipos(CON, { companyId: GASOMI });
+
+  it('propone el valor del detalle en vez de pedir el PDF', () => {
+    const p = proponerAplicaciones(ant2, CON, []);
+    const f = p.find(x => x.documento === 'F003-3481');
+    expect(f.monto).toBeCloseTo(10038.73, 2);
+    expect(f.pideMonto).toBe(false);
+    expect(f.origen).toBe('detalle');
+    expect(f.valorItems).toBeCloseTo(10038.73, 2);
+    expect(f.nItems).toBe(1);
+  });
+
+  it('🔴 no se pasa del saldo que queda del anticipo', () => {
+    const chico = { ...ant2, monto: 100 };
+    const p = proponerAplicaciones(chico, CON, []);
+    const total = p.reduce((s, x) => s + x.monto, 0);
+    expect(total).toBeLessThanOrEqual(100 + 0.05);
+  });
+
+  it('🔴 y el recorte por saldo se distingue de un importe mal leído', () => {
+    // `valorItems` guarda lo que sumaba el detalle ANTES de acotarlo: sin eso,
+    // una fila recortada por falta de saldo parecería un error de lectura.
+    const chico = { ...ant2, monto: 5000 };
+    const p = proponerAplicaciones(chico, CON, []);
+    const f = p.find(x => x.documento === 'F003-3481');
+    if (f) {
+      expect(f.monto).toBeLessThanOrEqual(5000);
+      expect(f.valorItems).toBeCloseTo(10038.73, 2);
+    }
+  });
+
+  it('las dos señales quedan separadas por `origen`', () => {
+    const p = proponerAplicaciones(ant2, CON, []);
+    expect(p.filter(x => x.origen === 'nota_credito')).toHaveLength(3);
+    expect(p.filter(x => x.origen === 'detalle')).toHaveLength(1);
+    expect(p.filter(x => x.origen === 'sin_dato')).toHaveLength(1);
   });
 });

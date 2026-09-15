@@ -79,11 +79,42 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
   });
 
   const aplicarLasAnuladas = conGuard(async (ant) => {
-    const listas = (ant.propuestas || []).filter(p => !p.pideMonto && p.monto > 0);
+    // Solo las que anuló una nota de crédito. El filtro era «todo lo que no
+    // pide monto» y desde que las facturas en cero traen su importe leído del
+    // detalle (15-set) eso habría metido las dos señales en el mismo botón.
+    const listas = (ant.propuestas || []).filter(p => p.origen === 'nota_credito' && p.monto > 0);
     if (!listas.length) return;
     await aplicarEnLote(listas.map(p => aplicacionNueva(ant, {
       facturaId: p.facturaId, monto: p.monto, motivo: p.motivo, fuente: 'manual',
     })), { userId });
+    setMsg('');
+    onCambio?.();
+  });
+
+  /**
+   * Las facturas que vinieron en CERO y cuyo importe se pudo leer de su propio
+   * detalle (ver `valorDeItems`). Son 16 en KOPLAST: de a una eran 16 PDFs
+   * abiertos para escribir un número que la app ya tenía.
+   *
+   * 🔴 PIDE CONFIRMACIÓN Y DICE EL TOTAL. El importe es una LECTURA del
+   * detalle, no una prueba dura como la nota de crédito: antes de escribir
+   * plata en 16 filas hay que poder ver cuánta es. Cada fila se puede editar
+   * antes, y quitar después.
+   */
+  const aplicarLasDeDetalle = conGuard(async (ant, listas) => {
+    const filas = (listas || []).filter(p => p.monto > 0);
+    if (!filas.length) return;
+    const total = filas.reduce((acc, p) => acc + Number(p.monto || 0), 0);
+    const ok = typeof confirm !== 'function' || confirm(
+      `Se van a aplicar ${filas.length} facturas contra este anticipo por ${fmtMonto(total, ant.moneda)} en total.\n\n`
+      + 'El importe de cada una sale del DETALLE de la propia factura (vino en cero porque el descuento '
+      + 'del anticipo ya estaba aplicado). Revisalo contra el PDF si alguna te hace ruido: cada línea se '
+      + 'puede quitar después.\n\n¿Seguir?');
+    if (!ok) return;
+    await aplicarEnLote(filas.map(p => aplicacionNueva(ant, {
+      facturaId: p.facturaId, monto: Number(p.monto), motivo: p.motivo, fuente: 'manual',
+    })), { userId });
+    setMontos({});
     setMsg('');
     onCambio?.();
   });
@@ -174,6 +205,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
                 setMontos={setMontos}
                 onAplicar={aplicar}
                 onAplicarLasAnuladas={aplicarLasAnuladas}
+                onAplicarLasDeDetalle={aplicarLasDeDetalle}
                 onQuitar={quitar}
               />
             )}
@@ -190,8 +222,26 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
  * donde un `ap.motivo` sobre un null explotaría en la obra y pasaría el green
  * gate en verde.
  */
-function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onQuitar }) {
-  const anuladas = (a.propuestas || []).filter(p => !p.pideMonto && p.monto > 0);
+function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onAplicarLasDeDetalle, onQuitar }) {
+  // 🔴 LAS DOS SEÑALES NO SE MEZCLAN EN EL MISMO BOTÓN (15-set-2026). Hasta
+  // hoy el filtro era «todo lo que no pide monto», y con las facturas en cero
+  // trayendo su importe leído del detalle habrían entrado ahí: el botón diría
+  // «nota de crédito» y aplicaría otra cosa. Se filtra por `origen`.
+  // `origen` lo pone `proponerAplicaciones`; una propuesta armada por un caller
+  // viejo no lo trae, y ahí vale la regla de antes: con importe y sin pedirlo,
+  // es una anulada. Sin este resguardo un fixture sin el campo nuevo cambiaba
+  // de rama y dejaba de ofrecer el botón.
+  const esAnulada = (p) => p.origen === 'nota_credito' || (!p.origen && !p.pideMonto && p.monto > 0);
+  const anuladas = (a.propuestas || []).filter(p => esAnulada(p) && p.monto > 0);
+  const conDetalle = (a.propuestas || []).filter(p => p.origen === 'detalle' && p.monto > 0);
+  // Lo que se va a aplicar de cada fila: lo escrito a mano si lo hay, si no lo
+  // propuesto. Una sola forma de leerlo, para que el botón de lote y el de la
+  // fila apliquen SIEMPRE el mismo número.
+  const montoDe = (p) => {
+    const escrito = montos[p.facturaId];
+    const n = Number(String(escrito ?? '').replace(',', '.'));
+    return (escrito !== undefined && escrito !== '' && Number.isFinite(n) && n > 0) ? n : p.monto;
+  };
   // `manuales` es nuevo (13-set): un `a` armado a mano (tests, o un caller
   // viejo) puede no traerlo — sin este resguardo, `undefined.length` tumbaba
   // la pantalla entera apenas se abría un anticipo (la clase de bug que este
@@ -223,21 +273,34 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
                 Aplicar las {anuladas.length} que una nota de crédito anuló
               </button>
             )}
+            {conDetalle.length > 0 && (
+              <button className="btn btn-xs btn-amber" onClick={() => onAplicarLasDeDetalle(a, conDetalle.map(p => ({ ...p, monto: montoDe(p) })))}>
+                Aplicar las {conDetalle.length} con el importe de su detalle
+              </button>
+            )}
           </div>
           {a.propuestas.map(p => (
             <div key={p.facturaId} style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '3px 0' }}>
               <span style={{ minWidth: 120 }}>{p.documento}</span>
               <span style={{ color: 'var(--tm)' }}>{fmtFecha(p.fecha)}</span>
-              {p.pideMonto ? (
+              {/* TRES CASOS, TRES TRATOS:
+                  · nota de crédito → monto fijo: el comprobante se anuló por ese
+                    importe exacto y no hay nada que escribir;
+                  · factura en cero CON detalle → campo PRELLENADO con lo que suman
+                    sus líneas, editable: el número ya no hay que buscarlo, pero es
+                    una lectura y quien decide tiene que poder corregirla;
+                  · sin detalle → campo vacío, como antes: ahí el dato de verdad
+                    solo está en el PDF. */}
+              {esAnulada(p) ? (
+                <strong>{fmtMonto(p.monto, p.moneda)}</strong>
+              ) : (
                 <input
                   className="fi"
                   style={{ width: 130, fontSize: 11.5, height: 24 }}
                   placeholder={`monto en ${a.moneda}`}
-                  value={montos[p.facturaId] ?? ''}
+                  value={montos[p.facturaId] ?? (p.monto > 0 ? String(p.monto) : '')}
                   onChange={e => setMontos(m => ({ ...m, [p.facturaId]: e.target.value }))}
                 />
-              ) : (
-                <strong>{fmtMonto(p.monto, p.moneda)}</strong>
               )}
               <span style={{ color: 'var(--tm)', fontSize: 10.5, flex: 1, minWidth: 220 }}>{p.motivo}</span>
               <button className="btn btn-xs btn-green" onClick={() => onAplicar(a, p)}>Aplicar</button>

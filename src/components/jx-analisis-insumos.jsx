@@ -434,7 +434,9 @@ function AnalisisInsumosPage({ showToast }) {
       if (t === 'bandeja') window.__analisisInsumosIntent.vista = 'reconocer';
       return t === 'bandeja' ? 'catalogo' : t;
     }
-    return 'comparador';
+    // Abre en el PASO 1 de la cadena (15-set): la guia numera el orden de
+    // trabajo y el comparador es consulta, no trabajo.
+    return 'correlaciones';
   });
   const [vistaCatalogo, setVistaCatalogo] = uS(() => {
     const v = typeof window !== 'undefined' && window.__analisisInsumosIntent?.vista;
@@ -1008,46 +1010,61 @@ function AnalisisInsumosPage({ showToast }) {
           </strong>
           <span style={{ fontSize: 11, color: 'var(--tm)' }}>Base de datos central con aprendizaje global entre entidades</span>
         </div>
+        {/* 🔴 LA GUIA NUMERA EL ORDEN DE TRABAJO, Y LAS PESTANAS VAN EN ESE
+            MISMO ORDEN (15-set-2026). Hasta hoy la guia decia 1. Clasificacion,
+            2. Correlaciones, y los botones de abajo estaban al reves (Comparador
+            primero, Clasificacion ultima): dos ordenes distintos para lo mismo, en
+            la misma pantalla. Gabriel: ya sabemos que el orden ha cambiado, los
+            usuarios pueden confundirse.
+            El orden es el de la cadena real y esta medido: correlacionar ANTES de
+            clasificar convierte tres preguntas en una (ver el encabezado de la
+            bandeja), y mapear DESPUES de clasificar es lo que hace que cada insumo
+            compita solo contra los de su clasificacion. El comparador va al final
+            porque es consulta: no hay nada que decidir ahi. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 8 }}>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🗂 1. Clasificación</div>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 1. Correlaciones</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
+              Une las formas distintas de escribir el <strong>mismo</strong> insumo. Va primero: cada grupo que
+              unís acá es una pregunta menos al clasificar, no una más.
+            </div>
+          </div>
+          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
+            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🗂 2. Clasificación</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               La única sección donde se clasifican los insumos y servicios de la entidad, y donde se reconocen
               los nombres con que aparecen en las facturas.
             </div>
           </div>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🤝 2. Correlaciones</div>
-            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              Une variantes de nombres del mismo insumo y cruza compras con ventas para cuadrar inventarios y saldos.
-            </div>
-          </div>
-          <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🎯 3. Mapeo al presupuesto</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
               Dice qué insumo del presupuesto de un trabajo es cada insumo ya clasificado de la entidad.
+              Necesita los dos pasos de arriba hechos.
             </div>
           </div>
           <div style={{ padding: '8px 10px', background: 'var(--bg-c)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <div style={{ fontWeight: 700, color: 'var(--ts)', marginBottom: 2 }}>🔍 4. Comparador de precios</div>
             <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              Qué proveedor vendió cada insumo, a qué precio y cómo evolucionó.
+              Qué proveedor vendió cada insumo, a qué precio y cómo evolucionó. Es consulta: no hay nada
+              que decidir acá.
             </div>
           </div>
         </div>
       </div>
 
+      {/* El MISMO orden que la guia de arriba - ver su comentario. */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 Comparador de precios</button>
         <button className={`btn btn-sm ${tab === 'correlaciones' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('correlaciones')}>
-          🤝 Correlaciones{pendientesCorr ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{pendientesCorr}</span> : null}
-        </button>
-        <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
-          🎯 Mapeo al presupuesto
+          🤝 1 · Correlaciones{pendientesCorr ? <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>{pendientesCorr}</span> : null}
         </button>
         <button className={`btn btn-sm ${tab === 'catalogo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('catalogo')}>
-          🗂 Clasificación de insumos y servicios
+          🗂 2 · Clasificación de insumos y servicios
         </button>
+        <button className={`btn btn-sm ${tab === 'mapeo' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('mapeo')}>
+          🎯 3 · Mapeo al presupuesto
+        </button>
+        <button className={`btn btn-sm ${tab === 'comparador' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTab('comparador')}>🔍 4 · Comparador de precios</button>
       </div>
 
       {tab === 'comparador' && (
