@@ -413,11 +413,46 @@ async function clasificarInsumoIUPC(req, res, body) {
     evidencia: body.evidencia,
     evidenciaPropia: body.evidencia_propia,
     propuestaLocal: body.propuesta_local,
+    // Las reglas de los pares difíciles que dispara ESTA descripción, ya
+    // filtradas contra los candidatos (tanda 3). Las calcula el cliente, como
+    // la evidencia: el diccionario y las reglas viajan en el bundle.
+    desempates: body.desempates,
   });
 
   try {
     const { parsed, data } = await pedirJsonALaIA({ sys, usr, maxTokens: 1200, modo: 'clasificar_insumo_iupc', elegido: body.modelo_texto });
     const codigoSugerido = String(parsed.codigo_sugerido || '').trim();
+    const confianza = typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5;
+
+    // ── «NO SÉ» ES UNA RESPUESTA (tanda 3, 15-set-2026) ──────────────
+    // Hasta acá el modelo estaba OBLIGADO a elegir: la única salida era
+    // proponer un código fuera de la lista, que se descarta con un mensaje que
+    // suena a error técnico («propuso un código fuera de la lista»). O sea que
+    // la duda honesta y la alucinación terminaban en el mismo cajón, y en el
+    // medio el modelo aprendía que lo barato es elegir la menos mala.
+    //
+    // Ahora hay dos caminos para decir «no sé»: el explícito (NO_SE) y el
+    // implícito (eligió algo pero con menos de 0,40 de confianza, que su propio
+    // prompt define como «no elijas»). Los dos devuelven `no_se: true` y
+    // `result: null` — no hay nada que aceptar de un click— y la razón viaja
+    // igual, porque decir POR QUÉ no se sabe es la mitad del trabajo de quien
+    // va a decidir a mano.
+    const UMBRAL_NO_SE = 0.40;
+    const dijoNoSe = /^no[_\s-]?se$/i.test(codigoSugerido);
+    if (dijoNoSe || (codigosValidos.has(codigoSugerido) && confianza < UMBRAL_NO_SE)) {
+      return res.status(200).json({
+        result: null,
+        no_se: true,
+        confianza,
+        razonamiento: String(parsed.razonamiento || '').slice(0, 300)
+          || 'La IA no encontró con qué decidir. Hay que clasificarla a mano.',
+        // Lo que igual llegó a mirar, para que la persona no arranque de cero.
+        casi: !dijoNoSe && codigosValidos.has(codigoSugerido) ? codigoSugerido : null,
+        clasificacion_nueva: String(parsed.clasificacion_nueva || '').trim().slice(0, 80) || null,
+        _model: data.model, _usage: data.usage,
+      });
+    }
+
     if (!codigosValidos.has(codigoSugerido)) {
       return res.status(200).json({
         result: null,
@@ -438,7 +473,7 @@ async function clasificarInsumoIUPC(req, res, body) {
     const nueva = String(parsed.clasificacion_nueva || '').trim().slice(0, 80);
     return res.status(200).json({
       result: { codigo_sugerido: codigoSugerido, alternativas, clasificacion_nueva: nueva || null },
-      confianza: typeof parsed.confianza === 'number' ? Math.max(0, Math.min(1, parsed.confianza)) : 0.5,
+      confianza,
       razonamiento: String(parsed.razonamiento || '').slice(0, 300),
       _model: data.model, _usage: data.usage,
     });

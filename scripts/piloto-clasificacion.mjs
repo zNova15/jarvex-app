@@ -58,6 +58,7 @@ const { promptClasificacion } = await mod('lib/prompt-clasificacion.js');
 const { construirCuerpo, normalizarRespuesta, openrouterChat } = await mod('lib/openrouter.js');
 const { candidatosParaIA, evidenciaDiccionario, clasificarConIUPC, etiquetaCategoria } =
   await mod('src/lib/indices-unificados-iupc.js');
+const { reglasDesempateParaIA } = await mod('src/lib/desempates-iupc.js');
 
 // ── Argumentos ────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -108,6 +109,8 @@ async function preguntar(modelo, caso) {
     evidencia: ev.filter(g => g.terminos.length).map(g => ({ codigo: g.codigo, terminos: g.terminos })),
     evidenciaPropia: [],
     propuestaLocal,
+    // Las reglas de los pares difíciles (tanda 3), igual que las manda la app.
+    desempates: reglasDesempateParaIA(caso.descripcion, candidatos.map(c => c.codigo)),
   });
 
   // 🔴 Sin respaldos: si el titular falla, falla y se anota. Una cadena de
@@ -128,9 +131,15 @@ async function preguntar(modelo, caso) {
   try { parsed = jm ? JSON.parse(jm[0]) : null; } catch { parsed = null; }
 
   const propuesto = String(parsed?.codigo_sugerido || '').trim();
+  // NO_SE no es una respuesta fuera de lista (tanda 3): es la opción que el
+  // prompt le da al modelo para no elegir por descarte. Se cuenta aparte — un
+  // modelo que dice «no sé» en un caso genuinamente ambiguo NO está fallando, y
+  // mezclarlo con las alucinaciones premiaría al que siempre adivina.
+  const noSe = /^no[_\s-]?se$/i.test(propuesto);
   return {
     propuesto,
-    valido: codigosValidos.has(propuesto),
+    noSe,
+    valido: noSe || codigosValidos.has(propuesto),
     candidatosOfrecidos: candidatos.length,
     confianza: typeof parsed?.confianza === 'number' ? parsed.confianza : null,
     razonamiento: String(parsed?.razonamiento || '').slice(0, 160),
@@ -168,7 +177,7 @@ for (const modelo of modelos) {
       continue;
     }
     const acerto = ok(caso, r.propuesto);
-    const marca = !r.valido ? '⚠' : acerto ? '✓' : '✗';
+    const marca = !r.valido ? '⚠' : r.noSe ? '?' : acerto ? '✓' : '✗';
     console.log(`  ${marca} ${String(r.propuesto || '—').padEnd(16)} (esperado ${caso.esperado.padEnd(16)}) `
       + `${String(r.ms + 'ms').padStart(7)}  ${caso.descripcion.slice(0, 44)}`);
     if (!acerto && r.razonamiento) console.log(`      ↳ ${r.razonamiento}`);
@@ -179,6 +188,7 @@ for (const modelo of modelos) {
 
   const validas = filas.filter(f => !f.error);
   const aciertos = validas.filter(f => f.acerto).length;
+  const noSabe = validas.filter(f => f.noSe).length;
   const fuera = validas.filter(f => !f.valido).length;
   const sinJson = validas.filter(f => f.sinJson).length;
   const tIn = validas.reduce((a, f) => a + (f.tokensIn || 0), 0);
@@ -194,22 +204,22 @@ for (const modelo of modelos) {
   const gemelasOk = gem.length === 2 ? gem[0] === gem[1] : null;
 
   tablero.push({
-    modelo: modelo.id, aciertos, total: validas.length, fuera, sinJson, errores,
+    modelo: modelo.id, aciertos, total: validas.length, fuera, sinJson, errores, noSabe,
     tIn, tOut, costoReal, costoEstimado, msProm, gemelasOk,
   });
 }
 
 // ── El tablero ────────────────────────────────────────────────────
 console.log('\n\n═══ RESULTADO ═══\n');
-console.log('modelo                          aciertos   fuera  sin    gemelas  seg/    USD este   USD 875');
-console.log('                                           lista  JSON   iguales  caso    set       descrip.');
+console.log('modelo                          aciertos   fuera  sin   no    gemelas  seg/    USD este   USD 875');
+console.log('                                           lista  JSON  se    iguales  caso    set       descrip.');
 for (const t of tablero) {
   const pct = t.total ? Math.round((t.aciertos * 100) / t.total) : 0;
   const costo = t.costoReal || t.costoEstimado || 0;
   const porCaso = t.total ? costo / t.total : 0;
   console.log(
     `${t.modelo.padEnd(30)} ${String(t.aciertos + '/' + t.total).padStart(7)} ${String(pct + '%').padStart(5)} `
-    + `${String(t.fuera).padStart(5)} ${String(t.sinJson).padStart(5)} `
+    + `${String(t.fuera).padStart(5)} ${String(t.sinJson).padStart(5)} ${String(t.noSabe).padStart(5)} `
     + `${(t.gemelasOk === null ? '—' : t.gemelasOk ? 'sí' : 'NO').padStart(8)} `
     + `${String((t.msProm / 1000).toFixed(1)).padStart(6)} `
     + `${('$' + costo.toFixed(4)).padStart(9)} ${('$' + (porCaso * 875).toFixed(2)).padStart(9)}`
@@ -217,4 +227,6 @@ for (const t of tablero) {
   if (t.errores) console.log(`${''.padEnd(30)} ${t.errores} llamadas fallaron y no cuentan.`);
 }
 console.log('\nUSD 875 descripciones = lo que costaría un barrido completo de una empresa.');
-console.log('«fuera lista» son respuestas que el server descarta: preguntas pagadas que no sirvieron.\n');
+console.log('«fuera lista» son respuestas que el server descarta: preguntas pagadas que no sirvieron.');
+console.log('«no se» es la salida honesta (tanda 3): no cuenta como acierto NI como error - un modelo');
+console.log('que la usa en un caso ambiguo hace lo correcto; uno que la usa siempre no sirve para nada.\n');

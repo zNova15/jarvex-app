@@ -49,6 +49,7 @@ import {
 import { enseñarDiccionario, olvidarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { avisoDeContradiccion } from "../lib/hermanas-clasificacion.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
@@ -78,18 +79,31 @@ const COLOR_ESTADO = {
  */
 function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const [sugerencia, setSugerencia] = uS(null);
+  const [noSabe, setNoSabe] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
 
   const preguntar = async (e) => {
     e.stopPropagation();
     if (cargando) return;
-    setCargando(true); setError(null);
+    setCargando(true); setError(null); setNoSabe(null); setSugerencia(null);
     try {
       const r = await clasificarInsumoConIA({
         descripcion, unidad, candidatos: OPCIONES_CLASIFICACION, terminosCustom, propuestaLocal,
         frecuentes, modeloTexto,
       });
+      // «No sé» NO es un error (tanda 3). Antes la duda honesta salía en rojo
+      // al lado del botón, con el mismo formato que «no se pudo consultar la
+      // IA»: una respuesta pensada disfrazada de falla técnica. Ahora se
+      // muestra como lo que es —la IA la miró y hace falta una persona— y con
+      // lo que sí llegó a razonar, que es de lo que se agarra quien decide.
+      if (r?.no_se) {
+        setNoSabe({
+          razonamiento: r.razonamiento || 'No encontró con qué decidir.',
+          nuevaClasificacion: r.result?.clasificacion_nueva || r.clasificacion_nueva || null,
+        });
+        return;
+      }
       if (!r?.result?.codigo_sugerido) {
         setError(r?.razonamiento || 'No encontró una clasificación clara para esto.');
         return;
@@ -113,6 +127,13 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
         {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
       </button>
       {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
+      {noSabe && (
+        <div style={{ marginTop: 4, padding: '5px 8px', background: 'rgba(148,163,184,.12)', border: '1px solid rgba(148,163,184,.4)', borderRadius: 5, fontSize: 10.5, maxWidth: 360 }}>
+          🤖 <strong>La IA no sabe</strong> y lo dice — no hay nada que aceptar acá, elegí la clasificación a mano.
+          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{noSabe.razonamiento}</div>
+          {noSabe.nuevaClasificacion && <ClasificacionNueva nombre={noSabe.nuevaClasificacion} />}
+        </div>
+      )}
       {sugerencia && (
         <div style={{ marginTop: 4, padding: '5px 8px', background: 'rgba(58,163,255,.08)', border: '1px solid rgba(58,163,255,.3)', borderRadius: 5, fontSize: 10.5, maxWidth: 360 }}>
           🤖 Sugiere <strong>{sugerencia.nombre}</strong>
@@ -509,6 +530,21 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
         terminosCustom, propuestaLocal: propuestaLocalDe(f), frecuentes, modeloTexto,
       });
+      // 🔴 EL «NO SÉ» SE GUARDA, NO SE TIRA (tanda 3). Un recorrido de 875
+      // preguntas que descarta las dudas deja a la persona sin saber cuáles
+      // MIRÓ la IA y cuáles se saltó por un error de red — y el próximo
+      // recorrido las vuelve a pagar igual. Guardada, la fila queda en el
+      // filtro «con recomendación» diciendo que hace falta una persona, que es
+      // la información que el recorrido fue a buscar. En modo 'aplicar' no se
+      // aplica nada: no hay código que aplicar.
+      if (r?.no_se) {
+        if (modo === 'aplicar') return 'saltada';
+        guardarRecomendacion('clasificacion', ambitoIA, f.norm, {
+          noSe: true, confianza: r.confianza || 0, razonamiento: r.razonamiento || '',
+          nuevaClasificacion: r.result?.clasificacion_nueva || r.clasificacion_nueva || null,
+        });
+        return 'recomendada';
+      }
       const cod = r?.result?.codigo_sugerido;
       if (!cod) return 'saltada';
       const conf = r.confianza || 0;
@@ -796,6 +832,36 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
 }
 
 /**
+ * «Sus hermanas ya se decidieron, y distinto» (tanda 3).
+ *
+ * El caso que lo pidió: «TUBO E. CUAD. 3/4IN * 1.2» y «… * 1.5» son el mismo
+ * tubo en dos espesores y quedaron en dos clasificaciones. Nadie se entera —
+ * son dos filas de 900 que no se ven juntas nunca. Acá no se corrige solo:
+ * se avisa, con el botón para alinearla de un click si corresponde.
+ */
+function AvisoHermanas({ aviso, onUsar }) {
+  if (!aviso) return null;
+  return (
+    <div style={{
+      marginTop: 5, padding: '4px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+      background: 'rgba(242,183,5,.12)', border: '1px solid rgba(242,183,5,.4)',
+    }} onClick={e => e.stopPropagation()}>
+      ⚠ {aviso.veces === 1 ? 'Una descripción hermana' : `${aviso.veces} descripciones hermanas`}
+      {' '}(misma cosa, otra medida) {aviso.veces === 1 ? 'quedó' : 'quedaron'} en
+      {' '}<strong>{etiquetaCategoria(aviso.codigo)}</strong>
+      {!aviso.unanime && <span style={{ color: 'var(--tm)' }}> — y esa familia ya venía dividida</span>}.
+      <div style={{ color: 'var(--tm)' }}>Por ejemplo: «{aviso.ejemplo}»</div>
+      {onUsar && (
+        <button type="button" className="btn btn-xs btn-amber" style={{ marginTop: 4 }}
+          onClick={(e) => { e.stopPropagation(); onUsar(aviso.codigo); }}>
+          Usar el mismo que las hermanas
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
  * Una fila de la bandeja. Va en su propio componente para que el test de
  * montaje pueda renderizar la rama «ya decidida» sin poder hacer clic en el
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
@@ -819,6 +885,17 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
   uE(() => {
     setCategoriaSel(sinPropuesta ? '' : (targetCat?.familia || f?.recomendacionIUPC?.codigo || 'otros'));
   }, [sinPropuesta, targetCat?.familia, f?.recomendacionIUPC?.codigo]);
+
+  // El aviso se calcula contra lo que está ELEGIDO en este momento, no contra
+  // la propuesta: así también salta cuando alguien elige a mano un código que
+  // contradice a las hermanas, que es cuando más sirve. En las ya decididas,
+  // contra el código con el que quedaron.
+  const avisoHermanas = uM(
+    () => avisoDeContradiccion(
+      f?.estado === 'decididas' ? f?.decision?.familia : categoriaSel,
+      f?.hermanas),
+    [f?.estado, f?.decision?.familia, categoriaSel, f?.hermanas],
+  );
 
   const rec = f?.recomendacionIUPC;
   const score = cand?.score ?? rec?.score ?? 0.08;
@@ -876,6 +953,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
               {/* «Quiero saber qué insumo he aceptado como recomendación yo»
                   (Gabriel, 14-sep): el sello queda en la fila ya decidida. */}
               {esDecisionDeIA(f.decision) && <SelloIA titulo={f.decision?.nota} />}
+              <AvisoHermanas aviso={avisoHermanas} />
             </div>
           ) : (
             <div style={{ fontSize: 11.5, marginTop: 4 }}>
@@ -913,6 +991,28 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                   onClick={e => e.stopPropagation()}
                 />
               </span>
+
+              <AvisoHermanas aviso={avisoHermanas} onUsar={setCategoriaSel} />
+
+              {/* El recorrido con IA la miró y dijo que no sabe. No hay botón
+                  de aceptar porque no hay nada que aceptar: la fila necesita
+                  una persona, y eso es exactamente lo que el recorrido fue a
+                  averiguar. Ver el comentario de `construirBarrido`. */}
+              {recIA?.noSe && (
+                <div style={{
+                  marginTop: 5, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+                  background: 'rgba(148,163,184,.12)', border: '1px solid rgba(148,163,184,.4)',
+                }} onClick={e => e.stopPropagation()}>
+                  <span className="badge b-gray" style={{ fontSize: 9 }}>🤖 La IA no sabe</span>
+                  <span style={{ marginLeft: 6 }}>La miró y no encontró con qué decidir — clasificala a mano.</span>
+                  {recIA.razonamiento && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{recIA.razonamiento}</div>}
+                  {recIA.nuevaClasificacion && <ClasificacionNueva nombre={recIA.nuevaClasificacion} />}
+                  <div style={{ marginTop: 4 }}>
+                    <button type="button" className="btn btn-xs btn-ghost"
+                      onClick={(e) => { e.stopPropagation(); onDescartarIA?.(); }}>Descartar</button>
+                  </div>
+                </div>
+              )}
 
               {/* Lo que dejó el recorrido con IA. Se muestra APARTE del
                   desplegable a propósito: si se metiera solo en el campo,

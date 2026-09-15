@@ -58,6 +58,7 @@ import {
 import {
   clasificarConIUPC, bandaConfianza, etiquetaCategoria, tipoDeCategoria,
 } from './indices-unificados-iupc.js';
+import { indiceDeHermanas, hermanasDe } from './hermanas-clasificacion.js';
 
 // ── 1. EL CATÁLOGO CONTRA EL QUE SE PROPONE ────────────────────────
 
@@ -271,11 +272,23 @@ export const BANDA_SIN_PROPUESTA = {
  * recomendación oficial IUPC / complementaria y su banda de probabilidad.
  */
 export function filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom = null }) {
+  // ── LAS HERMANAS YA DECIDIDAS (tanda 3) ──────────────────────────
+  // Se arma UNA vez para toda la bandeja y cada fila la consulta: son ~900
+  // descripciones y construir el índice por fila sería el mismo trabajo 900
+  // veces. Las decisiones van PRIMERO y el diccionario después, porque la
+  // misma descripción está en los dos lados (decidirla le enseña el término) y
+  // contar dos veces la misma inflaría el «ya se decidieron 6 así».
+  const indiceHermanas = indiceDeHermanas([
+    ...[...(decisiones?.values?.() || [])].map(v => ({ texto: v?.muestra, codigo: v?.familia })),
+    ...(terminosCustom || []).filter(t => t && !t.deleted_at)
+      .map(t => ({ texto: t?.termino, codigo: t?.clasificacion_codigo })),
+  ]);
   return (descripciones || []).map(d => {
     const ya = decisiones?.get(d.norm) || null;
+    const hermanas = hermanasDe(d.muestra, indiceHermanas);
     if (ya) {
       const cat = ya.catalogo_insumo_id ? porId?.get(ya.catalogo_insumo_id) : null;
-      return { ...d, estado: 'decididas', decision: ya, cat, sug: null, banda: 'decididas' };
+      return { ...d, estado: 'decididas', decision: ya, cat, sug: null, banda: 'decididas', hermanas };
     }
     const sug = prep
       ? sugerirMapeo({ descripcion: d.muestra, unidad: [...d.unidades][0] || '' }, prep, { servicios: true })
@@ -306,6 +319,7 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones, termino
         recomendacionIUPC: recIUPC,
         candidatoIUPC: null,
         sinPropuesta: true,
+        hermanas,
       };
     }
 
@@ -337,6 +351,11 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones, termino
       recomendacionIUPC: recIUPC,
       candidatoIUPC,
       sinPropuesta: false,
+      // Las descripciones gemelas que YA se decidieron, y con qué código. La
+      // pantalla compara contra lo que esté elegido en ese momento —no contra
+      // la propuesta— así que el aviso también aparece si alguien elige a mano
+      // un código que contradice a las hermanas. Ver `hermanas-clasificacion.js`.
+      hermanas,
     };
   });
 }

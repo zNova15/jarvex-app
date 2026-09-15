@@ -21,6 +21,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { apiFetch, apiParse } from './api-client.js';
 import { evidenciaDiccionario, candidatosParaIA } from './indices-unificados-iupc.js';
+import { reglasDesempateParaIA } from './desempates-iupc.js';
 
 const ENDPOINT = '/api/sugerir-cuenta-pcge';
 
@@ -114,6 +115,12 @@ async function postIA(payload) {
  * el desplegable no tiene, y la validación anti-alucinación del server tiene
  * contra qué validar.
  * → { result: {codigo_sugerido, alternativas} | null, confianza, razonamiento, _cached? }
+ *
+ * `no_se: true` en la respuesta es «la IA la miró y no sabe» (tanda 3), que NO
+ * es lo mismo que `result: null` a secas —eso es «contestó cualquier cosa»—.
+ * Ninguna de las dos se cachea: ver `cacheGuardar`. Una duda honesta puede
+ * cambiar en cuanto alguien le enseñe un término al diccionario, así que
+ * guardarla 30 días sería congelar el «no sé» justo cuando deja de ser cierto.
  */
 export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const desc = String(descripcion || '').trim();
@@ -155,6 +162,12 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
     descripcion: desc,
     unidad: unidad || '',
     candidatos: lista.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
+    // LOS PARES DIFÍCILES QUE DISPARA ESTA DESCRIPCIÓN (tanda 3). Van filtrados
+    // contra la lista que de verdad se ofrece: una regla que empuje hacia un
+    // código que no está entre los candidatos es texto pagado que no puede
+    // terminar en ninguna respuesta válida. El motor local ya aplicó estas
+    // mismas reglas antes de preguntar — es una sola fuente, `desempates-iupc.js`.
+    desempates: reglasDesempateParaIA(desc, lista.map(c => String(c.codigo))),
     // DOS BLOQUES, no uno (tanda 1): `evidencia` es la NORMA (Anexo 2 + árbol
     // de servicios) y `evidencia_propia` es el diccionario de la empresa,
     // aprendido de decisiones. Iban mezclados y el prompt los presentaba a

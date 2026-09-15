@@ -223,6 +223,62 @@ describe('la fila ya decidida (su propia rama, que el filtro por defecto esconde
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE AGREGÓ LA TANDA 3 A LA FILA: el aviso de hermanas y el «no sé».
+// Los dos son carteles que NO tienen botón de aceptar, y esa es la mitad del
+// punto: si lo tuvieran, el camino fácil volvería a ser guardar una respuesta
+// que nadie dio.
+// ═══════════════════════════════════════════════════════════════════
+describe('la fila pendiente avisa lo que no se puede aceptar de un click', () => {
+  const pendiente = {
+    norm: 'n2', muestra: 'TUBO E. CUAD. 3/4IN * 1.2', veces: 3, importe: 1200,
+    unidades: new Set(['und']), provs: new Set(['FERRETERIA SA']), entidades: new Set(), monedas: new Set(['PEN']),
+    estado: 'falta', sug: null, decision: null, cat: null, banda: 'media',
+    recomendacionIUPC: { codigo: '65', nombre: 'Tubería de acero negro y/o galvanizado', score: 0.6, motivos: [] },
+    candidatoIUPC: {
+      cat: { codigo: '65', insumo_codigo: '65', nombre: '[65] Tubería de acero', familia: '65', tipo: 'material', unidad: 'und', esIUPC: true },
+      score: 0.6, motivos: [], banda: { slug: 'media' },
+    },
+    sinPropuesta: false, hermanas: null,
+  };
+  const pintarFila = (f, extra = {}) => renderToString(React.createElement(AltaModulo.FilaBandeja, {
+    f, activa: false, catFila: null, marcada: false,
+    onFocus: () => {}, onMarcar: () => {}, onAceptar: () => {},
+    onFalta: () => {}, onNoInsumo: () => {}, onDeshacer: () => {}, ...extra,
+  }));
+
+  it('🔴 avisa cuando las hermanas ya decididas dicen otra cosa', () => {
+    const h = pintarFila({
+      ...pendiente,
+      hermanas: { raiz: 'cuad tubo', total: 3, codigos: [{ codigo: '03', veces: 3, ejemplo: 'TUBO E. CUAD. 3/4IN * 1.5' }] },
+    });
+    expect(h).toContain('3 descripciones hermanas');
+    expect(h).toContain('Acero de construcción corrugado');
+    expect(h).toContain('TUBO E. CUAD. 3/4IN * 1.5');
+    expect(h).toContain('Usar el mismo que las hermanas');
+    expect(h).not.toContain('undefined');
+  });
+
+  it('no avisa cuando las hermanas coinciden con lo que está elegido', () => {
+    const h = pintarFila({
+      ...pendiente,
+      hermanas: { raiz: 'cuad tubo', total: 2, codigos: [{ codigo: '65', veces: 2, ejemplo: 'TUBO E. CUAD. 2IN * 1.5' }] },
+    });
+    expect(h).not.toContain('descripciones hermanas');
+  });
+
+  it('🔴 el «no sé» de la IA se ve, y NO trae botón de aceptar', () => {
+    const h = pintarFila(pendiente, {
+      recIA: { noSe: true, confianza: 0.2, razonamiento: 'Dice solo una medida y una abreviatura.' },
+      onAceptarIA: () => {}, onDescartarIA: () => {},
+    });
+    expect(h).toContain('La IA no sabe');
+    expect(h).toContain('Dice solo una medida y una abreviatura.');
+    expect(h).not.toContain('Aceptar esta');
+    expect(h).toContain('Descartar');
+  });
+});
+
 describe('el alta al catálogo', () => {
   it('el cuerpo del modal se renderiza (sin window.Modal cae al card, pero se dibuja)', () => {
     const Alta = AltaModulo.default;   // la pestaña; el modal se prueba por dentro

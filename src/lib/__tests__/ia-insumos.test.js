@@ -74,6 +74,47 @@ describe('clasificarInsumoConIA', () => {
     expect(body.propuesta_local).toMatchObject({ codigo: '02', motivo: 'familia ferretería' });
   });
 
+  // 🔴 TANDA 3. Las reglas de los pares difíciles las calcula el CLIENTE (el
+  // diccionario y las reglas viajan en el bundle) y viajan con la pregunta:
+  // el motor local y la IA contestan con la misma regla delante o se
+  // contradicen entre ellos.
+  it('manda las REGLAS DE DESEMPATE que dispara esta descripción', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk({
+      result: { codigo_sugerido: '83', alternativas: [] }, confianza: 0.9, razonamiento: 'ok',
+    }));
+    await clasificarInsumoConIA({
+      descripcion: 'GUANTE DE ACERO ANTICORTE DE MALLA METALICA',
+      candidatos: CANDIDATOS,
+    });
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.desempates).toHaveLength(1);
+    expect(body.desempates[0].id).toBe('epp-vs-material');
+  });
+
+  it('una descripción sin par difícil no agrega reglas a la pregunta', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk({
+      result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.8, razonamiento: 'ok',
+    }));
+    await clasificarInsumoConIA({ descripcion: 'CEMENTO PORTLAND TIPO I 42.5 KG', candidatos: CANDIDATOS });
+    const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+    expect(body.desempates).toEqual([]);
+  });
+
+  // 🔴 «No sé» es una respuesta, no una falla (tanda 3). Y NO se cachea: una
+  // duda honesta puede cambiar en cuanto alguien le enseñe un término al
+  // diccionario, así que guardarla 30 días congelaría el «no sé» justo cuando
+  // deja de ser cierto.
+  it('un «no sé» de la IA vuelve tal cual y NO se cachea', async () => {
+    const noSe = { result: null, no_se: true, confianza: 0.2, razonamiento: 'Dice solo una marca y un número.' };
+    globalThis.fetch = vi.fn().mockResolvedValue(respOk(noSe));
+    const r1 = await clasificarInsumoConIA({ descripcion: 'ART 4477 BLANCO', candidatos: CANDIDATOS });
+    expect(r1.no_se).toBe(true);
+    expect(r1.razonamiento).toMatch(/marca/);
+    const r2 = await clasificarInsumoConIA({ descripcion: 'ART 4477 BLANCO', candidatos: CANDIDATOS });
+    expect(r2._cached).toBeUndefined();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('sin propuesta local manda null, no un objeto a medio llenar', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(respOk({
       result: { codigo_sugerido: '37', alternativas: [] }, confianza: 0.8, razonamiento: 'ok',

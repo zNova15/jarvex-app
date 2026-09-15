@@ -511,3 +511,48 @@ describe('el diccionario propio llega a la propuesta de la bandeja', () => {
     expect(filas[0].recomendacionIUPC.codigo).toBe('PI-GEO');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LAS HERMANAS YA DECIDIDAS LLEGAN A LA FILA (tanda 3).
+//
+// La lib arma el índice UNA vez y cada fila se lleva las suyas; la pantalla
+// compara contra lo que esté elegido en ese momento. Acá se comprueba lo que
+// la lib tiene que entregar — el cartel es de la pantalla.
+// ═══════════════════════════════════════════════════════════════════
+describe('las hermanas ya decididas viajan con la fila', () => {
+  const compras = [
+    compra('TUBO E. CUAD. 3/4IN * 1.2', 4000),
+    compra('TUBO E. CUAD. 3/4IN * 1.5', 3000),
+  ];
+
+  it('sin nada decidido, ninguna fila tiene hermanas', () => {
+    const { filas } = armar(compras);
+    expect(filas.every(f => f.hermanas === null)).toBe(true);
+  });
+
+  it('🔴 la gemela decidida aparece como hermana de la que falta, con su código', () => {
+    const decidida = {
+      norm: normMapeo('TUBO E. CUAD. 3/4IN * 1.5'),
+      muestra: 'TUBO E. CUAD. 3/4IN * 1.5',
+      decision: 'catalogo', catalogo_insumo_id: 'c1', familia: '03', deleted_at: null,
+    };
+    const { filas } = armar(compras, { decisiones: new Map([[decidida.norm, decidida]]) });
+    const pendiente = filas.find(f => f.muestra === 'TUBO E. CUAD. 3/4IN * 1.2');
+    expect(pendiente.hermanas.codigos).toEqual([
+      { codigo: '03', veces: 1, ejemplo: 'TUBO E. CUAD. 3/4IN * 1.5' },
+    ]);
+  });
+
+  it('el diccionario propio también cuenta como hermana decidida', () => {
+    const filasCat = catalogoParaProponer(CATALOGO, DISGREGACION, { companyId: null });
+    const { prep, porId } = indiceDePropuestas(filasCat);
+    const filas = filasDeBandeja(agruparDescripciones([compras[0]]), {
+      prep, porId, decisiones: new Map(),
+      terminosCustom: [{
+        id: 't9', termino: 'TUBO E. CUAD. 2IN * 2.0', clasificacion_codigo: '65',
+        origen: 'decision', deleted_at: null,
+      }],
+    });
+    expect(filas[0].hermanas.codigos[0]).toMatchObject({ codigo: '65', veces: 1 });
+  });
+});

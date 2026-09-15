@@ -14,8 +14,10 @@
 import {
   SERVICIOS_CODIGOS, SERVICIO_POR_CODIGO, esCodigoServicio, DICCIONARIO_SERVICIOS,
 } from './clasificacion-servicios.js';
+import { desempateDe } from './desempates-iupc.js';
 
 export { SERVICIOS_CODIGOS, SERVICIO_POR_CODIGO, esCodigoServicio, DICCIONARIO_SERVICIOS };
+export { DESEMPATES, desempateDe, reglasDesempateParaIA } from './desempates-iupc.js';
 
 export const IUPC_CODIGOS = [
   { codigo: '01', nombre: 'Aceite y lubricante', tipo: 'material' },
@@ -1574,7 +1576,7 @@ export function detectarServicio(texto) {
 }
 
 /** Arma la respuesta del clasificador con la banda SIEMPRE coherente. */
-function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelacionado = null }) {
+function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelacionado = null, capa = null }) {
   const info = bandaConfianza(score);
   return {
     categoria: codigo,
@@ -1586,6 +1588,11 @@ function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelac
     motivos,
     inclinacion,
     iupcRelacionado,
+    // DE QUÉ CAPA SALIÓ ESTA RESPUESTA (tanda 3). Las dos intocables —lo que
+    // alguien escribió a mano y la coincidencia exacta con el Anexo 2— se
+    // marcan acá para que las reglas de desempate no las pisen. Ver el
+    // encabezado de `desempates-iupc.js`.
+    capa,
   };
 }
 
@@ -1756,7 +1763,7 @@ export function validarClasificacion({ codigo, nombre }, existentes = []) {
 }
 
 /** La respuesta para un código del árbol de servicios. */
-function recServicio({ cod, score, motivos, inclinacion = null }) {
+function recServicio({ cod, score, motivos, inclinacion = null, capa = null }) {
   const info = SERVICIO_POR_CODIGO.get(cod);
   return recIUPC({
     codigo: cod,
@@ -1765,6 +1772,7 @@ function recServicio({ cod, score, motivos, inclinacion = null }) {
     motivos,
     inclinacion,
     iupcRelacionado: info?.iupcRelacionado || null,
+    capa,
   });
 }
 
@@ -1829,7 +1837,7 @@ function indexarCustom(terminos) {
  * exacta del Anexo 2 de la norma — o sea, la heurística de la casa le ganaba
  * al texto de la R.J. 016-2026-INEI. Al revés es lo correcto.
  */
-export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
+function clasificarBaseIUPC(texto, { terminosCustom = null } = {}) {
   const norm = normIUPC(texto);
   if (!norm) {
     return recIUPC({
@@ -1854,6 +1862,7 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
       nombre: etiquetaCategoria(exactoManual.cod),
       score: 0.99,
       motivos: [`«${exactoManual.nombre}» está en el diccionario que agregaste a mano`],
+      capa: 'manual',
     });
   }
 
@@ -1867,6 +1876,7 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
       nombre: info?.nombre || exacto.nombre,
       score: 0.98,
       motivos: [`Coincidencia exacta con «${exacto.nombre}» en Diccionario Oficial INEI (IUPC ${real})`],
+      capa: 'oficial-exacto',
     });
   }
 
@@ -1877,6 +1887,7 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
       cod: exactoServ.cod,
       score: 0.98,
       motivos: [`Coincidencia exacta con «${exactoServ.nombre}» en el diccionario de servicios`],
+      capa: 'oficial-exacto',
     });
   }
 
@@ -1918,6 +1929,7 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
         nombre: etiquetaCategoria(mc.item.cod),
         score: Math.min(0.97, Math.round(mc.score * 100) / 100),
         motivos: [`Similar a «${mc.item.nombre}», del diccionario que agregaste a mano`],
+        capa: 'manual',
       });
     }
   }
@@ -2078,6 +2090,43 @@ export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
     nombre: 'Sin clasificar — revisar a mano',
     score: 0.05,
     motivos: ['Sin coincidencia en el Diccionario Oficial ni en los conceptos IUPC'],
+  });
+}
+
+/**
+ * EL CLASIFICADOR, con las reglas de desempate encima (tanda 3, 15-set-2026).
+ *
+ * `clasificarBaseIUPC` hace el trabajo de siempre —manual, Anexo 2, servicios,
+ * aprendido, parecidos— y acá se le da una última pasada por los SEIS PARES
+ * DIFÍCILES: los pares donde el parecido de palabras se equivoca siempre en la
+ * misma dirección porque la descripción nombra el material y no la cosa.
+ *
+ * Medido el 15-set-2026 contra los 32 casos reales de
+ * `scripts/piloto/set-clasificacion.json`: el motor local pasa de **19 a 30**
+ * respuestas aceptables. Las reglas y su evidencia están en
+ * `desempates-iupc.js`; no se tocan desde acá.
+ *
+ * Lo que NO pisan: un término escrito a mano en el panel y una coincidencia
+ * exacta del Anexo 2 (`capa: 'manual' | 'oficial-exacto'`). Esa es la misma
+ * jerarquía de tres capas de la tanda 1 — la ley primero, la corrección
+ * deliberada por encima de todo.
+ */
+export function clasificarConIUPC(texto, { terminosCustom = null } = {}) {
+  const rec = clasificarBaseIUPC(texto, { terminosCustom });
+  const d = desempateDe(texto, { codigoActual: rec.codigo, capa: rec.capa });
+  if (!d) return rec;
+  // El score no es el de la regla sino el que tenía la respuesta que se
+  // corrige, con un piso: una regla de desempate es evidencia dura (la
+  // descripción dice «HDPE»), así que no puede quedar en banda «rara» y pasar
+  // desapercibida. Tope en 0,90: sigue sin ser una coincidencia exacta.
+  const score = Math.min(0.9, Math.max(0.6, rec.score || 0));
+  const info = IUPC_POR_CODIGO.get(REAGRUPACIONES_IUPC[d.codigo] || d.codigo);
+  return recIUPC({
+    codigo: d.codigo,
+    nombre: info?.nombre || etiquetaCategoria(d.codigo).replace(/^\[[^\]]+\]\s*/, ''),
+    score,
+    motivos: [d.motivo, `Regla de desempate: ${d.par}`],
+    capa: 'desempate',
   });
 }
 

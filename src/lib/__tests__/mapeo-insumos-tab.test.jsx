@@ -74,7 +74,9 @@ const cat = (id, nombre, unidad, familia, tipo = 'insumo') => ({
 // El catálogo de la empresa, con la clasificación YA decidida.
 const CATALOGO = [
   cat('c1', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bolsa', '21'),
-  cat('c2', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', '66'),
+  // En [72] a propósito: el catálogo dice «redes interiores» y el estándar
+  // deriva [66]. Es el cruce entre clasificaciones que se ofrece marcado.
+  cat('c2', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', '72'),
   cat('c3', 'GUANTES ANTICORTE', 'par', '83'),
   cat('c4', 'INSUMO RARO QUE NADIE CLASIFICO', 'und', 'sin_clasificar'),
 ];
@@ -136,8 +138,8 @@ describe('la compuerta de clasificación', () => {
   });
 
   it('🔴 la tubería se encuentra AUNQUE los dos lados la clasifiquen distinto', () => {
-    // El catálogo la tiene en [66] «red de agua potable y alcantarillado» y el
-    // estándar la deriva a [72] «redes interiores». Es la misma tubería. Con
+    // El catálogo la tiene en [72] «redes interiores» y el estándar la deriva
+    // a [66] «red de agua potable y alcantarillado». Es la misma tubería. Con
     // la compuerta como muro no se encontraban nunca; como preferencia se
     // ofrece igual, marcada para que alguien la mire.
     const html = h();

@@ -44,7 +44,13 @@ const cat = (id, nombre, unidad, familia, tipo = 'insumo') => ({
 
 const CATALOGO = [
   cat('c1', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bolsa', '21'),
-  cat('c2', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', '66'),
+  // 🔴 EN [72] A PROPÓSITO: es el caso de «los dos lados clasifican distinto».
+  // Alguien la guardó en el catálogo como «redes interiores» y el estándar la
+  // deriva a [66] «red de agua potable y alcantarillado» (dice UF e ISO 4435).
+  // Es la MISMA tubería y tiene que encontrarse igual, marcada. Hasta la
+  // tanda 3 los códigos estaban al revés —el catálogo en [66] y el estándar
+  // derivando [72]— porque el motor no leía el material del tubo.
+  cat('c2', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', '72'),
   cat('c3', 'GUANTES ANTICORTE', 'par', '83'),
   cat('c4', 'INSUMO RARO SIN CLASIFICAR', 'und', 'sin_clasificar'),
   cat('c5', 'TUBERIA PVC UF S25 DE 6"(160mm) x 6m ISO 4435', 'm', '66'),
@@ -129,7 +135,7 @@ describe('la propuesta, con la clasificación como compuerta', () => {
   });
 
   it('🔴 cuando los dos lados clasifican distinto, se ofrece igual y se MARCA', () => {
-    // La tubería de c2 está en [66] en el catálogo y el estándar deriva [72]
+    // La tubería de c2 está en [72] en el catálogo y el estándar deriva [66]
     // para la del presupuesto: es la misma. Con la compuerta como muro no se
     // encontraban nunca. Como preferencia, se ofrece marcada y NUNCA como
     // 'propuesto' — un cruce entre clasificaciones se mira, no se acepta en
