@@ -85,6 +85,14 @@ const TRANSACTIONAL_TABLES = [
   // activos_pesados: puede referenciarlo (activo_pesado_id) cuando la misma
   // máquina está en los dos registros.
   'activos_fijos',
+  // Transformaciones de insumos (mig 216, tanda 7): n entran, m salen,
+  // conservando el valor. Sus líneas viajan DENTRO de la fila (jsonb), así que
+  // no hay tabla hija ni ventana de «cabecera sí, líneas todavía no».
+  // FUERA de TABLA_TO_MODULO a propósito, igual que `activos_fijos`: la escribe
+  // la misma gente que el registro 7.1 y el RLS de la mig 216 es el guard real
+  // — mapearla a un módulo que algún rol no tenga dejaría su push bloqueado
+  // client-side y la fila en pending eterno (el bug que ya pasó con pagos).
+  'transformaciones',
   // SSOMA
   'charlas_seguridad', 'charla_asistentes', 'iperc',
   'epp_entregas', 'inspecciones_seguridad', 'capacitaciones',
@@ -424,6 +432,7 @@ const MASTER_TABLES = [
   { tabla: 'consumos_combustible',   query: () => supabase.from('consumos_combustible').select('*').is('deleted_at', null) },
   { tabla: 'mantenimientos_maquinaria', query: () => supabase.from('mantenimientos_maquinaria').select('*').is('deleted_at', null) },
   { tabla: 'activos_fijos',          query: () => supabase.from('activos_fijos').select('*').is('deleted_at', null) },
+  { tabla: 'transformaciones',       query: () => supabase.from('transformaciones').select('*').is('deleted_at', null) },
   // SSOMA
   { tabla: 'charlas_seguridad',         query: () => supabase.from('charlas_seguridad').select('*').is('deleted_at', null) },
   { tabla: 'charla_asistentes',         query: () => supabase.from('charla_asistentes').select('*').is('deleted_at', null) },
@@ -858,7 +867,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
     'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
-    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'transformaciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   prevencionista: new Set([
@@ -868,7 +877,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
     'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
-    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'transformaciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_ambiental: new Set([
@@ -878,7 +887,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
     'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
-    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'transformaciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_calidad: new Set([
@@ -888,7 +897,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
     'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
-    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'transformaciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   ing_social: new Set([
@@ -898,7 +907,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'mantenimientos_maquinaria', 'movimientos_bancarios', 'movimientos_maquinaria',
     'oc_items', 'ordenes_compra', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
-    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'trazabilidad_cadenas',
+    'presupuestos_versiones', 'requisicion_items', 'requisiciones', 'transformaciones', 'trazabilidad_cadenas',
     'valorizacion_adicionales', 'valorizacion_partidas', 'valorizaciones',
   ]),
   // ── Ayudante contable: sin SSOMA/campo/maquinaria. CONSERVA epps y
@@ -931,7 +940,7 @@ const PULL_SCOPE_POR_ROL = {
     'intercompany_transactions', 'movimientos_bancarios', 'pagos',
     'pagos_partes', 'partidas_versionadas', 'planilla_boletas', 'planillas',
     'presupuestos_versiones', 'reportes_especialidad', 'social_actores', 'social_compromisos',
-    'social_quejas', 'trazabilidad_cadenas', 'valorizacion_adicionales', 'valorizacion_partidas',
+    'social_quejas', 'transformaciones', 'trazabilidad_cadenas', 'valorizacion_adicionales', 'valorizacion_partidas',
     'valorizaciones',
   ]),
   // ── Rol CAMPO (portal de captura, mejora 2): solo necesita companies
@@ -1205,6 +1214,10 @@ const FK_DEPS = {
   consumos_combustible:      [{ campo: 'activo_id', tabla: 'activos_pesados' }, { campo: 'operador_id', tabla: 'personal' }],
   mantenimientos_maquinaria: [{ campo: 'activo_id', tabla: 'activos_pesados' }],
   activos_fijos:             [{ campo: 'company_id', tabla: 'companies' }, { campo: 'activo_pesado_id', tabla: 'activos_pesados' }, { campo: 'accounting_movement_id', tabla: 'accounting_movements' }, { campo: 'obra_id', tabla: 'obras' }],
+  // Las facturas que referencian los `costos` viajan DENTRO del jsonb y no son
+  // FK: una transformación no depende de que esa factura haya llegado primero
+  // (el enlace es para poder ir a verla, no para que el saldo cierre).
+  transformaciones:          [{ campo: 'company_id', tabla: 'companies' }, { campo: 'obra_id', tabla: 'obras' }],
   caja_chica_movimientos:    [{ campo: 'responsable_id', tabla: 'personal' }],
   // La regla de emisión referencia la empresa emisora + intermediarias (FKs reales).
   // El catálogo por entidad (mig 193): `company_id` es FK real a companies.

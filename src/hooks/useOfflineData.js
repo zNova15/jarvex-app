@@ -636,6 +636,18 @@ export function useActivosFijos(company_id, periodo) {
   }, [company_id, periodo]);
 }
 
+// ── Transformaciones de insumos (tanda 7, mig 216) ──────────────────
+// «Entraron 6 planchas y salieron 24 láminas»: se pide por empresa porque el
+// inventario que las usa es por empresa. Las líneas viajan dentro de la fila
+// (entradas/costos/salidas), así que una transformación se lee entera o no se
+// lee: no hay forma de ver media.
+export function useTransformaciones(company_id) {
+  return useOfflineData('transformaciones', q => {
+    const base = company_id ? q.where('company_id').equals(company_id) : q;
+    return base.filter(t => !t.deleted_at).toArray();
+  }, [company_id]);
+}
+
 // ── Activos pesados ─────────────────────────────────────────────────
 export function useActivosPesados() {
   return useOfflineData('activos_pesados', q =>

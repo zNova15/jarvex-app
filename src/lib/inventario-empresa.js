@@ -25,6 +25,10 @@
 //    cuenta en `lineasRebajadas` para poder decirlo.
 //  · Esto es inventario COMPRADO según facturas, NO stock: los consumos de obra
 //    viven en almacén por obra. La UI tiene que decirlo.
+//  · Y desde la tanda 7, lo que ENTRÓ DE UNA FORMA Y SALIÓ DE OTRA también
+//    mueve el saldo: `comprado + producido − vendido − consumido`. El efecto
+//    llega resuelto por `opts.transformadoDe` (ver `transformacion.js`), y sin
+//    transformaciones cargadas todo se comporta exactamente como antes.
 // ═══════════════════════════════════════════════════════════════════
 // 🔴 ESTA LIB NO IMPORTA `destino-inventario.js`, Y ES A PROPÓSITO (tanda 6).
 // La primera versión sí lo hacía, y el build lo delató: `inventario-empresa`
@@ -381,6 +385,57 @@ const cerrarLado = (lado) => ({
   ultimoProveedor: lado.ultimoProveedor,
 });
 
+// ── TANDA 7: el efecto de las transformaciones, POR GRUPO ─────────
+// 🔴 Se reagrupa por la MISMA clave que usa el inventario (`claveGrupoDe`) y no
+// por nombre normalizado, y no es un detalle de estilo:
+//
+//  · un grupo puede tener varias variantes transformadas por separado
+//    («PLANCHA LAF 1/16» y «PLANCHA LAF(1/16)»), y leer solo una perdería la
+//    otra — a diferencia del destino, que es una política única y por eso sí se
+//    queda con la primera;
+//  · y si lo que SALIÓ está correlacionado con un insumo que ya se compra pero
+//    con otro nombre, buscar por variante no lo encontraría y terminaría
+//    creando una fila nueva con la MISMA clave que la existente: dos filas del
+//    mismo insumo en la pantalla, cada una con medio saldo.
+function efectosPorClave(transformadoDe, grupoDe) {
+  const out = new Map();
+  if (!transformadoDe || !transformadoDe.size) return out;
+  for (const [norm, e] of transformadoDe) {
+    if (!norm || !e) continue;
+    const clave = claveGrupoDe(norm, grupoDe);
+    if (!out.has(clave)) {
+      out.set(clave, {
+        _consumido: new Map(), _producido: new Map(),
+        valorConsumido: 0, valorProducido: 0, vecesConsumido: 0, vecesProducido: 0,
+        nombres: [],
+      });
+    }
+    const acc = out.get(clave);
+    for (const c of (e.consumido || [])) acc._consumido.set(c.unidad, (acc._consumido.get(c.unidad) || 0) + c.cantidad);
+    for (const p of (e.producido || [])) acc._producido.set(p.unidad, (acc._producido.get(p.unidad) || 0) + p.cantidad);
+    acc.valorConsumido += e.valorConsumido || 0;
+    acc.valorProducido += e.valorProducido || 0;
+    acc.vecesConsumido += e.vecesConsumido || 0;
+    acc.vecesProducido += e.vecesProducido || 0;
+    for (const n of (e.nombres || [])) if (!acc.nombres.includes(n)) acc.nombres.push(n);
+  }
+  const cerrar = (m) => [...m.entries()]
+    .map(([unidad, cantidad]) => ({ unidad, label: labelUnidad(unidad), cantidad }))
+    .sort((a, b) => b.cantidad - a.cantidad);
+  for (const [clave, acc] of out) {
+    out.set(clave, {
+      consumido: cerrar(acc._consumido), producido: cerrar(acc._producido),
+      valorConsumido: acc.valorConsumido, valorProducido: acc.valorProducido,
+      vecesConsumido: acc.vecesConsumido, vecesProducido: acc.vecesProducido,
+      nombres: acc.nombres,
+    });
+  }
+  return out;
+}
+
+/** El orden de la lista: el mayor gasto en UNA moneda, y a igual gasto, quién se movió más. */
+const porGasto = (a, b) => (b.orden - a.orden) || (b.comprado.veces - a.comprado.veces);
+
 /**
  * Inventario de una empresa a partir de las líneas de factura ya extraídas
  * (extraerLineasDeFacturas de analisis-insumos.js).
@@ -408,6 +463,11 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     //   esActivo(linea) → bool
     //   destinoDe: Map(nombreNorm → { destino, saldoVendible })
     esActivo = null, destinoDe = null,
+    // Tanda 7: lo que entró de una forma y salió de otra. Llega RESUELTO desde
+    // `transformacion.js` (`efectoEnInventario`), por el mismo motivo que los
+    // dos de arriba: esta lib es la BASE y no importa capas que estén encima.
+    //   transformadoDe: Map(nombreNorm → { consumido, producido, valor… })
+    transformadoDe = null,
   } = opts;
   const porInsumo = new Map();
   const facturasAnuladas = new Set();
@@ -516,6 +576,10 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     }
   }
 
+  // Tanda 7: el efecto de las transformaciones, agrupado por la misma clave con
+  // la que se agruparon las líneas de factura. Ver `efectosPorClave`.
+  const efectoDe = efectosPorClave(transformadoDe, grupoDe);
+
   const insumos = [...porInsumo.values()].map(ins => {
     const compra = cerrarLado(ins._compra);
     const venta = cerrarLado(ins._venta);
@@ -535,16 +599,30 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
         }
       }
     }
-    // Saldo = comprado − vendido, SOLO si la empresa además vendió ese insumo
-    // (sin ventas el "saldo" sería la columna comprado repetida, y encima daría
-    // a entender que eso es stock disponible — no lo es: falta el consumo de obra).
-    const saldo = venta.veces === 0 ? [] : [...new Set([
+    // ── TANDA 7: lo que se transformó ────────────────────────────
+    const transf = efectoDe.get(ins.clave) || null;
+    const hayTransformacion = !!transf && (transf.consumido.length > 0 || transf.producido.length > 0);
+
+    // Saldo = comprado + producido − vendido − consumido.
+    // Solo si la empresa vendió ese insumo O lo transformó: sin ninguna de las
+    // dos cosas el "saldo" sería la columna comprado repetida, y encima daría a
+    // entender que eso es stock disponible — no lo es: falta el consumo de obra.
+    const saldo = (venta.veces === 0 && !hayTransformacion) ? [] : [...new Set([
       ...compra.cantidades.map(c => c.unidad),
       ...venta.cantidades.map(v => v.unidad),   // vendió en una unidad que no compró
+      ...(transf ? transf.consumido.map(c => c.unidad) : []),
+      ...(transf ? transf.producido.map(p => p.unidad) : []),
     ])].map(unidad => {
       const c = compra.cantidades.find(x => x.unidad === unidad);
       const v = venta.cantidades.find(x => x.unidad === unidad);
-      return { unidad, label: labelUnidad(unidad), cantidad: (c ? c.cantidad : 0) - (v ? v.cantidad : 0) };
+      const co = transf && transf.consumido.find(x => x.unidad === unidad);
+      const pr = transf && transf.producido.find(x => x.unidad === unidad);
+      return {
+        unidad,
+        label: labelUnidad(unidad),
+        cantidad: (c ? c.cantidad : 0) + (pr ? pr.cantidad : 0)
+                - (v ? v.cantidad : 0) - (co ? co.cantidad : 0),
+      };
     });
 
     // Total comprado en PEN (equivalente)
@@ -558,10 +636,19 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
 
     const tieneVentas = venta.veces > 0;
     const tieneCompras = compra.veces > 0;
-    // Margen económico: solo cuando hubo compras y ventas, para no falsear margen
-    const margenEconomicoPen = tieneVentas && tieneCompras ? totalVentaPen - totalCompraPen : null;
-    const margenPct = tieneVentas && totalVentaPen > 0 && tieneCompras
-      ? ((totalVentaPen - totalCompraPen) / totalVentaPen) * 100
+    // ── EL COSTO DE ESTA FILA, CON LA TRANSFORMACIÓN ADENTRO (tanda 7) ──
+    // Lo que salió transformado se llevó su valor a OTRA fila, y lo que llegó
+    // transformado trajo el suyo. Sin esta cuenta el mismo sol se contaría dos
+    // veces: una en la plancha que se cortó y otra en las láminas que salieron.
+    // Sin transformaciones, `costoNetoPen` es exactamente `totalCompraPen` y
+    // nada de lo de abajo cambia.
+    const costoNetoPen = totalCompraPen + (transf ? transf.valorProducido - transf.valorConsumido : 0);
+    // Una lámina que nadie compró pero que salió de una plancha SÍ tiene costo:
+    // por eso el margen ya no exige compras, exige costo.
+    const tieneCosto = tieneCompras || !!(transf && transf.valorProducido > 0);
+    const margenEconomicoPen = tieneVentas && tieneCosto ? totalVentaPen - costoNetoPen : null;
+    const margenPct = tieneVentas && totalVentaPen > 0 && tieneCosto
+      ? ((totalVentaPen - costoNetoPen) / totalVentaPen) * 100
       : null;
 
     return {
@@ -575,6 +662,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       saldo,
       totalCompraPen,
       totalVentaPen,
+      costoNetoPen,
       margenEconomicoPen,
       margenPct,
       // Cuántas de sus líneas vienen de una factura que una nota de crédito
@@ -588,16 +676,81 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       activosCargados: ins.activosCargados || 0,
       destino,
       saldoVendible,
+      // Tanda 7: qué se consumió y qué salió de este insumo, o null si nunca
+      // entró en una transformación (que es el caso de casi todo).
+      transformado: transf,
+      origen: 'factura',
       recepcion: ins.recepcion,
       lineas: ins.lineas.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)),
       // Solo para ORDENAR: el mayor gasto en UNA moneda (no se suman monedas).
       orden: Math.max(0, ...compra.montos.map(m => m.monto)),
     };
-  }).sort((a, b) => (b.orden - a.orden) || (b.comprado.veces - a.comprado.veces));
+  }).sort(porGasto);
+
+  // ── LO QUE SOLO EXISTE PORQUE SALIÓ DE UNA TRANSFORMACIÓN (tanda 7) ──
+  // Las láminas no las compró nadie: no tienen línea de factura, así que no
+  // aparecerían en ninguna fila y el valor de la plancha cortada se
+  // evaporaría de la pantalla. Se agregan con `origen: 'transformacion'`, que
+  // es lo que la UI usa para decir de dónde salieron.
+  if (efectoDe.size) {
+    const vacio = cerrarLado(nuevoLado());
+    for (const [clave, efecto] of efectoDe) {
+      // Si el insumo ya tiene filas de factura, su efecto ya se aplicó arriba:
+      // acá solo entran los que no tienen NINGUNA compra ni venta detrás.
+      if (porInsumo.has(clave)) continue;
+      if (!efecto || (!efecto.producido?.length && !efecto.consumido?.length)) continue;
+      const display = (efecto.nombres && efecto.nombres[0]) || clave;
+      const dest = destinoDe ? destinoDe.get(normInsumo(display)) : null;
+      const unidades = new Set([
+        ...(efecto.producido || []).map(p => p.unidad),
+        ...(efecto.consumido || []).map(c => c.unidad),
+      ]);
+      insumos.push({
+        clave,
+        display,
+        variantes: (efecto.nombres || [display]).slice().sort(),
+        tipos: [],
+        esAnticipo: false,
+        comprado: vacio,
+        vendido: vacio,
+        saldo: [...unidades].map(unidad => {
+          const pr = (efecto.producido || []).find(x => x.unidad === unidad);
+          const co = (efecto.consumido || []).find(x => x.unidad === unidad);
+          return {
+            unidad, label: labelUnidad(unidad),
+            cantidad: (pr ? pr.cantidad : 0) - (co ? co.cantidad : 0),
+          };
+        }),
+        totalCompraPen: 0,
+        totalVentaPen: 0,
+        costoNetoPen: (efecto.valorProducido || 0) - (efecto.valorConsumido || 0),
+        margenEconomicoPen: null,
+        margenPct: null,
+        rebajadas: 0,
+        activosCargados: 0,
+        destino: dest?.destino || null,
+        saldoVendible: dest ? dest.saldoVendible !== false : true,
+        transformado: {
+          consumido: efecto.consumido || [], producido: efecto.producido || [],
+          valorConsumido: efecto.valorConsumido || 0, valorProducido: efecto.valorProducido || 0,
+          vecesConsumido: efecto.vecesConsumido || 0, vecesProducido: efecto.vecesProducido || 0,
+        },
+        origen: 'transformacion',
+        recepcion: { conDato: 0, recibido: 0 },
+        lineas: [],
+        orden: 0,
+      });
+    }
+    insumos.sort(porGasto);
+  }
 
   totales.insumos = insumos.length;
   totales.facturasAnuladas = facturasAnuladas.size;
   totales.nombresNoInventariables = noInv.size;
+  // Tanda 7: cuántos insumos tocó una transformación, y cuántos existen SOLO
+  // porque salieron de una (los que no tienen ni una factura detrás).
+  totales.insumosTransformados = insumos.filter(i => i.transformado).length;
+  totales.insumosProducidos = insumos.filter(i => i.origen === 'transformacion').length;
   return {
     insumos,
     totales: {

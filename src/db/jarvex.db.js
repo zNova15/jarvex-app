@@ -123,6 +123,17 @@ export const db = new Dexie('JarvexDB');
 // `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
 // y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
 // Aditivo.
+// Versión 66: LO QUE ENTRA DE UNA FORMA Y SALE DE OTRA (mig 216, tanda 7).
+// Un documento atómico: las entradas, los costos de conversión y las salidas
+// viajan en el mismo registro (jsonb del lado del server, props sin índice acá)
+// porque editar media transformación es romper su invariante —lo que sale vale
+// lo que entró más lo que costó transformarlo—. Se indexa por empresa+fecha,
+// que es exactamente lo que pregunta la pantalla: «las de esta empresa, de la
+// más nueva a la más vieja». Aditivo.
+db.version(66).stores({
+  transformaciones: 'id, company_id, fecha, [company_id+fecha], obra_id, estado, deleted_at, sync_status',
+});
+
 // Versión 65: ANTICIPOS A PROVEEDORES (mig 207). A qué factura se aplica cada
 // anticipo y por cuánto; el saldo es su monto menos la suma de esto. Se indexa
 // por anticipo (el panel lista «las aplicaciones de éste»), por factura (para

@@ -48,13 +48,18 @@ import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
 import { resolverPares, construirGrupos, normInsumo } from "../lib/insumo-correlacion.js";
 import {
   inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario, filtrarPorFlujo,
-  saldosNegativos, tieneSaldoNegativo, aniosDeLineas,
+  saldosNegativos, tieneSaldoNegativo, aniosDeLineas, labelUnidad,
 } from "../lib/inventario-empresa.js";
 import { noInventariables } from "../lib/insumo-o-servicio.js";
 import {
   activosPorLinea, esActivoDe, destinoParaInventario, llaveDestino, contarDestinos,
   DESTINOS, DESTINO_INFO, labelDestino, AMBITO_DESTINO,
 } from "../lib/destino-inventario.js";
+import {
+  efectoEnInventario, construirTransformacion, validarTransformacion,
+  costoUnitarioSugerido, disponibleDe, leerLineas, transformacionesDe,
+  resumenTransformaciones, unidadDeLinea, REPARTOS, REPARTO_INFO,
+} from "../lib/transformacion.js";
 import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { aprenderClasificacion } from "../lib/clasificar-items.js";
 import { decidir } from "../lib/bandeja-categorizacion-db.js";
@@ -292,16 +297,41 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const activosLinea = uMD(() => activosPorLinea(afHook.data || []), [afHook.data]);
   const esActivo = uMD(() => esActivoDe(activosLinea), [activosLinea]);
   const destinoDe = uMD(() => destinoParaInventario(decisHook.data || []), [decisHook.data]);
+  // ── TANDA 7: lo que entró de una forma y salió de otra ───────────
+  // El cajón «🔁 Se transforma» de la tanda 6 apagaba el saldo y no había
+  // manera de decir en qué se convirtió la mercadería. Con esto el saldo
+  // vuelve a cerrar: comprado + producido − vendido − consumido.
+  const transfHook = window.__hooks.useTransformaciones?.(company?.id) || { data: [], refresh: null };
+  const transformadoDe = uMD(
+    () => efectoEnInventario(transfHook.data || [], { companyId: company?.id }),
+    [transfHook.data, company?.id]
+  );
   const inv = uMD(
     () => inventarioDeEmpresa(lineas, {
       companyId: company?.id, grupoDe, grupos, factorDe,
       desde: desdePeriodo, hasta: hastaPeriodo,
       noInventariables: descartadasInv,
-      esActivo, destinoDe,
+      esActivo, destinoDe, transformadoDe,
     }),
     [lineas, company?.id, grupoDe, grupos, factorDe, desdePeriodo, hastaPeriodo,
-      descartadasInv, esActivo, destinoDe]
+      descartadasInv, esActivo, destinoDe, transformadoDe]
   );
+  // Para el modal: encontrar un insumo por cualquiera de sus nombres. Se indexa
+  // por TODAS las variantes porque quien carga la transformación escribe el
+  // nombre que tiene a mano, no el canónico del grupo.
+  const insumoPorNorm = uMD(() => {
+    const m = new Map();
+    for (const i of inv.insumos) {
+      for (const v of (i.variantes || [])) m.set(normInsumo(v), i);
+      m.set(normInsumo(i.display), i);
+    }
+    return m;
+  }, [inv]);
+  const transformaciones = uMD(() => transformacionesDe(transfHook.data || [], company?.id), [transfHook.data, company?.id]);
+  const resumenTransf = uMD(() => resumenTransformaciones(transfHook.data || [], company?.id), [transfHook.data, company?.id]);
+  const [modalTransf, setModalTransf] = uSD(null);   // null | { entradaInicial }
+  const [verTransf, setVerTransf] = uSD(false);
+  const transfEnCursoRef = React.useRef(false);
   const tiposPresentes = uMD(() => {
     const s = new Set();
     inv.insumos.forEach(i => i.tipos.forEach(t => s.add(t)));
@@ -438,6 +468,73 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       showToast(destino
         ? `✓ «${String(ins.display).slice(0, 30)}» → ${labelDestino(destino)}`
         : '✓ Destino borrado', 'green');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
+    }
+  };
+
+  // ── REGISTRAR UNA TRANSFORMACIÓN (tanda 7) ────────────────────────
+  // 🔴 La fila la arma `construirTransformacion` y nadie más: la mig 216 tiene
+  // un CHECK sobre «lo que sale vale lo que entró más lo que costó
+  // transformarlo» y Dexie no valida CHECKs (regla 9) — una fila armada acá a
+  // mano que no cerrara quedaría rebotando en el push para siempre.
+  //
+  // El guard es un ref SÍNCRONO (regla 2): el guard por estado se activa recién
+  // después del await a Dexie, y en esa ventana un segundo clic entra y
+  // duplica. Acá duplicaría una transformación entera, con su valor.
+  const guardarTransformacion = async (borrador) => {
+    if (transfEnCursoRef.current) return false;
+    transfEnCursoRef.current = true;
+    const showToast = window.__showToast || (() => {});
+    try {
+      const { fila, error } = construirTransformacion({ ...borrador, companyId: company?.id });
+      if (error) { showToast(error, 'red'); return false; }
+      const userId = window.__currentUser?.id || null;
+      const now = new Date().toISOString();
+      const id = window.__newId();
+      await (window.__db || db).transformaciones.add({
+        id, ...fila,
+        demo: false,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now, deleted_at: null,
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId}_tr_${id}`,
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'create', table: 'transformaciones', recordId: id,
+          newData: { descripcion: fila.descripcion, valor_salidas: fila.valor_salidas },
+          reason: `Transformación en ${company?.name || 'la empresa'}`,
+        });
+      } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'transformaciones' } })); } catch {}
+      await transfHook.refresh?.();
+      showToast('✓ Transformación registrada', 'green');
+      return true;
+    } catch (e) {
+      showToast('Error al registrar: ' + (e.message || e), 'red');
+      return false;
+    } finally {
+      transfEnCursoRef.current = false;
+    }
+  };
+
+  // Anular no borra: la transformación deja de mover el saldo y se sigue
+  // viendo. Es lo que hace falta cuando el corte se cargó mal hace un mes y ya
+  // hay ventas contra esas láminas — borrarla dejaría el saldo sin explicación.
+  const cambiarEstadoTransf = async (t, estado) => {
+    const showToast = window.__showToast || (() => {});
+    try {
+      const userId = window.__currentUser?.id || null;
+      await (window.__db || db).transformaciones.update(t.id, {
+        estado,
+        updated_at: new Date().toISOString(), updated_by: userId,
+        version: (t.version ?? 0) + 1,
+        sync_status: t.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'transformaciones' } })); } catch {}
+      await transfHook.refresh?.();
+      showToast(estado === 'anulada' ? '✓ Transformación anulada' : '✓ Transformación restablecida', 'green');
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
     }
@@ -874,8 +971,106 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           >
             🤝 Correlaciones
           </button>
+          {/* ── TANDA 7: lo que entra de una forma y sale de otra ──────
+              El botón está siempre (una transformación puede ser el primer
+              registro de esta empresa); el contador solo aparece si hay algo
+              que contar, como el resto de los filtros de esta barra. */}
+          <button
+            className="btn btn-xs btn-ghost"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            onClick={() => setModalTransf({ entradaInicial: null })}
+            title="Registrar que unos insumos se convirtieron en otros: entran planchas, salen láminas. El valor de lo que entra (más lo que costó transformarlo) pasa a lo que sale."
+          >
+            🔁 Transformar
+          </button>
+          {(resumenTransf.registradas > 0 || resumenTransf.anuladas > 0) && (
+            <button
+              className={`btn btn-xs ${verTransf ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVerTransf(v => !v)}
+              title="Ver las transformaciones registradas en esta empresa"
+            >
+              {verTransf ? 'ocultar' : `${resumenTransf.registradas} transformación(es)`}
+            </button>
+          )}
           <span style={{ fontSize: 11, color: 'var(--tm)' }}>{filtrados.length} insumo(s)</span>
         </div>
+
+        {/* ── LAS TRANSFORMACIONES REGISTRADAS (tanda 7) ─────────────
+            Cada una dice qué entró, qué costó transformarlo y qué salió. Las
+            tres columnas tienen que cerrar: es la única razón por la que este
+            registro sirve. Una anulada se sigue viendo —tachada— porque un
+            saldo que cambia sin dejar rastro es un saldo que nadie cree. */}
+        {verTransf && (
+          <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', background: 'var(--tint-neutral)' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8 }}>
+              <strong>🔁 Lo que entró de una forma y salió de otra</strong> — {resumenTransf.registradas} registrada(s)
+              {resumenTransf.anuladas > 0 && <> · {resumenTransf.anuladas} anulada(s)</>}
+              {resumenTransf.costos > 0 && <> · {fmtMonto(resumenTransf.costos, 'PEN')} en costos de transformación</>}
+              . El valor de lo que entra, más lo que costó transformarlo, es exactamente lo que vale lo que sale.
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>Fecha</th>
+                  <th>Entra</th>
+                  <th>Sale</th>
+                  <th style={{ textAlign: 'right' }}>Valor</th>
+                  <th style={{ textAlign: 'center' }}>—</th>
+                </tr></thead>
+                <tbody>
+                  {transformaciones.map(t => {
+                    const anulada = t.estado === 'anulada';
+                    const ent = leerLineas(t.entradas), sal = leerLineas(t.salidas), cos = leerLineas(t.costos);
+                    return (
+                      <tr key={t.id} style={anulada ? { opacity: 0.55 } : undefined}>
+                        <td style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                          {fmtFecha(t.fecha)}
+                          {anulada && <div><span className="badge b-red" style={{ fontSize: 9 }}>anulada</span></div>}
+                          {t.descripcion && <div style={{ color: 'var(--tm)', fontSize: 10 }}>{t.descripcion}</div>}
+                        </td>
+                        <td style={{ fontSize: 11 }}>
+                          {ent.map((l, i) => (
+                            <div key={i}>{fmtCant(l.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10 }}>{unidadDeLinea(l.unidad)}</span> {l.nombre}</div>
+                          ))}
+                          {cos.map((c, i) => (
+                            <div key={`c${i}`} style={{ color: 'var(--amber)', fontSize: 10 }}>+ {c.concepto}: {fmtMonto(c.monto, t.moneda || 'PEN')}</div>
+                          ))}
+                        </td>
+                        <td style={{ fontSize: 11 }}>
+                          {sal.map((l, i) => (
+                            <div key={i}>
+                              {fmtCant(l.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10 }}>{unidadDeLinea(l.unidad)}</span> {l.nombre}
+                              <span style={{ color: 'var(--tm)', fontSize: 10 }}> · {fmtMonto(l.valor, t.moneda || 'PEN')}</span>
+                            </div>
+                          ))}
+                        </td>
+                        <td style={{ textAlign: 'right' }} className="col-num">
+                          <div style={{ fontWeight: 600, fontSize: 11 }}>{fmtMonto(t.valor_salidas, t.moneda || 'PEN')}</div>
+                          <div style={{ fontSize: 10, color: 'var(--tm)' }}>
+                            {fmtMonto(t.valor_entradas, t.moneda || 'PEN')}
+                            {Number(t.valor_costos) > 0 && <> + {fmtMonto(t.valor_costos, t.moneda || 'PEN')}</>}
+                          </div>
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            className="btn btn-xs btn-ghost"
+                            style={{ color: anulada ? 'var(--green)' : 'var(--red)' }}
+                            onClick={() => cambiarEstadoTransf(t, anulada ? 'registrada' : 'anulada')}
+                            title={anulada
+                              ? 'Volver a contarla en el saldo'
+                              : 'Dejar de contarla en el saldo. No se borra: se sigue viendo acá.'}
+                          >
+                            {anulada ? 'Restablecer' : 'Anular'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Un saldo negativo no es un error de la app: es un hecho que hay que
             ver. Tres causas, todas reales — se facturó lo que no se compró
@@ -979,6 +1174,22 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             >
                               🏷 Categorizar
                             </button>
+                            {/* ── TANDA 7 ──────────────────────────────
+                                Arranca el modal con este insumo ya puesto como
+                                entrada y su costo unitario propuesto: nadie
+                                abre «transformar» sin saber qué va a
+                                transformar, y hacerlo elegir de nuevo entre
+                                cientos de nombres es pedirle que repita lo que
+                                acaba de decir con el clic. */}
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs"
+                              style={{ fontSize: 10, padding: '1px 5px', color: 'var(--amber)', whiteSpace: 'nowrap' }}
+                              title="Este insumo se convirtió en otro: registrar qué salió de él y con qué valor"
+                              onClick={() => setModalTransf({ entradaInicial: ins })}
+                            >
+                              🔁 Transformar
+                            </button>
                             {/* ── QUÉ VA A PASAR CON ESTE INSUMO (tanda 6) ──
                                 Gabriel: «se sabe qué insumo se utilizarán
                                 dentro de la empresa y no se venderán, para que
@@ -1040,6 +1251,29 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                                 {DESTINO_INFO[ins.destino].icono} {labelDestino(ins.destino)}
                               </span>
                             )}
+                            {/* ── TANDA 7: qué se transformó ────────────
+                                Dos hechos distintos y los dos sacados del
+                                registro, no de una opinión: cuánto de este
+                                insumo se consumió transformándolo, y cuánto de
+                                este insumo salió de transformar otra cosa. */}
+                            {ins.transformado?.vecesConsumido > 0 && (
+                              <span className="badge b-amber" style={{ fontSize: 9 }}
+                                title={`Se transformó en otra cosa: ${ins.transformado.consumido.map(c => `${fmtCant(c.cantidad)} ${c.label}`).join(' · ')} por ${fmtMonto(ins.transformado.valorConsumido, 'PEN')}. Ese valor ya no está acá: se fue a lo que salió.`}>
+                                🔁 transformado ({ins.transformado.vecesConsumido})
+                              </span>
+                            )}
+                            {ins.transformado?.vecesProducido > 0 && (
+                              <span className="badge b-green" style={{ fontSize: 9 }}
+                                title={`Salió de transformar otro insumo: ${ins.transformado.producido.map(p => `${fmtCant(p.cantidad)} ${p.label}`).join(' · ')} por ${fmtMonto(ins.transformado.valorProducido, 'PEN')}, que es lo que valía lo que entró más lo que costó transformarlo.`}>
+                                ✨ producido ({ins.transformado.vecesProducido})
+                              </span>
+                            )}
+                            {ins.origen === 'transformacion' && (
+                              <span className="badge b-gray" style={{ fontSize: 9 }}
+                                title="Este insumo no tiene ni una factura detrás: existe porque salió de una transformación. Si algún día se compra con este nombre, las dos cosas van a caer en esta misma fila.">
+                                sin factura propia
+                              </span>
+                            )}
                             {(ins.comprado.convertidas + ins.vendido.convertidas) > 0 && (
                               <span className="badge b-blue" style={{ fontSize: 9 }}
                                 title="Este insumo se factura en más de una presentación y alguien declaró cómo se convierten: las cantidades están sumadas en una sola unidad">
@@ -1089,6 +1323,16 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                                 {fmtCant(s.cantidad)} <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{s.label}</span>
                               </div>
                             ))}
+                          {/* Con una transformación de por medio el saldo deja
+                              de ser «comprado − vendido» y hay que decirlo: un
+                              número que no se puede rehacer a mano es un número
+                              que la contadora deja de mirar. */}
+                          {ins.transformado && ins.saldo.length > 0 && (
+                            <div style={{ fontSize: 9.5, color: 'var(--tm)', lineHeight: 1.3 }}>
+                              {ins.transformado.consumido.map(c => `−${fmtCant(c.cantidad)} ${c.label} transf.`).join(' ')}
+                              {ins.transformado.producido.map(p => ` +${fmtCant(p.cantidad)} ${p.label} prod.`).join('')}
+                            </div>
+                          )}
                         </td>
                         <td style={{ textAlign: 'right' }} className="col-num">
                           {ins.margenEconomicoPen != null ? (
@@ -1259,6 +1503,21 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               </div>
             </div>
           </div>
+        )}
+
+        {modalTransf && (
+          <ModalTransformar
+            company={company}
+            insumos={inv.insumos}
+            insumoPorNorm={insumoPorNorm}
+            entradaInicial={modalTransf.entradaInicial}
+            onCerrar={() => setModalTransf(null)}
+            onGuardar={async (borrador) => {
+              const ok = await guardarTransformacion(borrador);
+              if (ok) { setModalTransf(null); setVerTransf(true); }
+              return ok;
+            }}
+          />
         )}
       </div>
       </>)}
@@ -1459,6 +1718,269 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 // ── SECCIÓN: FICHA ─────────────────────────────────────────────────
 // La identidad legal de la empresa. Estaba solo dentro del modal de edición:
 // para MIRAR el RUC o el representante legal había que abrir un formulario.
+// ═══════════════════════════════════════════════════════════════════
+// MODAL: LO QUE ENTRA DE UNA FORMA Y SALE DE OTRA (tanda 7, 15-set-2026)
+//
+// Gabriel: «podría […] ser parte de uso de la empresa para transformarla en
+// otro insumo (planchas metálicas por ejemplo a láminas más pequeñas)».
+//
+// La pantalla entera está organizada alrededor de UNA cuenta que tiene que
+// cerrar y que se ve todo el tiempo, arriba del botón de guardar:
+//
+//     lo que entra  +  lo que costó transformarlo  =  lo que sale
+//
+// Por eso el total vive en una franja fija y no al final de un scroll: si la
+// cuenta no cierra hay que enterarse antes de terminar de cargar, no después.
+// El botón de guardar queda apagado hasta que cierre, y el motivo se dice con
+// todas las letras («faltan S/ 50,00»), nunca como un genérico «revisá los
+// datos».
+// ═══════════════════════════════════════════════════════════════════
+function ModalTransformar({ company, insumos = [], insumoPorNorm, entradaInicial = null, onCerrar, onGuardar }) {
+  const lineaVacia = () => ({ nombre: '', cantidad: '', unidad: 'und', valor: '' });
+
+  // Si se entró desde la fila de un insumo, ya viene puesto como entrada con su
+  // costo propuesto: la pregunta «¿qué transformo?» ya la contestó el clic.
+  const entradaDesde = (ins) => {
+    if (!ins) return lineaVacia();
+    const unidad = (ins.comprado?.cantidades?.[0]?.unidad) || (ins.saldo?.[0]?.unidad) || 'und';
+    return { nombre: ins.display, cantidad: '', unidad, valor: '' };
+  };
+
+  const [fecha, setFecha] = uSD(() => (window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10)));
+  const [descripcion, setDescripcion] = uSD('');
+  const [entradas, setEntradas] = uSD(() => [entradaDesde(entradaInicial)]);
+  const [costos, setCostos] = uSD([]);
+  const [salidas, setSalidas] = uSD(() => [lineaVacia()]);
+  const [reparto, setReparto] = uSD('cantidad');
+  const [guardando, setGuardando] = uSD(false);
+
+  const nombresConocidos = uMD(() => insumos.map(i => i.display).slice(0, 400), [insumos]);
+  const insumoDe = (nombre) => (insumoPorNorm ? insumoPorNorm.get(normInsumo(nombre || '')) : null);
+
+  // El costo unitario PROPUESTO, y de dónde sale. Cuando no se puede derivar
+  // —dos monedas, otra unidad, sin compras— no se propone nada: un número
+  // inventado acá se aceptaría sin mirar y se propagaría a todo lo que salga.
+  const sugerenciaDe = (l) => {
+    const ins = insumoDe(l.nombre);
+    if (!ins) return null;
+    return costoUnitarioSugerido(ins, l.unidad);
+  };
+
+  const setLinea = (setter, i, campo, valor) =>
+    setter(prev => prev.map((l, j) => (j === i ? { ...l, [campo]: valor } : l)));
+
+  // Al escribir la cantidad de una entrada, se completa el valor con el costo
+  // propuesto — pero solo si el campo está vacío: lo que una persona escribió a
+  // mano no se pisa nunca.
+  const cantidadDeEntrada = (i, valor) => {
+    setEntradas(prev => prev.map((l, j) => {
+      if (j !== i) return l;
+      const nueva = { ...l, cantidad: valor };
+      if (!String(l.valor || '').trim()) {
+        const s = sugerenciaDe(nueva);
+        if (s && Number(valor) > 0) nueva.valor = String(Math.round(s.costo * Number(valor) * 100) / 100);
+      }
+      return nueva;
+    }));
+  };
+
+  const borrador = {
+    companyId: company?.id, fecha, descripcion,
+    entradas: entradas.map(l => ({ ...l, cantidad: Number(l.cantidad) || 0, valor: Number(l.valor) || 0 })),
+    costos: costos.map(c => ({ ...c, monto: Number(c.monto) || 0 })),
+    salidas: salidas.map(l => ({ ...l, cantidad: Number(l.cantidad) || 0, valor: Number(l.valor) || 0 })),
+    reparto,
+  };
+  const { errores, avisos, ok } = validarTransformacion(borrador, { insumoPorNorm });
+  const armada = construirTransformacion(borrador);
+  const valorEntradas = armada.fila ? armada.fila.valor_entradas
+    : Math.round(borrador.entradas.reduce((a, l) => a + l.valor, 0) * 100) / 100;
+  const valorCostos = Math.round(borrador.costos.reduce((a, c) => a + c.monto, 0) * 100) / 100;
+  const aRepartir = Math.round((valorEntradas + valorCostos) * 100) / 100;
+  const valorSalidas = reparto === 'manual'
+    ? Math.round(borrador.salidas.reduce((a, l) => a + l.valor, 0) * 100) / 100
+    : (armada.fila ? armada.fila.valor_salidas : 0);
+  const cierra = Math.abs(valorSalidas - aRepartir) <= 0.05;
+
+  const guardar = async () => {
+    if (guardando) return;
+    setGuardando(true);
+    try { await onGuardar(borrador); } finally { setGuardando(false); }
+  };
+
+  const filaLinea = (l, i, setter, lista, { conValor }) => {
+    const ins = insumoDe(l.nombre);
+    const s = conValor ? sugerenciaDe(l) : null;
+    const hay = ins ? disponibleDe(ins, l.unidad) : null;
+    return (
+      <div key={i} style={{ display: 'flex', gap: 4, alignItems: 'flex-start', marginBottom: 4, flexWrap: 'wrap' }}>
+        <div style={{ flex: 2, minWidth: 160 }}>
+          <input
+            className="fi" list="jx-insumos-empresa" style={{ width: '100%' }}
+            placeholder="Nombre del insumo"
+            value={l.nombre}
+            onChange={e => setLinea(setter, i, 'nombre', e.target.value)}
+          />
+          {conValor && ins && hay != null && (
+            <div style={{ fontSize: 9.5, color: 'var(--tm)' }}>
+              hay {fmtCant(hay)} {labelUnidad(l.unidad)}
+              {s && <> · costo ≈ {fmtMonto(s.costo, s.moneda)}/{labelUnidad(l.unidad)}</>}
+            </div>
+          )}
+          {conValor && l.nombre && !ins && (
+            <div style={{ fontSize: 9.5, color: 'var(--amber)' }}>no está en el inventario de esta empresa</div>
+          )}
+        </div>
+        <input
+          className="fi" style={{ width: 76 }} type="number" min="0" step="any" placeholder="Cant."
+          value={l.cantidad}
+          onChange={e => (conValor ? cantidadDeEntrada(i, e.target.value) : setLinea(setter, i, 'cantidad', e.target.value))}
+        />
+        <input
+          className="fi" style={{ width: 70 }} placeholder="und"
+          value={l.unidad}
+          onChange={e => setLinea(setter, i, 'unidad', e.target.value)}
+        />
+        {(conValor || reparto === 'manual') && (
+          <input
+            className="fi" style={{ width: 90 }} type="number" min="0" step="0.01"
+            placeholder={conValor ? 'Valor' : 'Valor'}
+            value={l.valor}
+            onChange={e => setLinea(setter, i, 'valor', e.target.value)}
+          />
+        )}
+        {!conValor && reparto !== 'manual' && (
+          <div style={{ width: 90, fontSize: 11, textAlign: 'right', paddingTop: 6, color: 'var(--tm)' }}>
+            {armada.fila && armada.fila.salidas[i] ? fmtMonto(armada.fila.salidas[i].valor, 'PEN') : '—'}
+          </div>
+        )}
+        {reparto === 'mercado' && !conValor && (
+          <input
+            className="fi" style={{ width: 90 }} type="number" min="0" step="0.01" placeholder="Vale en mercado"
+            value={l.valorMercado || ''}
+            onChange={e => setLinea(setter, i, 'valorMercado', e.target.value)}
+          />
+        )}
+        <button
+          className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+          disabled={lista.length <= 1}
+          onClick={() => setter(prev => prev.filter((_, j) => j !== i))}
+          title={lista.length <= 1 ? 'Tiene que quedar al menos una línea' : 'Quitar esta línea'}
+        >✕</button>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 10 }}>
+      <div className="card" style={{ width: '100%', maxWidth: 760, maxHeight: '92vh', overflowY: 'auto', padding: 18, background: 'var(--bg-c)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)' }}>
+        <datalist id="jx-insumos-empresa">
+          {nombresConocidos.map(n => <option key={n} value={n} />)}
+        </datalist>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>🔁 Transformar insumos</h4>
+          <button className="btn btn-ghost btn-xs" onClick={onCerrar}>✕</button>
+        </div>
+
+        <div style={{ fontSize: 11.5, color: 'var(--ts)', background: 'var(--tint-neutral)', padding: 8, borderRadius: 6, marginBottom: 10 }}>
+          Lo que entra sale convertido en otra cosa: <strong>entran planchas, salen láminas</strong>. El valor de lo
+          que entra —más lo que costó transformarlo— es exactamente lo que vale lo que sale. Esto <strong>no</strong> es
+          un movimiento de almacén ni un asiento contable: es lo que hace que el saldo del inventario vuelva a cerrar.
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700 }}>FECHA</div>
+            <input className="fi" type="date" style={{ width: 150 }} value={fecha} onChange={e => setFecha(e.target.value)} />
+          </div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 700 }}>QUÉ PASÓ</div>
+            <input className="fi" style={{ width: '100%' }} placeholder="Corte de planchas a láminas de 30×30"
+              value={descripcion} onChange={e => setDescripcion(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--red)', marginBottom: 4 }}>ENTRA — se consume</div>
+          {entradas.map((l, i) => filaLinea(l, i, setEntradas, entradas, { conValor: true }))}
+          <button className="btn btn-ghost btn-xs" onClick={() => setEntradas(prev => [...prev, lineaVacia()])}>+ otro insumo que entra</button>
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', marginBottom: 4 }}>
+            COSTO DE TRANSFORMAR — opcional
+            <span style={{ fontWeight: 400, color: 'var(--tm)' }}> (el servicio de corte, la mano de obra: ya está facturado aparte y se suma al valor de lo que sale)</span>
+          </div>
+          {costos.map((c, i) => (
+            <div key={i} style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
+              <input className="fi" style={{ flex: 1 }} placeholder="Concepto (CORTE GUILLOTINA…)"
+                value={c.concepto} onChange={e => setCostos(prev => prev.map((x, j) => (j === i ? { ...x, concepto: e.target.value } : x)))} />
+              <input className="fi" style={{ width: 100 }} type="number" min="0" step="0.01" placeholder="Monto"
+                value={c.monto} onChange={e => setCostos(prev => prev.map((x, j) => (j === i ? { ...x, monto: e.target.value } : x)))} />
+              <button className="btn btn-ghost btn-xs" style={{ color: 'var(--red)' }}
+                onClick={() => setCostos(prev => prev.filter((_, j) => j !== i))}>✕</button>
+            </div>
+          ))}
+          <button className="btn btn-ghost btn-xs" onClick={() => setCostos(prev => [...prev, { concepto: '', monto: '' }])}>+ costo de transformación</button>
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--green)' }}>SALE — lo que se produce</span>
+            <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>Repartir el valor:</span>
+            {REPARTOS.map(r => (
+              <button key={r} className={`btn btn-xs ${reparto === r ? 'btn-blue' : 'btn-ghost'}`}
+                title={REPARTO_INFO[r].ayuda}
+                onClick={() => setReparto(r)}>{REPARTO_INFO[r].label}</button>
+            ))}
+          </div>
+          {salidas.map((l, i) => filaLinea(l, i, setSalidas, salidas, { conValor: false }))}
+          <button className="btn btn-ghost btn-xs" onClick={() => setSalidas(prev => [...prev, lineaVacia()])}>+ otro insumo que sale</button>
+        </div>
+
+        {/* LA CUENTA, SIEMPRE A LA VISTA. Si no cierra hay que enterarse antes
+            de terminar de cargar, no al apretar guardar. */}
+        <div style={{
+          padding: 10, borderRadius: 6, marginBottom: 10,
+          background: cierra ? 'rgba(46, 204, 113, 0.10)' : 'rgba(231, 76, 60, 0.10)',
+          border: `1px solid ${cierra ? 'var(--green)' : 'var(--red)'}`,
+          fontSize: 12,
+        }}>
+          <strong>{fmtMonto(valorEntradas, 'PEN')}</strong> de lo que entra
+          {valorCostos > 0 && <> + <strong>{fmtMonto(valorCostos, 'PEN')}</strong> de transformarlo</>}
+          {' = '}<strong>{fmtMonto(aRepartir, 'PEN')}</strong>
+          <span style={{ margin: '0 6px' }}>→</span>
+          sale <strong style={{ color: cierra ? 'var(--green)' : 'var(--red)' }}>{fmtMonto(valorSalidas, 'PEN')}</strong>
+          {cierra
+            ? <span style={{ color: 'var(--green)', fontWeight: 600 }}> ✓ cierra</span>
+            : <span style={{ color: 'var(--red)', fontWeight: 600 }}>
+                {' '}✕ {valorSalidas > aRepartir ? 'sobran' : 'faltan'} {fmtMonto(Math.abs(valorSalidas - aRepartir), 'PEN')}
+              </span>}
+        </div>
+
+        {errores.length > 0 && (
+          <div style={{ fontSize: 11.5, color: 'var(--red)', marginBottom: 8 }}>
+            {errores.map((e, i) => <div key={i}>• {e}</div>)}
+          </div>
+        )}
+        {avisos.length > 0 && (
+          <div style={{ fontSize: 11.5, color: 'var(--amber)', marginBottom: 8 }}>
+            {avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn btn-ghost btn-sm" onClick={onCerrar}>Cancelar</button>
+          <button className="btn btn-blue btn-sm" disabled={!ok || guardando} onClick={guardar}>
+            {guardando ? 'Registrando…' : 'Registrar transformación'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FichaEmpresa({ company, obrasDeEmpresa, evidencias = [], refreshEvidencias }) {
   const dato = (label, valor, ancho = 1) => (
     <div style={{ gridColumn: `span ${ancho}` }}>
