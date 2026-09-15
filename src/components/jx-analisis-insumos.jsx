@@ -66,6 +66,7 @@ import {
 } from "../lib/insumo-o-servicio.js";
 import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
+import { candidatosPorMismoInsumo, unirCandidatos } from "../lib/correlacion-por-clasificacion.js";
 import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO, unidadesEnConflicto } from "../lib/bandas-correlacion.js";
 import { normUnidad, labelUnidad, factorConocido } from "../lib/inventario-empresa.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
@@ -543,17 +544,39 @@ function AnalisisInsumosPage({ showToast }) {
   //
   // Cada árbol por separado: un "REDUCCION PVC" nunca compite contra un
   // "ALQUILER DE VOLQUETE" por una raíz común.
+  // ── LA SEGUNDA FUENTE DE CANDIDATOS (tanda 9, 15-set-2026) ───────
+  // Gabriel: «acabé las recomendaciones y pensé que eso sería todo pero
+  // después de ir clasificando me parece que hace falta correlacionar más».
+  // Y hace falta: `sugerirCandidatos` propone por PARECIDO DE TEXTO, y al
+  // clasificar aparece una señal que antes no existía — dos descripciones
+  // pegadas al MISMO insumo del catálogo. Medido el 15-set: 170 pares que el
+  // texto nunca acercó. Ver el encabezado de correlacion-por-clasificacion.js.
+  const decCatHook = window.__hooks.useInsumoCategorias?.() || { data: [] };
+  const catHookCorr = window.__hooks.useCatalogoInsumos?.() || { data: [] };
+  const decisionesClasif = uM(
+    () => (decCatHook.data || []).filter(d => d && !d.deleted_at && !!d.demo === esPrueba),
+    [decCatHook.data, esPrueba],
+  );
+  const nombresCatalogo = uM(
+    () => new Map((catHookCorr.data || []).filter(r => r && !r.deleted_at).map(r => [r.id, r.nombre])),
+    [catHookCorr.data],
+  );
+  const porInsumoDe = uC((nombres) => candidatosPorMismoInsumo({
+    decisiones: decisionesClasif, nombresVisibles: nombres,
+    paresResueltos: resueltos, grupoDe, nombresCatalogo,
+  }), [decisionesClasif, resueltos, grupoDe, nombresCatalogo]);
+
   const candidatosInsumos = uM(
-    () => sugerirCandidatos(nombresInsumos, resueltos, grupoDe),
-    [nombresInsumos, resueltos, grupoDe]
+    () => unirCandidatos(sugerirCandidatos(nombresInsumos, resueltos, grupoDe), porInsumoDe(nombresInsumos)),
+    [nombresInsumos, resueltos, grupoDe, porInsumoDe]
   );
   const candidatosServicios = uM(
-    () => sugerirCandidatos(nombresServicios, resueltos, grupoDe),
-    [nombresServicios, resueltos, grupoDe]
+    () => unirCandidatos(sugerirCandidatos(nombresServicios, resueltos, grupoDe), porInsumoDe(nombresServicios)),
+    [nombresServicios, resueltos, grupoDe, porInsumoDe]
   );
   const candidatosOtros = uM(
-    () => sugerirCandidatos(nombresOtros, resueltos, grupoDe),
-    [nombresOtros, resueltos, grupoDe]
+    () => unirCandidatos(sugerirCandidatos(nombresOtros, resueltos, grupoDe), porInsumoDe(nombresOtros)),
+    [nombresOtros, resueltos, grupoDe, porInsumoDe]
   );
   const [subTabCorr, setSubTabCorr] = uS('insumos');
   const [verDescartadas, setVerDescartadas] = uS(false);
@@ -1435,9 +1458,26 @@ function AnalisisInsumosPage({ showToast }) {
                         <span className="badge b-blue" style={{ marginLeft: 8 }}>
                           {dentro.length} {dentro.length === 1 ? 'variante' : 'variantes'}
                         </span>
-                        <span className="badge b-green" style={{ marginLeft: 6 }}>
-                          {Math.round((c.score || 0) * 100)}% similitud
-                        </span>
+                        {/* 🔴 DE DÓNDE SALIÓ ESTE CANDIDATO (tanda 9). Los que
+                            vienen de «quedaron en el mismo insumo» NO tienen
+                            parecido de texto medido — su señal es una decisión
+                            que tomó una persona—, y mostrarles un «100%
+                            similitud» sería mentir sobre por qué están ahí.
+                            Además la pregunta es otra: acá un «son distintos» no
+                            es una correlación perdida, es el aviso de que una de
+                            las dos quedó mal clasificada. */}
+                        {c.motivo === 'mismo_insumo' ? (
+                          <span className="badge b-purple" style={{ marginLeft: 6 }}
+                            title={c.insumo
+                              ? `Las ${c.variantes.length} quedaron pegadas a «${c.insumo}» al clasificar. Si NO son lo mismo, alguna está mal clasificada.`
+                              : 'Quedaron pegadas al mismo insumo del catálogo al clasificar.'}>
+                            🗂 mismo insumo{c.insumo ? `: ${c.insumo}` : ''}
+                          </span>
+                        ) : (
+                          <span className="badge b-green" style={{ marginLeft: 6 }}>
+                            {Math.round((c.score || 0) * 100)}% similitud
+                          </span>
+                        )}
                         {fuera.length > 0 && (
                           <span className="badge b-amber" style={{ marginLeft: 6 }}>
                             {fuera.length} fuera del grupo
@@ -1555,7 +1595,16 @@ function AnalisisInsumosPage({ showToast }) {
                       <span><strong><NombreConDiferencias nombre={nombreA} otro={nombreB} /></strong><BadgeUnidad unidad={uA} choca={chocaU} /></span>
                       <span style={{ color: 'var(--tm)' }}>≈</span>
                       <span><strong><NombreConDiferencias nombre={nombreB} otro={nombreA} /></strong><BadgeUnidad unidad={uB} choca={chocaU} /></span>
-                      <span className="badge b-gray" style={{ fontSize: 9 }}>{Math.round(par.score * 100)}% parecido</span>
+                      {cand.motivo === 'mismo_insumo' ? (
+                        <span className="badge b-purple" style={{ fontSize: 9 }}
+                          title={cand.insumo
+                            ? `Las dos quedaron pegadas a «${cand.insumo}» al clasificar. Si NO son lo mismo, alguna está mal clasificada.`
+                            : 'Quedaron pegadas al mismo insumo del catálogo al clasificar.'}>
+                          🗂 mismo insumo{cand.insumo ? `: ${cand.insumo}` : ''}
+                        </span>
+                      ) : (
+                        <span className="badge b-gray" style={{ fontSize: 9 }}>{Math.round(par.score * 100)}% parecido</span>
+                      )}
                     </div>
                     <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
                       {ma && <>«{ma.nombre}» visto en {ma.doc} · {ma.proveedorNombre} · {fmtPrecio(ma.precio, ma.moneda)}. </>}
