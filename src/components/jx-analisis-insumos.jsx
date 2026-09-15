@@ -55,7 +55,7 @@ import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { useChart } from "../lib/chart-loader.js";
 import {
   resolverPares, construirGrupos, sugerirCandidatos, crearParesDeCluster, normInsumo,
-  resaltarDiferencias,
+  resaltarDiferencias, camposDeFactor, tieneFactor,
 } from "../lib/insumo-correlacion.js";
 import {
   extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
@@ -66,8 +66,8 @@ import {
 } from "../lib/insumo-o-servicio.js";
 import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
-import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO } from "../lib/bandas-correlacion.js";
-import { normUnidad, labelUnidad } from "../lib/inventario-empresa.js";
+import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO, unidadesEnConflicto } from "../lib/bandas-correlacion.js";
+import { normUnidad, labelUnidad, factorConocido } from "../lib/inventario-empresa.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
@@ -103,6 +103,82 @@ function NombreConDiferencias({ nombre, otro }) {
         </React.Fragment>
       ))}
     </>
+  );
+}
+
+/**
+ * EL FACTOR ENTRE PRESENTACIONES (tanda 5, 15-set-2026).
+ *
+ * Gabriel, probando la tanda 2: «encontré un caso sobre un par de guantes en
+ * unidades y el otro en par, que resulta que sí son lo mismo». SON lo mismo y
+ * unirlos es correcto — lo que faltaba era poder SUMARLOS. Sin factor, el
+ * inventario deja «20 par» y «15 und» en dos filas que nadie puede restar.
+ *
+ * 🔴 EL FACTOR ES OPCIONAL Y SE PUEDE SALTEAR. «Unir sin factor» hace
+ * exactamente lo de siempre, y es lo correcto cuando nadie sabe todavía
+ * cuántos kilos pesa un rollo de alambre: un número inventado es peor que dos
+ * filas separadas, porque dos filas se ven y un total falso no.
+ */
+function FactorPresentacion({ unidadA, unidadB, nombreA, nombreB, onUnir, onCancelar }) {
+  // La base arranca en la unidad de B y el factor en lo que la aritmética ya
+  // sabe (una docena son doce). Si no se sabe, el campo queda vacío: no se
+  // propone un número inventado — se aceptaría sin mirar.
+  const [base, setBase] = uS(unidadB);
+  const otra = base === unidadB ? unidadA : unidadB;
+  const sugerido = factorConocido(otra, base);
+  const [factor, setFactor] = uS(sugerido != null ? String(sugerido) : '');
+  uE(() => {
+    const s = factorConocido(base === unidadB ? unidadA : unidadB, base);
+    setFactor(s != null ? String(s) : '');
+  }, [base, unidadA, unidadB]);
+
+  const n = Number(String(factor).replace(',', '.'));
+  const valido = Number.isFinite(n) && n > 0;
+  const nombreDeOtra = otra === unidadA ? nombreA : nombreB;
+
+  return (
+    <div style={{
+      marginTop: 6, padding: '8px 10px', borderRadius: 6, fontSize: 11.5,
+      background: 'rgba(58,163,255,.07)', border: '1px solid rgba(58,163,255,.3)',
+    }} onClick={e => e.stopPropagation()}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        📏 Son el mismo insumo en otra presentación
+      </div>
+      <div style={{ color: 'var(--ts)', marginBottom: 6, lineHeight: 1.5 }}>
+        Para que las cantidades se puedan sumar en el inventario hace falta saber cómo se convierte una
+        en la otra. Si no lo sabés todavía, unilos igual: quedan en dos filas separadas, que es lo que
+        pasa hoy — y se puede completar después.
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span>Contar todo en:</span>
+        <select className="fi" style={{ width: 'auto' }} value={base} onChange={e => setBase(e.target.value)}>
+          <option value={unidadB}>{labelUnidad(unidadB)}</option>
+          <option value={unidadA}>{labelUnidad(unidadA)}</option>
+        </select>
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+        <span>1 {labelUnidad(otra)} de «{String(nombreDeOtra).slice(0, 28)}{String(nombreDeOtra).length > 28 ? '…' : ''}» =</span>
+        <input className="fi" style={{ width: 90 }} inputMode="decimal" value={factor}
+          placeholder="¿cuántos?" onChange={e => setFactor(e.target.value)} />
+        <span>{labelUnidad(base)}</span>
+        {sugerido != null && <span className="badge b-gray" style={{ fontSize: 9 }}>propuesto</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+        <button className="btn btn-green btn-xs" disabled={!valido}
+          title={valido ? undefined : 'Escribí cuántas unidades entran, o usá «Unir sin factor»'}
+          onClick={() => onUnir({
+            unidadBase: base,
+            unidadA, factorA: unidadA === base ? 1 : n,
+            unidadB, factorB: unidadB === base ? 1 : n,
+          })}>
+          ✓ Unir y convertir
+        </button>
+        <button className="btn btn-ghost btn-xs" onClick={() => onUnir(null)}>
+          Unir sin factor
+        </button>
+        <button className="btn btn-ghost btn-xs" onClick={onCancelar}>Cancelar</button>
+      </div>
+    </div>
   );
 }
 
@@ -479,6 +555,8 @@ function AnalisisInsumosPage({ showToast }) {
   );
   const [subTabCorr, setSubTabCorr] = uS('insumos');
   const [verDescartadas, setVerDescartadas] = uS(false);
+  // Qué candidato tiene abierto el paso del factor de conversión (tanda 5).
+  const [factorAbierto, setFactorAbierto] = uS(null);
   // 'todos' | 'grupos' | 'pares' — el filtro reemplaza a las dos secciones.
   const [formaCorr, setFormaCorr] = uS('todos');
   const candidatosTodos = subTabCorr === 'servicios' ? candidatosServicios
@@ -633,7 +711,8 @@ function AnalisisInsumosPage({ showToast }) {
   // `silencioso`: para el barrido de IA (14-sep) — sin toast por ítem, y sin
   // el confirm() de contradicción (bloquearía el recorrido con un diálogo
   // nativo): si hay contradicción, ese par se salta y queda para revisar a mano.
-  const decidir = async (par, relacion, { silencioso = false } = {}) => {
+  // `factor`: { unidadBase, unidadA, factorA, unidadB, factorB } o null (tanda 5).
+  const decidir = async (par, relacion, { silencioso = false, factor = null } = {}) => {
     if (decidiendoRef.current) return 'saltada';
     decidiendoRef.current = true;
     try {
@@ -667,6 +746,13 @@ function AnalisisInsumosPage({ showToast }) {
         id: window.__newId(),
         nombre_a: par.nombre_a, nombre_b: par.nombre_b,
         relacion, canonico, fuente: 'manual', deleted_at: null,
+        // ── EL FACTOR (tanda 5) ────────────────────────────────────
+        // 🔴 SIEMPRE los cinco campos, aunque no haya factor: el CHECK de la
+        // mig 214 es «todo o nada» y Dexie no lo valida. Una fila a medias se
+        // guarda local y rebota en el push con 23514, dejando el sync en
+        // reintento eterno (regla 9). `camposDeFactor(null)` devuelve los
+        // cinco en null, que es lo que corresponde a «unir sin factor».
+        ...camposDeFactor(relacion === 'mismo' ? factor : null),
       });
       // El par quedó resuelto: la propuesta de la IA ya no espera a nadie.
       // La clave es la misma que arma `sugerirCandidatos` para un candidato
@@ -1459,9 +1545,26 @@ function AnalisisInsumosPage({ showToast }) {
                       {mb && <>«{mb.nombre}» visto en {mb.doc} · {mb.proveedorNombre} · {fmtPrecio(mb.precio, mb.moneda)}.</>}
                     </div>
                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                      <button className="btn btn-green btn-xs" onClick={() => decidir(par, 'mismo').catch(() => {})}>✓ Mismo insumo</button>
+                      {/* Con las unidades en conflicto, «Mismo insumo» abre el
+                          paso del factor en vez de guardar de una (tanda 5).
+                          Ahí adentro está «Unir sin factor», que es
+                          exactamente lo que hacía este botón antes. */}
+                      <button className="btn btn-green btn-xs"
+                        onClick={() => (chocaU ? setFactorAbierto(cand.id) : decidir(par, 'mismo').catch(() => {}))}>
+                        ✓ Mismo insumo
+                      </button>
                       <button className="btn btn-ghost btn-xs" onClick={() => decidir(par, 'distinto').catch(() => {})}>✗ Son distintos</button>
                     </div>
+                    {chocaU && factorAbierto === cand.id && (
+                      <FactorPresentacion
+                        unidadA={uA} unidadB={uB} nombreA={nombreA} nombreB={nombreB}
+                        onCancelar={() => setFactorAbierto(null)}
+                        onUnir={(factor) => {
+                          setFactorAbierto(null);
+                          decidir(par, 'mismo', { factor }).catch(() => {});
+                        }}
+                      />
+                    )}
                     {/* La tercera respuesta (tanda 3): esto no es mercadería.
                         Va por nombre y no por par — ver `descartarNombre`. */}
                     <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1498,14 +1601,61 @@ function AnalisisInsumosPage({ showToast }) {
           <div className="card card-p">
             <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>Decisiones tomadas ({decisiones.length})</div>
             {decisiones.length === 0 && <div style={{ color: 'var(--tm)', fontStyle: 'italic', fontSize: 12 }}>Todavía no confirmaste ninguna correlación.</div>}
+            {/* ── EL FACTOR SOBRE LO YA DECIDIDO (tanda 5) ─────────────
+                Los trece pares con unidades incompatibles YA estaban unidos
+                antes de que existiera el factor. Si solo se pudiera declarar
+                al unir, esos trece —que son justamente los que lo necesitan—
+                quedarían afuera para siempre. */}
             <div style={{ display: 'grid', gap: 5, maxHeight: 340, overflow: 'auto' }}>
-              {decisiones.map(f => (
-                <div key={f.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, padding: '5px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
-                  <span className={`badge ${f.relacion === 'mismo' ? 'b-green' : 'b-red'}`} style={{ fontSize: 9 }}>{f.relacion === 'mismo' ? '= mismo' : '≠ distintos'}</span>
-                  <span style={{ flex: 1, minWidth: 0 }}>{f.nombre_a} <span style={{ color: 'var(--tm)' }}>↔</span> {f.nombre_b}</span>
-                  <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} title="Corregir: invierte la decisión" onClick={() => cambiarDecision(f)}>↺ Cambiar</button>
+              {decisiones.map(f => {
+                const ua = unidadDe(f.nombre_a), ub = unidadDe(f.nombre_b);
+                const chocan = f.relacion === 'mismo' && !!unidadesEnConflicto(ua, ub);
+                return (
+                <div key={f.id} style={{ display: 'grid', gap: 4, fontSize: 11.5, padding: '5px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span className={`badge ${f.relacion === 'mismo' ? 'b-green' : 'b-red'}`} style={{ fontSize: 9 }}>{f.relacion === 'mismo' ? '= mismo' : '≠ distintos'}</span>
+                    <span style={{ flex: 1, minWidth: 0 }}>{f.nombre_a} <span style={{ color: 'var(--tm)' }}>↔</span> {f.nombre_b}</span>
+                    {tieneFactor(f) && (
+                      <span className="badge b-blue" style={{ fontSize: 9 }}
+                        title={`1 ${labelUnidad(f.unidad_a)} = ${f.factor_a} ${labelUnidad(f.unidad_base)} · 1 ${labelUnidad(f.unidad_b)} = ${f.factor_b} ${labelUnidad(f.unidad_base)}`}>
+                        📏 en {labelUnidad(f.unidad_base)}
+                      </span>
+                    )}
+                    {chocan && !tieneFactor(f) && (
+                      <button className="btn btn-xs btn-amber" style={{ fontSize: 10 }}
+                        title={`Se facturan en ${labelUnidad(ua)} y en ${labelUnidad(ub)}: mientras no digas cómo se convierten, sus cantidades quedan en dos filas del inventario`}
+                        onClick={() => setFactorAbierto(factorAbierto === f.id ? null : f.id)}>
+                        📏 Poner factor
+                      </button>
+                    )}
+                    {tieneFactor(f) && (
+                      <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                        title="Sacar el factor: las cantidades vuelven a contarse por separado"
+                        onClick={() => corrHook.update(f.id, { ...camposDeFactor(null), fuente: 'manual' })
+                          .then(() => showToast?.('✓ Factor quitado', 'green'))
+                          .catch(e => showToast?.('Error: ' + (e.message || e), 'red'))}>
+                        ✕ factor
+                      </button>
+                    )}
+                    <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }} title="Corregir: invierte la decisión" onClick={() => cambiarDecision(f)}>↺ Cambiar</button>
+                  </div>
+                  {factorAbierto === f.id && (
+                    <FactorPresentacion
+                      unidadA={ua} unidadB={ub}
+                      nombreA={f.nombre_a} nombreB={f.nombre_b}
+                      onCancelar={() => setFactorAbierto(null)}
+                      onUnir={(factor) => {
+                        setFactorAbierto(null);
+                        if (!factor) return;      // «Unir sin factor» acá no cambia nada
+                        corrHook.update(f.id, { ...camposDeFactor(factor), fuente: 'manual' })
+                          .then(() => showToast?.('✓ Factor guardado — el inventario ya los suma juntos', 'green'))
+                          .catch(e => showToast?.('Error: ' + (e.message || e), 'red'));
+                      }}
+                    />
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </>

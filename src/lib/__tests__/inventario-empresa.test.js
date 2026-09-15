@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normUnidad, labelUnidad, resumenFinancieroEmpresa, inventarioDeEmpresa, filtrarInventario,
   saldosNegativos, tieneSaldoNegativo, clasificarLineaPorTexto, aniosDeLineas, filtrarPorFlujo,
+  factorConocido,
 } from '../inventario-empresa';
 
 import { extraerLineasDeFacturas } from '../analisis-insumos';
@@ -596,5 +597,108 @@ describe('inventarioDeEmpresa — «esto no va al inventario» (tanda 3)', () =>
     const sinSet = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_NOINV), { companyId: EMP_A });
     expect(conSet.insumos.length).toBe(sinSet.insumos.length);
     expect(conSet.totales.lineasNoInventariables).toBe(0);
+  });
+});
+
+// ── TANDA 5: los guantes que sí eran lo mismo ────────────────────────
+// Gabriel, 15-set: «encontré un caso sobre un par de guantes en unidades y el
+// otro en par, que resulta que sí son lo mismo». Unirlos siempre estuvo bien;
+// lo que faltaba era poder SUMARLOS en una sola fila.
+describe('inventarioDeEmpresa — factor entre presentaciones', () => {
+  const MOVS_GUANTES = [{
+    id: 'g1', company_id: EMP_A, date: '2026-09-01', type: 'cost', clase: 'compra',
+    currency: 'PEN', amount: 500, third_party_name: 'EPP SAC', document_number: 'F-1',
+    notas: { items_factura: [
+      { descripcion: 'GUANTES DE CUERO', unidad: 'par', cantidad: 20, precio_unitario: 15, tipo_insumo: 'epp' },
+      { descripcion: 'GUANTE DE CUERO REFORZADO', unidad: 'und', cantidad: 15, precio_unitario: 16, tipo_insumo: 'epp' },
+    ] },
+  }];
+  const unidos = (extra) => {
+    const pares = resolverPares([{
+      nombre_a: 'guantes de cuero', nombre_b: 'guante de cuero reforzado',
+      relacion: 'mismo', fuente: 'manual', updated_at: '2026-09-15T10:00:00Z', ...extra,
+    }]);
+    return construirGrupos(pares);
+  };
+
+  it('SIN factor quedan dos cantidades que nadie puede sumar (lo de hoy)', () => {
+    const { grupoDe, grupos, factorDe } = unidos({});
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_GUANTES), {
+      companyId: EMP_A, grupoDe, grupos, factorDe,
+    });
+    expect(inv.insumos).toHaveLength(1);                 // un solo insumo…
+    expect(inv.insumos[0].comprado.cantidades).toHaveLength(2);   // …con dos filas
+  });
+
+  it('CON factor (1 par = 1 und) quedan en UNA sola fila', () => {
+    const { grupoDe, grupos, factorDe } = unidos({
+      unidad_base: 'und', unidad_a: 'par', factor_a: 1, unidad_b: 'und', factor_b: 1,
+    });
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_GUANTES), {
+      companyId: EMP_A, grupoDe, grupos, factorDe,
+    });
+    const c = inv.insumos[0].comprado;
+    expect(c.cantidades).toHaveLength(1);
+    expect(c.cantidades[0]).toMatchObject({ unidad: 'und', cantidad: 35 });   // 20 + 15
+    expect(c.convertidas).toBe(2);
+  });
+
+  it('el caso de los tarugos: una docena son doce unidades', () => {
+    const movs = [{
+      id: 't1', company_id: EMP_A, date: '2026-09-01', type: 'cost', clase: 'compra',
+      currency: 'PEN', amount: 100, document_number: 'F-2',
+      notas: { items_factura: [
+        { descripcion: 'TARUGOS 3/8', unidad: 'docena', cantidad: 5, precio_unitario: 10 },
+        { descripcion: 'TARUGO PVC 3/8', unidad: 'und', cantidad: 8, precio_unitario: 1 },
+      ] },
+    }];
+    const { grupoDe, grupos, factorDe } = construirGrupos(resolverPares([{
+      nombre_a: 'tarugos 3 8', nombre_b: 'tarugo pvc 3 8',
+      relacion: 'mismo', fuente: 'manual', updated_at: '2026-09-15T10:00:00Z',
+      unidad_base: 'und', unidad_a: 'docena', factor_a: 12, unidad_b: 'und', factor_b: 1,
+    }]));
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(movs), { companyId: EMP_A, grupoDe, grupos, factorDe });
+    expect(inv.insumos[0].comprado.cantidades[0]).toMatchObject({ unidad: 'und', cantidad: 68 });  // 5×12 + 8
+  });
+
+  it('sin factorDe se comporta exactamente como antes', () => {
+    const { grupoDe, grupos } = unidos({
+      unidad_base: 'und', unidad_a: 'par', factor_a: 1, unidad_b: 'und', factor_b: 1,
+    });
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_GUANTES), { companyId: EMP_A, grupoDe, grupos });
+    expect(inv.insumos[0].comprado.cantidades).toHaveLength(2);
+    expect(inv.insumos[0].comprado.convertidas).toBe(0);
+  });
+
+  it('el saldo (comprado − vendido) también cierra en la unidad base', () => {
+    const conVenta = [...MOVS_GUANTES, {
+      id: 'g2', company_id: EMP_A, date: '2026-09-05', type: 'income', clase: 'venta',
+      currency: 'PEN', amount: 200, document_number: 'E-1',
+      notas: { items_factura: [{ descripcion: 'GUANTES DE CUERO', unidad: 'par', cantidad: 10, precio_unitario: 20 }] },
+    }];
+    const { grupoDe, grupos, factorDe } = unidos({
+      unidad_base: 'und', unidad_a: 'par', factor_a: 1, unidad_b: 'und', factor_b: 1,
+    });
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(conVenta), { companyId: EMP_A, grupoDe, grupos, factorDe });
+    expect(inv.insumos[0].saldo).toHaveLength(1);
+    expect(inv.insumos[0].saldo[0]).toMatchObject({ unidad: 'und', cantidad: 25 });   // 35 − 10
+  });
+});
+
+describe('factorConocido — lo aritmético se propone, lo demás se pregunta', () => {
+  it('propone lo que no depende del insumo', () => {
+    expect(factorConocido('docena', 'und')).toBe(12);
+    expect(factorConocido('DOCENAS', 'unidad')).toBe(12);
+    expect(factorConocido('millar', 'und')).toBe(1000);
+    expect(factorConocido('kg', 'g')).toBe(1000);
+    expect(factorConocido('und', 'und')).toBe(1);
+  });
+
+  it('🔴 NO inventa lo que depende del insumo: un número falso se acepta sin mirar', () => {
+    expect(factorConocido('und', 'kg')).toBe(null);     // ¿cuánto pesa un rollo?
+    expect(factorConocido('par', 'und')).toBe(null);    // ¿cuenta pares o guantes sueltos?
+    expect(factorConocido('m', 'und')).toBe(null);      // ¿de cuántos metros es la tira?
+    expect(factorConocido('bolsa', 'kg')).toBe(null);
+    expect(factorConocido('', 'und')).toBe(null);
   });
 });

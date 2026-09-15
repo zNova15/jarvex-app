@@ -71,6 +71,53 @@ export function resolverPares(filas, opts = {}) {
   return porPar;
 }
 
+// ── EL FACTOR ENTRE PRESENTACIONES (tanda 5, 15-set-2026) ───────────
+//
+// Gabriel, probando la tanda 2: «encontré un caso sobre un par de guantes en
+// unidades y el otro en par, que resulta que sí son lo mismo». Exacto: SON lo
+// mismo y unirlos es correcto. Lo que faltaba era poder SUMARLOS — el
+// inventario los dejaba en dos filas que nadie puede restar («20 par» y
+// «15 und») y el comparador se apagaba para ese insumo.
+//
+// Ver la cabecera de la mig 214: el factor NO es un `relacion` nuevo, son
+// columnas opcionales sobre un par que ya es 'mismo'. Quien no las mira se
+// comporta igual que antes.
+
+/**
+ * 🔴 EL ÚNICO CAMINO PARA ESCRIBIR LOS CAMPOS DE FACTOR.
+ *
+ * La mig 214 tiene un CHECK de «todo o nada» y Dexie NO valida CHECKs: una
+ * fila con tres de los cinco campos se guarda local y REBOTA en el push con
+ * 23514, dejando el sync en reintento eterno (regla 9 del CLAUDE.md). Esta
+ * función arma los cinco juntos o los cinco en null, y es la que tiene que
+ * usar toda la app — nunca escribir `factor_a` a mano.
+ *
+ * @param spec  { unidadBase, unidadA, factorA, unidadB, factorB } o null
+ * @returns el objeto de campos listo para la fila (los cinco, siempre).
+ */
+export function camposDeFactor(spec) {
+  const vacio = { unidad_base: null, unidad_a: null, factor_a: null, unidad_b: null, factor_b: null };
+  if (!spec) return vacio;
+  const { unidadBase, unidadA, unidadB } = spec;
+  const fa = Number(spec.factorA);
+  const fb = Number(spec.factorB);
+  // Un factor de 0 o negativo no convierte nada: convertiría todo en cero, que
+  // es peor que no convertir. Se trata como «sin factor», no como error —
+  // dejar pasar un 0 al push sería exactamente el rebote 23514 que evitamos.
+  if (!unidadBase || !unidadA || !unidadB) return vacio;
+  if (!Number.isFinite(fa) || fa <= 0 || !Number.isFinite(fb) || fb <= 0) return vacio;
+  return {
+    unidad_base: String(unidadBase),
+    unidad_a: String(unidadA), factor_a: fa,
+    unidad_b: String(unidadB), factor_b: fb,
+  };
+}
+
+/** ¿Esta fila de correlación trae un factor usable? */
+export const tieneFactor = (f) =>
+  !!(f && f.unidad_base && f.unidad_a && f.unidad_b
+    && Number(f.factor_a) > 0 && Number(f.factor_b) > 0);
+
 // Grupos de equivalencia (union-find sobre los pares 'mismo' resueltos).
 // → { grupoDe: Map(nombreNorm → gid), grupos: Map(gid → {nombres:[], canonico}) }
 // El canónico del grupo: el `canonico` más reciente entre sus pares; si nadie
@@ -92,12 +139,14 @@ export function construirGrupos(paresResueltos) {
   };
 
   const canonicos = [];   // [{a, b, canonico, updated_at}]
+  const conFactor = [];   // [{a, b, unidad_base, ..., updated_at}] — tanda 5
   for (const f of paresResueltos.values()) {
     if (f.relacion !== 'mismo') continue;
     const a = normInsumo(f.nombre_a), b = normInsumo(f.nombre_b);
     if (!a || !b) continue;
     union(a, b);
     if (f.canonico) canonicos.push({ a, canonico: f.canonico, updated_at: String(f.updated_at || '') });
+    if (tieneFactor(f)) conFactor.push({ a, b, f, updated_at: String(f.updated_at || '') });
   }
 
   const grupoDe = new Map();
@@ -117,7 +166,73 @@ export function construirGrupos(paresResueltos) {
     if (!g.canonico) g.canonico = g.nombres.reduce((m, n) => (n.length > m.length ? n : m), g.nombres[0] || '');
     delete g._canonicoAt;
   }
-  return { grupoDe, grupos };
+
+  // ── LOS FACTORES DEL GRUPO (tanda 5) ────────────────────────────
+  // Un grupo tiene UNA unidad base: la del par CON FACTOR más reciente. Con
+  // varios pares declarando bases distintas (alguien puso «und» y después
+  // «kg»), gana el último — es la misma regla de desempate que ya usa el
+  // canónico, y la última decisión de una persona es la que vale.
+  //
+  // Después, cada nombre toma su factor del par más reciente donde aparece
+  // Y cuya base coincide con la del grupo. Los pares que declaran otra base
+  // se ignoran: convertir la mitad del grupo a kilos y la otra mitad a
+  // unidades daría un total que no significa nada.
+  //
+  // 🔴 EL FACTOR ES POR (NOMBRE, UNIDAD DE ORIGEN), no por nombre a secas.
+  // Hay nombres que aparecen facturados en dos unidades según el proveedor,
+  // y aplicarle a una línea en kilos el factor que se declaró para las
+  // docenas es fabricar una cantidad. Ver la mig 214.
+  const baseDeGrupo = new Map();   // gid → { unidad_base, at }
+  for (const c of conFactor) {
+    const gid = grupoDe.get(c.a);
+    if (!gid) continue;
+    const prev = baseDeGrupo.get(gid);
+    if (!prev || c.updated_at >= prev.at) baseDeGrupo.set(gid, { unidad_base: c.f.unidad_base, at: c.updated_at });
+  }
+
+  // nombreNorm → { unidadBase, desde: Map(unidadOrigen → factor) }
+  const factorDe = new Map();
+  const anotar = (nombre, unidadOrigen, factor, unidadBase, at) => {
+    const gid = grupoDe.get(nombre);
+    if (!gid) return;
+    if (baseDeGrupo.get(gid)?.unidad_base !== unidadBase) return;   // otra base: se ignora
+    if (!factorDe.has(nombre)) factorDe.set(nombre, { unidadBase, desde: new Map(), _at: new Map() });
+    const e = factorDe.get(nombre);
+    const prevAt = e._at.get(unidadOrigen);
+    if (prevAt != null && at < prevAt) return;                      // ya hay uno más nuevo
+    e.desde.set(unidadOrigen, Number(factor));
+    e._at.set(unidadOrigen, at);
+  };
+  for (const c of conFactor) {
+    anotar(c.a, c.f.unidad_a, c.f.factor_a, c.f.unidad_base, c.updated_at);
+    anotar(c.b, c.f.unidad_b, c.f.factor_b, c.f.unidad_base, c.updated_at);
+  }
+  for (const e of factorDe.values()) delete e._at;
+  for (const [gid, b] of baseDeGrupo) {
+    const g = grupos.get(gid);
+    if (g) g.unidadBase = b.unidad_base;
+  }
+
+  return { grupoDe, grupos, factorDe };
+}
+
+/**
+ * Cuánto suma una línea, en la unidad base de su grupo.
+ *
+ * → { cantidad, unidad } — o null si no hay factor que aplicar, y entonces el
+ *   llamador suma como siempre, en la unidad de la línea.
+ *
+ * Devuelve null (y NO convierte) cuando la unidad de la línea no es aquella
+ * para la que se declaró el factor: el mismo nombre puede venir en docenas de
+ * un proveedor y en unidades de otro, y aplicar el factor de las docenas a
+ * una línea en unidades multiplicaría por doce una cantidad que ya estaba bien.
+ */
+export function convertirALaBase(nombreNorm, unidadLinea, cantidad, factorDe) {
+  const e = factorDe && factorDe.get(nombreNorm);
+  if (!e || !e.unidadBase) return null;
+  const f = e.desde.get(unidadLinea);
+  if (!(Number(f) > 0)) return null;
+  return { cantidad: Number(cantidad) * Number(f), unidad: e.unidadBase };
 }
 
 // Clave de agrupación para un nombre cualquiera (miembro de grupo → gid;

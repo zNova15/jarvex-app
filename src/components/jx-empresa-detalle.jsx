@@ -241,7 +241,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   );
   const lineas = uMD(() => extraerLineasDeFacturas(movs, { demo: esPrueba }), [movs, esPrueba]);
   const resueltos = uMD(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
-  const { grupoDe, grupos } = uMD(() => construirGrupos(resueltos), [resueltos]);
+  const { grupoDe, grupos, factorDe } = uMD(() => construirGrupos(resueltos), [resueltos]);
   // ── Bloques temporales (Tanda 3) ─────────────────────────────────────
   // 'historico' = sin filtro | 'anio' = año completo | 'mes' = mes puntual
   const [periodoInv, setPeriodoInv] = uSD('historico');
@@ -279,11 +279,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const descartadasInv = uMD(() => noInventariables(decisHook.data || []), [decisHook.data]);
   const inv = uMD(
     () => inventarioDeEmpresa(lineas, {
-      companyId: company?.id, grupoDe, grupos,
+      companyId: company?.id, grupoDe, grupos, factorDe,
       desde: desdePeriodo, hasta: hastaPeriodo,
       noInventariables: descartadasInv,
     }),
-    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo, descartadasInv]
+    [lineas, company?.id, grupoDe, grupos, factorDe, desdePeriodo, hastaPeriodo, descartadasInv]
   );
   const tiposPresentes = uMD(() => {
     const s = new Set();
@@ -929,6 +929,12 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {tieneSaldoNegativo(ins) && (
                               <span className="badge b-red" style={{ fontSize: 9 }} title="Vendió más de lo que compró: falta cargar la compra, está en otra empresa del grupo, o está escrita con otro nombre">
                                 stock negativo
+                              </span>
+                            )}
+                            {(ins.comprado.convertidas + ins.vendido.convertidas) > 0 && (
+                              <span className="badge b-blue" style={{ fontSize: 9 }}
+                                title="Este insumo se factura en más de una presentación y alguien declaró cómo se convierten: las cantidades están sumadas en una sola unidad">
+                                📏 convertido
                               </span>
                             )}
                             {ins.rebajadas > 0 && (

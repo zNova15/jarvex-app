@@ -26,7 +26,7 @@
 //  · Esto es inventario COMPRADO según facturas, NO stock: los consumos de obra
 //    viven en almacén por obra. La UI tiene que decirlo.
 // ═══════════════════════════════════════════════════════════════════
-import { claveGrupoDe, normInsumo } from './insumo-correlacion.js';
+import { claveGrupoDe, normInsumo, convertirALaBase } from './insumo-correlacion.js';
 import { convertirMoneda } from './tipo-cambio.js';
 
 // ── Clasificador de línea por texto (Tanda 3) ─────────────────────────
@@ -215,6 +215,37 @@ const LABEL_UNIDAD = {
 /** Etiqueta legible de una unidad canónica (la propia clave si no se conoce). */
 export const labelUnidad = (codigo) => LABEL_UNIDAD[codigo] || codigo || 'und';
 
+// ── FACTORES QUE NO HAY QUE PREGUNTAR (tanda 5) ────────────────────
+// Cuántas unidades base entran en 1 de la otra, cuando la respuesta es
+// aritmética y no depende del insumo: una docena SIEMPRE son doce, un ciento
+// son cien, un kilo son mil gramos.
+//
+// 🔴 LO QUE NO ESTÁ ACÁ ES A PROPÓSITO. «1 und de alambre = ¿cuántos kg?»
+// depende del rollo; «1 par de guantes = ¿cuántas und?» depende de si la
+// factura cuenta pares o guantes sueltos. Esas las contesta una persona
+// mirando el comprobante, y proponerle un número inventado sería peor que no
+// proponer nada: se aceptaría sin mirar.
+const FACTORES_CONOCIDOS = {
+  'docena>und': 12, 'und>docena': 1 / 12,
+  'ciento>und': 100, 'und>ciento': 0.01,
+  'millar>und': 1000, 'und>millar': 0.001,
+  'kg>g': 1000, 'g>kg': 0.001,
+  't>kg': 1000, 'kg>t': 0.001,
+  'l>ml': 1000, 'ml>l': 0.001,
+};
+
+/**
+ * El factor aritmético entre dos unidades canónicas, o null si depende del
+ * insumo y tiene que contestarlo una persona.
+ * → cuántas `hacia` hay en 1 `desde`.
+ */
+export function factorConocido(desde, hacia) {
+  const a = normUnidad(desde), b = normUnidad(hacia);
+  if (!a || !b) return null;
+  if (a === b) return 1;
+  return FACTORES_CONOCIDOS[`${a}>${b}`] ?? null;
+}
+
 // ── Resumen financiero de UNA empresa ────────────────────────────────
 // Criterio EXACTO de ConsolidadoPage: una moneda a la vez y sin movimientos
 // anulados. Se separa lo INTERCO (facturación entre empresas del grupo) porque
@@ -283,13 +314,23 @@ const nuevoLado = () => ({
   ultimaFecha: '', ultimoPrecio: null, ultimaMoneda: null, ultimoProveedor: null,
 });
 
-const acumular = (lado, l) => {
+const acumular = (lado, l, factorDe = null) => {
   lado.veces++;
   if (l.interco) lado.interco++;
   const esAnticipo = l.tipoInsumo === 'anticipo' || clasificarLineaPorTexto(l.nombre) === 'anticipo';
   if (esAnticipo) lado.anticiposCount++;
-  const u = normUnidad(l.unidad) || 'und';
-  lado.porUnidad.set(u, (lado.porUnidad.get(u) || 0) + l.cantidad);
+  const uLinea = normUnidad(l.unidad) || 'und';
+  // ── EL FACTOR ENTRE PRESENTACIONES (tanda 5) ──────────────────────
+  // Si alguien declaró cómo se convierte esta presentación a la unidad base
+  // del grupo, la cantidad se suma AHÍ: «20 par» y «15 und» dejan de ser dos
+  // filas que nadie puede restar. Sin factor declarado, todo sigue como
+  // antes — cada unidad en su fila, que es lo correcto mientras nadie diga
+  // cuántos kilos es una unidad de alambre.
+  const conv = factorDe ? convertirALaBase(l.nombreNorm || normInsumo(l.nombre), uLinea, l.cantidad, factorDe) : null;
+  const u = conv ? conv.unidad : uLinea;
+  const cant = conv ? conv.cantidad : l.cantidad;
+  if (conv) lado.convertidas = (lado.convertidas || 0) + 1;
+  lado.porUnidad.set(u, (lado.porUnidad.get(u) || 0) + cant);
   const monto = l.precio * l.cantidad;
   if (monto) {
     lado.porMoneda.set(l.moneda, (lado.porMoneda.get(l.moneda) || 0) + monto);
@@ -313,6 +354,8 @@ const acumular = (lado, l) => {
 const cerrarLado = (lado) => ({
   veces: lado.veces,
   interco: lado.interco,
+  // Cuántas líneas se sumaron convertidas a la unidad base del grupo (tanda 5).
+  convertidas: lado.convertidas || 0,
   anticiposCount: lado.anticiposCount || 0,
   anticiposMontos: [...(lado.anticiposPorMoneda?.entries() || [])]
     .map(([moneda, monto]) => ({ moneda, monto }))
@@ -341,12 +384,16 @@ const cerrarLado = (lado) => ({
  * @param opts.noInventariables  Set(nombreNorm) de las descripciones que una
  *        persona marcó como «esto no es un insumo» (tanda 3) — ver
  *        `noInventariables()` en insumo-o-servicio.js.
+ * @param opts.factorDe  de construirGrupos() (tanda 5): cómo convertir cada
+ *        presentación a la unidad base de su grupo. Sin esto, cada unidad
+ *        sigue en su propia fila — que es el comportamiento correcto mientras
+ *        nadie haya declarado el factor.
  * @returns { insumos:[...], totales:{...} }
  */
 export function inventarioDeEmpresa(lineas, opts = {}) {
   const {
     companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null,
-    noInventariables = null,
+    noInventariables = null, factorDe = null,
   } = opts;
   const porInsumo = new Map();
   const facturasAnuladas = new Set();
@@ -430,12 +477,12 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
 
     if (l.clase === 'venta') {
       totales.lineasVenta++;
-      acumular(ins._venta, l);
+      acumular(ins._venta, l, factorDe);
       const monto = l.precio * l.cantidad;
       if (monto) totales.ingresos.set(l.moneda, (totales.ingresos.get(l.moneda) || 0) + monto);
     } else {
       totales.lineasCompra++;
-      acumular(ins._compra, l);
+      acumular(ins._compra, l, factorDe);
       const monto = l.precio * l.cantidad;
       if (monto) totales.gastos.set(l.moneda, (totales.gastos.get(l.moneda) || 0) + monto);
       // La recepción de almacén se escribe sobre el ítem de la factura de

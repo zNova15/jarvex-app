@@ -3,6 +3,7 @@ import {
   normInsumo, parClave, resolverPares, construirGrupos, claveGrupoDe,
   scoreNombres, sugerirPares, sugerirClusters, crearParesDeCluster,
   resaltarDiferencias, sugerirCandidatos,
+  camposDeFactor, tieneFactor, convertirALaBase,
 } from '../insumo-correlacion';
 
 describe('normInsumo / parClave', () => {
@@ -328,5 +329,101 @@ describe('sugerirCandidatos — sin duplicados entre grupos y pares', () => {
   it('sin nombres no explota', () => {
     expect(sugerirCandidatos([], new Map(), new Map())).toEqual([]);
     expect(sugerirCandidatos(null, new Map(), new Map())).toEqual([]);
+  });
+});
+
+// ── TANDA 5: el factor entre presentaciones ──────────────────────────
+// Gabriel, 15-set, probando la tanda 2: «encontré un caso sobre un par de
+// guantes en unidades y el otro en par, que resulta que sí son lo mismo».
+// SON lo mismo y unirlos es correcto; lo que faltaba era poder SUMARLOS.
+describe('camposDeFactor — el único camino para escribir el factor', () => {
+  it('arma los cinco campos juntos', () => {
+    expect(camposDeFactor({ unidadBase: 'und', unidadA: 'docena', factorA: 12, unidadB: 'und', factorB: 1 }))
+      .toEqual({ unidad_base: 'und', unidad_a: 'docena', factor_a: 12, unidad_b: 'und', factor_b: 1 });
+  });
+
+  it('sin spec devuelve los cinco en null (nunca a medias)', () => {
+    const vacio = { unidad_base: null, unidad_a: null, factor_a: null, unidad_b: null, factor_b: null };
+    expect(camposDeFactor(null)).toEqual(vacio);
+    expect(camposDeFactor(undefined)).toEqual(vacio);
+  });
+
+  it('🔴 un factor inválido NO se escribe a medias: rebotaría en el push (23514)', () => {
+    const vacio = { unidad_base: null, unidad_a: null, factor_a: null, unidad_b: null, factor_b: null };
+    expect(camposDeFactor({ unidadBase: 'und', unidadA: 'docena', factorA: 0, unidadB: 'und', factorB: 1 })).toEqual(vacio);
+    expect(camposDeFactor({ unidadBase: 'und', unidadA: 'docena', factorA: -3, unidadB: 'und', factorB: 1 })).toEqual(vacio);
+    expect(camposDeFactor({ unidadBase: 'und', unidadA: 'docena', factorA: 'x', unidadB: 'und', factorB: 1 })).toEqual(vacio);
+    expect(camposDeFactor({ unidadBase: '', unidadA: 'docena', factorA: 12, unidadB: 'und', factorB: 1 })).toEqual(vacio);
+    expect(camposDeFactor({ unidadBase: 'und', unidadA: 'docena', factorA: 12, unidadB: '', factorB: 1 })).toEqual(vacio);
+  });
+
+  it('tieneFactor reconoce una fila usable', () => {
+    expect(tieneFactor({ unidad_base: 'und', unidad_a: 'docena', factor_a: 12, unidad_b: 'und', factor_b: 1 })).toBe(true);
+    expect(tieneFactor({ unidad_base: 'und', unidad_a: 'docena', factor_a: 0, unidad_b: 'und', factor_b: 1 })).toBe(false);
+    expect(tieneFactor({ relacion: 'mismo' })).toBe(false);
+    expect(tieneFactor(null)).toBe(false);
+  });
+});
+
+describe('construirGrupos + convertirALaBase', () => {
+  const fila = (a, b, extra = {}) => ({
+    nombre_a: a, nombre_b: b, relacion: 'mismo', fuente: 'manual',
+    updated_at: '2026-09-15T10:00:00Z', ...extra,
+  });
+  const CON_FACTOR = {
+    unidad_base: 'und', unidad_a: 'docena', factor_a: 12, unidad_b: 'und', factor_b: 1,
+  };
+
+  it('el caso de los tarugos: una docena son doce unidades', () => {
+    const r = resolverPares([fila('tarugos naranja 3 8', 'tarugo pvc 3 8', CON_FACTOR)]);
+    const { factorDe, grupos, grupoDe } = construirGrupos(r);
+    expect(convertirALaBase('tarugos naranja 3 8', 'docena', 5, factorDe))
+      .toEqual({ cantidad: 60, unidad: 'und' });
+    expect(convertirALaBase('tarugo pvc 3 8', 'und', 7, factorDe))
+      .toEqual({ cantidad: 7, unidad: 'und' });
+    expect(grupos.get(grupoDe.get('tarugos naranja 3 8')).unidadBase).toBe('und');
+  });
+
+  it('🔴 no convierte una línea cuya unidad NO es la declarada', () => {
+    // El mismo nombre puede venir en docenas de un proveedor y en unidades de
+    // otro: aplicarle el factor de las docenas multiplicaría por doce algo que
+    // ya estaba bien.
+    const r = resolverPares([fila('tarugos naranja 3 8', 'tarugo pvc 3 8', CON_FACTOR)]);
+    const { factorDe } = construirGrupos(r);
+    expect(convertirALaBase('tarugos naranja 3 8', 'und', 5, factorDe)).toBe(null);
+    expect(convertirALaBase('tarugos naranja 3 8', 'kg', 5, factorDe)).toBe(null);
+  });
+
+  it('un par SIN factor no convierte nada (se comporta como antes)', () => {
+    const { factorDe, grupos, grupoDe } = construirGrupos(resolverPares([fila('clavo 3', 'clavos n3')]));
+    expect(convertirALaBase('clavo 3', 'und', 5, factorDe)).toBe(null);
+    expect(grupos.get(grupoDe.get('clavo 3')).unidadBase).toBeUndefined();
+  });
+
+  it('con dos bases distintas gana la más reciente, y la otra se ignora', () => {
+    const r = resolverPares([
+      fila('a uno', 'b dos', { ...CON_FACTOR, updated_at: '2026-09-15T10:00:00Z' }),
+      fila('b dos', 'c tres', {
+        unidad_base: 'kg', unidad_a: 'und', factor_a: 2, unidad_b: 'und', factor_b: 3,
+        updated_at: '2026-09-15T12:00:00Z',
+      }),
+    ]);
+    const { factorDe, grupos, grupoDe } = construirGrupos(r);
+    expect(grupos.get(grupoDe.get('a uno')).unidadBase).toBe('kg');
+    // El par viejo declaraba base 'und': se ignora entero, no se mezcla.
+    expect(convertirALaBase('a uno', 'docena', 1, factorDe)).toBe(null);
+    expect(convertirALaBase('b dos', 'und', 1, factorDe)).toEqual({ cantidad: 2, unidad: 'kg' });
+    expect(convertirALaBase('c tres', 'und', 1, factorDe)).toEqual({ cantidad: 3, unidad: 'kg' });
+  });
+
+  it('un factor sobre un par "distinto" no se propaga', () => {
+    const r = resolverPares([fila('x uno', 'y dos', { ...CON_FACTOR, relacion: 'distinto' })]);
+    const { factorDe } = construirGrupos(r);
+    expect(convertirALaBase('x uno', 'docena', 1, factorDe)).toBe(null);
+  });
+
+  it('sin factorDe no explota', () => {
+    expect(convertirALaBase('x', 'und', 1, null)).toBe(null);
+    expect(convertirALaBase('x', 'und', 1, new Map())).toBe(null);
   });
 });
