@@ -53,6 +53,7 @@ import { enseñarDiccionario, olvidarDiccionario } from "../lib/clasificaciones-
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
 import { prepararClasificacionNueva } from "../lib/clasificacion-propuesta.js";
+import { vecindarioDeFactura, vecindarioDeFila } from "../lib/vecindario-factura.js";
 import { crearClasificacion, validarClasificacion } from "../lib/clasificaciones-db.js";
 import { avisoDeContradiccion } from "../lib/hermanas-clasificacion.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
@@ -116,7 +117,7 @@ function precioUnitarioDeFila(f) {
  * motor local (sigue siendo el primero, gratis y sin red) ni se aplica sola:
  * el resultado se muestra y `onElegir(codigo)` es un click aparte.
  */
-function AyudaClasificacionIA({ descripcion, unidad, precioUnitario = null, onElegir, opciones = OPCIONES_BASE, onCrearClasificacion = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
+function AyudaClasificacionIA({ descripcion, unidad, precioUnitario = null, vecinos = null, proveedor = '', onElegir, opciones = OPCIONES_BASE, onCrearClasificacion = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const [sugerencia, setSugerencia] = uS(null);
   const [noSabe, setNoSabe] = uS(null);
   const [cargando, setCargando] = uS(false);
@@ -128,8 +129,8 @@ function AyudaClasificacionIA({ descripcion, unidad, precioUnitario = null, onEl
     setCargando(true); setError(null); setNoSabe(null); setSugerencia(null);
     try {
       const r = await clasificarInsumoConIA({
-        descripcion, unidad, precioUnitario, candidatos: opciones, terminosCustom, propuestaLocal,
-        frecuentes, modeloTexto,
+        descripcion, unidad, precioUnitario, vecinos, proveedor,
+        candidatos: opciones, terminosCustom, propuestaLocal, frecuentes, modeloTexto,
       });
       // «No sé» NO es un error (tanda 3). Antes la duda honesta salía en rojo
       // al lado del botón, con el mismo formato que «no se pudo consultar la
@@ -396,6 +397,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     () => filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom }),
     [descripciones, prep, porId, decisiones, terminosCustom],
   );
+
+  // QUÉ MÁS TRAÍA CADA FACTURA (tanda 9). Se calcula una vez para todas las
+  // descripciones: es agrupar las líneas por comprobante, no una consulta.
+  // Es lo que convierte «PASTA FINA CPP» en algo decidible — ver el encabezado
+  // de vecindario-factura.js.
+  const vecindario = uM(() => vecindarioDeFactura(comprasEnAlcance), [comprasEnAlcance]);
 
   // LO QUE ESTA EMPRESA USA DE VERDAD (tanda 2). Es el relleno de la lista
   // corta que se le manda a la IA cuando el diccionario no alcanza para llegar
@@ -748,9 +755,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   const construirBarrido = uC((modo) => ({
     items: pendientesTotal,
     procesarItem: async (f) => {
+      const vec = vecindarioDeFila(f, vecindario);
       const r = await clasificarInsumoConIA({
         descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '',
         precioUnitario: precioUnitarioDeFila(f), candidatos: opcionesClasificacion,
+        vecinos: vec?.vecinos || null, proveedor: vec?.proveedor || '',
         terminosCustom, propuestaLocal: propuestaLocalDe(f), frecuentes, modeloTexto,
       });
       // 🔴 EL «NO SÉ» SE GUARDA, NO SE TIRA (tanda 3). Un recorrido de 875
@@ -784,7 +793,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       }, { modelo: r._model || modeloTexto || null });
       return 'recomendada';
     },
-  }), [pendientesTotal, ambitoIA, aceptar, terminosCustom, opcionesClasificacion]);
+  }), [pendientesTotal, ambitoIA, aceptar, terminosCustom, opcionesClasificacion, vecindario]);
 
   // ── Teclado ──────────────────────────────────────────────────────
   // Es la mitad de por qué esta pantalla se puede terminar. Se apaga mientras
@@ -1023,6 +1032,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             listId={listId}
             opciones={opcionesClasificacion}
             onCrearClasificacion={crearClasificacionDesdeIA}
+            vecindario={vecindario}
             recIA={recsIA[f.norm] || null}
             terminosCustom={terminosCustom}
             frecuentes={frecuentes}
@@ -1052,7 +1062,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       </div>
 
       {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} opciones={opcionesClasificacion}
-        onCrearClasificacion={crearClasificacionDesdeIA} terminosCustom={terminosCustom}
+        onCrearClasificacion={crearClasificacionDesdeIA} vecindario={vecindario} terminosCustom={terminosCustom}
         frecuentes={frecuentes} modeloTexto={modeloTexto}
         propuestaLocal={propuestaLocalDe(altaDe)} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
     </>
@@ -1095,7 +1105,7 @@ function AvisoHermanas({ aviso, onUsar }) {
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, vecindario = null, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -1124,6 +1134,9 @@ function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onC
       f?.hermanas),
     [f?.estado, f?.decision?.familia, categoriaSel, f?.hermanas],
   );
+
+  // Qué más traía la factura donde esta descripción pesó más (tanda 9).
+  const vecinosDeEsta = vecindario ? vecindarioDeFila(f, vecindario) : null;
 
   // Crear la clasificación que propone la IA y dejarla elegida en esta misma
   // fila. Sin esto había que ir a otra vista, crearla y volver a buscar la fila.
@@ -1294,6 +1307,8 @@ function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onC
                 descripcion={f.muestra}
                 unidad={[...(f.unidades || [])][0] || ''}
                 precioUnitario={precioUnitarioDeFila(f)}
+                vecinos={vecinosDeEsta?.vecinos || null}
+                proveedor={vecinosDeEsta?.proveedor || ''}
                 opciones={opciones}
                 onCrearClasificacion={onCrearClasificacion}
                 terminosCustom={terminosCustom}
@@ -1352,7 +1367,7 @@ function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onC
  * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
  * Todo es corregible antes de guardar.
  */
-function AltaEnCatalogo({ fila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, onCancel, onGuardar }) {
+function AltaEnCatalogo({ fila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, vecindario = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
   // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
   // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
@@ -1360,6 +1375,7 @@ function AltaEnCatalogo({ fila, listId, opciones = OPCIONES_BASE, onCrearClasifi
   const sinPropuesta = !!fila?.sinPropuesta || fila?.recomendacionIUPC?.codigo === 'sin_clasificar';
   const [familia, setFamilia] = uS(() => (sinPropuesta ? '' : (fila?.recomendacionIUPC?.codigo || '')));
   const [unidad, setUnidad] = uS(() => [...(fila?.unidades || [])][0] || 'und');
+  const vecinosDelAlta = vecindario ? vecindarioDeFila(fila, vecindario) : null;
   const Modal = window.Modal;
   const cuerpo = (
     <div style={{ display: 'grid', gap: 10 }}>
@@ -1391,6 +1407,7 @@ function AltaEnCatalogo({ fila, listId, opciones = OPCIONES_BASE, onCrearClasifi
           )}
           <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad}
             precioUnitario={precioUnitarioDeFila(fila)} opciones={opciones}
+            vecinos={vecinosDelAlta?.vecinos || null} proveedor={vecinosDelAlta?.proveedor || ''}
             onCrearClasificacion={onCrearClasificacion}
             terminosCustom={terminosCustom} propuestaLocal={propuestaLocal}
             frecuentes={frecuentes} modeloTexto={modeloTexto} onElegir={setFamilia} />

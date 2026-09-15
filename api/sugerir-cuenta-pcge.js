@@ -440,8 +440,15 @@ async function clasificarInsumoIUPC(req, res, body) {
   // `precioUnitarioDeFila` y el bloque del prompt.
   const precioCrudo = Number(body.precio_unitario);
   const precioUnitario = Number.isFinite(precioCrudo) && precioCrudo > 0 ? precioCrudo : null;
+  // LO QUE VINO EN LA MISMA FACTURA (tanda 9). Lo arma el cliente con
+  // `vecindarioDeFactura()`: son las otras líneas del comprobante donde esta
+  // descripción pesó más. Se topea acá también — el cliente ya manda 8, pero
+  // el body lo escribe el navegador y un pedido con 500 vecinos sería un prompt
+  // pagado por alguien que no lo pidió.
+  const vecinos = Array.isArray(body.vecinos) ? body.vecinos.slice(0, 8) : [];
+  const proveedor = sanitizeForPrompt(body.proveedor, 80);
   const { sys, usr, codigosValidos } = promptClasificacion({
-    descripcion, unidad, candidatos, precioUnitario,
+    descripcion, unidad, candidatos, precioUnitario, vecinos, proveedor,
     evidencia: body.evidencia,
     evidenciaPropia: body.evidencia_propia,
     propuestaLocal: body.propuesta_local,

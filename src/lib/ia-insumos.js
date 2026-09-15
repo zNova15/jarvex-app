@@ -122,7 +122,7 @@ async function postIA(payload) {
  * cambiar en cuanto alguien le enseñe un término al diccionario, así que
  * guardarla 30 días sería congelar el «no sé» justo cuando deja de ser cierto.
  */
-export async function clasificarInsumoConIA({ descripcion, unidad = '', precioUnitario = null, candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
+export async function clasificarInsumoConIA({ descripcion, unidad = '', precioUnitario = null, vecinos = null, proveedor = '', candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const desc = String(descripcion || '').trim();
   if (!desc || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
@@ -139,15 +139,16 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', precioUn
   // sin frecuentes), se manda el universo: preguntar con opciones es mejor que
   // no preguntar.
   const lista = cortos.length >= 3 ? cortos : candidatos;
-  // 🔴 `clasif5` (tanda 8): la pregunta volvió a cambiar — ahora también viaja
-  // el PRECIO UNITARIO y la guía de unidad, así que la respuesta guardada con
-  // `clasif4` contestaba a otra pregunta. Las versiones anteriores: `clasif`
-  // sin diccionario, `clasif2` con el diccionario mezclado con la norma (365
-  // términos huérfanos pasando por R.J. 016-2026), `clasif3` con las capas ya
-  // separadas pero las 95 opciones, `clasif4` con las 8-12 plausibles.
+  // 🔴 `clasif6` (tanda 9): ahora también viajan LOS OTROS ÍTEMS DE LA MISMA
+  // FACTURA, que es la pista que decide los casos donde la descripción sola no
+  // alcanza. Una respuesta guardada sin ese bloque contestaba a otra pregunta.
+  // Las versiones anteriores: `clasif` sin diccionario, `clasif2` con el
+  // diccionario mezclado con la norma (365 términos huérfanos pasando por R.J.
+  // 016-2026), `clasif3` con las capas ya separadas pero las 95 opciones,
+  // `clasif4` con las 8-12 plausibles, `clasif5` con unidad y precio.
   // El MODELO entra en la clave: dos modelos distintos son dos respuestas distintas,
   // y comparar uno contra otro con la caché del primero delante no compararía nada.
-  const clave = `clasif5::${modeloTexto || 'auto'}::${norm(desc)}`;
+  const clave = `clasif6::${modeloTexto || 'auto'}::${norm(desc)}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
@@ -167,6 +168,16 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', precioUn
     // descuento al 100%, factura en dólares— y entonces no viaja: un 0 leído
     // como precio sería peor que la ausencia de precio.
     ...(Number(precioUnitario) > 0 ? { precio_unitario: Number(precioUnitario) } : {}),
+    // LOS OTROS ÍTEMS DE LA MISMA FACTURA (tanda 9). Es lo que convierte
+    // «PASTA FINA CPP» —que no está en ningún diccionario— en algo decidible:
+    // vino con pinturas, brochas y rodillos. Ver `vecindario-factura.js`.
+    // Solo viaja si hay algo que contar: un encabezado vacío es prompt pagado.
+    ...(vecinos?.length ? {
+      vecinos: vecinos.slice(0, 8).map(v => ({
+        nombre: saneado(v?.nombre ?? v, 90), unidad: saneado(v?.unidad || '', 12),
+      })).filter(v => v.nombre),
+      proveedor: saneado(proveedor, 80),
+    } : {}),
     candidatos: lista.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
     // LOS PARES DIFÍCILES QUE DISPARA ESTA DESCRIPCIÓN (tanda 3). Van filtrados
     // contra la lista que de verdad se ofrece: una regla que empuje hacia un
