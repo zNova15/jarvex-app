@@ -1210,6 +1210,10 @@ export function listarCategoriasDisponibles(categoriasPersonalizadas = []) {
       };
     });
 
+  // Para que `etiquetaCategoria()` las sepa nombrar en las otras 35 llamadas
+  // de la app sin que ninguna tenga que recibir la lista — ver el registro.
+  if (customs.length) registrarClasificacionesPropias(customs);
+
   return [...iupc, ...servicios, ...complementarias, ...customs];
 }
 
@@ -1349,11 +1353,41 @@ const LEGACY_LABELS = {
   administrativos: 'Consumos administrativos / Oficina',
 };
 
+// ── EL NOMBRE DE LAS CLASIFICACIONES PROPIAS (tanda 8, 15-set-2026) ─
+//
+// EL DEFECTO. `etiquetaCategoria()` se llama en 35 lugares —la bandeja, el
+// catálogo, la auditoría, el mapeo— y solo conocía la base oficial: una
+// clasificación creada por Gabriel se mostraba como su código pelado
+// («PI-PINT-BARN») en todas ellas. Pasarle la lista de propias a las 35
+// llamadas sería propagar el mismo argumento por media app.
+//
+// LA SOLUCIÓN. Un registro chico que `listarCategoriasDisponibles()` llena
+// cada vez que se la llama CON las propias — que es lo que hacen las pantallas
+// que las tienen a mano. Es una memo idempotente de nombres, no estado de
+// React: volver a registrar la misma lista no cambia nada, y una clasificación
+// que se borra deja de venir en la lista y deja de registrarse en el próximo
+// render. Lo que NO hace es inventar: un código que nadie registró sigue
+// devolviéndose tal cual, como antes.
+const ETIQUETAS_PROPIAS = new Map();
+
+/** Deja que `etiquetaCategoria()` sepa nombrar las clasificaciones propias. */
+export function registrarClasificacionesPropias(lista) {
+  for (const c of (lista || [])) {
+    if (!c || c.deleted_at || c.activo === false) continue;
+    const cod = String(c.codigo || '').trim();
+    const nom = String(c.nombre || c.label || '').trim();
+    if (!cod || !nom || esCodigoOficial(cod)) continue;
+    ETIQUETAS_PROPIAS.set(cod, nom.startsWith('[') ? nom : `[${cod}] ${nom}`);
+  }
+}
+
 /** Devuelve la etiqueta legible de una categoría cualquiera */
 export function etiquetaCategoria(codigo) {
   if (!codigo) return 'Sin categoría';
   const c = String(codigo).trim();
   if (LEGACY_LABELS[c]) return LEGACY_LABELS[c];
+  const propia = ETIQUETAS_PROPIAS.get(c);
+  if (propia) return propia;
   const serv = SERVICIO_POR_CODIGO.get(c);
   if (serv) return `[${serv.codigo}] ${serv.nombre}`;
   const real = REAGRUPACIONES_IUPC[c] || c;

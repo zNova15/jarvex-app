@@ -145,9 +145,13 @@ export async function enseñarALaContadora(pares, { userId = null, equivalencias
  * su decisión dejaría la descripción igual de pendiente y nadie entendería por
  * qué apareció un insumo nuevo que no resolvió nada.
  */
-export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null, nota = null, variantes = null } = {}) {
+export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null, nota = null, variantes = null, decidida = true } = {}) {
   const esPrueba = esModoPrueba();
-  const nueva = filaNuevaDeCatalogo(fila, { companyId, familia, unidad, nombre });
+  // `decidida`: la clasificación la eligió una PERSONA mirando la fila, así que
+  // el insumo nace revisado y «Insumos y servicios» no vuelve a preguntar por
+  // él. El recorrido con IA en modo «aplicar» pasa `decidida: false` — ver
+  // `filaNuevaDeCatalogo`.
+  const nueva = filaNuevaDeCatalogo(fila, { companyId, familia, unidad, nombre, decidida });
   let creado = null;
   await db.transaction('rw', db.catalogo_insumos, db.insumo_categoria, async () => {
     // Si alguien ya creó ese mismo nombre (la otra PC, o dos filas de la misma

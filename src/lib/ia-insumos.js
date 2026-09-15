@@ -122,7 +122,7 @@ async function postIA(payload) {
  * cambiar en cuanto alguien le enseñe un término al diccionario, así que
  * guardarla 30 días sería congelar el «no sé» justo cuando deja de ser cierto.
  */
-export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
+export async function clasificarInsumoConIA({ descripcion, unidad = '', precioUnitario = null, candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const desc = String(descripcion || '').trim();
   if (!desc || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
@@ -139,15 +139,15 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
   // sin frecuentes), se manda el universo: preguntar con opciones es mejor que
   // no preguntar.
   const lista = cortos.length >= 3 ? cortos : candidatos;
-  // 🔴 `clasif4` (tanda 2): la pregunta cambió otra vez — ahora van 8-12
-  // opciones plausibles en vez de las 95, y con otra lista delante la
-  // respuesta puede ser otra. Las versiones anteriores: `clasif` sin
-  // diccionario, `clasif2` con el diccionario mezclado con la norma (365
-  // términos huérfanos pasando por R.J. 016-2026), `clasif3` con las capas
-  // ya separadas pero las 95 opciones.
+  // 🔴 `clasif5` (tanda 8): la pregunta volvió a cambiar — ahora también viaja
+  // el PRECIO UNITARIO y la guía de unidad, así que la respuesta guardada con
+  // `clasif4` contestaba a otra pregunta. Las versiones anteriores: `clasif`
+  // sin diccionario, `clasif2` con el diccionario mezclado con la norma (365
+  // términos huérfanos pasando por R.J. 016-2026), `clasif3` con las capas ya
+  // separadas pero las 95 opciones, `clasif4` con las 8-12 plausibles.
   // El MODELO entra en la clave: dos modelos distintos son dos respuestas distintas,
   // y comparar uno contra otro con la caché del primero delante no compararía nada.
-  const clave = `clasif4::${modeloTexto || 'auto'}::${norm(desc)}`;
+  const clave = `clasif5::${modeloTexto || 'auto'}::${norm(desc)}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
@@ -161,6 +161,12 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
     ...(modeloTexto ? { modelo_texto: modeloTexto } : {}),
     descripcion: desc,
     unidad: unidad || '',
+    // El precio por unidad en soles, cuando se sabe (tanda 8). Es la pista que
+    // separa una tapa de caja eléctrica de S/ 4 de una tapa de buzón de S/ 400,
+    // que escritas son casi la misma frase. `null` cuando no se puede saber —
+    // descuento al 100%, factura en dólares— y entonces no viaja: un 0 leído
+    // como precio sería peor que la ausencia de precio.
+    ...(Number(precioUnitario) > 0 ? { precio_unitario: Number(precioUnitario) } : {}),
     candidatos: lista.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
     // LOS PARES DIFÍCILES QUE DISPARA ESTA DESCRIPCIÓN (tanda 3). Van filtrados
     // contra la lista que de verdad se ofrece: una regla que empuje hacia un

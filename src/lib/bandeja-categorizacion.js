@@ -624,7 +624,7 @@ export function decisionNoInsumo(fila, { companyId = null, nota = null } = {}) {
  * correcto desde el minuto cero y la próxima descripción parecida sí encuentra
  * candidato. Todo es corregible antes de guardar.
  */
-export function filaNuevaDeCatalogo(fila, { companyId = null, familia = null, unidad = null, nombre = null } = {}) {
+export function filaNuevaDeCatalogo(fila, { companyId = null, familia = null, unidad = null, nombre = null, decidida = false } = {}) {
   const nom = (nombre || fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' ').slice(0, 200);
   // La categoría sale SOLO del estándar IUPC — el vocabulario comercial viejo
   // ya no se usa para dar de alta nada (decisión del 13-set).
@@ -643,7 +643,17 @@ export function filaNuevaDeCatalogo(fila, { companyId = null, familia = null, un
     // respeta eso).
     origen: 'manual',
     activo: true,
-    revisado: false,
+    // 🔴 `revisado` ES LO QUE EVITA VOLVER A PREGUNTAR (tanda 8, 15-set-2026).
+    // Gabriel: «en Nombres de factura por reconocer se realiza la clasificación
+    // de buena manera, pero es tedioso luego ver en Insumos y Servicios
+    // aparecer un triángulo que pida volver a confirmar la clasificación que ya
+    // hice». Y aparecía siempre: el alta desde la bandeja nacía con
+    // `revisado: false`, así que `revisarCategoriasCatalogo()` volvía a mirar
+    // con el estándar una fila que una persona acababa de clasificar a
+    // conciencia. Ahora, si la clasificación la eligió alguien, la fila nace
+    // revisada. Lo que aplica el recorrido con IA sin que nadie lo mire NO
+    // —esas son justamente las que hay que revisar—.
+    revisado: !!decidida,
     company_id: companyId || null,
     deleted_at: null,
   };

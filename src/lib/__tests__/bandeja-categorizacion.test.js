@@ -300,6 +300,20 @@ describe('el alta al catálogo desde la bandeja', () => {
     expect(nueva.origen).toBe('manual');
   });
 
+  it('🔴 lo que eligió una persona nace REVISADO (tanda 8, 15-set-2026)', () => {
+    // Gabriel: «es tedioso luego ver en Insumos y Servicios aparecer un
+    // triángulo que pida volver a confirmar la clasificación que ya hice».
+    // `revisarCategoriasCatalogo()` saltea las filas `revisado`, así que ésta
+    // es la marca que corta la repregunta.
+    const f = { norm: 'x', muestra: 'TAPA CIEGA', unidades: new Set(['und']) };
+    expect(filaNuevaDeCatalogo(f, { familia: '12', decidida: true }).revisado).toBe(true);
+    // Lo que aplica el recorrido con IA sin que nadie lo mire NO: esas son
+    // justamente las que hay que seguir revisando.
+    expect(filaNuevaDeCatalogo(f, { familia: '12', decidida: false }).revisado).toBe(false);
+    // Y el defecto por omisión sigue siendo «sin revisar».
+    expect(filaNuevaDeCatalogo(f).revisado).toBe(false);
+  });
+
   it('un servicio nuevo nace como servicio, no como insumo', () => {
     const f = { norm: 'x', muestra: 'servicio de transporte de tubo de chiclayo a cajamarca', unidades: new Set(['und']) };
     const nueva = filaNuevaDeCatalogo(f);

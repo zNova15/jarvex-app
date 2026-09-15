@@ -85,3 +85,39 @@ describe('lo que ya defendía el prompt', () => {
     expect(usr.indexOf('Guante de cuero')).toBeLessThan(usr.indexOf('GUANTERA ACERADA'));
   });
 });
+
+describe('la unidad y el precio unitario (tanda 8, 15-set-2026)', () => {
+  it('cuando se sabe el precio, va en el pedido con su unidad', () => {
+    const { usr } = armar({ precioUnitario: 4 });
+    expect(usr).toContain('Precio unitario en la factura: S/ 4.00 por par');
+  });
+
+  it('los precios grandes van redondeados — el centavo no clasifica nada', () => {
+    const { usr } = armar({ precioUnitario: 412.37 });
+    expect(usr).toContain('S/ 412 por par');
+  });
+
+  it('🔴 un 0 NO es un precio: no viaja', () => {
+    // «A veces te hacen descuento y sale como 0» (Gabriel). Mandarlo haría que
+    // el modelo lea «es baratísimo» donde el dato simplemente no existe.
+    expect(armar({ precioUnitario: 0 }).usr).not.toContain('Precio unitario');
+    expect(armar({ precioUnitario: null }).usr).not.toContain('Precio unitario');
+    expect(armar({ precioUnitario: -5 }).usr).not.toContain('Precio unitario');
+    expect(armar().usr).not.toContain('Precio unitario');
+  });
+
+  it('el sistema sabe para qué sirven, y que la norma les gana', () => {
+    const { sys } = armar();
+    expect(sys).toContain('EL PRECIO UNITARIO');
+    expect(sys).toContain('tapa de caja eléctrica');
+    expect(sys).toMatch(/si el precio contradice a la evidencia OFICIAL, gana la evidencia/i);
+  });
+});
+
+describe('la clasificación nueva viene con su árbol (tanda 8)', () => {
+  it('el contrato pide decir si es insumo o servicio', () => {
+    const { sys } = armar();
+    expect(sys).toContain('clasificacion_nueva_arbol');
+    expect(sys).toContain('si es algo que se contrata');
+  });
+});

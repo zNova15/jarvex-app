@@ -205,17 +205,50 @@ function RecomendacionesListas({ n, seccion, ambito, onVer }) {
  * Igual en las tres secciones: qué propone, con cuánta confianza, por qué, y
  * dos botones — aceptar (lo guarda una persona) o descartar.
  */
+/**
+ * EL RAZONAMIENTO ENTERO, NO EL PRINCIPIO (tanda 8, 15-set-2026).
+ *
+ * Gabriel: «las recomendaciones de IA en la clasificación a veces quedan
+ * minimizadas por el tamaño de la ventana de recomendación». Eran dos cosas a
+ * la vez: el cuadro era angosto (520 px) y el texto venía cortado a cuchillo a
+ * los 300 caracteres, en el medio de una palabra («…recubrimientos químicos o
+ * p»). El server ahora manda hasta 600 cortando donde termina una palabra
+ * (`razonamientoLimpio`), el cuadro es más ancho, y lo que igual no entra se
+ * pliega con un «ver todo» en vez de desaparecer: el argumento es lo ÚNICO que
+ * tiene quien decide para juzgar la propuesta.
+ */
+function Razonamiento({ texto, tope = 190 }) {
+  const [abierto, setAbierto] = uS(false);
+  const t = String(texto || '');
+  if (!t) return null;
+  const largo = t.length > tope;
+  return (
+    <div style={{ color: 'var(--tm)', marginTop: 2, lineHeight: 1.5 }}>
+      {largo && !abierto ? `${t.slice(0, tope).replace(/\s+\S*$/, '')}… ` : `${t} `}
+      {largo && (
+        <button type="button" className="btn btn-xs btn-ghost" style={{ padding: '0 4px', minWidth: 0 }}
+          onClick={(e) => { e.stopPropagation(); setAbierto(v => !v); }}>
+          {abierto ? 'ver menos' : 'ver todo'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function RecomendacionIA({ titulo, confianza, razonamiento, extra = null, onAceptar, onDescartar, textoAceptar = 'Aceptar esta' }) {
   const pct = Math.round((confianza || 0) * 100);
   return (
     <div style={{
-      marginTop: 5, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+      // 680 y no 520 (tanda 8): con el ancho viejo el razonamiento se comía
+      // seis renglones y el botón de aceptar quedaba abajo de todo, fuera de
+      // la vista. `maxWidth: '100%'` es lo que lo mantiene sano en el teléfono.
+      marginTop: 5, padding: '6px 9px', fontSize: 10.5, borderRadius: 5, maxWidth: 680, width: '100%',
       background: 'rgba(58,163,255,.08)', border: '1px solid rgba(58,163,255,.35)',
     }} onClick={e => e.stopPropagation()}>
       <span className="badge b-blue" style={{ fontSize: 9 }}>🤖 Recomendado por IA</span>
       <span style={{ marginLeft: 6 }}>{titulo}</span>
       <span className="badge b-gray" style={{ marginLeft: 4, fontSize: 9 }}>{pct}%</span>
-      {razonamiento && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{razonamiento}</div>}
+      <Razonamiento texto={razonamiento} />
       {extra}
       <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
         {onAceptar && (
@@ -241,5 +274,5 @@ function SelloIA({ titulo }) {
   );
 }
 
-Object.assign(window, { BarridoIA, RecomendacionIA, SelloIA });
-export { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA };
+Object.assign(window, { BarridoIA, RecomendacionIA, Razonamiento, SelloIA });
+export { BarridoIA, RecomendacionIA, Razonamiento, SelloIA, useBarridoIA };

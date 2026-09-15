@@ -376,12 +376,39 @@ async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null
   return { parsed, data };
 }
 
+/**
+ * EL RAZONAMIENTO, CORTADO DONDE TERMINA UNA PALABRA (tanda 8, 15-set-2026).
+ *
+ * Gabriel: «las recomendaciones de IA en la clasificación a veces quedan
+ * minimizadas por el tamaño de la ventana de recomendación». Una parte era el
+ * ancho del cuadro (se arregló en la pantalla) y la otra era este corte: 300
+ * caracteres a cuchillo, en el medio de la palabra («…recubrimientos químicos o
+ * p»). El argumento es lo ÚNICO que tiene quien decide para juzgar la
+ * propuesta; mostrar la mitad de una frase es peor que mostrar una frase corta.
+ *
+ * 600 y no más: sigue siendo una explicación, no un ensayo — el prompt pide
+ * «una frase corta y concreta» y eso no cambió.
+ */
+function razonamientoLimpio(txt, max = 600) {
+  const t = String(txt || '').trim();
+  if (t.length <= max) return t;
+  const cortado = t.slice(0, max);
+  const hastaPalabra = cortado.replace(/\s+\S*$/, '');
+  return `${hastaPalabra || cortado}…`;
+}
+
 /** Una sola forma de contestar el error de las tres ayudas. */
 function responderErrorIA(res, e) {
   if (e?.mensaje) return res.status(e.status || 502).json({ error: e.mensaje });
   if (e?.name === 'AbortError') return res.status(504).json({ error: 'La IA tardó demasiado. Tocá el botón otra vez.' });
   return res.status(502).json({ error: 'No se pudo consultar la IA. Tocá el botón otra vez.' });
 }
+
+/** El árbol que dijo la IA para su clasificación nueva; null si dijo cualquier cosa. */
+const arbolNuevo = (v) => {
+  const t = String(v || '').trim().toLowerCase();
+  return t === 'servicio' || t === 'insumo' ? t : null;
+};
 
 // ── 1. CLASIFICAR: insumo/servicio → código IUPC/Servicios ────────
 // Gabriel, 14-sep-2026: con solo parecido de palabras, "PANTALON Y CAMISACO DE
@@ -408,8 +435,13 @@ async function clasificarInsumoIUPC(req, res, body) {
   // compara modelos tiene que medir EXACTAMENTE este texto, no una copia que
   // se le parezca. Dos copias divergen a la primera corrección que se hace en
   // una sola de las dos.
+  // El precio unitario en SOLES, si el cliente lo pudo calcular (tanda 8). Un
+  // 0 o un negativo NO es precio: se descarta acá además de en el cliente — ver
+  // `precioUnitarioDeFila` y el bloque del prompt.
+  const precioCrudo = Number(body.precio_unitario);
+  const precioUnitario = Number.isFinite(precioCrudo) && precioCrudo > 0 ? precioCrudo : null;
   const { sys, usr, codigosValidos } = promptClasificacion({
-    descripcion, unidad, candidatos,
+    descripcion, unidad, candidatos, precioUnitario,
     evidencia: body.evidencia,
     evidenciaPropia: body.evidencia_propia,
     propuestaLocal: body.propuesta_local,
@@ -444,11 +476,12 @@ async function clasificarInsumoIUPC(req, res, body) {
         result: null,
         no_se: true,
         confianza,
-        razonamiento: String(parsed.razonamiento || '').slice(0, 300)
+        razonamiento: razonamientoLimpio(parsed.razonamiento)
           || 'La IA no encontró con qué decidir. Hay que clasificarla a mano.',
         // Lo que igual llegó a mirar, para que la persona no arranque de cero.
         casi: !dijoNoSe && codigosValidos.has(codigoSugerido) ? codigoSugerido : null,
         clasificacion_nueva: String(parsed.clasificacion_nueva || '').trim().slice(0, 80) || null,
+        clasificacion_nueva_arbol: arbolNuevo(parsed.clasificacion_nueva_arbol),
         _model: data.model, _usage: data.usage,
       });
     }
@@ -472,9 +505,15 @@ async function clasificarInsumoIUPC(req, res, body) {
     // se crea ninguna clasificación, eso se hace desde el Catálogo.
     const nueva = String(parsed.clasificacion_nueva || '').trim().slice(0, 80);
     return res.status(200).json({
-      result: { codigo_sugerido: codigoSugerido, alternativas, clasificacion_nueva: nueva || null },
+      result: {
+        codigo_sugerido: codigoSugerido, alternativas,
+        clasificacion_nueva: nueva || null,
+        // A qué árbol iría la clasificación nueva (tanda 8). Sin esto el
+        // cliente tenía que adivinarlo del nombre para poder crearla bien.
+        clasificacion_nueva_arbol: nueva ? arbolNuevo(parsed.clasificacion_nueva_arbol) : null,
+      },
       confianza,
-      razonamiento: String(parsed.razonamiento || '').slice(0, 300),
+      razonamiento: razonamientoLimpio(parsed.razonamiento),
       _model: data.model, _usage: data.usage,
     });
   } catch (e) {

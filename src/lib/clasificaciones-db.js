@@ -23,6 +23,20 @@ import { normIUPC, codigoSugerido, validarClasificacion } from './indices-unific
 export { codigoSugerido, validarClasificacion };
 
 const esModoPrueba = () => { try { return getCurrentMode() === 'prueba'; } catch { return false; } };
+
+/**
+ * AVISARLE A TODAS LAS PANTALLAS QUE ESTO CAMBIÓ.
+ *
+ * `useOfflineData` se refresca con `jx_data_changed`. Sin este aviso, cada
+ * pantalla montada tiene su propia copia de la tabla y solo se entera la que
+ * llamó a `refresh()`: crear una clasificación desde la bandeja —que vive
+ * ADENTRO de la sección de clasificación— dejaba al panel de afuera con la
+ * lista vieja hasta recargar. Es exactamente el síntoma que reportó Gabriel
+ * («no se actualiza automáticamente en las secciones»), del otro lado.
+ */
+const avisar = (tabla) => {
+  try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla } })); } catch { /* SSR / tests */ }
+};
 const filaDelModo = (r, esPrueba) => (esPrueba ? r.demo === true : r.demo !== true);
 const ahora = () => new Date().toISOString();
 
@@ -60,6 +74,7 @@ export async function crearClasificacion({ codigo, nombre, arbol = 'insumo', gas
     deleted_at: null,
   }, 'clasificaciones', esPrueba, userId);
   await db.clasificaciones.add(fila);
+  avisar('clasificaciones');
   return fila;
 }
 
@@ -68,6 +83,7 @@ export async function editarClasificacion(id, campos, { userId = null } = {}) {
   const prev = await db.clasificaciones.get(id);
   if (!prev) return null;
   await db.clasificaciones.update(id, parcheDeUpdate(campos, prev, esPrueba, userId));
+  avisar('clasificaciones');
   return { ...prev, ...campos };
 }
 
@@ -118,6 +134,7 @@ export async function agregarTermino({ termino, clasificacionCodigo, companyId =
     deleted_at: null,
   }, 'clasificacion_terminos', esPrueba, userId);
   await db.clasificacion_terminos.add(fila);
+  avisar('clasificacion_terminos');
   return { ok: true, fila };
 }
 
@@ -128,6 +145,7 @@ export async function quitarTermino(id, { userId = null } = {}) {
   if (!prev) return false;
   await db.clasificacion_terminos.update(id,
     parcheDeUpdate({ deleted_at: ahora() }, prev, esPrueba, userId));
+  avisar('clasificacion_terminos');
   return true;
 }
 
@@ -303,4 +321,113 @@ export async function moverTerminosEnLote(ids, clasificacionCodigo, { userId = n
     }
   });
   return n;
+}
+
+// ── ELIMINAR Y FUSIONAR UNA CLASIFICACIÓN PROPIA (tanda 8, 15-set) ─
+// El plan lo arma `fusion-clasificaciones.js` (puro, con tests) y la pantalla
+// lo muestra antes de escribir; acá solo se aterriza en Dexie.
+//
+// 🔴 TODO EN UNA SOLA TRANSACCIÓN, Y SOBRE LAS CUATRO TABLAS. Una fusión a
+// medias —los insumos movidos pero el diccionario no— deja la pantalla
+// diciendo cosas distintas según desde dónde se la mire, que es peor que no
+// poder fusionar. Por eso la baja de la clasificación va DENTRO de la misma
+// transacción que la mudanza de lo que apuntaba a ella.
+
+/**
+ * Baja de verdad, no «desactivar». Lo que nunca llegó al server se borra
+ * físicamente; lo que ya viajó va por baja lógica, para que el borrado llegue
+ * a la otra PC como tombstone en vez de reaparecer en el próximo pull.
+ *
+ * NO valida si alguien la usa: eso lo contesta `planBaja()` y lo decide la
+ * pantalla. Acá se ejecuta lo que ya se decidió.
+ */
+export async function eliminarClasificacion(id, { userId = null } = {}) {
+  const esPrueba = esModoPrueba();
+  const prev = await db.clasificaciones.get(id);
+  if (!prev || prev.deleted_at) return false;
+  if (prev.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) {
+    await db.clasificaciones.delete(id);
+  } else {
+    await db.clasificaciones.update(id, parcheDeUpdate({ deleted_at: ahora(), activo: false }, prev, esPrueba, userId));
+  }
+  avisar('clasificaciones');
+  return true;
+}
+
+/**
+ * Aplica el plan de `planFusion()`: manda a `hacia` todo lo que apuntaba a
+ * `desde` y después borra `desde`.
+ *
+ * `revisado: true` en los insumos que se mudan no es un detalle: la mudanza es
+ * una decisión deliberada de una persona, y sin esa marca la pantalla de
+ * «Insumos y servicios» volvería a proponer el cambio con su triángulo ámbar
+ * —pidiendo confirmar lo que se acaba de confirmar—, que es justo lo que
+ * Gabriel pidió que dejara de pasar.
+ *
+ * Devuelve el conteo de lo que tocó, para poder decirlo en el toast.
+ */
+export async function aplicarFusion(plan, { userId = null } = {}) {
+  if (!plan?.ok || !plan.desde?.codigo || !plan.hacia?.codigo) return null;
+  const esPrueba = esModoPrueba();
+  const destino = String(plan.hacia.codigo);
+  const hecho = { insumos: 0, terminos: 0, descartados: 0, decisiones: 0 };
+
+  await db.transaction('rw',
+    db.catalogo_insumos, db.clasificacion_terminos, db.insumo_categoria, db.clasificaciones,
+    async () => {
+      for (const r of (plan.insumos || [])) {
+        const prev = await db.catalogo_insumos.get(r.id);
+        if (!prev) continue;
+        await db.catalogo_insumos.update(r.id,
+          parcheDeUpdate({ familia: destino, revisado: true }, prev, esPrueba, userId));
+        hecho.insumos++;
+      }
+      for (const t of (plan.moverTerminos || [])) {
+        const prev = await db.clasificacion_terminos.get(t.id);
+        if (!prev) continue;
+        await db.clasificacion_terminos.update(t.id,
+          parcheDeUpdate({ clasificacion_codigo: destino }, prev, esPrueba, userId));
+        hecho.terminos++;
+      }
+      for (const t of (plan.descartarTerminos || [])) {
+        const prev = await db.clasificacion_terminos.get(t.id);
+        if (!prev) continue;
+        if (prev.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) {
+          await db.clasificacion_terminos.delete(t.id);
+        } else {
+          await db.clasificacion_terminos.update(t.id,
+            parcheDeUpdate({ deleted_at: ahora() }, prev, esPrueba, userId));
+        }
+        hecho.descartados++;
+      }
+      // Las decisiones ya tomadas en la bandeja: se reapuntan, no se reabren.
+      // Reabrirlas obligaría a volver a contestar 200 preguntas ya contestadas
+      // solo porque la clasificación cambió de nombre.
+      for (const d of (plan.decisiones || [])) {
+        const prev = await db.insumo_categoria.get(d.id);
+        if (!prev) continue;
+        await db.insumo_categoria.update(d.id,
+          parcheDeUpdate({ familia: destino }, prev, esPrueba, userId));
+        hecho.decisiones++;
+      }
+      const fila = await db.clasificaciones
+        .filter(c => !c.deleted_at && String(c.codigo) === String(plan.desde.codigo)
+          && filaDelModo(c, esPrueba)).first();
+      if (fila) {
+        if (fila.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) {
+          await db.clasificaciones.delete(fila.id);
+        } else {
+          await db.clasificaciones.update(fila.id,
+            parcheDeUpdate({ deleted_at: ahora(), activo: false }, fila, esPrueba, userId));
+        }
+      }
+    });
+
+  // Una fusión toca las cuatro tablas: si no se avisa por todas, media app
+  // sigue mostrando el código que acaba de desaparecer.
+  avisar('clasificaciones');
+  avisar('clasificacion_terminos');
+  avisar('catalogo_insumos');
+  avisar('insumo_categoria');
+  return hecho;
 }

@@ -47,9 +47,12 @@ import {
   terminosDeClasificacion, normIUPC,
 } from "../lib/indices-unificados-iupc.js";
 import {
-  crearClasificacion, editarClasificacion, desactivarClasificacion,
+  crearClasificacion, editarClasificacion,
   agregarTermino, quitarTermino, codigoSugerido, validarClasificacion,
+  eliminarClasificacion, aplicarFusion,
 } from "../lib/clasificaciones-db.js";
+import { planBaja, planFusion, parecidasEntreSi } from "../lib/fusion-clasificaciones.js";
+import { buscarClasificaciones, cuantasEnDiccionario } from "../lib/buscar-clasificacion.js";
 import {
   previsualizarImportacion, aplicarImportacion, corregirFactor,
   corregirEnLote, adoptarEnEntidad, decidirEquivalencia,
@@ -598,8 +601,10 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
               companyId={companyId}
               userId={userId}
               equivalencias={equivalencias}
+              decisiones={decHook.data || []}
+              insumosCrudos={crudo}
               showToast={showToast}
-              refrescar={async () => { await Promise.all([refrescar?.(), clasHook.refresh?.(), terHook.refresh?.()]); }}
+              refrescar={async () => { await Promise.all([refrescar?.(), clasHook.refresh?.(), terHook.refresh?.(), decHook.refresh?.()]); }}
             />
           )}
 
@@ -1060,12 +1065,19 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
 // resolvía nunca— para ser, dentro de cada clasificación, «estos parecen ser
 // de acá»: doce candidatos sí se despachan.
 // ═══════════════════════════════════════════════════════════════════
-function PanelClasificaciones({ activas, propias, terminos, revision, companyId, userId, equivalencias, showToast, refrescar }) {
+function PanelClasificaciones({ activas, propias, terminos, revision, companyId, userId, equivalencias, decisiones = [], insumosCrudos = null, showToast, refrescar }) {
   const [arbol, setArbol] = uS('insumo');
   const [sel, setSel] = uS(null);
   const [busca, setBusca] = uS('');
+  // Buscar TAMBIÉN por el diccionario (tanda 8). Apagada por defecto y a
+  // pedido: «quisiera un pequeño check a marcar puesto que solo lo requeriría
+  // en ciertas circunstancias» — ver el encabezado de buscar-clasificacion.js.
+  const [enDicc, setEnDicc] = uS(false);
   const [nuevoTermino, setNuevoTermino] = uS('');
   const [creando, setCreando] = uS(null);
+  // La baja/fusión de una clasificación propia: { codigo, hacia } mientras se
+  // decide. El plan se recalcula en cada render — nunca se escribe sin verlo.
+  const [baja, setBaja] = uS(null);
   const enCursoRef = uR(false);
 
   const todasCats = uM(() => listarCategoriasDisponibles(propias), [propias]);
@@ -1099,12 +1111,29 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
     return m;
   }, [revision]);
 
-  const visibles = uM(() => {
-    const q = busca.trim().toLowerCase();
-    return todasCats
-      .filter(c => (c.arbol === arbol) || (arbol === 'insumo' && c.arbol === 'complementaria'))
-      .filter(c => !q || c.label.toLowerCase().includes(q) || String(c.codigo).toLowerCase().includes(q));
-  }, [todasCats, arbol, busca]);
+  // Las del árbol elegido. Las complementarias («servicios en general»,
+  // «administrativos») viven del lado de los insumos, como en el resto de la app.
+  const delArbol = uM(
+    () => todasCats.filter(c => (c.arbol === arbol) || (arbol === 'insumo' && c.arbol === 'complementaria')),
+    [todasCats, arbol],
+  );
+
+  const visibles = uM(
+    () => buscarClasificaciones({ q: busca, cats: delArbol, diccPorCodigo, enDiccionario: enDicc }),
+    [delArbol, busca, diccPorCodigo, enDicc],
+  );
+
+  // EL EMPUJÓN: «clavos» no nombra ninguna clasificación pero está en el
+  // diccionario de 3. Sin esto la lista queda vacía y no dice por qué — que es
+  // exactamente lo que le pasó a Gabriel el 15-set.
+  const nEnDicc = uM(
+    () => (enDicc ? 0 : cuantasEnDiccionario({ q: busca, cats: delArbol, diccPorCodigo })),
+    [enDicc, busca, delArbol, diccPorCodigo],
+  );
+
+  // Dos propias que se llaman casi igual: el síntoma de haberle aceptado a la
+  // IA la misma clasificación nueva tres veces. Se avisa y se ofrece fusionar.
+  const paresParecidos = uM(() => parecidasEntreSi(delArbol), [delArbol]);
 
   const cat = uM(() => todasCats.find(c => c.codigo === sel) || null, [todasCats, sel]);
   const dicc = cat ? (diccPorCodigo.get(cat.codigo) || []) : [];
@@ -1163,15 +1192,61 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
     showToast?.(`✓ Clasificación «${cod}» creada. Agregale términos al diccionario.`, 'green');
   });
 
-  const bajaClasificacion = conGuard(async (codigo) => {
-    const fila = (propias || []).find(c => c.codigo === codigo && !c.deleted_at);
-    if (!fila) return;
-    const n = (porCodigo.get(codigo) || []).length;
-    if (n > 0 && !confirm(`«${codigo}» tiene ${n} insumo${n === 1 ? '' : 's'} adentro. Se desactiva la clasificación pero los insumos NO se mueven solos: quedan apuntando a un código inactivo hasta que los reasignes. ¿Seguir?`)) return;
-    await desactivarClasificacion(fila.id, { userId });
-    if (sel === codigo) setSel(null);
+  // ── ELIMINAR Y FUSIONAR (tanda 8) ───────────────────────────────
+  //
+  // «Desactivar» era la única salida y dejaba los insumos apuntando a un
+  // código muerto: la pantalla los mostraba como «sin clasificar» y el error
+  // no se podía deshacer. Ahora hay dos caminos honestos, y la pantalla dice
+  // CUÁL corresponde antes de tocar nada:
+  //   · la creada por error, que no usa nadie → se borra y listo;
+  //   · la que ya tiene contenido → hay que decir a dónde se va ese contenido,
+  //     y eso es la MISMA operación que fusionar dos que quedaron repetidas.
+  //
+  // Los planes se calculan sobre el catálogo CRUDO (todas las entidades) y no
+  // sobre el del ámbito actual: la clasificación desaparece para todos, así que
+  // una fila de otra empresa que la use tiene que mudarse igual. Dejarla
+  // apuntando a un código borrado es justo el bug que esto viene a cerrar.
+  const insumosParaPlan = insumosCrudos || activas;
+
+  const planDeBaja = uM(
+    () => (baja?.codigo
+      ? planBaja({ codigo: baja.codigo, cats: todasCats, insumos: insumosParaPlan, terminos, decisiones })
+      : null),
+    [baja, todasCats, insumosParaPlan, terminos, decisiones],
+  );
+
+  const planDeFusion = uM(
+    () => ((baja?.codigo && baja?.hacia)
+      ? planFusion({ desde: baja.codigo, hacia: baja.hacia, cats: todasCats, insumos: insumosParaPlan, terminos, decisiones })
+      : null),
+    [baja, todasCats, insumosParaPlan, terminos, decisiones],
+  );
+
+  const borrarVacia = conGuard(async () => {
+    const fila = (propias || []).find(c => c.codigo === baja?.codigo && !c.deleted_at);
+    if (!fila || !planDeBaja?.vacia) return;
+    if (typeof confirm === 'function'
+      && !confirm(`Se elimina «${planDeBaja.cat.nombre}». No la usa nada todavía, así que no se mueve ningún insumo.\n\n¿Seguir?`)) return;
+    await eliminarClasificacion(fila.id, { userId });
+    if (sel === baja.codigo) setSel(null);
+    setBaja(null);
     await refrescar();
-    showToast?.(`«${codigo}» desactivada.`, 'green');
+    showToast?.(`«${planDeBaja.cat.nombre}» eliminada.`, 'green');
+  });
+
+  const fusionar = conGuard(async () => {
+    const plan = planDeFusion;
+    if (!plan?.ok) { if (plan?.error) showToast?.(plan.error, 'error'); return; }
+    if (typeof confirm === 'function' && !confirm(
+      `Todo lo de «${plan.desde.nombre}» pasa a «${plan.hacia.nombre}» y la primera se elimina.\n\n`
+      + (plan.resumen.length ? `${plan.resumen.join('\n')}\n\n` : '')
+      + '¿Seguir?')) return;
+    const hecho = await aplicarFusion(plan, { userId });
+    if (sel === plan.desde.codigo) setSel(plan.hacia.codigo);
+    setBaja(null);
+    await refrescar();
+    showToast?.(`✓ «${plan.desde.nombre}» se fusionó con «${plan.hacia.nombre}»`
+      + (hecho?.insumos ? ` · ${hecho.insumos} ${hecho.insumos === 1 ? 'insumo movido' : 'insumos movidos'}` : ''), 'green');
   });
 
   // Las tres capas, cada una con su cartelito (tanda 1): la LEY (INEI / base de
@@ -1206,11 +1281,51 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
           onClick={() => { setArbol('insumo'); setSel(null); }}>🧱 Insumos</button>
         <button className={`btn btn-sm ${arbol === 'servicio' ? 'btn-blue' : 'btn-ghost'}`}
           onClick={() => { setArbol('servicio'); setSel(null); }}>🛠 Servicios</button>
-        <input className="fi" style={{ fontSize: 12, minWidth: 180, flex: 1 }} placeholder="Buscar clasificación…"
+        <input className="fi" style={{ fontSize: 12, minWidth: 180, flex: 1 }}
+          placeholder={enDicc ? 'Buscar por nombre o por una palabra de la factura…' : 'Buscar clasificación…'}
           value={busca} onChange={e => setBusca(e.target.value)} />
+        <label style={{ fontSize: 11, color: 'var(--ts)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+          title="Busca también adentro del diccionario: escribí «llave» y te dice en qué índice del IUPC cae, con el término de la norma que lo respalda.">
+          <input type="checkbox" checked={enDicc} onChange={e => setEnDicc(e.target.checked)} />
+          📖 Buscar en el diccionario
+        </label>
         <button className="btn btn-amber btn-sm"
           onClick={() => setCreando({ codigo: '', nombre: '', arbol, gasto: '' })}>+ Nueva clasificación</button>
       </div>
+
+      {/* EL EMPUJÓN. Sin esto, buscar «clavos» devolvía una lista vacía sin
+          decir nunca que la palabra SÍ está — en el diccionario, no en el
+          nombre. Es el reporte de Gabriel del 15-set. */}
+      {nEnDicc > 0 && (
+        <div className="card card-p" style={{ fontSize: 11.5, borderLeft: '3px solid var(--blue)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span>
+            «<strong>{busca.trim()}</strong>» no es el nombre de {visibles.length === 0 ? 'ninguna clasificación' : 'las que ves'}, pero está
+            en el <strong>diccionario</strong> de {nEnDicc} {nEnDicc === 1 ? 'clasificación' : 'clasificaciones'}.
+          </span>
+          <button className="btn btn-xs btn-blue" onClick={() => setEnDicc(true)}>Buscar en el diccionario</button>
+        </div>
+      )}
+
+      {/* Dos propias que se llaman casi igual. Pasa cuando se le acepta a la IA
+          la misma clasificación nueva en dos filas distintas — el caso que
+          Gabriel anticipó: «¿qué pasa si creo varias y podríamos convertirla
+          en una?». Se avisa acá y se resuelve con la fusión de abajo. */}
+      {paresParecidos.length > 0 && (
+        <div className="card card-p" style={{ fontSize: 11.5, borderLeft: '3px solid var(--amber)' }}>
+          ⚠ Hay {paresParecidos.length === 1 ? 'un par de clasificaciones tuyas que se llaman casi igual' : `${paresParecidos.length} pares de clasificaciones tuyas que se llaman casi igual`}:
+          <div style={{ color: 'var(--tm)', marginTop: 3 }}>
+            {paresParecidos.slice(0, 4).map((p, i) => (
+              <div key={i}>
+                «{p.a.nombre}» y «{p.b.nombre}»{' '}
+                <button className="btn btn-xs btn-ghost"
+                  onClick={() => { setSel(p.a.codigo); setBaja({ codigo: p.a.codigo, hacia: p.b.codigo }); }}>
+                  Fusionar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {creando && (
         <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)', display: 'grid', gap: 8 }}>
@@ -1256,7 +1371,14 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
         <div className="card card-p" style={{ flex: '1 1 320px', minWidth: 290, maxHeight: 620, overflowY: 'auto' }}>
           <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>
             {visibles.length} clasificaciones · {arbol === 'insumo' ? 'IUPC del Estado + complementarias' : 'árbol de servicios'}
+            {enDicc && busca.trim() && <> · buscando también en el <strong>diccionario</strong></>}
           </div>
+          {visibles.length === 0 && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>
+              Ninguna clasificación coincide con «{busca.trim()}».
+              {!enDicc && ' Probá marcar «📖 Buscar en el diccionario»: la palabra puede estar adentro de la norma sin ser el nombre del índice.'}
+            </div>
+          )}
           <table className="tbl" style={{ fontSize: 11.5 }}>
             <tbody>
               {visibles.map(c => {
@@ -1270,6 +1392,16 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
                     <td>
                       {c.nombre}
                       {c.propia && <span className="badge b-green" style={{ marginLeft: 4, fontSize: 8.5 }}>tuyo</span>}
+                      {/* POR QUÉ SALIÓ ESTA FILA. Cuando la búsqueda entró por
+                          el diccionario, el nombre no explica nada: lo que la
+                          trajo fue «Clavo de calamina», y eso es exactamente lo
+                          que se está yendo a buscar («guiarme de la ley»). */}
+                      {c.terminos?.length > 0 && (
+                        <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 1 }}>
+                          📖 {c.terminos.map(t => t.termino).join(' · ')}
+                          {c.nCoincidencias > c.terminos.length ? ` +${c.nCoincidencias - c.terminos.length}` : ''}
+                        </div>
+                      )}
                     </td>
                     <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
                       {n > 0 && <span title="insumos del catálogo acá adentro">{n} 📦</span>}
@@ -1297,13 +1429,66 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <div style={{ fontSize: 13, fontWeight: 700 }}>{etiquetaCategoria(cat.codigo)}</div>
                   {cat.propia && (
-                    <button className="btn btn-xs btn-ghost" onClick={() => bajaClasificacion(cat.codigo)}>Desactivar</button>
+                    <div style={{ display: 'flex', gap: 5 }}>
+                      <button className="btn btn-xs btn-ghost"
+                        onClick={() => setBaja(b => (b?.codigo === cat.codigo ? null : { codigo: cat.codigo, hacia: '' }))}>
+                        Eliminar o fusionar
+                      </button>
+                    </div>
                   )}
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
                   Va a <strong>{TIPO_DESTINO[cat.tipo] || cat.tipo}</strong> · contabilidad la agrupa
                   como <strong>{cat.gasto || (cat.arbol === 'servicio' ? 'servicios' : '—')}</strong>
                 </div>
+
+                {/* LA BAJA, CON SU PLAN A LA VISTA. Nunca se borra a ciegas:
+                    primero se dice qué apunta a esta clasificación y a dónde va
+                    a parar. Si no la usa nadie, el botón de eliminar alcanza. */}
+                {baja?.codigo === cat.codigo && planDeBaja && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+                    {!planDeBaja.ok ? (
+                      <div style={{ fontSize: 11.5, color: 'var(--amber)' }}>{planDeBaja.error}</div>
+                    ) : planDeBaja.vacia ? (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5 }}>
+                        <span>No la usa nada todavía: se puede eliminar sin mover nada.</span>
+                        <button className="btn btn-xs btn-red" onClick={borrarVacia}>Eliminar</button>
+                        <button className="btn btn-xs btn-ghost" onClick={() => setBaja(null)}>Cancelar</button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'grid', gap: 6, fontSize: 11.5 }}>
+                        <div>
+                          Esto lo usan{' '}
+                          <strong>{planDeBaja.nInsumos}</strong> {planDeBaja.nInsumos === 1 ? 'insumo' : 'insumos'},{' '}
+                          <strong>{planDeBaja.nTerminos}</strong> {planDeBaja.nTerminos === 1 ? 'término' : 'términos'} del diccionario y{' '}
+                          <strong>{planDeBaja.nDecisiones}</strong> {planDeBaja.nDecisiones === 1 ? 'decisión ya tomada' : 'decisiones ya tomadas'}.
+                          {' '}Para eliminarla hay que decir <strong>a dónde se van</strong>.
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ color: 'var(--tm)' }}>Mandar todo a:</span>
+                          <select className="fi" style={{ fontSize: 11.5, maxWidth: 320 }} value={baja.hacia || ''}
+                            onChange={e => setBaja(b => ({ ...b, hacia: e.target.value }))}>
+                            <option value="">— elegí una clasificación —</option>
+                            {delArbol.filter(c => c.codigo !== cat.codigo && c.codigo !== 'sin_clasificar')
+                              .map(c => <option key={c.codigo} value={c.codigo}>{c.label}</option>)}
+                          </select>
+                          <button className="btn btn-xs btn-amber" disabled={!planDeFusion?.ok} onClick={fusionar}>
+                            Fusionar y eliminar
+                          </button>
+                          <button className="btn btn-xs btn-ghost" onClick={() => setBaja(null)}>Cancelar</button>
+                        </div>
+                        {planDeFusion && !planDeFusion.ok && (
+                          <div style={{ color: 'var(--amber)' }}>{planDeFusion.error}</div>
+                        )}
+                        {planDeFusion?.ok && planDeFusion.resumen.length > 0 && (
+                          <ul style={{ margin: 0, paddingLeft: 16, color: 'var(--tm)' }}>
+                            {planDeFusion.resumen.map((t, i) => <li key={i}>{t}</li>)}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="card card-p">

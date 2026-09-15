@@ -147,7 +147,14 @@ describe('crear una clasificación propia', () => {
     expect(mia).toBeDefined();
     expect(mia.propia).toBe(true);
     expect(mia.arbol).toBe('servicio');
-    expect(etiquetaCategoria('PS-BUZO')).toBe('PS-BUZO'); // sin fila, devuelve el código crudo
+    // Y desde la tanda 8 también SE LLAMA por su nombre en el resto de la app.
+    // Antes `etiquetaCategoria()` solo conocía la base oficial y una propia se
+    // mostraba como su código pelado en las 35 llamadas que no reciben la lista
+    // —la bandeja, la auditoría, el mapeo—. Ahora `listarCategoriasDisponibles()`
+    // la registra al armarla; ver el registro en indices-unificados-iupc.js.
+    expect(etiquetaCategoria('PS-BUZO')).toBe('[PS-BUZO] Buceo industrial');
+    // Lo que nadie registró sigue devolviéndose crudo: el registro no inventa.
+    expect(etiquetaCategoria('PS-NUNCA-VISTA')).toBe('PS-NUNCA-VISTA');
   });
 
   it('una clasificación desactivada o borrada no se ofrece', () => {

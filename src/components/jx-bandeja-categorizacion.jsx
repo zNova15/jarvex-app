@@ -42,6 +42,7 @@ import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
 import {
   decidirEnLote, agregarAlCatalogoYDecidir, reabrirEnLote, enseñarALaContadora,
 } from "../lib/bandeja-categorizacion-db.js";
+import { corregirEnLote, adoptarEnEntidad } from "../lib/catalogo-canonico-db.js";
 import {
   equivalenciasDe,
 } from "../lib/catalogo-canonico.js";
@@ -51,26 +52,62 @@ import {
 import { enseñarDiccionario, olvidarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { prepararClasificacionNueva } from "../lib/clasificacion-propuesta.js";
+import { crearClasificacion, validarClasificacion } from "../lib/clasificaciones-db.js";
 import { avisoDeContradiccion } from "../lib/hermanas-clasificacion.js";
 import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
-import { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
+import { BarridoIA, RecomendacionIA, Razonamiento, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE, useId: uId, useCallback: uC } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
-// Se calcula UNA vez: son 95 categorías y este componente se renderiza en
-// cada fila de la tabla. `sin_clasificar` queda AFUERA a propósito (pedido de
-// Gabriel, 14-sep): elegirla a mano de una lista es lo mismo que no elegir
+// 🔴 ESTO ERA UN `const` DE MÓDULO Y ESE ERA EL BUG (tanda 8, 15-set-2026).
+//
+// `categoriasParaElegir()` se llamaba UNA vez, al importar el archivo, y sin
+// las clasificaciones propias. Consecuencia, reportada por Gabriel: «después de
+// crear una nueva clasificación no se actualiza automáticamente en las
+// secciones de las recomendaciones». Y no se actualizaba nunca — ni recargando:
+// la clasificación recién creada no estaba en el desplegable de cada fila, ni
+// en el datalist, ni entre los candidatos que se le mandan a la IA, así que la
+// IA tampoco podía proponerla. Crear la clasificación que la propia IA pedía
+// no servía para nada.
+//
+// Ahora la lista se arma en el componente desde `useClasificaciones()` y viaja
+// por props hasta las filas. `sin_clasificar` sigue AFUERA a propósito (pedido
+// de Gabriel, 14-sep): elegirla a mano de una lista es lo mismo que no elegir
 // nada — ver `categoriasParaElegir()`.
-const OPCIONES_CLASIFICACION = categoriasParaElegir();
+//
+// El piso de la base oficial queda acá solo como respaldo para los componentes
+// que se montan sueltos en un test sin pasarles `opciones`.
+const OPCIONES_BASE = categoriasParaElegir();
 
 const soles = (n) => `S/ ${Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 })}`;
 
-const COLOR_ESTADO = {
-  propuesto: 'b-green', revisar: 'b-amber', falta: 'b-blue', decididas: 'b-gray',
-};
+/**
+ * EL PRECIO UNITARIO, QUE ES UNA PISTA DE QUÉ COSA ES (tanda 8, 15-set-2026).
+ *
+ * Gabriel: «había una descripción de tapa ciega que lo relacionó con una tapa
+ * de cemento y su valor era de 4 soles; eso era una tapa que usan para
+ * electricidad, quedaba mejor con el índice 12». Una tapa de buzón de concreto
+ * no cuesta S/ 4 y una tapa ciega de caja eléctrica no cuesta S/ 400: con la
+ * descripción sola las dos se escriben igual, con el precio no.
+ *
+ * 🔴 DEVUELVE null CUANDO NO SE PUEDE SABER, y eso es la mitad del diseño. El
+ * mismo Gabriel lo anticipó: «no siempre el precio será el correcto pues a
+ * veces ocurre casos donde te hacen descuento y sale como 0». Un 0 mandado como
+ * dato es peor que no mandar nada — el modelo lo leería como «es baratísimo».
+ * `importe` además solo acumula SOLES (los dólares se ven pero no se suman,
+ * decisión del 7-set), así que una fila en dólares también cae acá en null.
+ */
+function precioUnitarioDeFila(f) {
+  const imp = Number(f?.importe) || 0;
+  const cant = Number(f?.cantidad) || 0;
+  if (imp <= 0 || cant <= 0) return null;
+  const p = imp / cant;
+  return Number.isFinite(p) && p > 0 ? p : null;
+}
 
 /**
  * Botón "🤖 Preguntale a la IA" — segunda opinión CON RAZONAMIENTO (14-sep).
@@ -79,7 +116,7 @@ const COLOR_ESTADO = {
  * motor local (sigue siendo el primero, gratis y sin red) ni se aplica sola:
  * el resultado se muestra y `onElegir(codigo)` es un click aparte.
  */
-function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
+function AyudaClasificacionIA({ descripcion, unidad, precioUnitario = null, onElegir, opciones = OPCIONES_BASE, onCrearClasificacion = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const [sugerencia, setSugerencia] = uS(null);
   const [noSabe, setNoSabe] = uS(null);
   const [cargando, setCargando] = uS(false);
@@ -91,7 +128,7 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
     setCargando(true); setError(null); setNoSabe(null); setSugerencia(null);
     try {
       const r = await clasificarInsumoConIA({
-        descripcion, unidad, candidatos: OPCIONES_CLASIFICACION, terminosCustom, propuestaLocal,
+        descripcion, unidad, precioUnitario, candidatos: opciones, terminosCustom, propuestaLocal,
         frecuentes, modeloTexto,
       });
       // «No sé» NO es un error (tanda 3). Antes la duda honesta salía en rojo
@@ -103,6 +140,7 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
         setNoSabe({
           razonamiento: r.razonamiento || 'No encontró con qué decidir.',
           nuevaClasificacion: r.result?.clasificacion_nueva || r.clasificacion_nueva || null,
+          arbolNuevo: r.result?.clasificacion_nueva_arbol || r.clasificacion_nueva_arbol || null,
         });
         return;
       }
@@ -110,11 +148,12 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
         setError(r?.razonamiento || 'No encontró una clasificación clara para esto.');
         return;
       }
-      const opt = OPCIONES_CLASIFICACION.find(o => o.codigo === r.result.codigo_sugerido);
+      const opt = opciones.find(o => o.codigo === r.result.codigo_sugerido);
       setSugerencia({
         codigo: r.result.codigo_sugerido, nombre: opt?.label || r.result.codigo_sugerido,
         confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached,
         nuevaClasificacion: r.result.clasificacion_nueva || null,
+        arbolNuevo: r.result.clasificacion_nueva_arbol || null,
       });
     } catch (e2) {
       setError(e2?.message || 'No se pudo consultar la IA.');
@@ -123,6 +162,13 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
     }
   };
 
+  // Crear la propuesta de la IA y dejarla elegida en la misma fila: si hubiera
+  // que ir a otra vista, volver y buscarla, nadie lo haría con 875 filas por
+  // delante — que es la razón por la que el aviso no servía para nada.
+  const crearYElegir = onCrearClasificacion
+    ? async (prep) => { const cod = await onCrearClasificacion(prep); if (cod) onElegir(cod); }
+    : null;
+
   return (
     <div style={{ marginTop: 6 }} onClick={e => e.stopPropagation()}>
       <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
@@ -130,19 +176,25 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
       </button>
       {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
       {noSabe && (
-        <div style={{ marginTop: 4, padding: '5px 8px', background: 'rgba(148,163,184,.12)', border: '1px solid rgba(148,163,184,.4)', borderRadius: 5, fontSize: 10.5, maxWidth: 360 }}>
+        <div style={{ marginTop: 4, padding: '6px 9px', background: 'rgba(148,163,184,.12)', border: '1px solid rgba(148,163,184,.4)', borderRadius: 5, fontSize: 10.5, maxWidth: 680, width: '100%' }}>
           🤖 <strong>La IA no sabe</strong> y lo dice — no hay nada que aceptar acá, elegí la clasificación a mano.
-          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{noSabe.razonamiento}</div>
-          {noSabe.nuevaClasificacion && <ClasificacionNueva nombre={noSabe.nuevaClasificacion} />}
+          <Razonamiento texto={noSabe.razonamiento} />
+          {noSabe.nuevaClasificacion && (
+            <ClasificacionNueva nombre={noSabe.nuevaClasificacion} arbol={noSabe.arbolNuevo}
+              cats={opciones} onCrear={crearYElegir} onUsar={onElegir} />
+          )}
         </div>
       )}
       {sugerencia && (
-        <div style={{ marginTop: 4, padding: '5px 8px', background: 'rgba(58,163,255,.08)', border: '1px solid rgba(58,163,255,.3)', borderRadius: 5, fontSize: 10.5, maxWidth: 360 }}>
+        <div style={{ marginTop: 4, padding: '6px 9px', background: 'rgba(58,163,255,.08)', border: '1px solid rgba(58,163,255,.3)', borderRadius: 5, fontSize: 10.5, maxWidth: 680, width: '100%' }}>
           🤖 Sugiere <strong>{sugerencia.nombre}</strong>
           <span className="badge b-blue" style={{ marginLeft: 4, fontSize: 9 }}>{Math.round((sugerencia.confianza || 0) * 100)}%</span>
           {sugerencia.cached && <span style={{ color: 'var(--tm)' }}> · ya preguntada</span>}
-          <div style={{ color: 'var(--tm)', marginTop: 2 }}>{sugerencia.razonamiento}</div>
-          {sugerencia.nuevaClasificacion && <ClasificacionNueva nombre={sugerencia.nuevaClasificacion} />}
+          <Razonamiento texto={sugerencia.razonamiento} />
+          {sugerencia.nuevaClasificacion && (
+            <ClasificacionNueva nombre={sugerencia.nuevaClasificacion} arbol={sugerencia.arbolNuevo}
+              cats={opciones} onCrear={crearYElegir} onUsar={onElegir} />
+          )}
           <button type="button" className="btn btn-xs btn-blue" style={{ marginTop: 4 }}
             onClick={(e) => { e.stopPropagation(); onElegir(sugerencia.codigo); }}>
             Usar esta clasificación
@@ -156,18 +208,74 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
 /**
  * «Ninguna de la lista le queda bien» — el aviso que pidió Gabriel el 15-sep
  * con "LA INMOBILIARIA BCP", que es el interés de un préstamo y no es un
- * insumo de construcción ni un consumo de oficina. Acá NO se crea nada: la
- * clasificación propia se da de alta desde el Catálogo, con su código
- * validado. Esto es una nota para quien decide.
+ * insumo de construcción ni un consumo de oficina.
+ *
+ * DESDE LA TANDA 8 ACÁ SE PUEDE CREAR, y ese fue el pedido: «tener la facilidad
+ * de darle a aceptar y que la IA me lo cree pero bien (cuidado duplique)». El
+ * «pero bien» es todo el asunto y lo resuelve `prepararClasificacionNueva()`:
+ *   · si ya existe una que se llama así —propia o de la NORMA— no se crea nada,
+ *     se ofrece la que hay;
+ *   · si hay parecidas se muestran primero, para elegir en vez de duplicar;
+ *   · el árbol (insumo o servicio) sale de lo que dijo la IA, y si no lo dijo
+ *     se deduce del nombre;
+ *   · el código se propone con prefijo propio y numerado si está tomado, así
+ *     nunca pisa el espacio oficial del IUPC.
+ * Sin `onCrear` sigue siendo la nota de antes — es como se monta en un test.
  */
-function ClasificacionNueva({ nombre }) {
+function ClasificacionNueva({ nombre, arbol = null, cats = null, onCrear = null, onUsar = null }) {
+  const prep = uM(
+    () => prepararClasificacionNueva({ nombre, arbol, cats: cats || [] }),
+    [nombre, arbol, cats],
+  );
+  const puedeCrear = !!onCrear && prep.ok && !prep.yaExiste;
+
   return (
-    <div style={{ marginTop: 4, padding: '4px 6px', borderRadius: 4, background: 'rgba(242,183,5,.12)', border: '1px solid rgba(242,183,5,.35)' }}>
+    <div style={{ marginTop: 4, padding: '4px 6px', borderRadius: 4, background: 'rgba(242,183,5,.12)', border: '1px solid rgba(242,183,5,.35)' }}
+      onClick={e => e.stopPropagation()}>
       ⚠ Ninguna clasificación de la lista le queda bien. La IA propone crear una:
-      {' '}<strong>«{nombre}»</strong>.
-      <div style={{ color: 'var(--tm)' }}>
-        Se crea desde <strong>Clasificaciones y diccionario</strong>; acá no se crea sola.
-      </div>
+      {' '}<strong>«{prep.nombre || nombre}»</strong>.
+
+      {prep.yaExiste ? (
+        <div style={{ marginTop: 3 }}>
+          ✓ <strong>Ya existe</strong> y se llama igual: {prep.yaExiste.label || prep.yaExiste.nombre}. No hace falta crear nada.
+          {onUsar && (
+            <button type="button" className="btn btn-xs btn-green" style={{ marginLeft: 6 }}
+              onClick={() => onUsar(prep.yaExiste.codigo)}>Usar esa</button>
+          )}
+        </div>
+      ) : (
+        <>
+          {prep.parecidas?.length > 0 && (
+            <div style={{ marginTop: 3, color: 'var(--tm)' }}>
+              Ojo, ya hay {prep.parecidas.length === 1 ? 'una parecida' : 'parecidas'}:{' '}
+              {prep.parecidas.map((x, i) => (
+                <span key={x.cat.codigo}>
+                  {i > 0 ? ' · ' : ''}
+                  {x.cat.label || x.cat.nombre}
+                  {onUsar && (
+                    <button type="button" className="btn btn-xs btn-ghost" style={{ marginLeft: 3 }}
+                      onClick={() => onUsar(x.cat.codigo)}>usar esa</button>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+          {puedeCrear ? (
+            <div style={{ marginTop: 4 }}>
+              <button type="button" className="btn btn-xs btn-amber" onClick={() => onCrear(prep)}>
+                Crear «{prep.nombre}»
+              </button>
+              <span style={{ color: 'var(--tm)', marginLeft: 6 }}>
+                como código <code>{prep.codigo}</code>, en el árbol de {prep.arbol === 'servicio' ? 'servicios' : 'insumos'}.
+              </span>
+            </div>
+          ) : (
+            <div style={{ color: 'var(--tm)' }}>
+              Se crea desde <strong>Clasificaciones y diccionario</strong>; acá no se crea sola.
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -182,6 +290,10 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // Anexo 2 (tanda 1): es la corrección que ya enseñó la contadora y mejora la
   // propuesta con el uso, pero no es la norma y no puede presentarse como tal.
   const terHook = window.__hooks.useClasificacionTerminos?.() || { data: [] };
+  // Las clasificaciones PROPIAS (mig 205). Antes esta pantalla no las leía y
+  // por eso una clasificación recién creada no aparecía acá nunca — ver el
+  // comentario de OPCIONES_BASE.
+  const clasHook = window.__hooks.useClasificaciones?.() || { data: [] };
   // Las correlaciones ya decididas: son las que fusionan varias descripciones
   // en una sola fila de esta bandeja (tanda 4 — ver `fusionarPorCorrelacion`).
   const corrHook = window.__hooks.useInsumoCorrelaciones?.() || { data: [] };
@@ -211,6 +323,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // Anti doble-click (regla crítica 2): ref SÍNCRONO. Un doble tap en «Aceptar»
   // no puede escribir dos filas para la misma descripción.
   const guardandoRef = uR(false);
+  // Su propio guard: crear la clasificación que propone la IA no bloquea (ni
+  // lo bloquea) a aceptar una fila, pero tampoco puede dispararse dos veces.
+  const creandoClasRef = uR(false);
   // Un solo <datalist> para TODA la pantalla (rendimiento — ver el
   // encabezado de jx-selector-clasificacion.jsx): cada fila solo pone un
   // <input list={listId}> liviano.
@@ -286,6 +401,50 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // corta que se le manda a la IA cuando el diccionario no alcanza para llegar
   // al mínimo: a falta de toda otra señal, lo más probable es lo que ya se
   // decidió cien veces. Sale de las decisiones tomadas, no de una lista fija.
+  // Lo que se OFRECE para elegir en esta pantalla: la base oficial + lo que
+  // Gabriel creó. Es la misma lista que se le manda a la IA como candidatos, así
+  // que una clasificación propia recién creada ya puede ser propuesta por ella.
+  const opcionesClasificacion = uM(
+    () => categoriasParaElegir((clasHook.data || []).filter(c => !c.deleted_at && !!c.demo === esPrueba)),
+    [clasHook.data, esPrueba],
+  );
+
+  /**
+   * Crear la clasificación que propuso la IA, desde la fila donde se propuso.
+   * Devuelve el código creado (o el de la que ya existía) para que quien llamó
+   * la deje elegida. `prepararClasificacionNueva()` ya resolvió el nombre, el
+   * árbol y un código libre; `validarClasificacion()` sigue siendo la última
+   * palabra sobre si ese código puede existir.
+   */
+  const crearClasificacionDesdeIA = async (prep) => {
+    if (!prep?.ok) return null;
+    if (prep.yaExiste) return prep.yaExiste.codigo;
+    // Anti doble-click (regla crítica de la casa): ref SÍNCRONO, no estado. Un
+    // doble tap en «Crear» no puede dejar dos clasificaciones gemelas — que es
+    // justamente el duplicado que este flujo vino a evitar. Va aparte de
+    // `guardandoRef` porque crear no bloquea ni es bloqueado por aceptar.
+    if (creandoClasRef.current) return null;
+    creandoClasRef.current = true;
+    // `validarClasificacion()` sigue siendo la última palabra sobre el código:
+    // `prepararClasificacionNueva()` ya eligió uno libre, pero el que valida si
+    // un código puede existir es uno solo, y es ése.
+    const err = validarClasificacion(prep, (clasHook.data || []).filter(c => !c.deleted_at));
+    if (err) { showToast?.(err, 'error'); return null; }
+    try {
+      await crearClasificacion({
+        codigo: prep.codigo, nombre: prep.nombre, arbol: prep.arbol, companyId,
+      }, { userId });
+      await clasHook.refresh?.();
+      showToast?.(`✓ Clasificación «${prep.nombre}» creada (${prep.codigo}). Ya se puede elegir acá.`, 'green');
+      return prep.codigo;
+    } catch (e) {
+      showToast?.('No se pudo crear la clasificación: ' + (e?.message || e), 'error');
+      return null;
+    } finally {
+      creandoClasRef.current = false;
+    }
+  };
+
   const frecuentes = uM(() => {
     const cuenta = new Map();
     const sumar = (cod, peso) => {
@@ -406,6 +565,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         unidad: [...(fila.unidades || [])][0] || 'und',
         nota: notaIA ? `${notaIA} · Alta desde la bandeja` : null,
         variantes: fila.variantes || null,
+        // Lo aplicado por el recorrido sin que nadie lo mire queda SIN revisar:
+        // esas son las que «Insumos y servicios» tiene que seguir mostrando.
+        decidida: !silencioso,
       });
       await enseñarALaContadora(paresParaContadora(fila, creado), { userId, equivalencias });
       // Enseña la clasificación IUPC — sea que se haya aceptado la propuesta
@@ -427,6 +589,32 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       nota: notaIA,
     });
     await decidirEnLote(replicarEnVariantes(cuerpo, fila), { userId });
+    // 🔴 LA DECISIÓN TAMBIÉN CORRIGE EL VOCABULARIO (tanda 8, 15-set-2026).
+    // Decidir acá escribía solo en `insumo_categoria` (la descripción de
+    // factura → el insumo), y dejaba al INSUMO del catálogo con su
+    // clasificación vieja. Resultado: la pestaña de al lado seguía mostrando
+    // otra clasificación para lo mismo y su triángulo ámbar pedía confirmar de
+    // nuevo lo recién decidido. Si una persona eligió una clasificación
+    // distinta a la que tenía el insumo, eso ES la corrección del insumo.
+    // Solo cuando la eligió una persona: el recorrido silencioso no reescribe
+    // el catálogo por su cuenta.
+    // Parado en una entidad, corregir una fila que viene del catálogo GENERAL
+    // no lo cambia para todos: le hace a esa entidad su propia copia. Es el
+    // mismo criterio de `corregirLote` en el panel del catálogo.
+    // `soloEnDisgregacion` son filas sintéticas (no existen en la tabla): esas
+    // no se corrigen, se dan de alta cuando corresponde.
+    if (!silencioso && catFila.id && !catFila.soloEnDisgregacion
+      && catFinal && catFinal !== 'sin_clasificar' && catFinal !== catFila.familia) {
+      const cambios = { familia: catFinal, revisado: true };
+      if ((catFila.company_id || null) === (companyId || null)) {
+        await corregirEnLote([catFila.id], cambios, { userId });
+      } else if (companyId) {
+        await adoptarEnEntidad(catFila.id, companyId, cambios, { userId });
+      } else {
+        await corregirEnLote([catFila.id], cambios, { userId });
+      }
+      await catHook.refresh?.();
+    }
     await enseñarALaContadora(paresParaContadora(fila, { ...catFila, familia: catFinal }), { userId, equivalencias });
     await enseñarTodasLasVariantes(fila, catFinal, origenTermino);
     olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
@@ -561,7 +749,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     items: pendientesTotal,
     procesarItem: async (f) => {
       const r = await clasificarInsumoConIA({
-        descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
+        descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '',
+        precioUnitario: precioUnitarioDeFila(f), candidatos: opcionesClasificacion,
         terminosCustom, propuestaLocal: propuestaLocalDe(f), frecuentes, modeloTexto,
       });
       // 🔴 EL «NO SÉ» SE GUARDA, NO SE TIRA (tanda 3). Un recorrido de 875
@@ -576,6 +765,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         guardarRecomendacion('clasificacion', ambitoIA, f.norm, {
           noSe: true, confianza: r.confianza || 0, razonamiento: r.razonamiento || '',
           nuevaClasificacion: r.result?.clasificacion_nueva || r.clasificacion_nueva || null,
+          arbolNuevo: r.result?.clasificacion_nueva_arbol || r.clasificacion_nueva_arbol || null,
         });
         return 'recomendada';
       }
@@ -590,10 +780,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       guardarRecomendacion('clasificacion', ambitoIA, f.norm, {
         codigo: cod, nombre: etiquetaCategoria(cod), confianza: conf, razonamiento: r.razonamiento || '',
         nuevaClasificacion: r.result.clasificacion_nueva || null,
+        arbolNuevo: r.result.clasificacion_nueva_arbol || null,
       });
       return 'recomendada';
     },
-  }), [pendientesTotal, ambitoIA, aceptar, terminosCustom]);
+  }), [pendientesTotal, ambitoIA, aceptar, terminosCustom, opcionesClasificacion]);
 
   // ── Teclado ──────────────────────────────────────────────────────
   // Es la mitad de por qué esta pantalla se puede terminar. Se apaga mientras
@@ -640,7 +831,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
 
   return (
     <>
-      <ClasificacionDatalist id={listId} opciones={OPCIONES_CLASIFICACION} />
+      <ClasificacionDatalist id={listId} opciones={opcionesClasificacion} />
       <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', lineHeight: 1.6 }}>
         Acá se dice <strong>qué insumo del catálogo</strong> es cada cosa que aparece en las facturas.
         Se decide <strong>por texto, no por factura</strong>: vale para todas las que digan lo mismo y no se vuelve a preguntar.
@@ -830,6 +1021,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             key={f.norm} f={f} activa={i === cursor}
             catFila={catalogoDe(f)}
             listId={listId}
+            opciones={opcionesClasificacion}
+            onCrearClasificacion={crearClasificacionDesdeIA}
             recIA={recsIA[f.norm] || null}
             terminosCustom={terminosCustom}
             frecuentes={frecuentes}
@@ -858,7 +1051,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         )}
       </div>
 
-      {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} terminosCustom={terminosCustom}
+      {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} opciones={opcionesClasificacion}
+        onCrearClasificacion={crearClasificacionDesdeIA} terminosCustom={terminosCustom}
         frecuentes={frecuentes} modeloTexto={modeloTexto}
         propuestaLocal={propuestaLocalDe(altaDe)} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
     </>
@@ -901,7 +1095,7 @@ function AvisoHermanas({ aviso, onUsar }) {
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -930,6 +1124,12 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
       f?.hermanas),
     [f?.estado, f?.decision?.familia, categoriaSel, f?.hermanas],
   );
+
+  // Crear la clasificación que propone la IA y dejarla elegida en esta misma
+  // fila. Sin esto había que ir a otra vista, crearla y volver a buscar la fila.
+  const crearYElegir = onCrearClasificacion
+    ? async (prep) => { const cod = await onCrearClasificacion(prep); if (cod) setCategoriaSel(cod); }
+    : null;
 
   const rec = f?.recomendacionIUPC;
   const score = cand?.score ?? rec?.score ?? 0.08;
@@ -1028,7 +1228,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                 <label style={{ fontSize: 10, color: 'var(--tm)' }}>Clasificación:</label>
                 <SelectorClasificacion
                   listId={listId}
-                  opciones={OPCIONES_CLASIFICACION}
+                  opciones={opciones}
                   value={categoriaSel}
                   // Sin esto, una fila que cae en el fallback 'otros' (o en una
                   // categoría vieja) mostraba el campo VACÍO y «Aceptar» igual
@@ -1053,13 +1253,16 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                   averiguar. Ver el comentario de `construirBarrido`. */}
               {recIA?.noSe && (
                 <div style={{
-                  marginTop: 5, padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+                  marginTop: 5, padding: '6px 9px', fontSize: 10.5, borderRadius: 5, maxWidth: 680, width: '100%',
                   background: 'rgba(148,163,184,.12)', border: '1px solid rgba(148,163,184,.4)',
                 }} onClick={e => e.stopPropagation()}>
                   <span className="badge b-gray" style={{ fontSize: 9 }}>🤖 La IA no sabe</span>
                   <span style={{ marginLeft: 6 }}>La miró y no encontró con qué decidir — clasificala a mano.</span>
-                  {recIA.razonamiento && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{recIA.razonamiento}</div>}
-                  {recIA.nuevaClasificacion && <ClasificacionNueva nombre={recIA.nuevaClasificacion} />}
+                  {recIA.razonamiento && <Razonamiento texto={recIA.razonamiento} />}
+                  {recIA.nuevaClasificacion && (
+                    <ClasificacionNueva nombre={recIA.nuevaClasificacion} arbol={recIA.arbolNuevo}
+                      cats={opciones} onCrear={crearYElegir} onUsar={setCategoriaSel} />
+                  )}
                   <div style={{ marginTop: 4 }}>
                     <button type="button" className="btn btn-xs btn-ghost"
                       onClick={(e) => { e.stopPropagation(); onDescartarIA?.(); }}>Descartar</button>
@@ -1076,7 +1279,12 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                   titulo={<>Clasificarlo como <strong>{recIA.nombre || etiquetaCategoria(recIA.codigo)}</strong></>}
                   confianza={recIA.confianza}
                   razonamiento={recIA.razonamiento}
-                  extra={recIA.nuevaClasificacion ? <ClasificacionNueva nombre={recIA.nuevaClasificacion} /> : null}
+                  extra={recIA.nuevaClasificacion
+                    ? (
+                      <ClasificacionNueva nombre={recIA.nuevaClasificacion} arbol={recIA.arbolNuevo}
+                        cats={opciones} onCrear={crearYElegir} onUsar={setCategoriaSel} />
+                    )
+                    : null}
                   onAceptar={() => onAceptarIA?.(recIA)}
                   onDescartar={() => onDescartarIA?.()}
                 />
@@ -1085,6 +1293,9 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
               <AyudaClasificacionIA
                 descripcion={f.muestra}
                 unidad={[...(f.unidades || [])][0] || ''}
+                precioUnitario={precioUnitarioDeFila(f)}
+                opciones={opciones}
+                onCrearClasificacion={onCrearClasificacion}
                 terminosCustom={terminosCustom}
                 propuestaLocal={propuestaLocal}
                 frecuentes={frecuentes}
@@ -1141,7 +1352,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
  * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
  * Todo es corregible antes de guardar.
  */
-function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, onCancel, onGuardar }) {
+function AltaEnCatalogo({ fila, listId, opciones = OPCIONES_BASE, onCrearClasificacion = null, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
   // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
   // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
@@ -1165,7 +1376,7 @@ function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = 
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Clasificación (IUPC / Servicios / Complementaria)</label>
           <SelectorClasificacion
             listId={listId}
-            opciones={OPCIONES_CLASIFICACION}
+            opciones={opciones}
             value={familia}
             actualLabel={familia ? etiquetaCategoria(familia) : null}
             permitirVacio
@@ -1179,6 +1390,8 @@ function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = 
             </div>
           )}
           <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad}
+            precioUnitario={precioUnitarioDeFila(fila)} opciones={opciones}
+            onCrearClasificacion={onCrearClasificacion}
             terminosCustom={terminosCustom} propuestaLocal={propuestaLocal}
             frecuentes={frecuentes} modeloTexto={modeloTexto} onElegir={setFamilia} />
         </div>
