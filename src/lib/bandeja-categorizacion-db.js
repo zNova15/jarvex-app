@@ -145,7 +145,7 @@ export async function enseñarALaContadora(pares, { userId = null, equivalencias
  * su decisión dejaría la descripción igual de pendiente y nadie entendería por
  * qué apareció un insumo nuevo que no resolvió nada.
  */
-export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null, nota = null } = {}) {
+export async function agregarAlCatalogoYDecidir(fila, { companyId = null, familia = null, unidad = null, nombre = null, userId = null, nota = null, variantes = null } = {}) {
   const esPrueba = esModoPrueba();
   const nueva = filaNuevaDeCatalogo(fila, { companyId, familia, unidad, nombre });
   let creado = null;
@@ -180,11 +180,22 @@ export async function agregarAlCatalogoYDecidir(fila, { companyId = null, famili
       fuente: 'manual', score: null, nota: nota || 'Alta desde la bandeja',
       company_id: companyId || null, deleted_at: null,
     };
-    const yaDecidida = await db.insumo_categoria
-      .filter(r => !r.deleted_at && r.norm === fila.norm
-        && (r.company_id || null) === (companyId || null) && filaDelModo(r, esPrueba)).toArray();
-    if (yaDecidida.length) await db.insumo_categoria.update(yaDecidida[0].id, parcheDeUpdate(cuerpo, yaDecidida[0], esPrueba, userId));
-    else await db.insumo_categoria.add(filaNueva(cuerpo, esPrueba, userId));
+    // 🔴 UNA DECISIÓN POR DESCRIPCIÓN, aunque la pantalla muestre una sola fila.
+    // Con Correlaciones resueltas (tanda 4) la fila puede ser un grupo de N
+    // variantes: `insumo_categoria` se indexa por `norm`, así que escribir solo
+    // la del representante dejaría a las otras pendientes para siempre. Dentro
+    // de la MISMA transacción que el alta del catálogo: un catálogo nuevo con
+    // media decisión es peor que ninguna de las dos.
+    const destinos = (variantes?.length ? variantes : [{ norm: fila.norm, muestra: fila.muestra }])
+      .filter(v => v?.norm);
+    for (const v of destinos) {
+      const cuerpoV = { ...cuerpo, norm: v.norm, muestra: v.muestra || fila.muestra };
+      const yaDecidida = await db.insumo_categoria
+        .filter(r => !r.deleted_at && r.norm === v.norm
+          && (r.company_id || null) === (companyId || null) && filaDelModo(r, esPrueba)).toArray();
+      if (yaDecidida.length) await db.insumo_categoria.update(yaDecidida[0].id, parcheDeUpdate(cuerpoV, yaDecidida[0], esPrueba, userId));
+      else await db.insumo_categoria.add(filaNueva(cuerpoV, esPrueba, userId));
+    }
   });
   return creado;
 }

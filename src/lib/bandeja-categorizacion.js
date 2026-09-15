@@ -59,6 +59,7 @@ import {
   clasificarConIUPC, bandaConfianza, etiquetaCategoria, tipoDeCategoria,
 } from './indices-unificados-iupc.js';
 import { indiceDeHermanas, hermanasDe } from './hermanas-clasificacion.js';
+import { normInsumo } from './insumo-correlacion.js';
 
 // ── 1. EL CATÁLOGO CONTRA EL QUE SE PROPONE ────────────────────────
 
@@ -152,8 +153,12 @@ export function resolverCategorias(rows, { companyId = null, demo = false } = {}
 
 /** Una fila por DESCRIPCIÓN, con lo que esa descripción movió en total.
  *  Espeja el criterio de la pestaña de mapeo: se decide por texto, no por
- *  factura, y las ventas y notas de crédito ya vienen filtradas de afuera. */
-export function agruparDescripciones(compras) {
+ *  factura, y las ventas y notas de crédito ya vienen filtradas de afuera.
+ *
+ *  `grupoDe` (tanda 4, 15-sep-2026): el mapa de Correlaciones. Cuando viene,
+ *  las descripciones que YA se correlacionaron como «el mismo insumo» salen
+ *  como UNA sola fila — ver `fusionarPorCorrelacion`. */
+export function agruparDescripciones(compras, { grupoDe = null } = {}) {
   const porNorm = new Map();
   for (const c of (compras || [])) {
     if (c?.clase && c.clase !== 'compra') continue;
@@ -175,7 +180,94 @@ export function agruparDescripciones(compras) {
     cur.monedas.add(c.moneda || 'PEN');
     porNorm.set(norm, cur);
   }
-  return [...porNorm.values()].sort((a, b) => b.importe - a.importe);
+  const filas = [...porNorm.values()].sort((a, b) => b.importe - a.importe);
+  return grupoDe ? fusionarPorCorrelacion(filas, grupoDe) : filas;
+}
+
+// ── UNA SOLA COLA: CORRELACIONAR → CLASIFICAR (tanda 4) ────────────
+/**
+ * Las descripciones que Correlaciones ya declaró «el mismo insumo» se juntan
+ * en UNA fila de la bandeja.
+ *
+ * POR QUÉ. Hasta acá, «CLAVO N 3», «CLAVOS NRO 3» y «CLAVO NUMERO 3» eran tres
+ * filas, tres propuestas y tres decisiones que podían salir distintas — y
+ * salían: es la causa raíz de buena parte de las contradicciones que Gabriel
+ * encontró en el diccionario. Correlacionar ANTES de clasificar convierte N
+ * preguntas que pueden contestarse distinto en UNA pregunta con UNA respuesta.
+ * Por eso el orden de trabajo es ese y no al revés.
+ *
+ * 🔴 LA FILA FUSIONADA NO PIERDE A NADIE. `variantes` lleva TODAS las
+ * descripciones del grupo con su propia `norm`, porque la decisión se escribe
+ * en `insumo_categoria` por descripción (la llave es `norm`): guardar solo la
+ * del representante dejaría a las otras dos eternamente pendientes, y la
+ * próxima factura que las trajera volvería a preguntar por ellas. Ver
+ * `replicarEnVariantes`.
+ *
+ * El REPRESENTANTE es el de mayor importe, no el más largo: la bandeja se
+ * ordena por plata y el nombre que la persona reconoce es el que más movió.
+ * Los totales se suman — la fila del grupo vale lo que valen sus variantes
+ * juntas, que es justamente lo que hace que suba al lugar que le corresponde.
+ */
+export function fusionarPorCorrelacion(filas, grupoDe) {
+  if (!grupoDe || !grupoDe.size) return filas || [];
+  const porGrupo = new Map();
+  const sueltas = [];
+  for (const f of (filas || [])) {
+    const gid = grupoDe.get(normInsumo(f.muestra));
+    if (!gid) { sueltas.push(f); continue; }
+    if (!porGrupo.has(gid)) porGrupo.set(gid, []);
+    porGrupo.get(gid).push(f);
+  }
+  const fusionadas = [];
+  for (const [gid, miembros] of porGrupo.entries()) {
+    // Un grupo con un solo miembro presente en esta base no es un grupo: sus
+    // hermanas están en otra entidad o todavía no se facturaron.
+    if (miembros.length < 2) { sueltas.push(...miembros); continue; }
+    const orden = [...miembros].sort((a, b) => b.importe - a.importe);
+    const rep = orden[0];
+    const unidades = new Set(), provs = new Set(), entidades = new Set(), monedas = new Set();
+    let veces = 0, importe = 0, cantidad = 0;
+    for (const m of orden) {
+      veces += m.veces; importe += m.importe; cantidad += m.cantidad;
+      for (const u of (m.unidades || [])) unidades.add(u);
+      for (const x of (m.provs || [])) provs.add(x);
+      for (const x of (m.entidades || [])) entidades.add(x);
+      for (const x of (m.monedas || [])) monedas.add(x);
+    }
+    fusionadas.push({
+      norm: rep.norm, muestra: rep.muestra,
+      veces, importe, cantidad, unidades, provs, entidades, monedas,
+      grupo: gid,
+      variantes: orden.map(m => ({ norm: m.norm, muestra: m.muestra, veces: m.veces, importe: m.importe })),
+    });
+  }
+  return [...sueltas, ...fusionadas].sort((a, b) => b.importe - a.importe);
+}
+
+/** Todas las `norm` que una decisión sobre esta fila tiene que escribir. */
+export function normsDeFila(fila) {
+  if (fila?.variantes?.length) return fila.variantes.map(v => v.norm).filter(Boolean);
+  return fila?.norm ? [fila.norm] : [];
+}
+
+/** Todas las descripciones crudas de la fila (para enseñar y para desenseñar). */
+export function muestrasDeFila(fila) {
+  if (fila?.variantes?.length) return fila.variantes.map(v => v.muestra).filter(Boolean);
+  return fila?.muestra ? [fila.muestra] : [];
+}
+
+/**
+ * Un cuerpo de decisión por cada variante del grupo.
+ *
+ * La decisión es UNA (la que tomó la persona mirando la fila fusionada); lo
+ * que se multiplica son las filas de `insumo_categoria`, porque esa tabla se
+ * indexa por descripción. Sin esto, decidir un grupo de 5 dejaba 4
+ * descripciones pendientes y la pantalla mentía sobre el avance.
+ */
+export function replicarEnVariantes(cuerpo, fila) {
+  const vs = fila?.variantes;
+  if (!cuerpo || !vs?.length) return cuerpo ? [cuerpo] : [];
+  return vs.map(v => ({ ...cuerpo, norm: v.norm, muestra: v.muestra }));
 }
 
 /**
@@ -271,6 +363,20 @@ export const BANDA_SIN_PROPUESTA = {
  * 100% de cobertura predictiva garantizada: Todo insumo cuenta con una
  * recomendación oficial IUPC / complementaria y su banda de probabilidad.
  */
+/** La decisión vigente de una fila, mirando todas sus variantes fusionadas. */
+export function decisionDeFila(fila, decisiones) {
+  if (!decisiones) return null;
+  const propia = decisiones.get(fila?.norm);
+  if (propia) return propia;
+  let mejor = null;
+  for (const n of normsDeFila(fila)) {
+    const d = decisiones.get(n);
+    if (!d) continue;
+    if (!mejor || String(d.updated_at || '') > String(mejor.updated_at || '')) mejor = d;
+  }
+  return mejor;
+}
+
 export function filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom = null }) {
   // ── LAS HERMANAS YA DECIDIDAS (tanda 3) ──────────────────────────
   // Se arma UNA vez para toda la bandeja y cada fila la consulta: son ~900
@@ -284,7 +390,12 @@ export function filasDeBandeja(descripciones, { prep, porId, decisiones, termino
       .map(t => ({ texto: t?.termino, codigo: t?.clasificacion_codigo })),
   ]);
   return (descripciones || []).map(d => {
-    const ya = decisiones?.get(d.norm) || null;
+    // 🔴 EN UNA FILA FUSIONADA, LA DECISIÓN PUEDE ESTAR EN CUALQUIER VARIANTE.
+    // La del representante primero (es la que se escribe al decidir el grupo);
+    // si no, la más reciente de sus hermanas — una decidida antes de
+    // correlacionarlas. Mirar solo `d.norm` haría reaparecer como pendiente un
+    // grupo que ya estaba resuelto, y decidirlo otra vez pisaría lo anterior.
+    const ya = decisionDeFila(d, decisiones);
     const hermanas = hermanasDe(d.muestra, indiceHermanas);
     if (ya) {
       const cat = ya.catalogo_insumo_id ? porId?.get(ya.catalogo_insumo_id) : null;

@@ -36,9 +36,11 @@ import {
   catalogoParaProponer, indiceDePropuestas, resolverCategorias,
   agruparDescripciones, filasDeBandeja, lotesPorPropuesta, resumenAvance,
   decisionDeCatalogo, decisionNoInsumo, ESTADOS, ORDENES, ordenarFilasBandeja,
+  normsDeFila, muestrasDeFila, replicarEnVariantes,
 } from "../lib/bandeja-categorizacion.js";
+import { resolverPares, construirGrupos } from "../lib/insumo-correlacion.js";
 import {
-  decidir, decidirEnLote, agregarAlCatalogoYDecidir, reabrir, reabrirEnLote, enseñarALaContadora,
+  decidirEnLote, agregarAlCatalogoYDecidir, reabrirEnLote, enseñarALaContadora,
 } from "../lib/bandeja-categorizacion-db.js";
 import {
   equivalenciasDe,
@@ -180,6 +182,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   // Anexo 2 (tanda 1): es la corrección que ya enseñó la contadora y mejora la
   // propuesta con el uso, pero no es la norma y no puede presentarse como tal.
   const terHook = window.__hooks.useClasificacionTerminos?.() || { data: [] };
+  // Las correlaciones ya decididas: son las que fusionan varias descripciones
+  // en una sola fila de esta bandeja (tanda 4 — ver `fusionarPorCorrelacion`).
+  const corrHook = window.__hooks.useInsumoCorrelaciones?.() || { data: [] };
   // Qué modelo usa esta sección, elegido en Administración → Modelos de IA.
   const { data: cfgIA } = window.__hooks?.useAppConfig?.() || { data: [] };
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
@@ -249,7 +254,19 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     () => (companyId ? (compras || []).filter(c => c.companyId === companyId) : (compras || [])),
     [compras, companyId],
   );
-  const descripciones = uM(() => agruparDescripciones(comprasEnAlcance), [comprasEnAlcance]);
+  // ── UNA SOLA COLA: CORRELACIONAR → CLASIFICAR (tanda 4) ──────────
+  // Lo que Correlaciones ya resolvió como «el mismo insumo» acá es UNA fila.
+  // El orden de trabajo es ese a propósito: tres variantes sueltas son tres
+  // preguntas que pueden contestarse distinto; una vez correlacionadas son una
+  // sola pregunta con una sola respuesta.
+  const grupoDe = uM(
+    () => construirGrupos(resolverPares(corrHook.data || [], { demo: esPrueba })).grupoDe,
+    [corrHook.data, esPrueba],
+  );
+  const descripciones = uM(
+    () => agruparDescripciones(comprasEnAlcance, { grupoDe }),
+    [comprasEnAlcance, grupoDe],
+  );
 
   // 🔴 VA ANTES DE `filas` A PROPÓSITO: esta pantalla ENSEÑA términos y hasta
   // la tanda 1 era la única que no los LEÍA — `filasDeBandeja` se llamaba sin
@@ -388,35 +405,54 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         companyId, familia: catFinal, userId,
         unidad: [...(fila.unidades || [])][0] || 'und',
         nota: notaIA ? `${notaIA} · Alta desde la bandeja` : null,
+        variantes: fila.variantes || null,
       });
-      await enseñarALaContadora([{ fila, catalogoFila: creado }], { userId, equivalencias });
+      await enseñarALaContadora(paresParaContadora(fila, creado), { userId, equivalencias });
       // Enseña la clasificación IUPC — sea que se haya aceptado la propuesta
       // TAL CUAL, o que se haya elegido otra cosa a mano (un descarte): lo que
       // se enseña es SIEMPRE la decisión final (ver enseñarDiccionario).
-      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId, origen: origenTermino }, { userId });
+      await enseñarTodasLasVariantes(fila, catFinal, origenTermino);
       olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
       await Promise.all([decHook.refresh?.(), catHook.refresh?.()]);
       if (!silencioso) showToast?.(`✓ «${creado.nombre}» dado de alta en ${etiquetaCategoria(catFinal)} y decidido`, 'green');
       return;
     }
 
-    await decidir(decisionDeCatalogo(fila, catFila, {
+    const cuerpo = decisionDeCatalogo(fila, catFila, {
       factor: cand?.factor?.factor ?? null,
       factorFuente: cand?.factor?.fuente ?? null,
       score: cand?.score ?? fila?.recomendacionIUPC?.score ?? null,
       companyId,
       categoria: catFinal,
       nota: notaIA,
-    }), { userId });
-    await enseñarALaContadora([{ fila, catalogoFila: { ...catFila, familia: catFinal } }], { userId, equivalencias });
-    await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: catFinal, companyId, origen: origenTermino }, { userId });
+    });
+    await decidirEnLote(replicarEnVariantes(cuerpo, fila), { userId });
+    await enseñarALaContadora(paresParaContadora(fila, { ...catFila, familia: catFinal }), { userId, equivalencias });
+    await enseñarTodasLasVariantes(fila, catFinal, origenTermino);
     olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     await decHook.refresh?.();
     if (!silencioso) showToast?.(`✓ ${catFila.nombre} [${etiquetaCategoria(catFinal)}] — vale para todas las facturas`, 'green');
   });
 
+  // ── LO QUE UNA DECISIÓN ALCANZA (tanda 4) ────────────────────────
+  // Una fila puede ser un GRUPO de variantes correlacionadas. La decisión es
+  // una sola —la que tomó la persona— pero se escribe una vez por descripción,
+  // porque `insumo_categoria` se indexa por `norm` y el diccionario aprende
+  // por texto. Escribir solo la del representante dejaba a las hermanas
+  // pendientes y la próxima factura volvía a preguntar por ellas.
+  const enseñarTodasLasVariantes = async (fila, codigo, origenTermino) => {
+    if (!codigo) return;
+    // SECUENCIAL: enseñarDiccionario lee-antes-de-escribir y dos variantes en
+    // paralelo verían ambas «no hay término» y crearían un duplicado.
+    for (const muestra of muestrasDeFila(fila)) {
+      await enseñarDiccionario({ descripcion: muestra, clasificacionCodigo: codigo, companyId, origen: origenTermino }, { userId });
+    }
+  };
+  const paresParaContadora = (fila, catalogoFila) =>
+    muestrasDeFila(fila).map(muestra => ({ fila: { ...fila, muestra }, catalogoFila }));
+
   const noEsInsumo = conGuard(async (fila) => {
-    await decidir(decisionNoInsumo(fila, { companyId }), { userId });
+    await decidirEnLote(replicarEnVariantes(decisionNoInsumo(fila, { companyId }), fila), { userId });
     // Decir «no es un insumo» también resuelve la fila: la propuesta de la IA
     // ya no tiene a quién esperar.
     olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
@@ -425,11 +461,11 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   });
 
   const deshacer = conGuard(async (fila) => {
-    await reabrir(fila.norm, { companyId });
+    await reabrirEnLote(normsDeFila(fila), { companyId });
     // Deshacer una decisión también DESENSEÑA lo que esa decisión enseñó (ver
     // `olvidarDiccionario`): dejar el término vivo era lo que fabricaba los
     // 365 huérfanos. Lo escrito a mano en el panel no se toca.
-    const olvidados = await olvidarDiccionario([fila.muestra], { userId });
+    const olvidados = await olvidarDiccionario(muestrasDeFila(fila), { userId });
     await Promise.all([decHook.refresh?.(), olvidados ? terHook.refresh?.() : null]);
     showToast?.(olvidados
       ? 'Decisión deshecha — vuelve a la lista y el diccionario la olvida'
@@ -439,22 +475,20 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   const aceptarLote = conGuard(async (grupo) => {
     const catFila = porId.get(grupo.codigo);
     if (!catFila) return;
-    const cuerpos = grupo.filas.map(f => decisionDeCatalogo(f, catFila, {
+    const cuerpos = grupo.filas.flatMap(f => replicarEnVariantes(decisionDeCatalogo(f, catFila, {
       factor: f.sug?.candidatos?.[0]?.factor?.factor ?? null,
       factorFuente: f.sug?.candidatos?.[0]?.factor?.fuente ?? null,
       score: f.sug?.candidatos?.[0]?.score ?? null, companyId,
-    }));
+    }), f));
     const n = await decidirEnLote(cuerpos, { userId });
-    await enseñarALaContadora(grupo.filas.map(f => ({ fila: f, catalogoFila: catFila })), { userId, equivalencias });
+    await enseñarALaContadora(grupo.filas.flatMap(f => paresParaContadora(f, catFila)), { userId, equivalencias });
     // Un término por descripción del lote — todas terminan en la MISMA
     // clasificación (la del insumo del catálogo al que se aceptó el lote).
     // SECUENCIAL a propósito: enseñarDiccionario lee-antes-de-escribir, y dos
     // filas del lote con la misma descripción normalizada bajo un Promise.all
     // verían ambas "no hay término todavía" y crearían un duplicado.
     if (catFila.familia) {
-      for (const f of grupo.filas) {
-        await enseñarDiccionario({ descripcion: f.muestra, clasificacionCodigo: catFila.familia, companyId }, { userId });
-      }
+      for (const f of grupo.filas) await enseñarTodasLasVariantes(f, catFila.familia, 'decision');
     }
     for (const f of grupo.filas) olvidarRecomendacion('clasificacion', ambitoIA, f.norm);
     await decHook.refresh?.();
@@ -472,7 +506,9 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
    */
   const desclasificar = conGuard(async (filasADeshacer, queEs) => {
     const elegidas = (filasADeshacer || []).filter(f => f?.norm);
-    const norms = [...new Set(elegidas.map(f => f.norm))];
+    // Un grupo correlacionado se desclasifica entero: dejar media hermana
+    // decidida es exactamente la contradicción que la fusión vino a evitar.
+    const norms = [...new Set(elegidas.flatMap(f => normsDeFila(f)))];
     if (!norms.length) return;
     const ok = typeof confirm !== 'function' || confirm(
       `Se van a DESCLASIFICAR ${norms.length} ${norms.length === 1 ? 'descripción' : 'descripciones'} (${queEs}).\n\n`
@@ -485,7 +521,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     // Desclasificar desenseña — ver `olvidarDiccionario`. Sin esto cada tanda
     // arrancaba con los términos de la anterior, incluidos los que se
     // deshicieron justamente porque estaban mal.
-    const olvidados = await olvidarDiccionario(elegidas.map(f => f.muestra), { userId });
+    const olvidados = await olvidarDiccionario(elegidas.flatMap(f => muestrasDeFila(f)), { userId });
     setMarcadas(new Set());
     await Promise.all([decHook.refresh?.(), olvidados ? terHook.refresh?.() : null]);
     showToast?.(`↩ ${n} ${n === 1 ? 'decisión deshecha' : 'decisiones deshechas'}`
@@ -495,7 +531,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   const noSonInsumoEnLote = conGuard(async () => {
     const elegidas = enPantalla.filter(f => marcadas.has(f.norm) && f.estado !== 'decididas');
     if (!elegidas.length) return;
-    const n = await decidirEnLote(elegidas.map(f => decisionNoInsumo(f, { companyId })), { userId });
+    const n = await decidirEnLote(elegidas.flatMap(f => replicarEnVariantes(decisionNoInsumo(f, { companyId }), f)), { userId });
     // También resuelve filas: sin esto sus propuestas de IA quedaban huérfanas
     // en localStorage y el contador de arriba decía más que el filtro de abajo.
     for (const f of elegidas) olvidarRecomendacion('clasificacion', ambitoIA, f.norm);
@@ -505,10 +541,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   });
 
   const crearEnCatalogo = conGuard(async (fila, campos) => {
-    const creado = await agregarAlCatalogoYDecidir(fila, { ...campos, companyId, userId });
-    if (campos.familia) {
-      await enseñarDiccionario({ descripcion: fila.muestra, clasificacionCodigo: campos.familia, companyId }, { userId });
-    }
+    const creado = await agregarAlCatalogoYDecidir(fila, { ...campos, companyId, userId, variantes: fila.variantes || null });
+    if (campos.familia) await enseñarTodasLasVariantes(fila, campos.familia, 'decision');
     olvidarRecomendacion('clasificacion', ambitoIA, fila.norm);
     setAltaDe(null);
     await Promise.all([catHook.refresh?.(), decHook.refresh?.()]);
@@ -932,7 +966,26 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
         <input type="checkbox" checked={marcada} onChange={onMarcar} style={{ marginTop: 3 }}
           title={f.estado === 'decididas' ? 'Marcar para desclasificar en lote' : 'Marcar para decidir en lote'} />
         <div style={{ flex: 1, minWidth: 240 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.muestra}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+            {f.muestra}
+            {/* UNA FILA QUE SON VARIAS (tanda 4). Lo que se correlacionó en
+                «Análisis de insumos» llega acá como una sola pregunta: se
+                decide una vez y la decisión se escribe para las N. El detalle
+                se muestra porque decidir a ciegas sobre nombres que no se ven
+                sería peor que decidirlos de a uno. */}
+            {f.variantes?.length > 1 && (
+              <span className="badge b-blue" style={{ marginLeft: 6, fontSize: 9 }}
+                title={`Correlacionadas como el mismo insumo: ${f.variantes.map(v => v.muestra).join(' · ')}. Lo que decidas acá vale para las ${f.variantes.length}.`}>
+                🔗 {f.variantes.length} variantes
+              </span>
+            )}
+          </div>
+          {f.variantes?.length > 1 && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2, fontStyle: 'italic' }}>
+              también: {f.variantes.slice(1, 4).map(v => v.muestra).join(' · ')}
+              {f.variantes.length > 4 ? ` +${f.variantes.length - 4}` : ''}
+            </div>
+          )}
           <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
             {f.veces} {f.veces === 1 ? 'vez' : 'veces'}
             {f.provs?.size > 0 && <> · {[...f.provs].slice(0, 2).join(', ')}{f.provs.size > 2 ? ` +${f.provs.size - 2}` : ''}</>}

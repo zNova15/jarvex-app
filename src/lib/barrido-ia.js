@@ -85,27 +85,40 @@ export function _reiniciarTurnoIA() {
  * `esperarTurno`: si viene, se llama ANTES de cada ítem en vez de dormir
  * después (es `turnoIA`, el ritmo compartido). Sin él se usa la pausa
  * propia — es lo que hacen los tests, que no quieren ritmo compartido.
+ *
+ * `necesitaTurno(item)`: si viene y devuelve false, ese ítem NO espera turno
+ * ni pausa — es la banda `obvio` del pre-filtro local (tanda 4), que se
+ * resuelve sin salir a la red y por lo tanto no consume el ritmo compartido.
+ * Hacerlos esperar 1,1 s igual sería cobrar el peaje de una autopista por la
+ * que no se pasó. Se cuentan aparte en `sinIA`.
  */
 export async function ejecutarBarridoIA({
   items, procesarItem, onProgreso, debeCancelar,
   pausaMs = GAP_IA_MS, esperarTurno = null, toleranciaErrores = 8,
+  necesitaTurno = null,
 }) {
   const lista = items || [];
   const estado = {
     total: lista.length, i: 0,
-    recomendadas: 0, aplicadas: 0, saltadas: 0, errores: 0,
+    recomendadas: 0, aplicadas: 0, saltadas: 0, errores: 0, sinIA: 0,
     cancelado: false, cortado: false, ultimoError: null,
   };
   let seguidos = 0;
   for (let i = 0; i < lista.length; i++) {
     if (debeCancelar?.()) { estado.cancelado = true; break; }
-    if (esperarTurno) await esperarTurno();
+    // ¿Este ítem sale a la red? Si el pre-filtro local ya lo resolvió, no
+    // espera turno ni pausa: no hay nada que ritmar.
+    const usaIA = necesitaTurno ? !!necesitaTurno(lista[i]) : true;
+    if (esperarTurno && usaIA) await esperarTurno();
     if (debeCancelar?.()) { estado.cancelado = true; break; }
     try {
       const r = await procesarItem(lista[i]);
       if (r === 'aplicada') estado.aplicadas++;
       else if (r === 'recomendada') estado.recomendadas++;
       else estado.saltadas++;
+      // Se cuenta DESPUÉS de que salió bien: un ítem que nunca se procesó
+      // (cancelado en el medio, o que tiró) no ahorró nada.
+      if (!usaIA) estado.sinIA++;
       seguidos = 0;
     } catch (e) {
       estado.errores++;
@@ -120,7 +133,7 @@ export async function ejecutarBarridoIA({
       console.warn(`[barrido-ia] cortado: ${seguidos} errores seguidos.`);
       break;
     }
-    if (!esperarTurno && i < lista.length - 1 && pausaMs > 0) {
+    if (usaIA && !esperarTurno && i < lista.length - 1 && pausaMs > 0) {
       await new Promise(res => setTimeout(res, pausaMs));
     }
   }

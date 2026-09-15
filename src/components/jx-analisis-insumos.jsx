@@ -62,13 +62,14 @@ import {
 } from "../lib/analisis-insumos.js";
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
+import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO } from "../lib/bandas-correlacion.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
 import { BarridoIA, useBarridoIA } from "./jx-barrido-ia.jsx";
 import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
-const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
+const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR, useCallback: uC } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 // Si un nombre clasifica como SERVICIO (árbol S01…S13), como INSUMO (IUPC +
@@ -129,7 +130,7 @@ function NombreConDiferencias({ nombre, otro }) {
  * `textoAplicar(mismas)` puede devolver null para no ofrecer botón (ej. la IA
  * dice que ninguna es la misma: para eso ya está "Son distintos").
  */
-function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null }) {
+function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null, banda = null }) {
   // `inicial`: lo que dejó el recorrido completo (barrido-store). Se muestra
   // sin volver a preguntar —ya se pagó— y con el sello de que vino de ahí.
   const [res, setRes] = uS(null);
@@ -159,10 +160,37 @@ function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null
 
   return (
     <div style={{ marginTop: 6 }} onClick={e => e.stopPropagation()}>
-      {!mostrado && (
-        <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}>
+      {/* ── EL PRE-FILTRO LOCAL (tanda 4) ────────────────────────────
+          Cuando los dos nombres dicen exactamente lo mismo no hay nada que
+          preguntar: la respuesta está acá, gratis y al instante. Igual hay
+          que apretar el botón — lo que se ahorra es la pregunta, no la
+          revisión. Cuando SÍ hay algo que juzgar, se dice qué es: eso es lo
+          que hay que mirar antes de gastar un viaje a la IA. */}
+      {!mostrado && banda?.banda === 'obvio' && (
+        <div style={{
+          padding: '5px 8px', fontSize: 10.5, borderRadius: 5, maxWidth: 520,
+          background: 'rgba(46,204,113,.09)', border: '1px solid rgba(46,204,113,.35)',
+        }}>
+          <span className="badge b-green" style={{ fontSize: 9 }}>⚡ Sin IA</span>
+          <span style={{ marginLeft: 6 }}>{banda.motivo}</span>
+          {textoAplicar && textoAplicar(variantes) && (
+            <div style={{ marginTop: 4 }}>
+              <button type="button" className="btn btn-xs btn-green"
+                onClick={(e) => { e.stopPropagation(); onAplicar?.(variantes, []); }}>
+                {textoAplicar(variantes)}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {!mostrado && banda?.banda !== 'obvio' && (
+        <button type="button" className="btn btn-xs btn-ghost" disabled={cargando} onClick={preguntar}
+          title={banda?.motivo || undefined}>
           {cargando ? '🤖 Pensando…' : '🤖 Preguntale a la IA'}
         </button>
+      )}
+      {!mostrado && banda?.banda === 'consultar' && (
+        <span style={{ fontSize: 10, color: 'var(--tm)', marginLeft: 6 }}>{banda.motivo}</span>
       )}
       {error && <span style={{ color: 'var(--red)', fontSize: 10.5, marginLeft: 6 }}>{error}</span>}
       {mostrado && (() => { const res = mostrado; return (
@@ -172,7 +200,10 @@ function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null
           border: `1px solid ${sonElMismo ? 'rgba(46,204,113,.35)' : 'rgba(231,76,60,.3)'}`,
         }}>
           {deRecorrido
-            ? <span className="badge b-blue" style={{ fontSize: 9, marginRight: 4 }}>🤖 Recomendado por IA</span>
+            ? (res.origen === 'local'
+              ? <span className="badge b-green" style={{ fontSize: 9, marginRight: 4 }}
+                  title="No se le preguntó a la IA: los dos nombres dicen lo mismo.">⚡ Resuelto sin IA</span>
+              : <span className="badge b-blue" style={{ fontSize: 9, marginRight: 4 }}>🤖 Recomendado por IA</span>)
             : '🤖 '}
           {esPar
             ? (sonElMismo ? <strong>Son el mismo insumo</strong> : <strong>NO son el mismo insumo</strong>)
@@ -444,6 +475,36 @@ function AnalisisInsumosPage({ showToast }) {
     for (const c of lineasEntidad) if (!m.has(c.nombreNorm)) m.set(c.nombreNorm, c);
     return m;
   }, [lineasEntidad]);
+
+  // ── EL PRE-FILTRO LOCAL (tanda 4) ────────────────────────────────
+  // Antes de gastar un viaje a la IA por cada par y cada grupo, se mira si hay
+  // algo que dudar. «CLAVO N 3» contra «CLAVOS NRO 3» no es una pregunta: es
+  // la misma frase escrita por dos personas. Ver bandas-correlacion.js — la
+  // banda `obvio` es estricta (no puede sobrar NADA de ninguno de los dos
+  // lados) justamente para que nunca tape una diferencia real.
+  //
+  // Va sobre los nombres CRUDOS, no los normalizados: normInsumo() parte
+  // "1/2" en dos números sueltos y la medida es lo que hay que juzgar.
+  const crudoDe = uC(
+    (v) => muestraDe.get(normInsumo(v))?.nombre || v,
+    [muestraDe],
+  );
+  const bandaDeCluster = uM(() => {
+    const m = new Map();
+    for (const c of clustersSugeridos) m.set(c.id, bandaDeGrupo(c.variantes.map(crudoDe)));
+    return m;
+  }, [clustersSugeridos, crudoDe]);
+  const bandaDeSugerencia = uM(() => {
+    const m = new Map();
+    for (const p of sugerencias) m.set(clavePar(p), bandaDePar(crudoDe(p.nombre_a), crudoDe(p.nombre_b)));
+    return m;
+  }, [sugerencias, crudoDe]);
+  // Cuántas de las pendientes NO van a salir a la red. Es el número que el
+  // botón muestra antes de arrancar.
+  const nSinIA = uM(
+    () => [...bandaDeCluster.values(), ...bandaDeSugerencia.values()].filter(b => b.banda === 'obvio').length,
+    [bandaDeCluster, bandaDeSugerencia],
+  );
   // Serie del gráfico memoizada (identidad estable: sin ella, cada re-render
   // del padre destruía y recreaba el Chart completo). ANTES del early return
   // del gate — regla de hooks.
@@ -581,15 +642,45 @@ function AnalisisInsumosPage({ showToast }) {
   // 🔴 NO DECIDE NADA en el modo por defecto: deja el veredicto de la IA en
   // la tarjeta de cada grupo/par, y el botón de siempre («Unir las N», «Son
   // distintos») lo sigue apretando una persona. Ver barrido-ia.js.
+  /**
+   * Lo que hace el recorrido con un candidato de banda `obvio`: NO pregunta.
+   * Deja la misma propuesta que dejaría la IA —con el motivo local y el sello
+   * `origen: 'local'`— o, en modo «aplicar», la guarda como cualquier otra de
+   * confianza alta (0,96 > el umbral). Devuelve lo mismo que los demás
+   * caminos, para que el contador del recorrido siga cuadrando.
+   */
+  const resolverSinIA = async ({ modo, variantes, confianza, motivo, claveRec, aplicar }) => {
+    if (modo === 'aplicar') {
+      const res = await aplicar();
+      return res === 'aplicada' ? 'aplicada' : 'saltada';
+    }
+    guardarRecomendacion('correlaciones', ambitoIA, claveRec, {
+      mismas: variantes, fuera: [], confianza, razonamiento: motivo, origen: 'local',
+    });
+    return 'recomendada';
+  };
+
   const construirBarrido = (modo) => ({
     items: [
-      ...clustersSugeridos.map(item => ({ tipo: 'cluster', item })),
-      ...sugerencias.map(item => ({ tipo: 'par', item })),
+      ...clustersSugeridos.map(item => ({ tipo: 'cluster', item, banda: bandaDeCluster.get(item.id) })),
+      ...sugerencias.map(item => ({ tipo: 'par', item, banda: bandaDeSugerencia.get(clavePar(item)) })),
     ],
+    // 🔴 EL PRE-FILTRO DECIDE QUIÉN SALE A LA RED, no quién se decide. Los de
+    // banda `obvio` se resuelven acá mismo y por eso no piden turno: hacerlos
+    // esperar 1,1 s sería cobrarles el peaje de una autopista por la que no
+    // pasaron. Igual dejan una propuesta que una persona tiene que aceptar.
+    necesitaTurno: (t) => t?.banda?.banda !== 'obvio',
     procesarItem: async (t) => {
       if (t.tipo === 'cluster') {
         const c = t.item;
         const variantes = c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v);
+        if (t.banda?.banda === 'obvio') {
+          return await resolverSinIA({
+            modo, variantes, confianza: CONFIANZA_OBVIO, motivo: t.banda.motivo,
+            claveRec: claveCluster(c),
+            aplicar: () => decidirCluster(c, 'mismo', c.variantes, { silencioso: true }),
+          });
+        }
         const r = await correlacionarConIA({ variantes });
         if (!r?.result) return 'saltada';
         const conf = r.confianza || 0;
@@ -612,6 +703,13 @@ function AnalisisInsumosPage({ showToast }) {
       const par = t.item;
       const ma = muestraDe.get(par.nombre_a), mb = muestraDe.get(par.nombre_b);
       const nombreA = ma?.nombre || par.nombre_a, nombreB = mb?.nombre || par.nombre_b;
+      if (t.banda?.banda === 'obvio') {
+        return await resolverSinIA({
+          modo, variantes: [nombreA, nombreB], confianza: CONFIANZA_OBVIO, motivo: t.banda.motivo,
+          claveRec: clavePar(par),
+          aplicar: () => decidir(par, 'mismo', { silencioso: true }),
+        });
+      }
       const r = await correlacionarConIA({ variantes: [nombreA, nombreB] });
       if (!r?.result) return 'saltada';
       const conf = r.confianza || 0;
@@ -951,6 +1049,7 @@ function AnalisisInsumosPage({ showToast }) {
             etiqueta={subTabCorr === 'servicios' ? 'los servicios' : 'los insumos'}
             cantidadPendiente={clustersSugeridos.length + sugerencias.length}
             cantidadRecomendadas={nRecomendadasIA}
+            sinIA={nSinIA}
             construir={construirBarrido}
           />
 
@@ -1042,6 +1141,7 @@ function AnalisisInsumosPage({ showToast }) {
                         la medida ("1/2") es justo lo que hay que juzgar. */}
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
+                      banda={bandaDeCluster.get(c.id) || null}
                       inicial={recsIA[claveCluster(c)] || null}
                       onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, claveCluster(c))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
@@ -1096,6 +1196,7 @@ function AnalisisInsumosPage({ showToast }) {
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
+                      banda={bandaDeSugerencia.get(clavePar(par)) || null}
                       inicial={recsIA[clavePar(par)] || null}
                       onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}

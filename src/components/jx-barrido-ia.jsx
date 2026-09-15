@@ -36,13 +36,19 @@ function useBarridoIA(seccion, ambito) {
 }
 
 /**
- * `construir(modo)` devuelve `{ items, procesarItem }` — lo que hay que
- * recorrer y qué hacer con cada uno. Se llama al apretar el botón, así que
- * ve la lista de ese momento.
+ * `construir(modo)` devuelve `{ items, procesarItem, necesitaTurno? }` — lo
+ * que hay que recorrer, qué hacer con cada uno y (opcional) cuáles de esos
+ * ítems salen de verdad a la red. Se llama al apretar el botón, así que ve la
+ * lista de ese momento.
+ *
+ * `sinIA`: cuántos de los pendientes ya están resueltos por el pre-filtro
+ * local y NO se le van a preguntar a la IA (tanda 4). Se dice ANTES de
+ * arrancar, en el propio botón: el número que importa no es «cuántas filas
+ * hay» sino «cuántas preguntas se van a hacer».
  * `onVerRecomendadas()`: opcional, para que el cartel pueda llevar al filtro
  * «solo las recomendadas por IA» de la pantalla.
  */
-function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, construir, onVerRecomendadas, cantidadRecomendadas = null, disabled = false }) {
+function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, construir, onVerRecomendadas, cantidadRecomendadas = null, disabled = false, sinIA = 0 }) {
   const { estado, recomendaciones } = useBarridoIA(seccion, ambito);
   const [modo, setModo] = uS('recomendar');
   // Anti-doble-click (regla crítica 2 del CLAUDE.md): el guard por ESTADO se
@@ -59,13 +65,17 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
     ? cantidadRecomendadas
     : Object.keys(recomendaciones || {}).length;
 
+  // Lo que de verdad se le va a preguntar a la IA: el resto lo resuelve el
+  // pre-filtro local antes de salir a la red.
+  const consultas = Math.max(0, (cantidadPendiente || 0) - (sinIA || 0));
+
   const empezar = uC(() => {
     if (arrancandoRef.current || barridoActivo(seccion, ambito)) return;
     arrancandoRef.current = true;
     try {
-      const { items, procesarItem } = construir(modo) || {};
+      const { items, procesarItem, necesitaTurno = null } = construir(modo) || {};
       if (!items?.length || !procesarItem) return;
-      arrancarBarrido({ seccion, ambito, etiqueta, items, procesarItem, modo })
+      arrancarBarrido({ seccion, ambito, etiqueta, items, procesarItem, modo, necesitaTurno })
         .catch(() => { /* el cartel ya muestra el corte; no hay a quién relanzarlo */ })
         .finally(() => { arrancandoRef.current = false; });
     } finally {
@@ -81,10 +91,16 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button type="button" className="btn btn-sm btn-blue" disabled={disabled || !cantidadPendiente} onClick={empezar}
           title={!cantidadPendiente ? 'No hay nada pendiente para recorrer'
-            : `Le pregunta a la IA una por una a las ${cantidadPendiente} pendientes${modo === 'aplicar' ? ' y guarda sola las de confianza alta' : ' y deja la propuesta al lado de cada fila, para que la mires vos'}`}>
+            : `De las ${cantidadPendiente} pendientes${consultas !== cantidadPendiente ? `, ${consultas} se le preguntan a la IA y ${sinIA} ya están resueltas acá mismo` : ' se le pregunta a la IA una por una'}${modo === 'aplicar' ? '. Guarda solas las de confianza alta' : '. La propuesta queda al lado de cada fila, para que la mires vos'}`}>
           🤖 Recorrer {etiqueta} con IA ({cantidadPendiente})
         </button>
         <SelectorModo modo={modo} setModo={setModo} />
+        {sinIA > 0 && (
+          <span className="badge b-green" style={{ fontSize: 9.5 }}
+            title="Los dos nombres dicen lo mismo (plural, abreviatura, otro orden). No hace falta preguntarle a nadie: la propuesta sale al instante y vos la aceptás igual.">
+            ⚡ {sinIA} sin gastar IA
+          </span>
+        )}
         {nRecomendadas > 0 && (
           <RecomendacionesListas
             n={nRecomendadas} seccion={seccion} ambito={ambito} onVer={onVerRecomendadas}
@@ -125,6 +141,9 @@ function BarridoIA({ seccion, ambito = null, etiqueta, cantidadPendiente, constr
           ? <>✓ <strong>{estado.aplicadas}</strong> guardadas solas</>
           : <>🤖 <strong>{estado.recomendadas}</strong> con propuesta lista para revisar</>}
         {' '}· <strong>{estado.saltadas}</strong> sin propuesta clara (quedan para mirar a mano)
+        {estado.sinIA > 0 && (
+          <> · ⚡ <strong>{estado.sinIA}</strong> resueltas sin gastar IA</>
+        )}
         {estado.errores > 0 && <> · ⚠ {estado.errores} con error</>}
         {estado.cancelado && <> · cancelado — lo hecho hasta acá queda</>}
       </div>

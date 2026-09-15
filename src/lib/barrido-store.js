@@ -208,7 +208,7 @@ export function cerrarBarrido(seccion, ambito = null) {
  * por defecto ('recomendar') NO debe escribir en la base: guarda con
  * `guardarRecomendacion` y listo.
  */
-export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items = [], procesarItem, modo = 'recomendar' }) {
+export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items = [], procesarItem, modo = 'recomendar', necesitaTurno = null }) {
   const kCorrida = claveCorrida(seccion, ambito);
   if (barridoActivo(seccion, ambito)) return enCurso.get(kCorrida).promesa;
 
@@ -217,7 +217,7 @@ export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items =
     estado: {
       activo: true, modo, etiqueta, ambito,
       total: items.length, i: 0,
-      recomendadas: 0, aplicadas: 0, saltadas: 0, errores: 0,
+      recomendadas: 0, aplicadas: 0, saltadas: 0, errores: 0, sinIA: 0,
       cancelado: false, cortado: false, ultimoError: null,
       desde: Date.now(),
     },
@@ -237,6 +237,9 @@ export function arrancarBarrido({ seccion, ambito = null, etiqueta = '', items =
         items,
         procesarItem,
         esperarTurno: turnoIA,
+        // El pre-filtro local (tanda 4): los ítems que ya se resolvieron sin
+        // salir a la red no piden turno ni pausa. Ver bandas-correlacion.js.
+        necesitaTurno,
         debeCancelar: () => reg.cancelar,
         onProgreso: (p) => {
           reg.estado = { ...reg.estado, ...p, activo: true };

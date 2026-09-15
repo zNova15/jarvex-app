@@ -134,12 +134,19 @@ export function claveGrupoDe(nombre, grupoDe) {
 // (clavo de 8 ≠ clavo de 4 — medidas distintas son insumos distintos).
 const STOPWORDS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'con', 'para', 'por', 'en', 'y', 'a', 'un', 'una', 'x']);
 const tokensDe = (nombreNorm) => nombreNorm.split(' ').filter(t => t && !STOPWORDS.has(t));
-const tokenMatch = (t, u) => {
+export const tokenMatch = (t, u) => {
   if (t === u) return true;
   if (/^\d/.test(t) || /^\d/.test(u)) return false;   // numéricos: exacto o nada
   const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
   return corto.length >= 4 && largo.startsWith(corto);
 };
+
+// Los tokens con los que ESTE motor compara, para quien necesite razonar
+// sobre las mismas palabras que deciden el score (lo usa
+// `bandas-correlacion.js` para saber si dos nombres dicen lo mismo). Se
+// exporta la función y no una copia del criterio: una sola definición de qué
+// cuenta como palabra y qué como medida.
+export const tokensParaScore = (nombre) => tokensDe(normParaScore(nombre));
 
 export function scoreNombres(a, b) {
   const ta = tokensDe(normParaScore(a));
