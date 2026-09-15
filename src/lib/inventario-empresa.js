@@ -51,10 +51,46 @@ const RX_TRANSPORTE_SVC  = /\bTRANSPORTE\b|\bFLETE\b|\bTRASLADO\b/;
 const RX_MANTENIM_SVC    = /\bMANTENIMIENTO\b|\bREPARACI[OO]N\b/;
 const RX_HONORARIOS_TXT  = /\b(GASTOS NOTARIALES|HONORARIOS|CONSULTORIA|ASESORIA TECNICA|ASESORIA)\b/;
 
+// ── LO QUE NO ES NI UN BIEN NI UN SERVICIO CONTRATADO (tanda 3) ────
+// Gabriel, 15-set-2026, mirando la pestaña 🧱 Insumos: «encontré varias
+// descripciones que no son insumos, por ejemplo "gastos administrativos del
+// centro del proceso arbitral seguido entre el consorcio santa y la
+// municipalidad distrital de nuevo chimbote exp nro 044 2023 coar pago en via
+// de subrogacion"».
+//
+// Ese ítem existe de verdad —dos veces, en E001-209 y E001-210, a S/ 7.000
+// cada uno— y llegaba a la lista de insumos por dos caminos que se sumaban:
+// el estándar IUPC no lo reconoce (devuelve `sin_clasificar`, y lo no
+// reconocido caía del lado de los insumos) y `tipo_insumo` de la factura dice
+// «material», porque la IA de Captura Mágica lo tipeó así.
+//
+// Estos patrones son plata que se mueve, no mercadería que entra: arbitrajes,
+// subrogaciones, seguros y SCTR, intereses y comisiones, detracciones,
+// penalidades y multas. Ninguno tiene stock, ninguno se compara por precio
+// unitario y ninguno debería competir por atención contra un codo de PVC.
+//
+// 🔴 Se declaran ACÁ, con los otros overrides, y no en una lista nueva: es el
+// mismo tipo de regla (texto de la factura → qué es esto en realidad) y dos
+// lugares con reglas de texto serían dos verdades sobre la misma línea.
+const RX_LEGAL_ARB       = /\bARBITRAL\b|\bARBITRAJE\b|\bSUBROGACI[OO]N\b|\bLAUDO\b|\bCONCILIACI[OO]N\b/;
+const RX_SEGURO_TXT      = /\bSCTR\b|\bP[OO]LIZA\b|\bSEGURO(S)?\b|\bESSALUD\b|\bSENCICO\b|\bCONAFOVICER\b/;
+const RX_FINANCIERO_TXT  = /\bINTER[EE]S(ES)?\b|\bCOMISI[OO]N\b|\bPORTES\b|\bMANTENIMIENTO DE CUENTA\b|\bITF\b/;
+const RX_TRIBUTO_TXT     = /\bDETRACCI[OO]N\b|\bRETENCI[OO]N\b|\bPERCEPCI[OO]N\b/;
+const RX_PENALIDAD_TXT   = /\bPENALIDAD(ES)?\b|\bMULTA(S)?\b|\bMORA\b/;
+const RX_ADMIN_TXT       = /\bGASTOS ADMINISTRATIVOS\b|\bGASTOS DE GESTI[OO]N\b/;
+
 /**
  * Override de tipo de insumo basado en el texto de la descripción.
- * Devuelve el tipo correcto ('anticipo' | 'servicio_obra' | 'servicio') o
- * `null` si no hay regla aplicable (en cuyo caso se usa el tipo de la IA).
+ * Devuelve el tipo correcto o `null` si no hay regla aplicable (en cuyo caso
+ * se usa el tipo de la IA).
+ *
+ *   'anticipo'      — plata adelantada, todavía no hay nada entregado.
+ *   'servicio_obra' — lo que se factura ES la obra (valorizaciones, saldos).
+ *   'servicio'      — un servicio contratado: alquiler, flete, honorarios…
+ *   'financiero'    — ni bien ni servicio: arbitrajes, seguros, intereses,
+ *                     detracciones, penalidades, gastos administrativos
+ *                     (tanda 3). Nunca es inventario.
+ *
  * @param {string} nombre  texto del ítem tal como viene de la factura
  * @returns {string|null}
  */
@@ -63,6 +99,17 @@ export function clasificarLineaPorTexto(nombre) {
   if (!n) return null;
   if (RX_ANTICIPO.test(n))       return 'anticipo';
   if (RX_SERVICIO_OBRA.test(n))  return 'servicio_obra';
+  // 🔴 LO LEGAL/FINANCIERO VA ANTES QUE LOS SERVICIOS y después de obra: el
+  // arbitraje del Consorcio Santa dice «GASTOS ADMINISTRATIVOS» y también
+  // podría pescar alguna regla de servicios por otra palabra. Lo que NO puede
+  // pasar es que gane sobre `servicio_obra`: una valorización de obra que
+  // mencione una penalidad sigue siendo la obra.
+  if (RX_LEGAL_ARB.test(n))      return 'financiero';
+  if (RX_ADMIN_TXT.test(n))      return 'financiero';
+  if (RX_TRIBUTO_TXT.test(n))    return 'financiero';
+  if (RX_PENALIDAD_TXT.test(n))  return 'financiero';
+  if (RX_SEGURO_TXT.test(n))     return 'financiero';
+  if (RX_FINANCIERO_TXT.test(n)) return 'financiero';
   if (RX_LIQUIDACION.test(n))    return 'servicio';
   if (RX_ALQUILER_TXT.test(n))   return 'servicio';
   if (RX_TRANSPORTE_SVC.test(n)) return 'servicio';
@@ -291,18 +338,27 @@ const cerrarLado = (lado) => ({
  * @param opts.companyId  filtra a esa empresa (si se omite, toma todo lo dado)
  * @param opts.grupoDe    Map(nombreNorm → gid) de las correlaciones confirmadas
  * @param opts.grupos     Map(gid → {canonico}) para el nombre a mostrar
+ * @param opts.noInventariables  Set(nombreNorm) de las descripciones que una
+ *        persona marcó como «esto no es un insumo» (tanda 3) — ver
+ *        `noInventariables()` en insumo-o-servicio.js.
  * @returns { insumos:[...], totales:{...} }
  */
 export function inventarioDeEmpresa(lineas, opts = {}) {
-  const { companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null } = opts;
+  const {
+    companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null,
+    noInventariables = null,
+  } = opts;
   const porInsumo = new Map();
   const facturasAnuladas = new Set();
+  const noInv = new Set();
   const totales = {
     insumos: 0, lineasCompra: 0, lineasVenta: 0, lineasSinPrecio: 0,
     lineasNota: 0, lineasAnticipo: 0, gastos: new Map(), ingresos: new Map(),
     anticipos: new Map(),
     // Tanda 1: lo que la nota de crédito se llevó, y lo que solo rebajó.
     lineasAnuladas: 0, facturasAnuladas: 0, lineasRebajadas: 0,
+    // Tanda 3: lo que una persona marcó como «esto no va al inventario».
+    lineasNoInventariables: 0, nombresNoInventariables: 0,
   };
 
   for (const l of (lineas || [])) {
@@ -328,6 +384,16 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     // Rebajada por una nota PARCIAL: la compra sigue siendo real (no se
     // descarta), pero la cantidad de acá está sin rebajar. Ver `lineasRebajadas`.
     if (l.rebajada) totales.lineasRebajadas++;
+    // ── «ESTO NO VA AL INVENTARIO» (tanda 3) ─────────────────────────
+    // Una persona dijo que esta descripción no es mercadería: un arbitraje,
+    // un seguro, una detracción. No es un bien que entre ni salga, así que no
+    // tiene cantidades que sumar ni saldo que cuadrar. Se descarta y se
+    // cuenta, igual que las anuladas: la pantalla lo dice.
+    if (noInventariables && noInventariables.has(l.nombreNorm || normInsumo(l.nombre))) {
+      totales.lineasNoInventariables++;
+      noInv.add(l.nombreNorm || normInsumo(l.nombre));
+      continue;
+    }
 
     const clave = claveGrupoDe(l.nombre, grupoDe);
     if (!porInsumo.has(clave)) {
@@ -440,6 +506,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
 
   totales.insumos = insumos.length;
   totales.facturasAnuladas = facturasAnuladas.size;
+  totales.nombresNoInventariables = noInv.size;
   return {
     insumos,
     totales: {

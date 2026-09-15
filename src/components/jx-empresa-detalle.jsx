@@ -50,6 +50,7 @@ import {
   inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario, filtrarPorFlujo,
   saldosNegativos, tieneSaldoNegativo, aniosDeLineas,
 } from "../lib/inventario-empresa.js";
+import { noInventariables } from "../lib/insumo-o-servicio.js";
 import { aprenderClasificacion } from "../lib/clasificar-items.js";
 import { decidir } from "../lib/bandeja-categorizacion-db.js";
 // Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
@@ -270,9 +271,19 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 
   const hayFiltroTemporal = periodoInv !== 'historico';
 
+  // Lo que alguien marcó como «esto no es un insumo» desde Correlaciones
+  // (tanda 3): un arbitraje, un seguro, una detracción. No es mercadería que
+  // entre ni salga, así que no tiene cantidades que sumar. Ver
+  // `insumo-o-servicio.js`.
+  const decisHook = window.__hooks.useCotejoDecisiones();
+  const descartadasInv = uMD(() => noInventariables(decisHook.data || []), [decisHook.data]);
   const inv = uMD(
-    () => inventarioDeEmpresa(lineas, { companyId: company?.id, grupoDe, grupos, desde: desdePeriodo, hasta: hastaPeriodo }),
-    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo]
+    () => inventarioDeEmpresa(lineas, {
+      companyId: company?.id, grupoDe, grupos,
+      desde: desdePeriodo, hasta: hastaPeriodo,
+      noInventariables: descartadasInv,
+    }),
+    [lineas, company?.id, grupoDe, grupos, desdePeriodo, hastaPeriodo, descartadasInv]
   );
   const tiposPresentes = uMD(() => {
     const s = new Set();
@@ -635,6 +646,18 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           los insumos de dicha factura dejan de existir también en nuestro
           inventario». Ya no cuentan — y se dice, porque un saldo que baja sin
           explicación es un saldo que la contadora deja de creer. */}
+      {/* ── LO QUE NO ES MERCADERÍA (tanda 3, 15-set) ────────────────
+          Marcado a mano desde Correlaciones → «No va al inventario». */}
+      {inv.totales.nombresNoInventariables > 0 && (
+        <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--tm)', fontSize: 11.5, color: 'var(--ts)' }}>
+          <strong>No va al inventario</strong> — <strong>{inv.totales.nombresNoInventariables} descripción(es)</strong>{' '}
+          ({inv.totales.lineasNoInventariables} línea(s)) están marcadas como algo que no es mercadería: arbitrajes,
+          seguros, detracciones, penalidades, anticipos. Se siguen viendo en Movimientos y suman en los reportes
+          contables; lo que no hacen es ocupar una fila de inventario con una cantidad que nadie puede recibir ni
+          entregar. Se marcan y se deshacen desde <strong>Análisis de insumos → Correlaciones</strong>.
+        </div>
+      )}
+
       {(inv.totales.facturasAnuladas > 0 || inv.totales.lineasRebajadas > 0) && (
         <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--amber)', fontSize: 11.5, color: 'var(--ts)' }}>
           <strong style={{ color: 'var(--amber)' }}>Notas de crédito aplicadas</strong>

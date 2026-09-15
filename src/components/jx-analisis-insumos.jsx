@@ -60,7 +60,11 @@ import {
 import {
   extraerLineasDeFacturas, extraerComprasDeFacturas, agruparComprasPorInsumo, proveedorMasBarato, seriePrecios,
 } from "../lib/analisis-insumos.js";
-import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
+import {
+  arbolPorNombre, entraEnPestania, contarArboles, noInventariables,
+  AMBITO_NO_INVENTARIO, DECISION_NO_INVENTARIO, llaveNoInventario,
+} from "../lib/insumo-o-servicio.js";
+import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
 import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO } from "../lib/bandas-correlacion.js";
 import { normUnidad, labelUnidad } from "../lib/inventario-empresa.js";
@@ -74,26 +78,12 @@ import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR, useCallback: uC } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
-// Si un nombre clasifica como SERVICIO (árbol S01…S13), como INSUMO (IUPC +
-// complementarias) o como DESCONOCIDO. Reusa el MISMO clasificador que
-// "Clasificación de insumos y servicios" — es la misma pregunta, una sola
-// respuesta (pedido de Gabriel, 14-sep: «dividir entre las sugerencias de
-// insumos, y las de servicios»).
-//
-// 🔴 `terminosCustom` NO es opcional: el diccionario propio LE GANA a la base
-// (regla 8 del CLAUDE.md) y sin pasarlo esta pantalla clasificaría distinto
-// que todas las demás.
-//
-// 🔴 Y «sin_clasificar» devuelve 'desconocido', no 'insumo'. Si cayera del
-// lado de insumos, una forma de escribir un servicio que el estándar todavía
-// no reconoce quedaría en la pestaña de Insumos y su gemela reconocida en la
-// de Servicios: nunca más se podrían correlacionar entre sí, que es
-// justamente el par que más falta hace unir.
-const tipoDeNombre = (nombre, terminosCustom) => {
-  const cod = clasificarConIUPC(nombre, { terminosCustom }).codigo;
-  if (!cod || cod === 'sin_clasificar') return 'desconocido';
-  return tipoDeCategoria(cod) === 'servicio' ? 'servicio' : 'insumo';
-};
+// El corte insumo / servicio / ni-uno-ni-otro vive en `insumo-o-servicio.js`
+// (tanda 3, 15-set-2026), que mira TRES señales en vez de una: el estándar
+// IUPC con el diccionario propio, el texto de la factura y el `tipo_insumo`
+// que anotó Captura Mágica. Acá arriba había una versión de una sola señal y
+// por eso el arbitraje del Consorcio Santa aparecía en 🧱 Insumos — ver la
+// cabecera de esa lib, que explica el caso con nombre y número de factura.
 
 // Un nombre con las diferencias contra `otro` resaltadas — mismo criterio que
 // decide el motor (resaltarDiferencias usa tokenMatch, el mismo de
@@ -417,28 +407,36 @@ function AnalisisInsumosPage({ showToast }) {
   const resueltos = uM(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos } = uM(() => construirGrupos(resueltos), [resueltos]);
   const porInsumo = uM(() => agruparComprasPorInsumo(compras, grupoDe, grupos), [compras, grupoDe, grupos]);
+  // ── EL ÁRBOL DE CADA NOMBRE (tanda 3, 15-set) ────────────────────
   // Insumos y servicios son preguntas DISTINTAS para correlacionar — pedido
   // de Gabriel, 14-sep: «dividir entre las sugerencias de insumos y las de
-  // servicios». Un solo nombre único clasificado una vez (memoizado: son
-  // potencialmente miles de líneas, clasificar de más sería regalado).
-  const tipoPorNombre = uM(() => {
-    const m = new Map();
-    for (const l of lineasEntidad) {
-      if (!m.has(l.nombreNorm)) m.set(l.nombreNorm, tipoDeNombre(l.nombre, terminosCustom));
-    }
-    return m;
-  }, [lineasEntidad, terminosCustom]);
-  // Las que el estándar NO reconoce entran a las DOS listas: su gemela puede
-  // estar de cualquiera de los dos lados, y dejarlas en una sola las
-  // condenaría a no poder correlacionarse nunca (ver `tipoDeNombre`).
-  const nombresInsumos = uM(
-    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) !== 'servicio').map(c => c.nombre),
-    [lineasEntidad, tipoPorNombre]
+  // servicios». Y desde el 15-set hay una TERCERA: lo que no es ninguna de
+  // las dos (arbitrajes, seguros, detracciones, anticipos). Ver
+  // `insumo-o-servicio.js`, que documenta las tres señales y el caso real.
+  // Un solo nombre único clasificado una vez (memoizado: son potencialmente
+  // miles de líneas, clasificar de más sería regalado).
+  const arbolDe = uM(
+    () => arbolPorNombre(lineasEntidad, { terminosCustom }),
+    [lineasEntidad, terminosCustom]
   );
-  const nombresServicios = uM(
-    () => lineasEntidad.filter(l => tipoPorNombre.get(l.nombreNorm) !== 'insumo').map(c => c.nombre),
-    [lineasEntidad, tipoPorNombre]
-  );
+  const conteoArboles = uM(() => contarArboles(arbolDe), [arbolDe]);
+  // ── «ESTO NO VA AL INVENTARIO» (tanda 3) ─────────────────────────
+  // Lo que una persona ya descartó no vuelve a preguntarse en ninguna de las
+  // tres pestañas. Se guarda por DESCRIPCIÓN (no por par): marcar un par no
+  // sirve — la misma descripción reaparece mañana contra otro nombre.
+  const decisHook = window.__hooks.useCotejoDecisiones();
+  const descartadas = uM(() => noInventariables(decisHook.data || []), [decisHook.data]);
+  // Los nombres de UNA pestaña, ya sin los descartados. Lo `desconocido`
+  // entra en las tres a propósito: su gemela puede estar de cualquier lado
+  // (ver `entraEnPestania`).
+  const nombresDe = uC((pestania) => lineasEntidad
+    .filter(l => !descartadas.has(l.nombreNorm)
+      && entraEnPestania(arbolDe.get(l.nombreNorm) || 'desconocido', pestania))
+    .map(l => l.nombre),
+  [lineasEntidad, arbolDe, descartadas]);
+  const nombresInsumos = uM(() => nombresDe('insumo'), [nombresDe]);
+  const nombresServicios = uM(() => nombresDe('servicio'), [nombresDe]);
+  const nombresOtros = uM(() => nombresDe('otro'), [nombresDe]);
   // Sugerir pares cruzando tanto compras como ventas registradas, cada árbol
   // por separado — un "REDUCCION PVC" nunca compite contra un "ALQUILER DE
   // VOLQUETE" por una raíz común.
@@ -450,6 +448,10 @@ function AnalisisInsumosPage({ showToast }) {
     () => sugerirPares(nombresServicios, resueltos, grupoDe),
     [nombresServicios, resueltos, grupoDe]
   );
+  const sugerenciasOtros = uM(
+    () => sugerirPares(nombresOtros, resueltos, grupoDe),
+    [nombresOtros, resueltos, grupoDe]
+  );
   // Sugerir clusters multi-variantes (N a N), también por árbol:
   const clustersInsumos = uM(
     () => sugerirClusters(nombresInsumos, resueltos, grupoDe),
@@ -459,9 +461,16 @@ function AnalisisInsumosPage({ showToast }) {
     () => sugerirClusters(nombresServicios, resueltos, grupoDe),
     [nombresServicios, resueltos, grupoDe]
   );
+  const clustersOtros = uM(
+    () => sugerirClusters(nombresOtros, resueltos, grupoDe),
+    [nombresOtros, resueltos, grupoDe]
+  );
   const [subTabCorr, setSubTabCorr] = uS('insumos');
-  const sugerencias = subTabCorr === 'servicios' ? sugerenciasServicios : sugerenciasInsumos;
-  const clustersSugeridos = subTabCorr === 'servicios' ? clustersServicios : clustersInsumos;
+  const [verDescartadas, setVerDescartadas] = uS(false);
+  const sugerencias = subTabCorr === 'servicios' ? sugerenciasServicios
+    : subTabCorr === 'otros' ? sugerenciasOtros : sugerenciasInsumos;
+  const clustersSugeridos = subTabCorr === 'servicios' ? clustersServicios
+    : subTabCorr === 'otros' ? clustersOtros : clustersInsumos;
   // Las propuestas del recorrido se guardan por ENTIDAD y por sub-pestaña:
   // insumos y servicios son dos listas distintas y no se mezclan.
   const ambitoIA = `${empresaVista || 'grupo'}::${subTabCorr}`;
@@ -645,6 +654,52 @@ function AnalisisInsumosPage({ showToast }) {
       return 'aplicada';
     } catch (e) { if (!silencioso) showToast?.('Error: ' + (e.message || e), 'red'); throw e; }
     finally { decidiendoRef.current = false; }
+  };
+
+  // ── «ESTO NO VA AL INVENTARIO» (tanda 3, 15-set) ─────────────────
+  // Gabriel, 15-set, sobre el arbitraje del Consorcio Santa en 🧱 Insumos:
+  // hasta hoy las únicas dos respuestas eran «mismo» y «distintos», y ninguna
+  // de las dos saca una descripción que no es mercadería: seguía volviendo,
+  // emparejada contra otra cosa, una y otra vez.
+  //
+  // 🔴 VA POR DESCRIPCIÓN, NO POR PAR. Marcar el par «arbitraje E001-209 ≈
+  // arbitraje E001-210» como distintos no arregla nada: mañana el motor
+  // propone el mismo arbitraje contra cualquier otro texto largo y la
+  // pregunta vuelve. Lo que no es un insumo no lo es contra nadie.
+  //
+  // Y saca la descripción de TODOS lados, no solo de esta pantalla: sus
+  // líneas dejan de contar cantidades en el inventario de la empresa (ver
+  // `noInventariables` en inventario-empresa.js). Es la misma idea que la
+  // factura anulada de la tanda 1 — lo que no es mercadería no tiene stock.
+  const descartarNombre = async (nombreCrudo) => {
+    if (decidiendoRef.current) return;
+    decidiendoRef.current = true;
+    try {
+      const userId = window.__useAuth?.()?.profile?.id || null;
+      await decidirCotejo({
+        ambito: AMBITO_NO_INVENTARIO,
+        llave: llaveNoInventario(nombreCrudo),
+        decision: DECISION_NO_INVENTARIO,
+        nota: String(nombreCrudo || '').slice(0, 200),
+        companyId: empresaVista || null,
+      }, userId);
+      showToast?.(`✓ «${String(nombreCrudo).slice(0, 40)}…» ya no se propone ni cuenta en el inventario`, 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    } finally {
+      decidiendoRef.current = false;
+    }
+  };
+
+  /** Deshacer: la descripción vuelve a las listas y al inventario. */
+  const recuperarNombre = async (llave) => {
+    try {
+      const userId = window.__useAuth?.()?.profile?.id || null;
+      await decidirCotejo({ ambito: AMBITO_NO_INVENTARIO, llave, decision: null }, userId);
+      showToast?.('✓ Vuelve a la lista y al inventario', 'green');
+    } catch (e) {
+      showToast?.('Error: ' + (e.message || e), 'red');
+    }
   };
 
   const cambiarDecision = async (fila) => {
@@ -1127,12 +1182,76 @@ function AnalisisInsumosPage({ showToast }) {
                 </span>
               )}
             </button>
+            {/* ── LA TERCERA PESTAÑA (tanda 3, 15-set) ─────────────────
+                Lo que no es ni un insumo ni un servicio: arbitrajes, seguros,
+                detracciones, penalidades, anticipos. Antes todo esto caía en
+                🧱 Insumos porque el estándar no lo reconoce y `tipo_insumo`
+                decía «material». Acá se puede correlacionar entre sí (dos
+                formas de escribir el mismo arbitraje SON el mismo concepto)
+                y, sobre todo, sacarlo del inventario de una vez. */}
+            <button className={`btn btn-sm ${subTabCorr === 'otros' ? 'btn-blue' : 'btn-ghost'}`}
+              onClick={() => setSubTabCorr('otros')}
+              title="Ni insumo ni servicio: arbitrajes, seguros, detracciones, penalidades, anticipos. No es mercadería que entre o salga del inventario.">
+              ❔ Ni uno ni otro
+              {(sugerenciasOtros.length + clustersOtros.length) > 0 && (
+                <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}>
+                  {sugerenciasOtros.length + clustersOtros.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Qué está mirando esta pestaña y qué quedó descartado. */}
+          <div className="card card-p" style={{ fontSize: 11.5, color: 'var(--ts)', borderLeft: '3px solid var(--blue)' }}>
+            {subTabCorr === 'otros' ? (
+              <>
+                <strong style={{ color: 'var(--blue)' }}>Ni insumo ni servicio</strong> — lo que se factura pero no
+                es mercadería: arbitrajes, subrogaciones, seguros y SCTR, intereses y comisiones, detracciones,
+                penalidades, anticipos. Correlacionarlos entre sí sirve (dos formas de escribir el mismo concepto),
+                pero lo que casi siempre corresponde es <strong>«No va al inventario»</strong>: así dejan de
+                proponerse y sus líneas dejan de contar cantidades en el inventario de la empresa.
+              </>
+            ) : (
+              <>
+                {conteoArboles.otro > 0 && (
+                  <>Se apartaron <strong>{conteoArboles.otro} descripción(es)</strong> que no son ni insumo ni
+                  servicio (arbitrajes, seguros, detracciones…) — están en <strong>❔ Ni uno ni otro</strong>.{' '}</>
+                )}
+                {conteoArboles.desconocido > 0 && (
+                  <>Hay <strong>{conteoArboles.desconocido}</strong> que el sistema no supo reconocer: aparecen en
+                  las tres pestañas a propósito, porque su gemela puede estar de cualquier lado.{' '}</>
+                )}
+                Si ves acá algo que no es mercadería, usá <strong>«No va al inventario»</strong> en vez de
+                «Son distintos»: descartar el par no la saca, vuelve mañana contra otro nombre.
+              </>
+            )}
+            {descartadas.size > 0 && (
+              <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid var(--border)' }}>
+                <strong>{descartadas.size}</strong> descripción(es) marcadas «no va al inventario».{' '}
+                <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                  onClick={() => setVerDescartadas(v => !v)}>
+                  {verDescartadas ? 'Ocultar' : 'Ver y deshacer'}
+                </button>
+                {verDescartadas && (
+                  <div style={{ display: 'grid', gap: 4, marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
+                    {[...descartadas].sort().map(ll => (
+                      <div key={ll} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, padding: '4px 8px', background: 'var(--tint-neutral)', borderRadius: 5 }}>
+                        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ll}>{ll}</span>
+                        <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                          onClick={() => recuperarNombre(ll)}>↺ Devolver</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <BarridoIA
             seccion="correlaciones"
             ambito={ambitoIA}
-            etiqueta={subTabCorr === 'servicios' ? 'los servicios' : 'los insumos'}
+            etiqueta={subTabCorr === 'servicios' ? 'los servicios'
+              : subTabCorr === 'otros' ? 'lo que no es insumo ni servicio' : 'los insumos'}
             cantidadPendiente={clustersSugeridos.length + sugerencias.length}
             cantidadRecomendadas={nRecomendadasIA}
             sinIA={nSinIA}
@@ -1195,6 +1314,21 @@ function AnalisisInsumosPage({ showToast }) {
                           onClick={() => decidirCluster(c, 'distinto', dentro).catch(() => {})}
                         >
                           ✗ Son distintos
+                        </button>
+                        {/* Tanda 3: si el grupo entero no es mercadería (tres
+                            formas de escribir el mismo arbitraje), se sacan
+                            las N de una — el descarte es por nombre, así que
+                            son N decisiones, no una del grupo. */}
+                        <button
+                          className="btn btn-ghost btn-xs"
+                          title="Ninguna de estas es un insumo: dejan de proponerse y sus líneas dejan de contar en el inventario"
+                          onClick={async () => {
+                            for (const v of c.variantes) {
+                              await descartarNombre(muestraDe.get(normInsumo(v))?.nombre || v);
+                            }
+                          }}
+                        >
+                          🚫 No van al inventario
                         </button>
                       </div>
                     </div>
@@ -1292,6 +1426,21 @@ function AnalisisInsumosPage({ showToast }) {
                     <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
                       <button className="btn btn-green btn-xs" onClick={() => decidir(par, 'mismo').catch(() => {})}>✓ Mismo insumo</button>
                       <button className="btn btn-ghost btn-xs" onClick={() => decidir(par, 'distinto').catch(() => {})}>✗ Son distintos</button>
+                    </div>
+                    {/* La tercera respuesta (tanda 3): esto no es mercadería.
+                        Va por nombre y no por par — ver `descartarNombre`. */}
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{ fontSize: 10, color: 'var(--tm)' }}>¿No es un insumo?</span>
+                      <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                        title={`«${nombreA}» deja de proponerse y sus líneas dejan de contar en el inventario`}
+                        onClick={() => descartarNombre(nombreA)}>
+                        🚫 Sacar «{nombreA.slice(0, 22)}{nombreA.length > 22 ? '…' : ''}»
+                      </button>
+                      <button className="btn btn-ghost btn-xs" style={{ fontSize: 10 }}
+                        title={`«${nombreB}» deja de proponerse y sus líneas dejan de contar en el inventario`}
+                        onClick={() => descartarNombre(nombreB)}>
+                        🚫 Sacar «{nombreB.slice(0, 22)}{nombreB.length > 22 ? '…' : ''}»
+                      </button>
                     </div>
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}

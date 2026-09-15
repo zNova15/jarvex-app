@@ -528,3 +528,73 @@ describe('inventarioDeEmpresa — facturas anuladas por nota de crédito', () =>
     expect(lineas.every(l => l.anulada === false)).toBe(true);
   });
 });
+
+// ── TANDA 3: lo que no es mercadería ─────────────────────────────────
+describe('clasificarLineaPorTexto — financiero (tanda 3)', () => {
+  it('el arbitraje del Consorcio Santa, con su texto real de produccion', () => {
+    expect(clasificarLineaPorTexto(
+      'gastos administrativos del centro, del proceso arbitral seguido entre el consorcio santa y la '
+      + 'municipaldad distrital de nuevo chimbote- exp.nro.044-2023-coar - pago en via de subrogacion.'
+    )).toBe('financiero');
+  });
+
+  it('seguros, SCTR y aportes', () => {
+    expect(clasificarLineaPorTexto('CT CANCELACION RECIBO 171515564. SEGURO DE SCTR SALUD')).toBe('financiero');
+    expect(clasificarLineaPorTexto('POLIZA DE SEGURO DE CONSTRUCCION')).toBe('financiero');
+    expect(clasificarLineaPorTexto('APORTE SENCICO')).toBe('financiero');
+  });
+
+  it('tributos, penalidades e intereses', () => {
+    expect(clasificarLineaPorTexto('DETRACCION 12%')).toBe('financiero');
+    expect(clasificarLineaPorTexto('RETENCION DE GARANTIA')).toBe('financiero');
+    expect(clasificarLineaPorTexto('PENALIDAD POR ATRASO')).toBe('financiero');
+    expect(clasificarLineaPorTexto('INTERESES COMPENSATORIOS')).toBe('financiero');
+    expect(clasificarLineaPorTexto('COMISION DE TRANSFERENCIA')).toBe('financiero');
+  });
+
+  it('una valorizacion de obra sigue siendo servicio_obra aunque nombre una penalidad', () => {
+    expect(clasificarLineaPorTexto('VALORIZACION 03 CON DESCUENTO DE PENALIDAD')).toBe('servicio_obra');
+  });
+
+  it('un EPP con la palabra "seguridad" NO es financiero', () => {
+    expect(clasificarLineaPorTexto('BOTAS DE SEGURIDAD PUNTA DE ACERO')).toBeNull();
+    expect(clasificarLineaPorTexto('CHALECO DE SEGURIDAD REFLECTIVO')).toBeNull();
+  });
+});
+
+describe('inventarioDeEmpresa — «esto no va al inventario» (tanda 3)', () => {
+  const MOVS_NOINV = [{
+    id: 'ni1', company_id: EMP_A, date: '2026-09-01', type: 'cost', clase: 'compra',
+    currency: 'PEN', amount: 14000, third_party_name: 'CENTRO DE ARBITRAJE',
+    document_number: 'E001-210',
+    notas: { items_factura: [
+      { descripcion: 'gastos administrativos del proceso arbitral', unidad: 'und', cantidad: 1, precio_unitario: 7000, tipo_insumo: 'material' },
+      { descripcion: 'Cemento Sol', unidad: 'und', cantidad: 5, precio_unitario: 30, tipo_insumo: 'material' },
+    ] },
+  }];
+
+  it('sin la marca, el arbitraje ocupa una fila de inventario', () => {
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_NOINV), { companyId: EMP_A });
+    expect(inv.insumos.map(i => i.display)).toContain('gastos administrativos del proceso arbitral');
+  });
+
+  it('marcado, desaparece del inventario y se cuenta', () => {
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_NOINV), {
+      companyId: EMP_A,
+      noInventariables: new Set(['gastos administrativos del proceso arbitral']),
+    });
+    expect(inv.insumos.map(i => i.display)).not.toContain('gastos administrativos del proceso arbitral');
+    expect(inv.totales.lineasNoInventariables).toBe(1);
+    expect(inv.totales.nombresNoInventariables).toBe(1);
+    // Y el cemento de la MISMA factura sigue contando: se descarta la
+    // descripcion, no el comprobante.
+    expect(inv.insumos.map(i => i.display)).toContain('Cemento Sol');
+  });
+
+  it('un set vacio no cambia nada', () => {
+    const conSet = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_NOINV), { companyId: EMP_A, noInventariables: new Set() });
+    const sinSet = inventarioDeEmpresa(extraerLineasDeFacturas(MOVS_NOINV), { companyId: EMP_A });
+    expect(conSet.insumos.length).toBe(sinSet.insumos.length);
+    expect(conSet.totales.lineasNoInventariables).toBe(0);
+  });
+});

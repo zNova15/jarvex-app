@@ -48,6 +48,9 @@ describe('Verificación dentro de la aplicación (E2E Component & Logic)', () =>
       // El corte insumo/servicio de Correlaciones mira el diccionario propio
       // (regla 8 del CLAUDE.md: le gana a la base oficial).
       useClasificacionTerminos: () => ({ data: [] }),
+      // Tanda 3: «esto no va al inventario» vive en cotejo_decisiones con
+      // ámbito 'inventario' (ver insumo-o-servicio.js).
+      useCotejoDecisiones: () => ({ data: [] }),
       useCompanies: () => ({ data: [{ id: 'emp-1', name: 'Constructora Alfa', tipo_entidad: 'propia' }] }),
     };
 
@@ -125,6 +128,8 @@ describe('Verificación dentro de la aplicación (E2E Component & Logic)', () =>
         ],
       }),
       useInsumoCorrelaciones: () => ({ data: [] }),
+      // Tanda 3: el inventario descarta lo marcado «no va al inventario».
+      useCotejoDecisiones: () => ({ data: [] }),
       usePersonal: () => ({ data: [] }),
       useCuentasBancarias: () => ({ data: [] }),
     };
