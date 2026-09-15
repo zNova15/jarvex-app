@@ -26,6 +26,14 @@
 //  · Esto es inventario COMPRADO según facturas, NO stock: los consumos de obra
 //    viven en almacén por obra. La UI tiene que decirlo.
 // ═══════════════════════════════════════════════════════════════════
+// 🔴 ESTA LIB NO IMPORTA `destino-inventario.js`, Y ES A PROPÓSITO (tanda 6).
+// La primera versión sí lo hacía, y el build lo delató: `inventario-empresa`
+// lo importan muchas pantallas —hasta `bandas-correlacion`, por `normUnidad`—
+// así que tirar de acá la cadena del recomendador de activos
+// (destino-inventario → recomendador-activos → catalogo-subfamilias →
+// mapeo-insumos) le colgaba ese peso a todas ellas, y movió el reparto de
+// chunks de dist/assets. Es la lib BASE: recibe datos, no importa capas de
+// arriba. Lo que necesita del destino llega por `opts`, ya resuelto.
 import { claveGrupoDe, normInsumo, convertirALaBase } from './insumo-correlacion.js';
 import { convertirMoneda } from './tipo-cambio.js';
 
@@ -394,6 +402,12 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   const {
     companyId = null, grupoDe = null, grupos = null, desde = null, hasta = null,
     noInventariables = null, factorDe = null,
+    // Tanda 6: el HECHO (qué líneas ya son un activo fijo) y la DECISIÓN (qué
+    // va a pasar con este insumo). Los dos llegan RESUELTOS desde
+    // `destino-inventario.js` — ver la nota de los imports arriba.
+    //   esActivo(linea) → bool
+    //   destinoDe: Map(nombreNorm → { destino, saldoVendible })
+    esActivo = null, destinoDe = null,
   } = opts;
   const porInsumo = new Map();
   const facturasAnuladas = new Set();
@@ -454,12 +468,18 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
         _venta: nuevoLado(),
         recepcion: { conDato: 0, recibido: 0 },
         rebajadas: 0,
+        activosCargados: 0,
         lineas: [],
       });
     }
     const ins = porInsumo.get(clave);
     ins.variantes.add(l.nombre);
     if (l.rebajada) ins.rebajadas++;
+    // ── EL HECHO: esta línea ya es un activo fijo (tanda 6) ──────────
+    // No es una opinión ni una propuesta: hay una fila en `activos_fijos`
+    // apuntando a esta línea de esta factura. El dato existía desde siempre;
+    // lo que faltaba era que el inventario lo leyera.
+    if (esActivo && esActivo(l)) ins.activosCargados++;
     // ── Override de tipo por texto (Tanda 3) ──────────────────────────
     // 'clasificarLineaPorTexto' detecta anticipos, valorizaciones de obra,
     // liquidaciones, alquileres, etc. y les asigna el tipo correcto antes
@@ -499,6 +519,22 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   const insumos = [...porInsumo.values()].map(ins => {
     const compra = cerrarLado(ins._compra);
     const venta = cerrarLado(ins._venta);
+    // El destino se busca por CUALQUIERA de sus variantes: el grupo puede
+    // haberse marcado desde el nombre que escribe un proveedor y mostrarse
+    // con el que escribe otro. Gana la primera que tenga decisión — son el
+    // mismo insumo, así que no pueden tener dos destinos distintos.
+    let destino = null;
+    let saldoVendible = true;
+    if (destinoDe) {
+      for (const v of ins.variantes) {
+        const d = destinoDe.get(normInsumo(v));
+        if (d && d.destino) {
+          destino = d.destino;
+          saldoVendible = d.saldoVendible !== false;
+          break;
+        }
+      }
+    }
     // Saldo = comprado − vendido, SOLO si la empresa además vendió ese insumo
     // (sin ventas el "saldo" sería la columna comprado repetida, y encima daría
     // a entender que eso es stock disponible — no lo es: falta el consumo de obra).
@@ -544,6 +580,14 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       // Cuántas de sus líneas vienen de una factura que una nota de crédito
       // rebajó en parte: la cantidad de este insumo está SIN rebajar.
       rebajadas: ins.rebajadas || 0,
+      // ── TANDA 6 ──────────────────────────────────────────────────
+      // `activosCargados`: cuántas de sus compras ya están en el registro
+      // 7.1 (un hecho). `destino`: qué dijo una persona que va a pasar con
+      // este insumo (una decisión). `saldoVendible`: si la columna Saldo
+      // significa «lo que queda por colocar» o es otra cosa.
+      activosCargados: ins.activosCargados || 0,
+      destino,
+      saldoVendible,
       recepcion: ins.recepcion,
       lineas: ins.lineas.slice().sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : 0)),
       // Solo para ORDENAR: el mayor gasto en UNA moneda (no se suman monedas).
@@ -629,6 +673,14 @@ export function saldosNegativos(insumos = []) {
   const out = [];
   const unidades = new Map();
   for (const ins of insumos) {
+    // ── TANDA 6: el rojo es de lo que se revende ─────────────────────
+    // «Vendió más de lo que compró» es una alarma sobre MERCADERÍA. Para un
+    // activo de uso el saldo es lo que la empresa tiene y usa, y para lo que
+    // se transforma no cierra hasta que exista el movimiento que lo
+    // convierte: pintarlos del mismo rojo es cómo se consigue que nadie mire
+    // ninguno. Sin destino marcado —que es el caso de casi todo— se comporta
+    // igual que siempre.
+    if (ins && ins.saldoVendible === false) continue;
     const rojos = (ins?.saldo || []).filter(s => Number(s.cantidad) < -0.0001);
     if (!rojos.length) continue;
     out.push({ ...ins, negativos: rojos });
@@ -639,4 +691,5 @@ export function saldosNegativos(insumos = []) {
 
 /** ¿Este insumo está en rojo? Para pintar la fila sin recorrer la lista aparte. */
 export const tieneSaldoNegativo = (ins) =>
-  (ins?.saldo || []).some(s => Number(s.cantidad) < -0.0001);
+  ins?.saldoVendible !== false
+  && (ins?.saldo || []).some(s => Number(s.cantidad) < -0.0001);

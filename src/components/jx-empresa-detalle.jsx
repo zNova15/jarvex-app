@@ -51,6 +51,11 @@ import {
   saldosNegativos, tieneSaldoNegativo, aniosDeLineas,
 } from "../lib/inventario-empresa.js";
 import { noInventariables } from "../lib/insumo-o-servicio.js";
+import {
+  activosPorLinea, esActivoDe, destinoParaInventario, llaveDestino, contarDestinos,
+  DESTINOS, DESTINO_INFO, labelDestino, AMBITO_DESTINO,
+} from "../lib/destino-inventario.js";
+import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { aprenderClasificacion } from "../lib/clasificar-items.js";
 import { decidir } from "../lib/bandeja-categorizacion-db.js";
 // Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
@@ -277,13 +282,25 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // `insumo-o-servicio.js`.
   const decisHook = window.__hooks.useCotejoDecisiones();
   const descartadasInv = uMD(() => noInventariables(decisHook.data || []), [decisHook.data]);
+  // ── TANDA 6: el hecho y la decisión ──────────────────────────────
+  // El HECHO: qué líneas de factura ya están cargadas en el registro 7.1.
+  // El vínculo existe desde que existe la tabla (`accounting_movement_id` +
+  // `accounting_item_idx`, y los 12 activos de producción lo tienen); lo que
+  // faltaba era que esta pantalla lo leyera.
+  // La DECISIÓN: qué va a pasar con cada insumo. Ver `destino-inventario.js`.
+  const afHook = window.__hooks.useActivosFijos?.(company?.id) || { data: [] };
+  const activosLinea = uMD(() => activosPorLinea(afHook.data || []), [afHook.data]);
+  const esActivo = uMD(() => esActivoDe(activosLinea), [activosLinea]);
+  const destinoDe = uMD(() => destinoParaInventario(decisHook.data || []), [decisHook.data]);
   const inv = uMD(
     () => inventarioDeEmpresa(lineas, {
       companyId: company?.id, grupoDe, grupos, factorDe,
       desde: desdePeriodo, hasta: hastaPeriodo,
       noInventariables: descartadasInv,
+      esActivo, destinoDe,
     }),
-    [lineas, company?.id, grupoDe, grupos, factorDe, desdePeriodo, hastaPeriodo, descartadasInv]
+    [lineas, company?.id, grupoDe, grupos, factorDe, desdePeriodo, hastaPeriodo,
+      descartadasInv, esActivo, destinoDe]
   );
   const tiposPresentes = uMD(() => {
     const s = new Set();
@@ -304,6 +321,9 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     return { insumos: ins, total: ins.length };
   }, [inv]);
   const [soloRebajados, setSoloRebajados] = uSD(false);
+  // Tanda 6: '' | 'activos' | 'sin_decidir' | uno de DESTINOS
+  const [destinoFiltro, setDestinoFiltro] = uSD('');
+  const conteoDestinos = uMD(() => contarDestinos(inv.insumos), [inv]);
   const [flujoFiltro, setFlujoFiltro] = uSD('todos');
   const [modalCategorizar, setModalCategorizar] = uSD(null);
 
@@ -313,8 +333,13 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     const porFlujo = filtrarPorFlujo(porTipo, flujoFiltro);
     if (soloNegativos) return porFlujo.filter(tieneSaldoNegativo);
     if (soloRebajados) return porFlujo.filter(i => (i.rebajadas || 0) > 0);
+    // Tanda 6: por destino, y 'activos' = lo que ya está en el registro 7.1
+    // (el hecho), que no es lo mismo que «marcado como uso de la empresa».
+    if (destinoFiltro === 'activos') return porFlujo.filter(i => (i.activosCargados || 0) > 0);
+    if (destinoFiltro === 'sin_decidir') return porFlujo.filter(i => !i.destino);
+    if (destinoFiltro) return porFlujo.filter(i => i.destino === destinoFiltro);
     return porFlujo;
-  }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos, soloRebajados]);
+  }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos, soloRebajados, destinoFiltro]);
 
   const guardarRecategorizacion = async (insumo, cat, subcat) => {
     const showToast = window.__showToast || (() => {});
@@ -385,6 +410,36 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       setTope(PASO_LISTA);
     } else {
       verNegativos();
+    }
+  };
+
+  // ── QUÉ VA A PASAR CON ESTE INSUMO (tanda 6) ──────────────────────
+  // Se guarda por DESCRIPCIÓN y no por línea: «los taladros son para uso de
+  // la empresa» es una política sobre el insumo, y escribirla una vez por
+  // cada factura de taladros sería pedirle a la contadora que conteste
+  // cuarenta veces la misma pregunta. La compra puntual que se aparta de esa
+  // política se distingue por el HECHO (queda cargada en el 7.1), no por acá.
+  //
+  // Se marca sobre TODAS las variantes del grupo: el insumo se muestra con el
+  // nombre de un proveedor y puede volver a aparecer con el de otro.
+  const guardarDestino = async (ins, destino) => {
+    const userId = window.__useAuth?.()?.profile?.id || null;
+    const showToast = window.__showToast || (() => {});
+    try {
+      for (const v of (ins.variantes || [])) {
+        await decidirCotejo({
+          ambito: AMBITO_DESTINO,
+          llave: llaveDestino(v),
+          decision: destino,                 // null = deshacer, ya lo sabe decidirCotejo
+          nota: String(ins.display || '').slice(0, 200),
+          companyId: company?.id || null,
+        }, userId);
+      }
+      showToast(destino
+        ? `✓ «${String(ins.display).slice(0, 30)}» → ${labelDestino(destino)}`
+        : '✓ Destino borrado', 'green');
+    } catch (e) {
+      showToast('Error: ' + (e.message || e), 'red');
     }
   };
 
@@ -786,6 +841,24 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               (GASOMI E001-275, S/ 38.500 con una nota de S/ 690) y sus cinco
               ítems estaban perdidos entre cientos de filas. Misma solución
               que el botón rojo: un filtro que solo existe si hay algo. */}
+          {/* ── TANDA 6: filtrar por qué va a pasar con cada insumo ────
+              «Activos fijos» son los que YA están en el 7.1 (un hecho, sale
+              del vínculo de la tabla). Los demás son la decisión que alguien
+              tomó en el selector de cada fila. */}
+          {(conteoDestinos.activos_cargados > 0
+            || DESTINOS.some(d => conteoDestinos[d] > 0)) && (
+            <select className="fi" style={{ width: 'auto', fontSize: 11 }}
+              value={destinoFiltro}
+              onChange={e => { setDestinoFiltro(e.target.value); setSoloNegativos(false); setSoloRebajados(false); setTope(PASO_LISTA); }}>
+              <option value="">Todo destino</option>
+              {conteoDestinos.activos_cargados > 0 && (
+                <option value="activos">🏗 En el registro 7.1 ({conteoDestinos.activos_cargados})</option>
+              )}
+              {DESTINOS.filter(d => conteoDestinos[d] > 0).map(d => (
+                <option key={d} value={d}>{DESTINO_INFO[d].icono} {labelDestino(d)} ({conteoDestinos[d]})</option>
+              ))}
+            </select>
+          )}
           {rebajados.total > 0 && (
             <button className={`btn btn-xs ${soloRebajados ? 'btn-amber' : 'btn-ghost'}`}
               onClick={toggleRebajados}
@@ -906,6 +979,26 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             >
                               🏷 Categorizar
                             </button>
+                            {/* ── QUÉ VA A PASAR CON ESTE INSUMO (tanda 6) ──
+                                Gabriel: «se sabe qué insumo se utilizarán
+                                dentro de la empresa y no se venderán, para que
+                                se muestre de esta manera en nuestro
+                                inventario». Cuatro cajones, los mismos que el
+                                recomendador de activos — no un vocabulario
+                                nuevo. Vacío es lo normal y no hace falta
+                                marcarlo: la mayoría se consume. */}
+                            <select
+                              className="fi"
+                              style={{ width: 'auto', fontSize: 10, padding: '1px 4px' }}
+                              value={ins.destino || ''}
+                              title="Qué va a pasar con este insumo. Cambia si su saldo significa «lo que queda por vender» o es otra cosa."
+                              onChange={e => guardarDestino(ins, e.target.value || null)}
+                            >
+                              <option value="">— destino —</option>
+                              {DESTINOS.map(d => (
+                                <option key={d} value={d}>{DESTINO_INFO[d].icono} {labelDestino(d)}</option>
+                              ))}
+                            </select>
                           </div>
                           <div style={{ marginTop: 2, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                             {ins.tipos.map(t => (
@@ -929,6 +1022,22 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {tieneSaldoNegativo(ins) && (
                               <span className="badge b-red" style={{ fontSize: 9 }} title="Vendió más de lo que compró: falta cargar la compra, está en otra empresa del grupo, o está escrita con otro nombre">
                                 stock negativo
+                              </span>
+                            )}
+                            {/* ── TANDA 6: el HECHO y la DECISIÓN ────────
+                                El badge 🏗 sale del registro 7.1, no de una
+                                opinión: hay una fila en `activos_fijos`
+                                apuntando a esa línea de esa factura. */}
+                            {ins.activosCargados > 0 && (
+                              <span className="badge b-blue" style={{ fontSize: 9 }}
+                                title={`${ins.activosCargados} de sus compras ya están cargadas en el registro de activos fijos (formato 7.1). No son mercadería para vender.`}>
+                                🏗 activo fijo ({ins.activosCargados})
+                              </span>
+                            )}
+                            {ins.destino && DESTINO_INFO[ins.destino] && (
+                              <span className={`badge ${DESTINO_INFO[ins.destino].badge}`} style={{ fontSize: 9 }}
+                                title={DESTINO_INFO[ins.destino].ayuda}>
+                                {DESTINO_INFO[ins.destino].icono} {labelDestino(ins.destino)}
                               </span>
                             )}
                             {(ins.comprado.convertidas + ins.vendido.convertidas) > 0 && (
