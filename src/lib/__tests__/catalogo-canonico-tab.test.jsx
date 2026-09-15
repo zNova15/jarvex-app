@@ -116,30 +116,22 @@ describe('la pestaña del catálogo abre', () => {
 });
 
 describe('lo que la pestaña dibuja', () => {
-  it('lista lo activo y esconde lo desactivado hasta que se pide verlo', () => {
+  // 15-set-2026: la pestaña «📋 Insumos y servicios» se fue. Gabriel la pidió
+  // sacar dos veces («está por las puras, no hace nada») y lo estaba: su panel
+  // de recomendaciones ya vive dentro de cada clasificación, sus filtros son la
+  // lista de la izquierda, y su botón de desactivar no se usó NUNCA (0 de 729
+  // insumos desactivados). Lo único suyo que sobrevivió —buscar un insumo por
+  // nombre sin saber su clasificación— es ahora el panel derecho de
+  // «Clasificaciones y diccionario». Ver `BuscadorInsumos`.
+  it('🔴 ya no hay pestaña de lista plana', () => {
     const h = conDatos();
-    expect(h).toContain('TUBERIA PVC UF S25');
-    expect(h).not.toContain('CLAVO 3&quot; QUE YA NO SE USA');
-    // Pero avisa que hay uno guardado apagado.
-    expect(h).toContain('Ver los desactivados');
+    expect(h).not.toContain('📋 Insumos y servicios');
   });
 
-  it('dice a qué inventario iría cada cosa — es el puente que justifica la entrega', () => {
+  it('en su lugar ofrece buscar un insumo por su nombre', () => {
     const h = conDatos();
-    expect(h).toContain('EPP');            // el tybek, por familia
-    expect(h).toContain('Maquinaria');     // la retroexcavadora, por la unidad `hm`
-    expect(h).toContain('Servicio / gasto');
-  });
-
-  it('muestra las familias con su conteo, sin las que no tienen nada', () => {
-    const h = conDatos();
-    expect(h).toContain('Implementos de seguridad');
-    expect(h).toContain('Tubería y accesorios');
-    expect(h).not.toContain('Agregados');   // ninguna fila activa cae ahí
-  });
-
-  it('marca lo corregido a mano para que se vea que la importación no lo pisa', () => {
-    expect(conDatos()).toContain('tuyo');
+    expect(h).toContain('Buscar un insumo o servicio');
+    expect(h).toContain('Para cuando no sabés en qué clasificación quedó');
   });
 
   it('la disgregación muestra el factor con su procedencia', () => {
@@ -206,29 +198,31 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
     { id: 'r3', tipo: 'insumo', nombre: 'CASCOS DE SEGURIDAD', norm: 'casco de seguridad', unidad: 'und', familia: '83', origen: 'xlsx', activo: true },
   ];
 
-  it('avisa cuántos tienen recomendación oficial, con el destino IUPC a la vista', () => {
+  it('las recomendaciones viven DENTRO de cada clasificación, no en un panel aparte', () => {
+    // 15-set: el panel gigante de arriba se fue con la pestaña. Cada
+    // clasificación dice cuántos insumos «parecen ser de acá» con su chapita
+    // «+N», y al entrar muestra cuáles con su porcentaje y el botón «Traer
+    // acá». Doce candidatos sí se despachan; 389 en una sola lista, nunca.
     const h = conDatos(MAL, []);
-    expect(h).toContain('con recomendación de categoría');
-    expect(h).toContain('CEMENTO PORTLAND TIPO I');
-    expect(h).toContain('Cemento Portland');
-    expect(h).toContain('Servicios');
+    expect(h).toContain('Cemento Portland');          // el destino propuesto
+    expect(h).toMatch(/candidatos que parecen ser de acá/);
   });
 
-  it('dice cuántas faltan reclasificar del vocabulario viejo', () => {
-    // r1 y r2 tienen familia legacy ('ferreteria', 'seguridad'); r3 ya tiene
-    // su código IUPC. El contador tiene que decir «faltan 2 de 3».
-    expect(conDatos(MAL, [])).toContain('faltan reclasificar');
-  });
-
-  it('deja marcar POR BANDA y no ofrece un «marcar todas»', () => {
-    // Reclasificar el catálogo entero de un click es justo lo que no se quiere:
-    // el lote se acota a lo que el estándar reconoce con confianza alta.
+  it('🔴 sigue sin ofrecer un «marcar todas» (regla 8 del CLAUDE.md)', () => {
+    // Reclasificar el catálogo entero de un click es justo lo que no se quiere.
+    // El lote se despacha POR BANDA DE CONFIANZA, y eso se mudó con la pestaña
+    // en vez de perderse: está en el buscador, detrás de la casilla «solo los
+    // que parecen mal clasificados».
     const h = conDatos(MAL, []);
     expect(h).not.toContain('Marcar todas');
-    expect(h).toContain('Marcar las');
   });
 
-  it('las opciones del desplegable de categoría NO salen vacías', () => {
+  it('avisa cuántos parecen mal clasificados, para poder filtrarlos', () => {
+    const h = conDatos(MAL, []);
+    expect(h).toContain('Solo los que parecen mal clasificados');
+  });
+
+  it('las opciones del desplegable de clasificación NO salen vacías', () => {
     // El JSX pedía `c.nombreCompleto`, un campo que nunca existió en
     // `listarCategoriasDisponibles()` → 80 opciones en blanco y el
     // desplegable inservible. Esto lo agarra si vuelve a pasar. (14-sep-2026:
@@ -240,16 +234,6 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
     // original —value con código pero SIN texto visible— ya no puede pasar
     // con esta estructura.
     expect(h).toMatch(/<option value="\[03\] Acero de construcción corrugado">/);
-  });
-
-  it('la fila con familia vieja MUESTRA cuál tiene, en el propio campo', () => {
-    // Las 413 filas sin reclasificar tienen un valor que ya no está entre las
-    // opciones: sin esto el selector se vería en blanco y se perdería de vista
-    // qué categoría tienen puesta hoy. Se lee (precargado en el campo), pero
-    // hay que escribir y elegir una opción real de la lista para cambiarlo.
-    const h = conDatos(MAL, []);
-    expect(h).toContain('Material de ferretería');
-    expect(h).toMatch(/value="Material de ferretería"/);
   });
 
   it('lo que está bien puesto con su código oficial NO aparece como recomendación', () => {
@@ -265,17 +249,18 @@ describe('la revisión recommendativa del catálogo (IUPC / INEI)', () => {
   it('cumple la regla rectora: una sola clasificación y NO subfamilias', () => {
     const h = conDatos(MAL, []);
     expect(h).not.toContain('Subfamilia');
-    expect(h).toContain('Categoría (IUPC / Estándar)');
+    expect(h).not.toContain('subfamilia');
   });
 });
 
 describe('el Catálogo abre en las clasificaciones y su diccionario', () => {
-  it('la vista por defecto son las clasificaciones, no la lista plana', () => {
+  it('la vista por defecto son las clasificaciones y su diccionario', () => {
     const h = conDatosClas();
     expect(h).toContain('Clasificaciones y diccionario');
-    expect(h).toContain('Insumos y servicios (');
-    // El diccionario es el punto de la pantalla; la tabla de 483 filas no.
+    // El diccionario es el punto de la pantalla; la tabla de 483 filas no
+    // — y desde el 15-set esa tabla ya no es una pestaña.
     expect(h).toContain('diccionario');
+    expect(h).not.toContain('📋 Insumos y servicios');
   });
 
   // 13-set: «Categorizar» dejó de ser una pestaña aparte. Las tres vistas

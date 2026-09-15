@@ -136,7 +136,11 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
   // Catálogo = las CLASIFICACIONES y su diccionario. La lista plana de los 483
   // insumos queda como segunda vista: con ese volumen, buscar y corregir en
   // lote sigue siendo la forma más rápida de arreglar muchas filas a la vez.
-  const [vista, setVista] = uS(vistaInicial);
+  // 'lista' era la pestaña «📋 Insumos y servicios», que se fue el 15-set. El
+  // alias cae a 'clasificaciones' en vez de dejar la pantalla en blanco: hay
+  // navegaciones guardadas (y memoria muscular) que todavía la piden por
+  // nombre, y una vista que no existe no dibuja NADA — ni un cartel.
+  const [vista, setVista] = uS(() => (vistaInicial === 'lista' ? 'clasificaciones' : vistaInicial));
   const [catOverride, setCatOverride] = uS({});// id → codigo categoria sugerida editada
   const [recMarcadas, setRecMarcadas] = uS({});
   // Anti doble-click (regla crítica de la casa): ref SÍNCRONO. Un doble tap no
@@ -551,16 +555,6 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className={`btn btn-sm ${vista === 'clasificaciones' ? 'btn-amber' : 'btn-ghost'}`}
               onClick={() => setVista('clasificaciones')}>🗂 Clasificaciones y diccionario</button>
-            <button className={`btn btn-sm ${vista === 'lista' ? 'btn-amber' : 'btn-ghost'}`}
-              onClick={() => setVista('lista')}>
-              📋 Insumos y servicios ({activas.length})
-              {revision.recomendaciones.length > 0 && (
-                <span className="badge b-amber" style={{ marginLeft: 6, fontSize: 9 }}
-                  title={`${revision.recomendaciones.length} podrían estar mal clasificados: el estándar propone otra clasificación.`}>
-                  ⚠ {revision.recomendaciones.length}
-                </span>
-              )}
-            </button>
             <button className={`btn btn-sm ${vista === 'reconocer' ? 'btn-amber' : 'btn-ghost'}`}
               onClick={() => setVista('reconocer')}>
               📥 Nombres de factura por reconocer ({porReconocer.pendientes})
@@ -603,313 +597,16 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
               equivalencias={equivalencias}
               decisiones={decHook.data || []}
               insumosCrudos={crudo}
+              opciones={opcionesClasificacion}
+              listId={listId}
+              corregir={corregirLote}
+              marcados={marcados}
+              setMarcados={setMarcados}
               showToast={showToast}
               refrescar={async () => { await Promise.all([refrescar?.(), clasHook.refresh?.(), terHook.refresh?.(), decHook.refresh?.()]); }}
             />
           )}
 
-          {vista === 'lista' && (<>
-          {/* ── La revisión: recomendaciones oficiales IUPC / INEI ─ */}
-          {revision.recomendaciones.length > 0 && (
-            <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 4 }}>
-                {revision.recomendaciones.length} {revision.recomendaciones.length === 1
-                  ? 'insumo con recomendación de categoría' : 'insumos con recomendación de categoría'}
-                {revision.pendientesLegacy > 0 && (
-                  <span className="badge b-amber" style={{ marginLeft: 8, fontSize: 10 }}>
-                    faltan reclasificar {revision.pendientesLegacy} de {revision.pendientesLegacy + revision.yaClasificadas}
-                  </span>
-                )}
-                {revision.sinRecomendacion > 0 && (
-                  <span className="badge b-gray" style={{ marginLeft: 6, fontSize: 10 }}
-                    title="El estándar no las alcanza. No se proponen porque su categoría actual es mejor que «sin clasificar»: asignalas a mano con el desplegable de cada fila, abajo.">
-                    {revision.sinRecomendacion} que el estándar no alcanza
-                  </span>
-                )}
-              </div>
-              <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 8, lineHeight: 1.55 }}>
-                Propuestas del estándar oficial del Estado Peruano (Índices Unificados de Precios de la
-                Construcción, R.J. 016-2026-INEI). Podés aceptar la recomendación, cambiarla en el
-                desplegable, o dejar el insumo donde está.{' '}
-                <strong>Vienen ordenadas de mayor a menor confianza</strong> — las de arriba son las que el
-                Diccionario Oficial reconoce y se despachan por lote; las del final hay que mirarlas de a una.
-              </div>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="tbl" style={{ fontSize: 11.5 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 26 }}></th>
-                      <th>Insumo</th>
-                      <th>Actual → Sugerida</th>
-                      <th>Cambiar categoría</th>
-                      <th>Motivo oficial</th>
-                      <th>Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {revision.recomendaciones.slice(0, 60).map(r => {
-                      const scorePct = Math.round((r.score || 0) * 100);
-                      const BADGE_BANDA = {
-                        alta: 'b-green', media: 'b-blue', baja: 'b-amber', rara: 'b-purple', extrema_baja: 'b-red',
-                      };
-                      const catElegida = catOverride[r.id] || r.familiaSugerida || r.categoriaSugerida;
-                      return (
-                        <tr key={r.id}>
-                          <td style={{ width: 26 }}>
-                            <input type="checkbox" checked={!!recMarcadas[r.id]}
-                              onChange={e => setRecMarcadas(p => {
-                                const n = { ...p };
-                                if (e.target.checked) n[r.id] = true; else delete n[r.id];
-                                return n;
-                              })} />
-                          </td>
-                          <td style={{ fontWeight: 600 }}>{r.nombre}</td>
-                          <td style={{ whiteSpace: 'nowrap', color: 'var(--tm)' }}>
-                            {etiquetaFamilia(r.familia)} →{' '}
-                            <strong style={{ color: 'var(--tp)' }}>{etiquetaCategoria(catElegida)}</strong>
-                            <span className={`badge ${BADGE_BANDA[r.banda] || 'b-gray'}`} style={{ marginLeft: 6 }}>
-                              {scorePct}%
-                            </span>
-                            {r.inclinacion && (
-                              <div style={{ fontSize: 10.5, color: '#d97706', marginTop: 2 }}>
-                                🛠 Servicio con inclinación a: <strong>{r.inclinacion}</strong>
-                              </div>
-                            )}
-                          </td>
-                          <td>
-                            <SelectorClasificacion
-                              listId={listId}
-                              opciones={opcionesClasificacion}
-                              value={catElegida}
-                              onChange={cod => setCatOverride(p => ({ ...p, [r.id]: cod }))}
-                              style={{ fontSize: 11, padding: '1px 6px', height: 24, width: 200 }}
-                            />
-                          </td>
-                          <td style={{ color: 'var(--tm)', fontSize: 11 }}>{r.motivo}</td>
-                          <td style={{ whiteSpace: 'nowrap' }}>
-                            <button className="btn btn-xs btn-green" onClick={() => aceptarUna(r)} style={{ marginRight: 4 }}>
-                              Aceptar
-                            </button>
-                            <button className="btn btn-xs btn-ghost" onClick={() => descartarMovidas([r.id])}>
-                              Está bien así
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                <button className="btn btn-amber btn-sm" disabled={!idsRec.length} onClick={aceptarMovidas}>
-                  Aplicar a {idsRec.length || ''} {idsRec.length === 1 ? 'insumo marcado' : 'insumos marcados'}
-                </button>
-                <button className="btn btn-ghost btn-sm" disabled={!idsRec.length}
-                  onClick={() => descartarMovidas(idsRec)}>Dejar donde están</button>
-                {/* Marcar de a BANDA, nunca «todas». Reclasificar 450 filas de un
-                    click con un clasificador que a veces se equivoca es
-                    exactamente lo que no se quiere: las de coincidencia alta se
-                    despachan juntas, las dudosas se miran de a una. */}
-                {BANDAS_LOTE.map(([slug, lbl]) => {
-                  const n = revision.porBanda?.[slug] || 0;
-                  if (!n) return null;
-                  return (
-                    <button key={slug} className="btn btn-ghost btn-sm"
-                      onClick={() => setRecMarcadas(Object.fromEntries(
-                        revision.recomendaciones.filter(r => r.banda === slug).map(r => [r.id, true])))}>
-                      Marcar las {n} de {lbl}
-                    </button>
-                  );
-                })}
-                <button className="btn btn-ghost btn-sm" disabled={!idsRec.length}
-                  onClick={() => setRecMarcadas({})}>Desmarcar</button>
-              </div>
-            </div>
-          )}
-
-          {/* ── Familias / Categorías ─────────────────────────── */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button className={`btn btn-xs ${famSel === 'todas' ? 'btn-amber' : 'btn-ghost'}`}
-              onClick={() => setFamSel('todas')}>Todas ({activas.length})</button>
-            {familias.map(f => (
-              <button key={f.slug} className={`btn btn-xs ${famSel === f.slug ? 'btn-amber' : 'btn-ghost'}`}
-                onClick={() => setFamSel(f.slug)}
-                title={f.propia ? 'Categoría propia de esta entidad: falta decir a cuál del grupo equivale.' : `Va a ${TIPO_DESTINO[f.tipo] || 'inventario'}`}>
-                {f.propia ? '◆ ' : ''}{f.label} ({f.n})
-              </button>
-            ))}
-          </div>
-
-          {/* ── Filtros ───────────────────────────────────────── */}
-          <div className="card card-p" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <label className="flabel" style={{ fontSize: 10.5 }}>Buscar</label>
-              <input className="fi" style={{ width: '100%', fontSize: 12 }} value={busca}
-                placeholder="nombre del insumo o servicio" onChange={e => setBusca(e.target.value)} />
-            </div>
-            <div>
-              <label className="flabel" style={{ fontSize: 10.5 }}>Tipo</label>
-              <select className="fi" style={{ fontSize: 12 }} value={tipoSel} onChange={e => setTipoSel(e.target.value)}>
-                <option value="todos">Todo</option>
-                <option value="insumo">Insumos</option>
-                <option value="servicio">Servicios</option>
-              </select>
-            </div>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, cursor: 'pointer' }}>
-              <input type="checkbox" checked={verInactivos} onChange={e => setVerInactivos(e.target.checked)} />
-              Ver los desactivados{inactivas > 0 ? ` (${inactivas})` : ''}
-            </label>
-            <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, cursor: 'pointer' }}
-              title="Los que el estándar clasificaría distinto de como están hoy.">
-              <input type="checkbox" checked={soloDudosos} onChange={e => setSoloDudosos(e.target.checked)} />
-              Solo los que parecen mal clasificados ({revision.recomendaciones.length})
-            </label>
-          </div>
-
-          {/* ── Corregir en lote ──────────────────────────────── */}
-          {idsMarcados.length > 0 && (
-            <div className="card card-p" style={{ background: 'var(--amber-l)', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, alignSelf: 'center' }}>
-                {idsMarcados.length} {idsMarcados.length === 1 ? 'marcado' : 'marcados'}
-              </div>
-              <div>
-                <label className="flabel" style={{ fontSize: 10.5 }}>Cambiar la categoría a</label>
-                <SelectorClasificacion
-                  listId={listId}
-                  opciones={opcionesClasificacion}
-                  value={famLote}
-                  onChange={setFamLote}
-                  permitirVacio
-                  placeholder="— elegir categoría —"
-                  style={{ fontSize: 12, width: 240 }}
-                />
-              </div>
-              <button className="btn btn-amber btn-sm" disabled={!famLote} onClick={() => corregirLote({ familia: famLote })}>
-                Aplicar categoría
-              </button>
-              <div>
-                <label className="flabel" style={{ fontSize: 10.5 }}>o la unidad a</label>
-                <input className="fi" list="jx-unidades-cat" style={{ fontSize: 12, width: 110 }} value={uniLote}
-                  placeholder="und, m, kg…" onChange={e => setUniLote(e.target.value)} />
-                <datalist id="jx-unidades-cat">
-                  {UNIDADES_SUGERIDAS.map(u => <option key={u} value={u} />)}
-                </datalist>
-              </div>
-              <button className="btn btn-amber btn-sm" disabled={!uniLote.trim()} onClick={() => corregirLote({ unidad: uniLote.trim() })}>
-                Aplicar unidad
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => corregirLote({ activo: false })}>
-                Desactivar
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setMarcados({})}>Desmarcar todo</button>
-            </div>
-          )}
-
-          {/* ── La lista ──────────────────────────────────────── */}
-          <div className="card" style={{ overflowX: 'auto' }}>
-            <table className="tbl" style={{ fontSize: 11.5 }}>
-              <thead>
-                <tr>
-                  <th style={{ width: 28 }}>
-                    <input type="checkbox"
-                      checked={visibles.length > 0 && visibles.slice(0, limite).every(r => marcados[r.id])}
-                      onChange={e => {
-                        const on = e.target.checked;
-                        setMarcados(p => {
-                          const n = { ...p };
-                          for (const r of visibles.slice(0, limite)) { if (on) n[r.id] = true; else delete n[r.id]; }
-                          return n;
-                        });
-                      }} />
-                  </th>
-                  <th>Nombre</th>
-                  <th>Unidad</th>
-                  <th>Categoría (IUPC / Estándar)</th>
-                  <th title="A qué inventario iría si se da de alta">Va a</th>
-                  <th title="Cómo lo agrupa contabilidad">Categoría de gasto</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibles.slice(0, limite).map(r => {
-                  const destino = tipoInsumoDe(r, equivalencias);
-                  const propia = !esFamiliaCanonica(r.familia);
-                  return (
-                    <tr key={r.id} style={r.activo === false ? { opacity: 0.5 } : undefined}>
-                      <td>
-                        <input type="checkbox" checked={!!marcados[r.id]}
-                          onChange={e => setMarcados(p => {
-                            const n = { ...p };
-                            if (e.target.checked) n[r.id] = true; else delete n[r.id];
-                            return n;
-                          })} />
-                      </td>
-                      <td>{r.nombre}</td>
-                      <td style={{ fontFamily: 'monospace' }}>{r.unidad || '—'}</td>
-                      <td style={{ minWidth: 200 }} title={propia ? 'Categoría propia de esta entidad' : undefined}>
-                        <SelectorClasificacion
-                          listId={listId}
-                          opciones={opcionesClasificacion}
-                          value={r.familia || 'otros'}
-                          actualLabel={etiquetaCategoria(r.familia || 'otros')}
-                          onChange={async (nuevaCat) => {
-                            if (nuevaCat === r.familia) return;
-                            await corregirEnLote([r.id], { familia: nuevaCat }, { userId });
-                            await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: nuevaCat, companyId }, { userId });
-                            await refrescar();
-                            showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(nuevaCat)}`, 'green');
-                          }}
-                          style={{ fontSize: 11, height: 24, padding: '1px 4px', width: 200 }}
-                          title="Cambiar categoría de este insumo directamente"
-                        />
-                        {(() => {
-                          const rec = recPorId.get(r.id);
-                          if (!rec) return null;
-                          return (
-                            <div style={{ fontSize: 10.5, marginTop: 3, color: 'var(--amber)', lineHeight: 1.4 }}
-                              title={rec.motivo}>
-                              ⚠ Puede estar mal: el estándar dice{' '}
-                              <strong>{etiquetaCategoria(rec.familiaSugerida)}</strong>{' '}
-                              ({Math.round(rec.score * 100)}%){' '}
-                              <button className="btn btn-xs" style={{ padding: '0 6px' }}
-                                onClick={async () => {
-                                  await corregirEnLote([r.id], { familia: rec.familiaSugerida }, { userId });
-                                  await enseñarDiccionario({ descripcion: r.nombre, clasificacionCodigo: rec.familiaSugerida, companyId }, { userId });
-                                  await refrescar();
-                                  showToast?.(`✓ «${r.nombre}» reasignado a ${etiquetaCategoria(rec.familiaSugerida)}`, 'green');
-                                }}>
-                                Cambiar
-                              </button>
-                            </div>
-                          );
-                        })()}
-                      </td>
-                      <td><span className={`badge ${BADGE_DESTINO[destino] || 'b-gray'}`} style={{ fontSize: 9 }}>{TIPO_DESTINO[destino] || destino}</span></td>
-                      <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {r.origen === 'manual' && <span className="badge b-blue" style={{ fontSize: 8.5 }} title="Editado a mano: la importación no lo pisa.">tuyo</span>}
-                        {companyId && !r.company_id && <span className="badge b-gray" style={{ fontSize: 8.5 }} title="Viene del catálogo general del grupo.">del grupo</span>}
-                        {r.activo === false && <span className="badge b-gray" style={{ fontSize: 8.5 }}>desactivado</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {visibles.length === 0 && (
-              <div style={{ padding: 14, fontSize: 12, color: 'var(--tm)', fontStyle: 'italic' }}>
-                Nada coincide con el filtro.
-              </div>
-            )}
-            {visibles.length > limite && (
-              <div style={{ padding: 10 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setLimite(l => l + 200)}>
-                  Ver más ({visibles.length - limite} restantes)
-                </button>
-              </div>
-            )}
-          </div>
-          </>)}
         </>
       )}
 
@@ -1065,7 +762,219 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
 // resolvía nunca— para ser, dentro de cada clasificación, «estos parecen ser
 // de acá»: doce candidatos sí se despachan.
 // ═══════════════════════════════════════════════════════════════════
-function PanelClasificaciones({ activas, propias, terminos, revision, companyId, userId, equivalencias, decisiones = [], insumosCrudos = null, showToast, refrescar }) {
+/**
+ * BUSCAR UN INSUMO SIN SABER SU CLASIFICACIÓN (tanda 9, 15-set-2026).
+ *
+ * ── POR QUÉ EXISTE ────────────────────────────────────────────────
+ * Es lo ÚNICO que la pestaña «📋 Insumos y servicios» hacía y no se podía
+ * hacer en ningún otro lado. Gabriel la pidió sacar dos veces —«esta pestaña
+ * está por las puras, no hace nada»— y tenía razón en casi todo:
+ *   · su panel de recomendaciones ya vive DENTRO de cada clasificación
+ *     («estos N insumos parecen ser de acá»);
+ *   · sus filtros por familia son la lista de la izquierda;
+ *   · y su botón de desactivar no se usó NUNCA: medido el 15-set, 0 de 729
+ *     insumos desactivados.
+ * Lo que sí se perdía al borrarla era esto: encontrar un insumo por su nombre
+ * cuando no se sabe en qué clasificación cayó, y corregirlo ahí mismo. Por eso
+ * la pestaña se fue y su única función propia se quedó, en el lugar donde la
+ * pregunta se hace.
+ *
+ * Ocupa el panel derecho mientras no hay ninguna clasificación elegida — que
+ * antes decía «elegí una de la izquierda» y no hacía nada más.
+ */
+function BuscadorInsumos({ activas, opciones, listId, revision, marcados, setMarcados, corregir, onIrA, equivalencias }) {
+  const [q, setQ] = uS('');
+  const [soloDudosos, setSoloDudosos] = uS(false);
+  const [famLote, setFamLote] = uS('');
+  const [uniLote, setUniLote] = uS('');
+
+  const recPorId = uM(
+    () => new Map((revision?.recomendaciones || []).map(r => [r.id, r])),
+    [revision],
+  );
+
+  // Buscar por PALABRAS sueltas y en cualquier orden: «tubo 2» tiene que
+  // encontrar «TUBO PVC-U 2" C-7.5». Un `includes` de la frase entera no lo
+  // hace, y es exactamente cómo se busca un insumo cuando no se recuerda el
+  // nombre completo (que es siempre).
+  const toks = uM(() => normIUPC(q).split(' ').filter(Boolean), [q]);
+  const resultados = uM(() => {
+    if (!toks.length && !soloDudosos) return [];
+    return (activas || [])
+      .filter(r => !soloDudosos || recPorId.has(r.id))
+      .filter(r => {
+        if (!toks.length) return true;
+        const n = normIUPC(r.nombre);
+        return toks.every(t => n.includes(t));
+      })
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'))
+      .slice(0, 120);
+  }, [activas, toks, soloDudosos, recPorId]);
+
+  const ids = uM(() => Object.keys(marcados || {}).filter(k => marcados[k]), [marcados]);
+
+  // «Aceptar la del estándar» NO es un lote a una misma clasificación: a cada
+  // insumo le corresponde la SUYA. Se despacha de a una porque `corregir`
+  // trabaja sobre lo marcado, y marcar de a uno es la única forma de que cada
+  // fila termine donde el estándar dijo para ella.
+  const corregirCadaUnaALaSuya = async (lista) => {
+    for (const id of lista) {
+      const rec = recPorId.get(id);
+      if (!rec?.familiaSugerida) continue;
+      setMarcados?.({ [id]: true });
+      // eslint-disable-next-line no-await-in-loop
+      await corregir({ familia: rec.familiaSugerida, revisado: true });
+    }
+    setMarcados?.({});
+  };
+  const togglear = (id) => setMarcados?.(p => {
+    const n = { ...p };
+    if (n[id]) delete n[id]; else n[id] = true;
+    return n;
+  });
+
+  const nDudosos = revision?.recomendaciones?.length || 0;
+
+  return (
+    <div className="card card-p" style={{ display: 'grid', gap: 8 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 600 }}>🔎 Buscar un insumo o servicio</div>
+      <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+        Para cuando no sabés en qué clasificación quedó. Escribí parte del nombre — las palabras pueden ir
+        en cualquier orden — y corregí su clasificación o su unidad acá mismo. O elegí una clasificación de la
+        izquierda para ver su diccionario y todo lo que tiene adentro.
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="fi" style={{ flex: 1, minWidth: 200, fontSize: 12 }}
+          placeholder="cemento, tubo 2, guante…" value={q} onChange={e => setQ(e.target.value)} />
+        {nDudosos > 0 && (
+          <label style={{ fontSize: 11, color: 'var(--ts)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+            title="Los que el estándar IUPC clasificaría distinto de como están hoy.">
+            <input type="checkbox" checked={soloDudosos} onChange={e => setSoloDudosos(e.target.checked)} />
+            ⚠ Solo los que parecen mal clasificados ({nDudosos})
+          </label>
+        )}
+      </div>
+
+      {/* 🔴 EL LOTE SE DESPACHA POR BANDA DE CONFIANZA, Y NO HAY «MARCAR TODAS».
+          Es una decisión de producto de Gabriel (regla 8 del CLAUDE.md):
+          reclasificar 450 insumos de un click con un clasificador que a veces
+          se equivoca es exactamente lo que no se quiere. Vivía en la pestaña
+          «Insumos y servicios»; se mudó acá con ella, porque sacar la pestaña
+          no era motivo para perder la forma de despachar. */}
+      {soloDudosos && nDudosos > 0 && corregir && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11.5 }}>
+          <span style={{ color: 'var(--tm)' }}>Marcar por confianza:</span>
+          {BANDAS_LOTE.map(([slug, etiqueta]) => {
+            const dela = (revision?.recomendaciones || []).filter(r => r.banda === slug);
+            if (!dela.length) return null;
+            return (
+              <button key={slug} className="btn btn-xs btn-ghost"
+                onClick={() => setMarcados?.(p2 => {
+                  const n2 = { ...p2 };
+                  for (const r of dela) n2[r.id] = true;
+                  return n2;
+                })}>
+                Marcar las {dela.length} de {etiqueta}
+              </button>
+            );
+          })}
+          <button className="btn btn-xs btn-ghost" title="Están bien donde están: no vuelven a proponerse."
+            onClick={() => {
+              const todos = (revision?.recomendaciones || []).map(r => r.id);
+              if (todos.length) { setMarcados?.(Object.fromEntries(todos.map(i => [i, true]))); corregir({ revisado: true }); }
+            }}>
+            Están bien así
+          </button>
+        </div>
+      )}
+
+      {ids.length > 0 && corregir && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '6px 8px', background: 'var(--tint-neutral)', borderRadius: 6 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{ids.length} marcado{ids.length === 1 ? '' : 's'}:</span>
+          <SelectorClasificacion listId={listId} opciones={opciones} value={famLote} onChange={setFamLote}
+            placeholder="mandarlos a…" style={{ fontSize: 11, height: 24, width: 190 }} />
+          <button className="btn btn-xs btn-amber" disabled={!famLote}
+            onClick={() => { corregir({ familia: famLote, revisado: true }); setFamLote(''); }}>
+            Cambiar clasificación
+          </button>
+          <input className="fi" style={{ width: 90, fontSize: 11, height: 24 }} placeholder="unidad"
+            value={uniLote} onChange={e => setUniLote(e.target.value)} />
+          <button className="btn btn-xs btn-amber" disabled={!uniLote.trim()}
+            onClick={() => { corregir({ unidad: uniLote.trim() }); setUniLote(''); }}>
+            Cambiar unidad
+          </button>
+          {ids.some(i => recPorId.has(i)) && (
+            <button className="btn btn-xs btn-green"
+              title="A cada una, la clasificación que propone el estándar para ELLA (no todas a la misma)."
+              onClick={() => corregirCadaUnaALaSuya(ids)}>
+              Aceptar la del estándar en cada una
+            </button>
+          )}
+          <button className="btn btn-xs btn-ghost" onClick={() => setMarcados?.({})}>Desmarcar</button>
+        </div>
+      )}
+
+      {!toks.length && !soloDudosos ? (
+        <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>
+          Escribí algo para buscar entre los {activas.length} insumos y servicios de la entidad.
+        </div>
+      ) : resultados.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: 'var(--tm)', fontStyle: 'italic' }}>
+          Ningún insumo coincide con «{q.trim()}».
+        </div>
+      ) : (
+        <div style={{ maxHeight: 460, overflowY: 'auto' }}>
+          <table className="tbl" style={{ fontSize: 11.5 }}>
+            <tbody>
+              {resultados.map(r => {
+                const rec = recPorId.get(r.id);
+                return (
+                  <tr key={r.id}>
+                    <td style={{ width: 24 }}>
+                      <input type="checkbox" checked={!!marcados?.[r.id]} onChange={() => togglear(r.id)} />
+                    </td>
+                    <td>
+                      {r.nombre}
+                      {/* El aviso de la vieja pestaña, en el único lugar donde
+                          ahora se puede encontrar el insumo por su nombre. */}
+                      {rec && (
+                        <div style={{ fontSize: 10, color: 'var(--amber)', marginTop: 1 }}>
+                          ⚠ el estándar diría {etiquetaCategoria(rec.familiaSugerida)} ({Math.round((rec.score || 0) * 100)}%)
+                          {corregir && (
+                            <button className="btn btn-xs btn-ghost" style={{ marginLeft: 4, padding: '0 4px', minWidth: 0 }}
+                              onClick={() => { setMarcados?.({ [r.id]: true }); corregir({ familia: rec.familiaSugerida, revisado: true }); }}>
+                              cambiar
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ fontFamily: 'monospace', color: 'var(--tm)', whiteSpace: 'nowrap' }}>{r.unidad || '—'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-xs btn-ghost" title="Ver esta clasificación"
+                        onClick={() => onIrA?.(r.familia)}>
+                        {etiquetaCategoria(r.familia)}
+                      </button>
+                    </td>
+                    <td style={{ color: 'var(--tm)' }}>{categoriaItemDe(r, equivalencias)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {resultados.length >= 120 && (
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+              Se muestran los primeros 120 — afiná la búsqueda.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PanelClasificaciones({ activas, propias, terminos, revision, companyId, userId, equivalencias, decisiones = [], insumosCrudos = null, opciones = [], listId = null, corregir = null, marcados = {}, setMarcados = null, showToast, refrescar }) {
   const [arbol, setArbol] = uS('insumo');
   const [sel, setSel] = uS(null);
   const [busca, setBusca] = uS('');
@@ -1420,9 +1329,11 @@ function PanelClasificaciones({ activas, propias, terminos, revision, companyId,
 
         <div style={{ flex: '2 1 400px', minWidth: 300, display: 'grid', gap: 10 }}>
           {!cat ? (
-            <div className="card card-p" style={{ fontSize: 12, color: 'var(--tm)' }}>
-              Elegí una clasificación de la izquierda para ver su diccionario y los insumos que tiene adentro.
-            </div>
+            <BuscadorInsumos
+              activas={activas} opciones={opciones} listId={listId}
+              revision={revision} marcados={marcados} setMarcados={setMarcados}
+              corregir={corregir} onIrA={setSel} equivalencias={equivalencias}
+            />
           ) : (
             <>
               <div className="card card-p">
