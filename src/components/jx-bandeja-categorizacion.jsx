@@ -49,6 +49,7 @@ import {
 import { enseñarDiccionario, olvidarDiccionario } from "../lib/clasificaciones-db.js";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { clasificarInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
 import { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
@@ -75,7 +76,7 @@ const COLOR_ESTADO = {
  * motor local (sigue siendo el primero, gratis y sin red) ni se aplica sola:
  * el resultado se muestra y `onElegir(codigo)` es un click aparte.
  */
-function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = null, propuestaLocal = null }) {
+function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const [sugerencia, setSugerencia] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
@@ -87,6 +88,7 @@ function AyudaClasificacionIA({ descripcion, unidad, onElegir, terminosCustom = 
     try {
       const r = await clasificarInsumoConIA({
         descripcion, unidad, candidatos: OPCIONES_CLASIFICACION, terminosCustom, propuestaLocal,
+        frecuentes, modeloTexto,
       });
       if (!r?.result?.codigo_sugerido) {
         setError(r?.razonamiento || 'No encontró una clasificación clara para esto.');
@@ -153,10 +155,12 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
   const eqHook = window.__hooks.useCatalogoFamiliaMapeo();
   const decHook = window.__hooks.useInsumoCategorias();
   const compHook = window.__hooks.useCompanies();
-  // El diccionario PROPIO (mig 205). Va a la IA junto con el oficial del INEI:
-  // las correcciones que ya enseñó la contadora son evidencia tan buena como
-  // el Anexo 2, y es lo que hace que la propuesta mejore con el uso.
+  // El diccionario PROPIO (mig 205). Va a la IA en su PROPIA bolsa, aparte del
+  // Anexo 2 (tanda 1): es la corrección que ya enseñó la contadora y mejora la
+  // propuesta con el uso, pero no es la norma y no puede presentarse como tal.
   const terHook = window.__hooks.useClasificacionTerminos?.() || { data: [] };
+  // Qué modelo usa esta sección, elegido en Administración → Modelos de IA.
+  const { data: cfgIA } = window.__hooks?.useAppConfig?.() || { data: [] };
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
   const userId = (() => { try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; } })();
 
@@ -239,6 +243,27 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     () => filasDeBandeja(descripciones, { prep, porId, decisiones, terminosCustom }),
     [descripciones, prep, porId, decisiones, terminosCustom],
   );
+
+  // LO QUE ESTA EMPRESA USA DE VERDAD (tanda 2). Es el relleno de la lista
+  // corta que se le manda a la IA cuando el diccionario no alcanza para llegar
+  // al mínimo: a falta de toda otra señal, lo más probable es lo que ya se
+  // decidió cien veces. Sale de las decisiones tomadas, no de una lista fija.
+  const frecuentes = uM(() => {
+    const cuenta = new Map();
+    const sumar = (cod, peso) => {
+      if (!cod || cod === 'sin_clasificar') return;
+      cuenta.set(cod, (cuenta.get(cod) || 0) + peso);
+    };
+    // Las decisiones pesan más que el catálogo: son respuestas dadas sobre
+    // descripciones de factura, que es exactamente la pregunta que se hace.
+    for (const d of decisiones.values()) sumar(d?.familia, 3);
+    for (const f of filasCatalogo) sumar(f?.familia, 1);
+    return [...cuenta.entries()].sort((a, b) => b[1] - a[1]).map(([cod]) => cod);
+  }, [decisiones, filasCatalogo]);
+
+  // El modelo que el admin eligió para clasificar (Administración → Modelos de
+  // IA). `null` = la cadena de gratuitos de siempre.
+  const modeloTexto = uM(() => modelosDe(cfgIA || [], 'clasificacion').texto, [cfgIA]);
   const avance = uM(() => resumenAvance(filas), [filas]);
   const lotes = uM(() => lotesPorPropuesta(filas), [filas]);
 
@@ -482,7 +507,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
     procesarItem: async (f) => {
       const r = await clasificarInsumoConIA({
         descripcion: f.muestra, unidad: [...(f.unidades || [])][0] || '', candidatos: OPCIONES_CLASIFICACION,
-        terminosCustom, propuestaLocal: propuestaLocalDe(f),
+        terminosCustom, propuestaLocal: propuestaLocalDe(f), frecuentes, modeloTexto,
       });
       const cod = r?.result?.codigo_sugerido;
       if (!cod) return 'saltada';
@@ -737,6 +762,8 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
             listId={listId}
             recIA={recsIA[f.norm] || null}
             terminosCustom={terminosCustom}
+            frecuentes={frecuentes}
+            modeloTexto={modeloTexto}
             propuestaLocal={propuestaLocalDe(f)}
             onAceptarIA={(rec) => aceptar(f, rec.codigo, { desdeIA: rec.confianza })}
             onDescartarIA={() => olvidarRecomendacion('clasificacion', ambitoIA, f.norm)}
@@ -762,6 +789,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
       </div>
 
       {altaDe && <AltaEnCatalogo fila={altaDe} listId={listId} terminosCustom={terminosCustom}
+        frecuentes={frecuentes} modeloTexto={modeloTexto}
         propuestaLocal={propuestaLocalDe(altaDe)} onCancel={() => setAltaDe(null)} onGuardar={crearEnCatalogo} />}
     </>
   );
@@ -773,7 +801,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
  * filtro: es donde un `f.decision.decision` sobre un null explotaría en la obra
  * y pasaría el green gate en verde.
  */
-function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
+function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, onDescartarIA, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, marcada, onFocus, onMarcar, onAceptar, onFalta, onNoInsumo, onDeshacer }) {
   const cand = f?.sug?.candidatos?.[0] || f?.candidatoIUPC;
   const targetCat = catFila || (f?.candidatoIUPC ? {
     id: null,
@@ -906,6 +934,8 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
                 unidad={[...(f.unidades || [])][0] || ''}
                 terminosCustom={terminosCustom}
                 propuestaLocal={propuestaLocal}
+                frecuentes={frecuentes}
+                modeloTexto={modeloTexto}
                 onElegir={setCategoriaSel}
               />
 
@@ -958,7 +988,7 @@ function FilaBandeja({ f, activa, catFila, listId, recIA = null, onAceptarIA, on
  * porque si hubiera que escribir tres campos desde cero nadie lo usaría.
  * Todo es corregible antes de guardar.
  */
-function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = null, onCancel, onGuardar }) {
+function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null, onCancel, onGuardar }) {
   const [nombre, setNombre] = uS(() => (fila?.muestra || '').trim().toUpperCase().replace(/\s+/g, ' '));
   // Si el estándar no reconoció nada, el desplegable arranca VACÍO: dar de alta
   // un insumo nuevo ya clasificado como «sin clasificar» es agregarle ruido al
@@ -996,7 +1026,8 @@ function AltaEnCatalogo({ fila, listId, terminosCustom = null, propuestaLocal = 
             </div>
           )}
           <AyudaClasificacionIA descripcion={fila?.muestra} unidad={unidad}
-            terminosCustom={terminosCustom} propuestaLocal={propuestaLocal} onElegir={setFamilia} />
+            terminosCustom={terminosCustom} propuestaLocal={propuestaLocal}
+            frecuentes={frecuentes} modeloTexto={modeloTexto} onElegir={setFamilia} />
         </div>
         <div style={{ flex: 1, minWidth: 110 }}>
           <label style={{ fontSize: 11, color: 'var(--tm)' }}>Unidad</label>

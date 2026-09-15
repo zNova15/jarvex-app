@@ -20,7 +20,7 @@
 // razonamiento y la persona decide.
 // ═══════════════════════════════════════════════════════════════════
 import { apiFetch, apiParse } from './api-client.js';
-import { evidenciaDiccionario } from './indices-unificados-iupc.js';
+import { evidenciaDiccionario, candidatosParaIA } from './indices-unificados-iupc.js';
 
 const ENDPOINT = '/api/sugerir-cuenta-pcge';
 
@@ -115,18 +115,32 @@ async function postIA(payload) {
  * contra qué validar.
  * → { result: {codigo_sugerido, alternativas} | null, confianza, razonamiento, _cached? }
  */
-export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos, terminosCustom = null, propuestaLocal = null }) {
+export async function clasificarInsumoConIA({ descripcion, unidad = '', candidatos, terminosCustom = null, propuestaLocal = null, frecuentes = [], modeloTexto = null }) {
   const desc = String(descripcion || '').trim();
   if (!desc || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
   }
-  // 🔴 `clasif3`, no `clasif2` (tanda 1). Las respuestas de la versión
-  // anterior se dieron con el diccionario aprendido de la empresa mezclado
-  // dentro de la «EVIDENCIA DEL DICCIONARIO OFICIAL», o sea con 365 términos
-  // huérfanos —muchos mal— pasando por norma peruana. Servirlas 30 días desde
-  // la caché sería seguir mostrando el error que esta tanda arregla.
-  // (`clasif` fue la versión sin diccionario alguno, 15-sep.)
-  const clave = `clasif3::${norm(desc)}`;
+  // 🔴 EL RECORTE VA ACÁ, NO EN CADA PANTALLA (tanda 2). Los llamadores pasan
+  // el universo entero —las 95 clasificaciones, que es lo correcto: es lo que
+  // ofrece su desplegable— y acá se eligen las 8-12 plausibles con el ranking
+  // que el motor local YA calculó. Hacerlo en la lib y no en el componente es
+  // lo que garantiza que ninguna pantalla mande las 95 por olvido.
+  const cortos = candidatosParaIA(desc, {
+    opciones: candidatos, terminosCustom, propuestaLocal, frecuentes,
+  });
+  // Si el recorte se quedó sin nada que ofrecer (texto sin palabras útiles y
+  // sin frecuentes), se manda el universo: preguntar con opciones es mejor que
+  // no preguntar.
+  const lista = cortos.length >= 3 ? cortos : candidatos;
+  // 🔴 `clasif4` (tanda 2): la pregunta cambió otra vez — ahora van 8-12
+  // opciones plausibles en vez de las 95, y con otra lista delante la
+  // respuesta puede ser otra. Las versiones anteriores: `clasif` sin
+  // diccionario, `clasif2` con el diccionario mezclado con la norma (365
+  // términos huérfanos pasando por R.J. 016-2026), `clasif3` con las capas
+  // ya separadas pero las 95 opciones.
+  // El MODELO entra en la clave: dos modelos distintos son dos respuestas distintas,
+  // y comparar uno contra otro con la caché del primero delante no compararía nada.
+  const clave = `clasif4::${modeloTexto || 'auto'}::${norm(desc)}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
@@ -137,9 +151,10 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
 
   const v = await postIA({
     action: 'clasificar_insumo_iupc',
+    ...(modeloTexto ? { modelo_texto: modeloTexto } : {}),
     descripcion: desc,
     unidad: unidad || '',
-    candidatos: candidatos.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
+    candidatos: lista.map(c => ({ codigo: String(c.codigo), nombre: String(c.nombre || c.label || '') })),
     // DOS BLOQUES, no uno (tanda 1): `evidencia` es la NORMA (Anexo 2 + árbol
     // de servicios) y `evidencia_propia` es el diccionario de la empresa,
     // aprendido de decisiones. Iban mezclados y el prompt los presentaba a
@@ -175,7 +190,7 @@ export async function clasificarInsumoConIA({ descripcion, unidad = '', candidat
  * → { result: { mismas:[...], fuera:[...], canonico }, confianza, razonamiento }
  * `fuera` siempre es el complemento exacto de `mismas` (lo arma el server).
  */
-export async function correlacionarConIA({ variantes }) {
+export async function correlacionarConIA({ variantes, modeloTexto = null }) {
   // Saneado ANTES de mandar (ver `saneado`): así lo que vuelve en `mismas` es
   // carácter por carácter lo que se mandó, y el llamador puede mapearlo de
   // vuelta a sus variantes sin sorpresas.
@@ -183,11 +198,11 @@ export async function correlacionarConIA({ variantes }) {
   if (lista.length < 2) return { result: null, razonamiento: '' };
 
   // La pregunta es el CONJUNTO, no el orden en que llegó.
-  const clave = `corr::${[...lista].map(norm).sort().join('|')}`;
+  const clave = `corr::${modeloTexto || 'auto'}::${[...lista].map(norm).sort().join('|')}`;
   const hit = cacheLeer(clave);
   if (hit) return { ...hit, _cached: true };
 
-  const v = await postIA({ action: 'correlacionar_insumos', variantes: lista });
+  const v = await postIA({ action: 'correlacionar_insumos', variantes: lista, ...(modeloTexto ? { modelo_texto: modeloTexto } : {}) });
   cacheGuardar(clave, v);
   return v;
 }
@@ -198,13 +213,13 @@ export async function correlacionarConIA({ variantes }) {
  * trabajo (una preselección — el server los usa como única lista válida).
  * → { result: {codigo_sugerido, alternativas} | null, confianza, razonamiento }
  */
-export async function mapearInsumoConIA({ insumo, unidad = '', clasificacion = '', candidatos, obraId = '' }) {
+export async function mapearInsumoConIA({ insumo, unidad = '', clasificacion = '', candidatos, obraId = '', modeloTexto = null }) {
   const nombre = String(insumo || '').trim();
   if (!nombre || !Array.isArray(candidatos) || !candidatos.length) {
     return { result: null, razonamiento: '' };
   }
   // El presupuesto es por obra: la misma pregunta en otra obra es otra pregunta.
-  const clave = `mapeo::${obraId || ''}::${norm(nombre)}`;
+  const clave = `mapeo::${modeloTexto || 'auto'}::${obraId || ''}::${norm(nombre)}`;
   const hit = cacheLeer(clave);
   // Y el presupuesto de una obra SE REIMPORTA: si el código guardado ya no
   // existe entre los candidatos de hoy, la respuesta vieja no sirve — se
@@ -216,6 +231,7 @@ export async function mapearInsumoConIA({ insumo, unidad = '', clasificacion = '
 
   const v = await postIA({
     action: 'mapear_insumo_presupuesto',
+    ...(modeloTexto ? { modelo_texto: modeloTexto } : {}),
     insumo: nombre,
     unidad: unidad || '',
     clasificacion: clasificacion || '',

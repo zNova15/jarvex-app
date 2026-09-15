@@ -2602,12 +2602,16 @@ function SistemaTab({ showToast }) {
     })();
     return () => { vivo = false; };
   }, []);
+  // El tercer ámbito (tanda 2) no lee documentos: clasifica texto que ya está
+  // escrito. Su `ocr` es null y la pantalla no dibuja ese selector.
   const CLAVES_IA = {
     licitaciones: { ocr: 'ia_licitaciones_ocr', texto: 'ia_licitaciones_texto' },
     captura: { ocr: 'ia_captura_ocr', texto: 'ia_captura_texto' },
+    clasificacion: { ocr: null, texto: 'ia_clasificacion_texto' },
   };
   const leerIA = (ambito, tipo) => {
     const clave = CLAVES_IA[ambito][tipo];
+    if (!clave) return '';
     const v = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(appCfgHook.data, clave, null) : null;
     const t = v == null ? '' : String(v).trim();
     return t || (catIA?.defaults?.[ambito]?.[tipo] || '');
@@ -2985,11 +2989,13 @@ function SistemaTab({ showToast }) {
         {catIA && [
           { ambito:'licitaciones', titulo:'Licitaciones (bases y currículums)', nota:'Documentos escaneados, largos y con tablas. Acá es donde el OCR barato se queda corto.' },
           { ambito:'captura', titulo:'Captura Mágica (facturas, guías, SCTR)', nota:'Comprobantes nítidos de una o dos páginas. Hoy funciona bien: cambiá esto solo si algo empieza a fallar.' },
+          { ambito:'clasificacion', titulo:'Clasificación de insumos y servicios (IUPC)', nota:'No lee documentos: elige una clasificación de una lista corta, con la evidencia del Anexo 2 delante. Es el que MÁS llamadas hace — un barrido completo son cientos seguidas —, así que acá el precio por token pesa de verdad.' },
         ].map(({ ambito, titulo, nota }) => (
           <div key={ambito} style={{ marginBottom:14, paddingBottom:14, borderBottom:'1px solid var(--border)' }}>
             <div style={{ fontSize:12.5, fontWeight:600 }}>{titulo}</div>
             <div style={{ fontSize:11, color:'var(--tm)', marginBottom:8 }}>{nota}</div>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(280px,1fr))', gap:12 }}>
+              {CLAVES_IA[ambito].ocr && (
               <div>
                 <label style={{ fontSize:11, color:'var(--tm)', display:'block', marginBottom:3 }}>Escaneo (OCR)</label>
                 <select className="fi" disabled={!isAdmin || ocupadoIA === CLAVES_IA[ambito].ocr}
@@ -3009,14 +3015,18 @@ function SistemaTab({ showToast }) {
                   )}
                 </div>
               </div>
+              )}
               <div>
-                <label style={{ fontSize:11, color:'var(--tm)', display:'block', marginBottom:3 }}>Extracción (texto → datos)</label>
+                <label style={{ fontSize:11, color:'var(--tm)', display:'block', marginBottom:3 }}>
+                  {ambito === 'clasificacion' ? 'Modelo que clasifica' : 'Extracción (texto → datos)'}
+                </label>
                 <select className="fi" disabled={!isAdmin || ocupadoIA === CLAVES_IA[ambito].texto}
                   value={leerIA(ambito, 'texto')}
                   onChange={e => guardarIA(ambito, 'texto', e.target.value)}>
                   {catIA.texto.map(m => (
                     <option key={m.id} value={m.id}>
                       {m.nombre}{m.gratis ? ' — USD 0' : ` — ${Number(m.precio?.entrada ?? 0).toFixed(3)} entrada / ${Number(m.precio?.salida ?? 0).toFixed(3)} salida`}
+                      {(m.recomendadoEn || []).includes(ambito) ? ' · recomendado' : ''}
                     </option>
                   ))}
                 </select>

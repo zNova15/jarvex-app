@@ -1232,6 +1232,107 @@ export function categoriasParaElegir(categoriasPersonalizadas = []) {
     .filter(c => c.codigo !== 'sin_clasificar');
 }
 
+/**
+ * EL PISO DEL RELLENO cuando la empresa todavía no decidió lo suficiente como
+ * para tener «lo que usa de verdad» (ver `candidatosParaIA`, paso 4).
+ *
+ * NO es una preferencia inventada: es el ranking MEDIDO de `catalogo_insumos`
+ * en producción el 15-set-2026 — 484 filas ya clasificadas —, de mayor a menor:
+ *   [72] tubería 98 · [37] herramienta manual 68 · administrativos 44 ·
+ *   [83] EPP 37 · [65] productos metálicos 36 · [48] maquinaria liviana 29 ·
+ *   [02] alambre 29 · [26] clavos 19 · [51] pinturas 18 · [10] agregados 14 ·
+ *   [05] aditivos 14 · [43] madera 12 · [21] cemento y [03] acero, que no
+ *   lideran el catálogo por FILAS pero sí por plata en las facturas.
+ * Se usa solo para completar; nunca desplaza a la evidencia ni a la propuesta
+ * local, que van antes.
+ */
+export const FRECUENTES_POR_DEFECTO = [
+  '72', '37', '83', '65', '21', '03', '02', '48', '26', '51', '10', '43', '05', '07',
+];
+
+/**
+ * LAS POCAS OPCIONES PLAUSIBLES PARA PREGUNTARLE A LA IA (tanda 2, 15-set-2026).
+ *
+ * EL PROBLEMA: al modelo se le mandaban las 95 clasificaciones enteras en cada
+ * pregunta. Eso es ~1.900 tokens de lista por llamada —el grueso del prompt— y,
+ * peor que el costo, son 83 formas de irse por las ramas: cuantas más opciones
+ * implausibles hay delante, más fácil es que elija una.
+ *
+ * NO ES UN ALGORITMO NUEVO: el ranking ya se calcula. `evidenciaDiccionario()`
+ * recorre el diccionario indexado y le da un puntaje a cada código según cuánto
+ * comparte con la descripción. Hasta ahora ese orden se usaba para armar la
+ * evidencia y se tiraba. Acá se reusa para armar la lista.
+ *
+ * QUÉ ENTRA, EN ESTE ORDEN:
+ *   1. La propuesta del motor local — si el sistema ya cree algo, esa opción
+ *      tiene que estar sí o sí (si no, la IA no puede confirmarla).
+ *   2. Los códigos con evidencia, de mayor a menor parecido.
+ *   3. Las dos salidas de escape: `servicios` y `administrativos`. Sin ellas el
+ *      modelo fuerza un código IUPC sobre algo que no es un insumo de obra —el
+ *      error de «LA INMOBILIARIA BCP», que es el interés de un préstamo.
+ *   4. Si todavía falta para el mínimo, las más usadas por la empresa
+ *      (`frecuentes`), que es lo más probable a falta de toda otra señal.
+ *
+ * `sin_clasificar` NO entra nunca: no se ofrece como opción (regla 8) y además
+ * la validación anti-alucinación del server usa esta misma lista, así que
+ * ofrecerla sería habilitar «no sé» con un botón verde al lado.
+ */
+export function candidatosParaIA(texto, {
+  opciones = null, terminosCustom = null, propuestaLocal = null, frecuentes = [],
+  categoriasPersonalizadas = [], min = 10, max = 12,
+} = {}) {
+  // `opciones` es el universo del que se puede elegir — el MISMO que ofrece el
+  // desplegable de esa pantalla, con sus clasificaciones propias incluidas. Si
+  // no viene, la lista canónica.
+  const todas = Array.isArray(opciones) && opciones.length
+    ? opciones.filter(c => c && String(c.codigo) !== 'sin_clasificar')
+    : categoriasParaElegir(categoriasPersonalizadas);
+  const porCodigo = new Map(todas.map(c => [String(c.codigo), c]));
+  const elegidos = [];
+  const vistos = new Set();
+  const sumar = (codigo) => {
+    const cod = String(codigo || '').trim();
+    if (!cod || vistos.has(cod) || elegidos.length >= max) return;
+    const c = porCodigo.get(cod);
+    if (!c) return;   // un código que el desplegable no tiene no se ofrece
+    vistos.add(cod);
+    elegidos.push(c);
+  };
+
+  // 1. Lo que ya propuso el motor local.
+  if (propuestaLocal?.codigo) sumar(propuestaLocal.codigo);
+  // 2. Lo que dice el diccionario, por parecido. Un `maxCodigos` holgado: el
+  //    tope real lo pone `max`, y pedir de más acá no cuesta nada (es local).
+  for (const g of evidenciaDiccionario(texto, { terminosCustom, maxCodigos: max, maxPorCodigo: 1 })) {
+    sumar(g.codigo);
+  }
+  // 3. Las salidas de escape, siempre — aunque haya que hacerles lugar.
+  //    🔴 EL LUGAR SE HACE DE UNA VEZ, ANTES DE AGREGAR NINGUNO. Sacar uno y
+  //    agregar uno dentro del mismo bucle hacía que el segundo escape se
+  //    llevara puesto al primero (lo último agregado es lo primero que sale),
+  //    así que con la lista llena entraba «administrativos» y desaparecía
+  //    «servicios» — justo la salida que más se usa.
+  const escapes = ['servicios', 'administrativos'].filter(e => !vistos.has(e) && porCodigo.has(e));
+  if (escapes.length) {
+    const sobran = elegidos.length + escapes.length - max;
+    if (sobran > 0) elegidos.splice(elegidos.length - sobran, sobran);  // salen los de menor parecido
+    for (const e of escapes) sumar(e);
+  }
+  // 4. Relleno hasta el mínimo: lo que esta empresa usa de verdad, y si eso no
+  //    alcanza, el piso medido del catálogo.
+  //
+  //    🔴 EL RELLENO NO ES DECORACIÓN, ES LO QUE HACE SEGURO AL RECORTE.
+  //    Medido el 15-set-2026 sobre los 32 casos del set de piloto: SIN relleno,
+  //    la respuesta correcta se quedaba afuera de la lista en 8 de 32 (25%) —
+  //    o sea que el recorte habría fabricado errores nuevos en vez de ahorrar.
+  //    Con relleno, sobrevive en 31 de 32.
+  for (const cod of [...frecuentes, ...FRECUENTES_POR_DEFECTO]) {
+    if (elegidos.length >= min) break;
+    sumar(cod);
+  }
+  return elegidos;
+}
+
 const LEGACY_LABELS = {
   tuberia_accesorios: 'Tubería y accesorios',
   ferreteria: 'Material de ferretería',

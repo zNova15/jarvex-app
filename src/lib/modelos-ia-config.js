@@ -20,10 +20,18 @@
 // mano, solo entran modelos aprobados.
 // ═══════════════════════════════════════════════════════════════════
 
-/** Las cuatro claves. Dos ámbitos × (OCR, texto). */
+/**
+ * Las claves. Dos ámbitos × (OCR, texto), más el tercero que no tiene OCR.
+ *
+ * `clasificacion` (tanda 2, 15-set-2026) no lee documentos: recibe una
+ * descripción que ya está en texto. Su `ocr` es `null` a propósito — así la
+ * pantalla sabe que no tiene que ofrecer ese selector y `cuerpoDeModelos` no
+ * manda una clave que el endpoint ignoraría.
+ */
 export const CLAVES = {
   licitaciones: { ocr: 'ia_licitaciones_ocr', texto: 'ia_licitaciones_texto' },
   captura: { ocr: 'ia_captura_ocr', texto: 'ia_captura_texto' },
+  clasificacion: { ocr: null, texto: 'ia_clasificacion_texto' },
 };
 
 /**
@@ -38,7 +46,7 @@ export function modelosDe(filas, ambito) {
   const k = CLAVES[ambito];
   if (!k) return { ocr: null, texto: null };
   const leer = window.__hooks?.resolverConfig
-    ? (clave) => window.__hooks.resolverConfig(filas, clave, null)
+    ? (clave) => (clave ? window.__hooks.resolverConfig(filas, clave, null) : null)
     : () => null;
   const limpiar = (v) => {
     const s = v == null ? '' : String(v).trim();
