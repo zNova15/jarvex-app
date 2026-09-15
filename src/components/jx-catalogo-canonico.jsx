@@ -58,6 +58,7 @@ import {
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { agruparDescripciones, resolverCategorias } from "../lib/bandeja-categorizacion.js";
 import { BandejaCategorizacionTab } from "./jx-bandeja-categorizacion.jsx";
+import { PanelAuditoriaDiccionario } from "./jx-auditoria-diccionario.jsx";
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
 
@@ -220,6 +221,14 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
     for (const d of descripciones) if (!decididas.get(d.norm)) pend += 1;
     return { total: descripciones.length, pendientes: pend, decididas: descripciones.length - pend };
   }, [compras, companyId, decHook.data, esPrueba]);
+
+  // Lo que la app aprendió sola más lo que se escribió a mano: es el número de
+  // la pestaña de Auditoría (tanda 5). La base oficial no cuenta acá — viaja
+  // en el bundle, no se audita ni se toca.
+  const terminosPropios = uM(
+    () => (terHook.data || []).filter(t => t && !t.deleted_at && !!t.demo === esPrueba),
+    [terHook.data, esPrueba],
+  );
 
   const visibles = uM(() => {
     const q = busca.trim().toLowerCase();
@@ -553,7 +562,25 @@ function CatalogoCanonicoTab({ showToast, empresaFija = null, vistaInicial = 'cl
               onClick={() => setVista('reconocer')}>
               📥 Nombres de factura por reconocer ({porReconocer.pendientes})
             </button>
+            {/* La cuarta vista (tanda 5): lo que la app aprendió sola, en una
+                sola lista que se puede filtrar y revisar en bloque. Ver el
+                encabezado de jx-auditoria-diccionario.jsx. */}
+            <button className={`btn btn-sm ${vista === 'auditoria' ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => setVista('auditoria')}>
+              🔍 Auditoría del diccionario ({terminosPropios.length})
+            </button>
           </div>
+
+          {vista === 'auditoria' && (
+            <PanelAuditoriaDiccionario
+              terminos={terHook.data || []}
+              opciones={opcionesClasificacion}
+              esPrueba={esPrueba}
+              userId={userId}
+              showToast={showToast}
+              refrescar={async () => { await terHook.refresh?.(); }}
+            />
+          )}
 
           {vista === 'reconocer' && (
             <BandejaCategorizacionTab

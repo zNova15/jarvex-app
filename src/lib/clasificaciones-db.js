@@ -246,3 +246,61 @@ export async function olvidarDiccionario(normsOTextos, { userId = null } = {}) {
     return 0;
   }
 }
+
+// ── REVISAR EN BLOQUE (tanda 5, 15-sep-2026) ──────────────────────
+// El panel de auditoría deja marcar varios términos y despacharlos juntos.
+// De a uno no se revisa un diccionario de 600: es la misma razón por la que la
+// bandeja tiene lotes. Las dos operaciones van en UNA transacción — media
+// limpieza aplicada es peor que ninguna, porque nadie sabría dónde quedó.
+
+/** Saca del diccionario los términos marcados (baja lógica, como siempre). */
+export async function quitarTerminosEnLote(ids, { userId = null } = {}) {
+  const buscados = [...new Set((ids || []).filter(Boolean))];
+  if (!buscados.length) return 0;
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.clasificacion_terminos, async () => {
+    for (const id of buscados) {
+      const prev = await db.clasificacion_terminos.get(id);
+      if (!prev || prev.deleted_at) continue;
+      // Lo que nunca llegó al server se borra de verdad; el resto por baja
+      // lógica, para que el borrado viaje a los otros equipos como tombstone.
+      if (prev.sync_status === SYNC_STATUS.PENDING_CREATE || esPrueba) {
+        await db.clasificacion_terminos.delete(id);
+      } else {
+        await db.clasificacion_terminos.update(id,
+          parcheDeUpdate({ deleted_at: ahora() }, prev, esPrueba, userId));
+      }
+      n++;
+    }
+  });
+  return n;
+}
+
+/**
+ * Manda los términos marcados a otra clasificación.
+ *
+ * 🔴 NO cambia el `origen`. Un término que dejó un recorrido con IA y que
+ * alguien corrigió a mano sigue diciendo que lo dejó la IA: el `origen`
+ * contesta de dónde SALIÓ, y falsearlo para que se vea mejor rompería
+ * justamente la auditoría que esta pantalla vino a hacer posible. Lo que
+ * cambia es a dónde apunta.
+ */
+export async function moverTerminosEnLote(ids, clasificacionCodigo, { userId = null } = {}) {
+  const cod = String(clasificacionCodigo || '').trim();
+  const buscados = [...new Set((ids || []).filter(Boolean))];
+  if (!cod || !buscados.length) return 0;
+  const esPrueba = esModoPrueba();
+  let n = 0;
+  await db.transaction('rw', db.clasificacion_terminos, async () => {
+    for (const id of buscados) {
+      const prev = await db.clasificacion_terminos.get(id);
+      if (!prev || prev.deleted_at) continue;
+      if (String(prev.clasificacion_codigo) === cod) continue;
+      await db.clasificacion_terminos.update(id,
+        parcheDeUpdate({ clasificacion_codigo: cod }, prev, esPrueba, userId));
+      n++;
+    }
+  });
+  return n;
+}
