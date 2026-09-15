@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   leerConfig, construirCuerpo, normalizarRespuesta, errorDelCuerpo, openrouterChat,
-  presupuestoSalida, MODELO_DEFAULT, MODELO_FALLBACK_DEFAULT,
+  presupuestoSalida, MODELO_DEFAULT, MODELO_FALLBACK_DEFAULT, MAX_MODELOS_CADENA,
 } from '../../../lib/openrouter.js';
 
 // El adaptador vive en /lib (lo consume api/captura-magica.js, que no se
@@ -111,6 +111,33 @@ describe('construirCuerpo — la política de datos viaja en CADA llamada', () =
     const b = construirCuerpo({ modelo: 'a/uno', respaldos: ['b/dos'], ...base });
     expect(b.model).toBe('a/uno');
     expect(b.models).toEqual(['a/uno', 'b/dos']);
+  });
+
+  // ── EL TOPE DE TRES (regresión del apagón del 15-set-2026) ──────
+  // OpenRouter rechaza con 400 "'models' array must have 3 items or fewer"
+  // CUALQUIER cadena más larga, y el rechazo se lleva puesto al titular, que
+  // andaba bien. Ese día la cadena pasó a 4 y Captura Mágica dejó de leer TODA
+  // factura en producción: cada lectura caía al respaldo de Claude —que estaba
+  // sin saldo— y el mensaje que veía la almacenera hablaba de crédito, no de
+  // configuración. Estos tests son la puerta que impide repetirlo.
+  it('nunca manda más de 3 modelos: con 4, OpenRouter rechaza la request ENTERA', () => {
+    const b = construirCuerpo({ modelo: 'a/uno', respaldos: ['b/dos', 'c/tres', 'd/cuatro'], ...base });
+    expect(b.models).toHaveLength(3);
+    expect(b.models).toEqual(['a/uno', 'b/dos', 'c/tres']);
+  });
+
+  it('una lista larga DEGRADA (se usan los 3 primeros), no rompe', () => {
+    // OPENROUTER_STRUCT_FALLBACK se configura en Vercel sin pasar por ningún
+    // test: el recorte tiene que estar acá, no en el default.
+    const b = construirCuerpo({ modelo: 'a/uno', respaldos: ['b/2', 'c/3', 'd/4', 'e/5', 'f/6'], ...base });
+    expect(b.models).toHaveLength(MAX_MODELOS_CADENA);
+    expect(b.model).toBe('a/uno');
+  });
+
+  it('el titular SIEMPRE sobrevive al recorte: es el único medido', () => {
+    const b = construirCuerpo({ modelo: 'titular/x', respaldos: Array.from({ length: 9 }, (_, i) => `r/${i}`), ...base });
+    expect(b.models[0]).toBe('titular/x');
+    expect(b.model).toBe('titular/x');
   });
 
   it('sin respaldo no manda models[] (un array de uno solo no aporta)', () => {

@@ -143,17 +143,68 @@ Por eso la cadena por defecto va **del mejor al que va a seguir estando**, y
 termina fuera de OpenRouter:
 
 ```
-ling-3.0-flash-fin:free → minimax-m3:free → openrouter/free → Claude Haiku (pago)
+ling-3.0-flash-fin:free → ling-3.0-flash-vl:free → openrouter/free → Claude Haiku (pago)
 ```
 
 `openrouter/free` es el auto-router de OpenRouter: elige solo entre los
 gratuitos **vivos**, así que sigue funcionando después de una rotación.
 
-**La cadena degrada sola, no rompe.** Verificado: con `zdr` puesto y un modelo
-sin endpoint ZDR primero en la lista, OpenRouter **saltea** y sirve el
-siguiente que sí cumple. Ojo con esto: bajo `zdr`, `minimax-m3:free` queda
-afuera y el pool del auto-router es **variable** (a veces tiene un gratuito ZDR,
-a veces no). Ése es el costo real de exigir ZDR — con `deny` entran los tres.
+## 🔴 TRES MODELOS, NI UNO MÁS (apagón del 15-set-2026)
+
+`models` admite **como máximo 3 entradas, titular incluido**. Con 4, OpenRouter
+no saltea ni ignora las de más: rechaza la request entera con
+
+```
+400 'models' array must have 3 items or fewer.
+```
+
+y el rechazo pasa **antes** de mirar el modelo, así que se lleva puesto también
+al titular, que andaba perfecto. El 15-set-2026 la cadena pasó a titular + 3
+respaldos y Captura Mágica dejó de leer **toda** factura en producción: cada
+lectura caía al respaldo de Claude, que estaba sin saldo, y la almacenera veía
+«el servicio de IA no tiene crédito» — un mensaje que apuntaba al saldo cuando
+lo roto era el largo de esta lista.
+
+`construirCuerpo()` ahora **recorta a 3** (`MAX_MODELOS_CADENA`) con tests de
+regresión. El recorte está ahí y no en el default a propósito:
+`OPENROUTER_STRUCT_FALLBACK` se configura en Vercel sin pasar por ningún test,
+así que una lista larga tiene que degradar, nunca romper.
+
+## El flag `zdr` del catálogo NO es el permiso de esta cuenta
+
+Mismo día, misma causa raíz de fondo. `/api/v1/models` marcaba
+`nvidia/nemotron-3-super-120b-a12b:free` y `google/gemma-4-31b-it:free` con
+`zdr: true`, y entraron a la cadena por ese flag. Pedidos **de verdad** con la
+key de producción, los dos contestan:
+
+```
+404 No endpoints found matching your data policy (Zero data retention)
+```
+
+El flag dice qué **declara** el modelo; no dice a qué endpoints llega esta
+cuenta. Barridos los 20 gratuitos del catálogo uno por uno, pasan ZDR **tres**,
+y los tres son la misma familia servida por Novita:
+
+| Modelo | ZDR real |
+|---|---|
+| `inclusionai/ling-3.0-flash-fin:free` | ✅ titular |
+| `inclusionai/ling-3.0-flash-vl:free` | ✅ respaldo |
+| `inclusionai/ling-3.0-flash-sante:free` | ✅ |
+| los otros 17 | ❌ 404 de política (15) · 403/429 (2) |
+
+**Regla: un modelo entra a la cadena después de que
+`scripts/revisar-modelos-openrouter.mjs --probar` le saque un 200 REAL con la
+política puesta.** Leer el flag y confiar es exactamente cómo se llegó al
+apagón.
+
+Corolario incómodo: hoy **todo lo gratuito con ZDR es el mismo proveedor**
+(Novita). Si Novita se cae, la cadena gratis entera se cae con él y el respaldo
+real es Claude — que necesita saldo. Con `deny` en vez de `zdr` entran muchos
+más, pero eso es una decisión de privacidad, no de ingeniería.
+
+**La cadena degrada sola dentro del tope.** Verificado: con `zdr` puesto y un
+modelo sin endpoint ZDR primero en la lista, OpenRouter **saltea** y sirve el
+siguiente que sí cumple. Lo que no tolera es el largo.
 
 **Cómo enterarse de que rotó, sin esperar la factura:**
 

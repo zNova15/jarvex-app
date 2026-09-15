@@ -501,7 +501,7 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
         console.warn('[captura-magica] relectura de ítems, OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
           puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
         if (!puedeRespaldar) throw e;
-        data = await llamarClaude();
+        data = await conRespaldoAnotado(llamarClaude, e);
         engine = 'mistral-ocr+claude(respaldo)';
       }
     } else {
@@ -547,6 +547,23 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
   }
 }
 
+// Corre el respaldo de Claude dejando anotado en su error CON QUÉ había fallado
+// OpenRouter antes. Sin esa anotación los dos motores caídos producen el MISMO
+// mensaje que uno solo caído, y el 15-set-2026 eso mandó a Gabriel a revisar
+// saldos —Mistral, OpenRouter— que estaban perfectos: lo que se había roto era
+// la cadena de modelos, y el "sin crédito" era del respaldo, no del titular.
+async function conRespaldoAnotado(llamarClaude, errorOR) {
+  try {
+    return await llamarClaude();
+  } catch (eClaude) {
+    if (eClaude && typeof eClaude === 'object') {
+      eClaude.trasOpenRouter = errorOR?.upstreamStatus || 'error';
+      eClaude.trasOpenRouterTexto = (errorOR?.upstreamText || '').slice(0, 200);
+    }
+    throw eClaude;
+  }
+}
+
 // Traduce un error del pipeline a la respuesta HTTP amigable (igual que antes).
 function respondError(e, res, isProd) {
   if (e && e.name === 'AbortError') {
@@ -588,10 +605,18 @@ function respondError(e, res, isProd) {
     });
   }
   if (e && e.upstreamStatus === 400 && /credit balance is too low|insufficient.*credit|billing/i.test(e.upstreamText || '')) {
-    console.error('[captura-magica] Anthropic sin crédito');
+    // El saldo que falta es el de ANTHROPIC, que acá es el RESPALDO. Si además
+    // se llegó hasta él porque OpenRouter (el titular, gratuito) había fallado,
+    // eso va en el log: son dos fallas distintas y la de arriba suele ser la
+    // que se arregla con código, no con plata.
+    console.error('[captura-magica] Anthropic sin crédito',
+      e.trasOpenRouter ? `— se llegó al respaldo porque OpenRouter falló con ${e.trasOpenRouter}: ${e.trasOpenRouterTexto || ''}` : '— era el motor titular');
     return res.status(402).json({
-      error: 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
+      error: e.trasOpenRouter
+        ? 'La lectura gratuita falló y el respaldo de pago no tiene saldo. Avisa al administrador: hay que revisar la configuración de la IA y recargar el saldo.'
+        : 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
       code: 'ia_sin_credito',
+      ...(isProd ? {} : { tras_openrouter: e.trasOpenRouter || null, detalle_openrouter: e.trasOpenRouterTexto || null }),
     });
   }
   if (e && e.upstreamStatus) {
@@ -985,7 +1010,7 @@ export default async function handler(req, res) {
           puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
         if (!puedeRespaldar) throw e;
         respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
-        data = await llamarClaude();
+        data = await conRespaldoAnotado(llamarClaude, e);
         engine = 'mistral-ocr+claude(respaldo)';
       }
     } else {
