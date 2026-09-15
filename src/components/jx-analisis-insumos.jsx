@@ -969,7 +969,7 @@ function AnalisisInsumosPage({ showToast }) {
         mismas: r.result.mismas || [], fuera: r.result.fuera || [],
         confianza: conf, razonamiento: r.razonamiento || '',
         unidades: r.unidades || null, unidades_en_conflicto: !!r.unidades_en_conflicto,
-      });
+      }, { modelo: r._model || modeloTextoIA || null });
       return 'recomendada';
     },
   });

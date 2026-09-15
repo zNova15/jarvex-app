@@ -10,7 +10,7 @@
 import React from "react";
 import {
   arrancarBarrido, cancelarBarrido, cerrarBarrido, estadoBarrido, barridoActivo,
-  suscribir, leerRecomendaciones, limpiarRecomendaciones,
+  suscribir, leerRecomendaciones, limpiarRecomendaciones, hidratarDesdeLaNube,
 } from "../lib/barrido-store.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR, useCallback: uC } = React;
@@ -23,6 +23,11 @@ const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR, useCallback: uC } 
 function useBarridoIA(seccion, ambito) {
   const [tic, setTic] = uS(0);
   uE(() => suscribir(seccion, () => setTic(t => t + 1)), [seccion]);
+  // Trae de la base lo que otra PC (u otro dominio) haya recorrido, y sube lo
+  // que acá estaba solo en localStorage — mig 217. Corre una vez por sesión:
+  // la propia función se encarga de no repetirse. Sin esto, la Contadora Jefe
+  // abría la bandeja y no veía ninguna de las propuestas ya pagadas.
+  uE(() => { hidratarDesdeLaNube(); }, []);
   // El estado se pide por sección Y ámbito: el recorrido de otra obra (u otra
   // entidad, u otra sub-pestaña) no se dibuja acá ni tapa el botón propio.
   const estado = estadoBarrido(seccion, ambito);

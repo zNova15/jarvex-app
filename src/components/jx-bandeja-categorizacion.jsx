@@ -766,7 +766,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
           noSe: true, confianza: r.confianza || 0, razonamiento: r.razonamiento || '',
           nuevaClasificacion: r.result?.clasificacion_nueva || r.clasificacion_nueva || null,
           arbolNuevo: r.result?.clasificacion_nueva_arbol || r.clasificacion_nueva_arbol || null,
-        });
+        }, { modelo: r._model || modeloTexto || null });
         return 'recomendada';
       }
       const cod = r?.result?.codigo_sugerido;
@@ -781,7 +781,7 @@ function BandejaCategorizacionTab({ compras, showToast, empresaFija = null, ambi
         codigo: cod, nombre: etiquetaCategoria(cod), confianza: conf, razonamiento: r.razonamiento || '',
         nuevaClasificacion: r.result.clasificacion_nueva || null,
         arbolNuevo: r.result.clasificacion_nueva_arbol || null,
-      });
+      }, { modelo: r._model || modeloTexto || null });
       return 'recomendada';
     },
   }), [pendientesTotal, ambitoIA, aceptar, terminosCustom, opcionesClasificacion]);

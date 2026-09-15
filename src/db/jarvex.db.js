@@ -123,6 +123,16 @@ export const db = new Dexie('JarvexDB');
 // `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
 // y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
 // Aditivo.
+// Versión 67: LAS RECOMENDACIONES DE IA DEJAN DE VIVIR EN UN NAVEGADOR
+// (mig 217). Estaban en localStorage, que está atado al navegador Y al
+// dominio: lo que recorrió Gabriel en su PC no existía en la de la Contadora
+// Jefe, y lo recorrido en el preview de staging no cruzaba a producción
+// aunque se promoviera el código. Se indexa por [seccion+ambito], que es
+// exactamente lo que pide la pantalla. Aditivo.
+db.version(67).stores({
+  ia_recomendaciones: 'id, seccion, ambito, item_id, [seccion+ambito], deleted_at, sync_status',
+});
+
 // Versión 66: LO QUE ENTRA DE UNA FORMA Y SALE DE OTRA (mig 216, tanda 7).
 // Un documento atómico: las entradas, los costos de conversión y las salidas
 // viajan en el mismo registro (jsonb del lado del server, props sin índice acá)

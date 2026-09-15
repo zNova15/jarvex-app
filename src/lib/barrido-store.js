@@ -22,10 +22,22 @@
 //      `sesion-ocupada.js` (el mismo mecanismo que salvó la lectura de bases
 //      con IA), que además pide el wake lock y avisa antes de cerrar la
 //      pestaña. Se suelta en un `finally`.
-//   3. LAS RECOMENDACIONES SOBREVIVEN A TODO. Van a localStorage apenas
-//      llegan, así que un refresco, un cierre de sesión o un cierre de
-//      pestaña NO tiran a la basura media hora de respuestas: al volver a
-//      entrar están ahí, esperando que alguien las mire.
+//   3. LAS RECOMENDACIONES SOBREVIVEN A TODO, Y DESDE LA MIG 217 TAMBIÉN AL
+//      CAMBIO DE PC. Van a localStorage apenas llegan —así que un refresco, un
+//      cierre de sesión o un cierre de pestaña NO tiran a la basura media hora
+//      de respuestas— y en paralelo se espejan en la base.
+//
+//      🔴 POR QUE HIZO FALTA EL ESPEJO. localStorage está atado al NAVEGADOR y
+//      al DOMINIO. Gabriel, 15-set: «probé en la PC de la Contadora en Jefe y
+//      a ella no le salen las recomendaciones por IA por las que pagué». Y no
+//      era la rama: lo recorrido en el preview de staging tampoco cruzaba a
+//      producción, porque son dos orígenes distintos para el navegador. El
+//      código se promueve; los datos no.
+//
+//      localStorage se queda como CACHÉ DE LECTURA SÍNCRONA —que es para lo
+//      que sirve, y lo que permite que `leerRecomendaciones()` siga siendo
+//      síncrona y la pantalla vea todo al instante— y `barrido-nube.js` pone
+//      lo mismo en Dexie, que sincroniza. Ver su encabezado.
 //   4. DOS RECORRIDOS A LA VEZ, uno por sección (clasificación, correlaciones,
 //      mapeo). El ritmo compartido lo pone `turnoIA` — ver barrido-ia.js.
 //
@@ -35,6 +47,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { ejecutarBarridoIA, turnoIA } from './barrido-ia.js';
 import { ocupar } from './sesion-ocupada.js';
+import * as nube from './barrido-nube.js';
 
 const CLAVE_LS = 'jx_ia_recomendaciones_v1';
 // 15 días: más que suficiente para terminar una empresa, y poco como para
@@ -99,6 +112,45 @@ function bajarADisco({ yaMismo = false } = {}) {
   }, ESPERA_DISCO_MS);
 }
 
+// ── LA HIDRATACIÓN DESDE LA NUBE (mig 217) ───────────────────────
+//
+// Al primer uso se mezcla en el mapa lo que haya en la base y se sube lo que
+// solo estaba local. Las dos cosas van juntas a propósito: si solo bajara, la
+// primera PC que abriera la app después del deploy borraría de la vista sus
+// propias propuestas (la base está vacía todavía); si solo subiera, la
+// contadora seguiría sin ver nada.
+//
+// LO DE LA BASE NO PISA LO LOCAL cuando la clave existe en los dos lados: lo
+// local es igual o más nuevo (acaba de escribirse en esta máquina) y además
+// ya está dibujado en pantalla. Cambiarlo por debajo de una lista que alguien
+// está despachando es lo único peor que no tenerlo.
+let hidratado = false;
+
+export function hidratarDesdeLaNube() {
+  if (hidratado) return;
+  hidratado = true;
+  (async () => {
+    try {
+      const deLaNube = await nube.leerTodas();
+      const m = cargar();
+      const corte = Date.now() - TTL;
+      let bajadas = 0;
+      for (const [k, v] of Object.entries(deLaNube)) {
+        if (m[k]) continue;                       // lo local manda
+        if ((v.t || 0) <= corte) continue;        // el mismo TTL de los dos lados
+        m[k] = v;
+        bajadas++;
+      }
+      if (bajadas) {
+        bajarADisco({ yaMismo: true });
+        for (const sec of new Set(Object.keys(m).map(k => k.split('::')[0]))) avisar(sec);
+      }
+      // Y lo que estaba solo acá se sube: es el rescate de lo ya pagado.
+      await nube.subirFaltantes(cargar(), { yaEnLaNube: deLaNube });
+    } catch { /* sin nube el recorrido sigue andando contra localStorage */ }
+  })();
+}
+
 // ── Los avisos ────────────────────────────────────────────────────
 const oyentes = new Map();   // seccion → Set<cb>
 
@@ -122,10 +174,13 @@ function avisar(seccion) {
  * sección (la norm de la descripción, el par, el grupo…), `ambito` lo que
  * hace que la misma fila sea otra pregunta (la entidad, la obra, la pestaña).
  */
-export function guardarRecomendacion(seccion, ambito, id, datos) {
+export function guardarRecomendacion(seccion, ambito, id, datos, { modelo = null } = {}) {
   const m = cargar();
   m[clave(seccion, ambito, id)] = { ...datos, t: Date.now() };
   bajarADisco();
+  // El espejo en la base va SIN await: el recorrido no puede quedarse esperando
+  // a Dexie por cada ítem, y si falla la propuesta igual está en localStorage.
+  nube.guardar(seccion, ambito, id, datos, { modelo });
   avisar(seccion);
 }
 
@@ -147,6 +202,8 @@ export function olvidarRecomendacion(seccion, ambito, id) {
   if (!(k in m)) return;
   delete m[k];
   bajarADisco({ yaMismo: true });   // olvido suelto: que no lo resucite un refresco
+  // Y que no lo resucite tampoco el próximo pull desde la otra PC.
+  nube.olvidar(seccion, ambito, id);
   avisar(seccion);
 }
 
@@ -156,7 +213,7 @@ export function limpiarRecomendaciones(seccion, ambito) {
   const pre = `${seccion}::${ambito || '-'}::`;
   let n = 0;
   for (const k of Object.keys(m)) if (k.startsWith(pre)) { delete m[k]; n++; }
-  if (n) { bajarADisco({ yaMismo: true }); avisar(seccion); }
+  if (n) { bajarADisco({ yaMismo: true }); nube.limpiar(seccion, ambito); avisar(seccion); }
   return n;
 }
 
@@ -271,5 +328,6 @@ export function _reiniciar() {
   if (timerDisco) { clearTimeout(timerDisco); timerDisco = null; }
   pendienteDisco = false;
   mapa = {};
+  hidratado = false;
   try { localStorage.removeItem(CLAVE_LS); } catch { /* sin localStorage no hay nada que limpiar */ }
 }

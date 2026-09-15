@@ -199,6 +199,14 @@ const TRANSACTIONAL_TABLES = [
   'catalogo_familia_mapeo',
   'clasificaciones',
   'clasificacion_terminos',
+  // Las propuestas que deja un recorrido con IA (mig 217). Antes vivían en
+  // localStorage y por eso no cruzaban de PC ni de dominio: la Contadora Jefe
+  // abría la bandeja y no veía ninguna de las propuestas ya pagadas. FK-less y
+  // FUERA de TABLA_TO_MODULO, igual que el catálogo: el gate de escritura lo
+  // pone la RLS (admin/gerente/contador), y tiene que incluir al contador
+  // porque es quien despacha la bandeja — sin eso su propio recorrido le
+  // rebotaría en el push.
+  'ia_recomendaciones',
   // Qué insumo del catálogo es cada descripción de factura (mig 195). Mismo
   // criterio que el catálogo: todos la LEEN (es lo que hace que la propuesta
   // aparezca en Almacén y en las órdenes), y el gate de escritura lo pone la
@@ -403,6 +411,7 @@ const MASTER_TABLES = [
   { tabla: 'catalogo_familia_mapeo',       query: () => supabase.from('catalogo_familia_mapeo').select('*').is('deleted_at', null) },
   { tabla: 'clasificaciones',              query: () => supabase.from('clasificaciones').select('*').is('deleted_at', null) },
   { tabla: 'clasificacion_terminos',       query: () => supabase.from('clasificacion_terminos').select('*').is('deleted_at', null) },
+  { tabla: 'ia_recomendaciones',           query: () => supabase.from('ia_recomendaciones').select('*').is('deleted_at', null) },
   { tabla: 'insumo_categoria',             query: () => supabase.from('insumo_categoria').select('*').is('deleted_at', null) },
   { tabla: 'sunat_cortes',                 query: () => supabase.from('sunat_cortes').select('*').is('deleted_at', null) },
   { tabla: 'cotejo_decisiones',            query: () => supabase.from('cotejo_decisiones').select('*').is('deleted_at', null) },

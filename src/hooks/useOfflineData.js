@@ -525,6 +525,16 @@ export function useClasificacionTerminos() {
   , []);
 }
 
+// Las propuestas que dejó un recorrido con IA (mig 217). Chica y global: se
+// trae entera y la pantalla filtra por sección y ámbito. Vive en la base y no
+// en localStorage porque lo que se pagó tiene que verse desde cualquier PC —
+// ver el encabezado de la migración.
+export function useIaRecomendaciones() {
+  return useOfflineData('ia_recomendaciones', q =>
+    q.filter(c => !c.deleted_at).toArray()
+  , []);
+}
+
 // Config global clave→valor (mig 159). Puede haber filas repetidas por clave
 // (dos devices offline) — resolver al leer: updated_at más reciente gana.
 export function useAppConfig() {
