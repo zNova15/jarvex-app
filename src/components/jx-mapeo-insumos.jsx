@@ -49,6 +49,7 @@ import {
 import { decidirMapeo, decidirMapeoEnLote, reabrirMapeo } from "../lib/mapeo-trabajo-db.js";
 import { etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
 import { mapearInsumoConIA, notaDeIA, esDecisionDeIA } from "../lib/ia-insumos.js";
+import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
 import { BarridoIA, RecomendacionIA, SelloIA, useBarridoIA } from "./jx-barrido-ia.jsx";
@@ -71,7 +72,7 @@ const SearchableSelect = (p) => (window.SearchableSelect ? <window.SearchableSel
  * Nunca decide sola: deja el insumo elegido en el selector y la decisión
  * sigue siendo tocar "Es este".
  */
-function AyudaMapeoIA({ fila, candidatosIA, obraId, onElegir }) {
+function AyudaMapeoIA({ fila, candidatosIA, obraId, onElegir, modeloTexto = null }) {
   const [res, setRes] = uS(null);
   const [cargando, setCargando] = uS(false);
   const [error, setError] = uS(null);
@@ -93,6 +94,7 @@ function AyudaMapeoIA({ fila, candidatosIA, obraId, onElegir }) {
         clasificacion: fila.clasificacionNombre || '',
         candidatos: lista,
         obraId,
+        modeloTexto,
       });
       setRes({
         codigo: r?.result?.codigo_sugerido || null,
@@ -189,6 +191,11 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
   const terHook = window.__hooks.useClasificacionTerminos();
   const mapHook = window.__hooks.useInsumoTrabajoMapeos();
   const compHook = window.__hooks.useCompanies();
+  // 🔴 EL MISMO ÁMBITO QUE CLASIFICAR (15-set): mapear iba siempre en 'auto'
+  // —la cadena de gratuitos de OpenRouter, la que devolvió 429 durante horas el
+  // 15-set— aunque el admin hubiera elegido un modelo. Clasificar, correlacionar
+  // y mapear son tres preguntas del mismo módulo: una sola elección.
+  const { data: cfgIA } = window.__hooks?.useAppConfig?.() || { data: [] };
   const auth = window.__useAuth ? window.__useAuth() : {};
   const userId = auth?.profile?.id || null;
   const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
@@ -381,6 +388,8 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
     () => filas.filter(f => f.estado !== 'decididas' && f.estado !== 'sin_clasificar'),
     [filas],
   );
+  const modeloTextoIA = uM(() => modelosDe(cfgIA || [], 'clasificacion').texto, [cfgIA]);
+
   const construirBarrido = uC((modo) => ({
     items: pendientesMapeo,
     procesarItem: async (f) => {
@@ -388,7 +397,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
       if (!lista.length) return 'saltada';
       const r = await mapearInsumoConIA({
         insumo: f.nombre, unidad: f.unidad || '', clasificacion: f.clasificacionNombre || '',
-        candidatos: lista, obraId,
+        candidatos: lista, obraId, modeloTexto: modeloTextoIA,
       });
       const cod = r?.result?.codigo_sugerido;
       if (!cod) return 'saltada';
@@ -634,6 +643,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
                     f={f}
                     opciones={opcionesPresupuesto}
                     candidatosIA={candidatosIA}
+                    modeloTexto={modeloTextoIA}
                     obraId={obraId}
                     recIA={recsIA[f.norm] || null}
                     onAceptarIA={(rec) => aceptar(f, rec.codigo, { desdeIA: rec.confianza })}
@@ -669,7 +679,7 @@ function MapeoInsumosTab({ showToast, empresaFija = null }) {
  * un `f.decision.decision` sobre un null explotaría en la obra y pasaría el
  * green gate en verde.
  */
-function FilaMapeo({ f, opciones, candidatosIA, obraId, recIA = null, onAceptarIA, onDescartarIA, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer }) {
+function FilaMapeo({ f, opciones, candidatosIA, obraId, recIA = null, onAceptarIA, onDescartarIA, elegido, onElegir, destino, onAceptar, onNoEsta, onDeshacer, modeloTexto = null }) {
   const cand = f?.sug?.candidatos?.[0] || null;
   const banda = cand ? bandaDe(cand.score) : null;
   const fac = destino ? factorPropuesto(f, destino) : null;
@@ -760,7 +770,7 @@ function FilaMapeo({ f, opciones, candidatosIA, obraId, recIA = null, onAceptarI
                 {et && <span className={`badge ${et.color}`} style={{ marginLeft: 6 }} title={et.ayuda}>{et.txt}</span>}
               </div>
             )}
-            {candidatosIA && <AyudaMapeoIA fila={f} candidatosIA={candidatosIA} obraId={obraId} onElegir={onElegir} />}
+            {candidatosIA && <AyudaMapeoIA fila={f} candidatosIA={candidatosIA} obraId={obraId} onElegir={onElegir} modeloTexto={modeloTexto} />}
           </div>
         )}
       </div>

@@ -63,6 +63,7 @@ import {
 import { clasificarConIUPC, tipoDeCategoria } from "../lib/indices-unificados-iupc.js";
 import { correlacionarConIA } from "../lib/ia-insumos.js";
 import { bandaDePar, bandaDeGrupo, CONFIANZA_OBVIO } from "../lib/bandas-correlacion.js";
+import { modelosDe } from "../lib/modelos-ia-config.js";
 import { UMBRAL_BARRIDO_IA } from "../lib/barrido-ia.js";
 import { guardarRecomendacion, olvidarRecomendacion } from "../lib/barrido-store.js";
 import { BarridoIA, useBarridoIA } from "./jx-barrido-ia.jsx";
@@ -130,7 +131,7 @@ function NombreConDiferencias({ nombre, otro }) {
  * `textoAplicar(mismas)` puede devolver null para no ofrecer botón (ej. la IA
  * dice que ninguna es la misma: para eso ya está "Son distintos").
  */
-function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null, banda = null }) {
+function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null, onDescartar = null, banda = null, modeloTexto = null }) {
   // `inicial`: lo que dejó el recorrido completo (barrido-store). Se muestra
   // sin volver a preguntar —ya se pagó— y con el sello de que vino de ahí.
   const [res, setRes] = uS(null);
@@ -144,7 +145,7 @@ function AyudaCorrelacionIA({ variantes, textoAplicar, onAplicar, inicial = null
     if (cargando) return;
     setCargando(true); setError(null);
     try {
-      const r = await correlacionarConIA({ variantes });
+      const r = await correlacionarConIA({ variantes, modeloTexto });
       if (!r?.result) { setError(r?.razonamiento || 'La IA no pudo decidir esto.'); return; }
       setRes({ ...r.result, confianza: r.confianza, razonamiento: r.razonamiento, cached: !!r._cached });
     } catch (e2) {
@@ -297,6 +298,9 @@ function AnalisisInsumosPage({ showToast }) {
   const movsHook = window.__hooks.useAccountingMovements();
   const corrHook = window.__hooks.useInsumoCorrelaciones();
   const compHook = window.__hooks.useCompanies();
+  // El modelo que el admin eligió para el módulo de insumos (Administración →
+  // Modelos de IA). Ver `modeloTextoIA` más abajo.
+  const { data: cfgIA } = window.__hooks?.useAppConfig?.() || { data: [] };
   // El diccionario propio: le GANA a la base oficial al clasificar (regla 8
   // del CLAUDE.md), así que el corte insumo/servicio de las correlaciones
   // tiene que mirarlo igual que lo mira la sección de Clasificación.
@@ -489,6 +493,16 @@ function AnalisisInsumosPage({ showToast }) {
     (v) => muestraDe.get(normInsumo(v))?.nombre || v,
     [muestraDe],
   );
+  // ── CON QUÉ MODELO PREGUNTA (15-set) ─────────────────────────────
+  // 🔴 Correlaciones iba SIEMPRE en 'auto' —la cadena de modelos gratuitos de
+  // OpenRouter— aunque el admin hubiera elegido uno en Administración →
+  // Modelos de IA. Eso es exactamente lo que tiró producción el 15-set: los
+  // gratuitos devolvieron 429 «sin proveedor» durante horas y el botón de IA
+  // no contestaba nada. Correlacionar, clasificar y mapear son el MISMO ámbito
+  // ('clasificacion'): tres preguntas del mismo módulo, una sola elección. Un
+  // cuarto ámbito solo para esto serían más perillas para la misma respuesta.
+  const modeloTextoIA = uM(() => modelosDe(cfgIA || [], 'clasificacion').texto, [cfgIA]);
+
   const bandaDeCluster = uM(() => {
     const m = new Map();
     for (const c of clustersSugeridos) m.set(c.id, bandaDeGrupo(c.variantes.map(crudoDe)));
@@ -681,7 +695,7 @@ function AnalisisInsumosPage({ showToast }) {
             aplicar: () => decidirCluster(c, 'mismo', c.variantes, { silencioso: true }),
           });
         }
-        const r = await correlacionarConIA({ variantes });
+        const r = await correlacionarConIA({ variantes, modeloTexto: modeloTextoIA });
         if (!r?.result) return 'saltada';
         const conf = r.confianza || 0;
         // Mismo mapeo normalizado que "Usar esta" del botón individual —
@@ -710,7 +724,7 @@ function AnalisisInsumosPage({ showToast }) {
           aplicar: () => decidir(par, 'mismo', { silencioso: true }),
         });
       }
-      const r = await correlacionarConIA({ variantes: [nombreA, nombreB] });
+      const r = await correlacionarConIA({ variantes: [nombreA, nombreB], modeloTexto: modeloTextoIA });
       if (!r?.result) return 'saltada';
       const conf = r.confianza || 0;
       if (modo === 'aplicar') {
@@ -1142,6 +1156,7 @@ function AnalisisInsumosPage({ showToast }) {
                     <AyudaCorrelacionIA
                       variantes={c.variantes.map(v => muestraDe.get(normInsumo(v))?.nombre || v)}
                       banda={bandaDeCluster.get(c.id) || null}
+                      modeloTexto={modeloTextoIA}
                       inicial={recsIA[claveCluster(c)] || null}
                       onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, claveCluster(c))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? `Marcar solo esas ${mismas.length}` : null)}
@@ -1197,6 +1212,7 @@ function AnalisisInsumosPage({ showToast }) {
                     <AyudaCorrelacionIA
                       variantes={[nombreA, nombreB]}
                       banda={bandaDeSugerencia.get(clavePar(par)) || null}
+                      modeloTexto={modeloTextoIA}
                       inicial={recsIA[clavePar(par)] || null}
                       onDescartar={() => olvidarRecomendacion('correlaciones', ambitoIA, clavePar(par))}
                       textoAplicar={(mismas) => (mismas.length >= 2 ? '✓ Unir como mismo insumo' : '✗ Marcar como distintos')}
