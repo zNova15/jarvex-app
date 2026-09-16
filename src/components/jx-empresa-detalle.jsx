@@ -67,6 +67,7 @@ import { agregarAlCatalogoYDecidir } from "../lib/bandeja-categorizacion-db.js";
 // Catálogo y la bandeja — una sola forma de elegir una clasificación en la app.
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { categoriasParaElegir, tipoDeCategoria, etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
+import { sugerirPorCabeza } from "../lib/sugerencia-inventario.js";
 // Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
 // pantalla, que es la única que lo usa.
 import { PanelAnticipos } from "./jx-anticipos.jsx";
@@ -337,7 +338,40 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const togglearSel = (clave) => setSelInsumos(prev =>
     prev.includes(clave) ? prev.filter(c => c !== clave) : [...prev, clave]);
 
-  const unirSeleccionados = async () => {
+  // ── ANTES DE UNIR: ¿DICEN LO MISMO SOBRE QUÉ SON? (16-set) ───────
+  //
+  // Gabriel: «que pasa tambien cuando quiero unir insumos que tienen
+  // clasificacion diferentes […] deberia avisarnos para que si en caso
+  // queramos correlacionarlos decidamos que clasificacion tendran ambos».
+  //
+  // Unir dos descripciones es decir «son el MISMO insumo». Si una está
+  // clasificada como herramienta y la otra como pintura, una de las dos está
+  // mal — y unirlas sin resolverlo deja el conflicto adentro de una sola fila,
+  // donde ya no se ve. Peor: la clasificación es lo que decide a qué tabla de
+  // inventario va y cómo la agrupa la contadora.
+  //
+  // Así que no se bloquea ni se elige por él: se muestra el choque y se le
+  // pide UNA clasificación para las dos.
+  const [modalUnir, setModalUnir] = uSD(null);
+
+  const abrirUnir = () => {
+    const elegidos = (inv.insumos || []).filter(i => selInsumos.includes(i.clave));
+    if (elegidos.length < 2) return;
+    // Qué clasificación tiene hoy cada uno (por cualquiera de sus variantes).
+    const conClasif = elegidos.map(i => ({ insumo: i, codigo: clasifInsumo(i) }));
+    const codigos = [...new Set(conClasif.map(c => c.codigo).filter(Boolean))];
+    setModalUnir({
+      elegidos: conClasif,
+      codigos,
+      // Con UNA sola clasificación presente (o ninguna) no hay nada que
+      // resolver: se propone esa misma y el modal es una confirmación corta.
+      choca: codigos.length > 1,
+      codigoFinal: codigos[0] || '',
+      guardando: false,
+    });
+  };
+
+  const unirSeleccionados = async (codigoFinal = null) => {
     // Guard SÍNCRONO (regla 2): el guard por estado se activa recién después
     // del await y en esa ventana un segundo clic escribe los pares de nuevo.
     if (uniendoRef.current) return;
@@ -355,11 +389,6 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
       // que usa Correlaciones.
       const canonico = nombres.reduce((m, n) => (n.length > m.length ? n : m), nombres[0]);
       const pares = crearParesDeCluster(nombres, canonico, 'mismo', { yaResueltos: resueltos });
-      if (!pares.length) {
-        showToast('Estos ya estaban unidos — no había nada nuevo que guardar', 'blue');
-        setSelInsumos([]);
-        return;
-      }
       for (const par of pares) {
         await corrHook.create({
           id: window.__newId(),
@@ -368,8 +397,23 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           fuente: 'manual', deleted_at: null,
         });
       }
+      // La clasificación acordada se aplica a TODOS: si venían con dos
+      // distintas, quedan con una sola; si uno no tenía, la hereda.
+      let clasificados = 0;
+      if (codigoFinal) {
+        for (const ins of elegidos) {
+          if (clasifInsumo(ins) === codigoFinal) continue;
+          await guardarRecategorizacion(ins, codigoFinal, { silencioso: true });
+          clasificados++;
+        }
+      }
       setSelInsumos([]);
-      showToast(`✓ ${elegidos.length} insumos unidos bajo «${String(canonico).slice(0, 28)}» (${pares.length} enlaces)`, 'green');
+      setModalUnir(null);
+      const partes = [];
+      if (pares.length) partes.push(`${elegidos.length} insumos unidos bajo «${String(canonico).slice(0, 26)}»`);
+      else partes.push('Ya estaban unidos');
+      if (clasificados) partes.push(`${clasificados} reclasificado(s)`);
+      showToast('✓ ' + partes.join(' · '), pares.length || clasificados ? 'green' : 'blue');
     } catch (e) {
       showToast('Error al unir: ' + (e.message || e), 'red');
     } finally {
@@ -394,6 +438,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     }
     return m;
   }, [decCatHook.data]);
+  // La clasificación de un insumo por CUALQUIERA de sus variantes: el grupo se
+  // pudo clasificar desde el nombre que escribe un proveedor y mostrarse con el
+  // que escribe otro. Sin esto, unir dos filas «apagaba» la chapita.
+  const clasifInsumo = (ins) => [...(ins?.variantes || []), ins?.display]
+    .map(v => clasifDe.get(normInsumo(v))).find(Boolean) || null;
   const decisHook = window.__hooks.useCotejoDecisiones();
   const descartadasInv = uMD(() => noInventariables(decisHook.data || []), [decisHook.data]);
   // ── TANDA 6: el hecho y la decisión ──────────────────────────────
@@ -512,8 +561,21 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // pasan TODAS las variantes de nombre del insumo: `insumo_categoria` se
   // indexa por `norm`, así que decidir solo el representante dejaría a las
   // otras preguntando para siempre.
-  const guardarRecategorizacion = async (insumo, codigo) => {
-    const showToast = window.__showToast || (() => {});
+
+  // ── «ESTOS PARECEN EL MISMO» (16-set) ────────────────────────────
+  // Sale de mirar las 32 correlaciones que hizo Gabriel a mano: para las
+  // herramientas, lo que decide es la primera palabra y no la medida (unió
+  // llave stilson de 36" con la de 8"). Esa regla en el scorer GLOBAL genera
+  // 15.648 pares nuevos —medido— y resucita los controles adversariales; acá,
+  // sobre las cuatro filas que quedan después de escribir «marti», es
+  // exactamente lo que hace falta. Ver la cabecera de la lib.
+  const sugerencias = uMD(
+    () => (busca.trim() ? sugerirPorCabeza(filtrados, { grupoDe, resueltos }) : []),
+    [busca, filtrados, grupoDe, resueltos],
+  );
+
+  const guardarRecategorizacion = async (insumo, codigo, { silencioso = false } = {}) => {
+    const showToast = silencioso ? () => {} : (window.__showToast || (() => {}));
     if (!codigo) { showToast('Elegí una clasificación', 'amber'); return; }
     const userId = window.__currentUserId || null;
     try {
@@ -1312,6 +1374,31 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 
         <ClasificacionDatalist id={LIST_CLASIF} opciones={opcionesClasificacion} />
 
+        {/* ── «ESTOS PARECEN EL MISMO» (16-set) ──────────────────────
+            Solo con el buscador en uso: la regla de la cabeza vale porque la
+            persona ya acotó la lista. Un clic los tilda y la barra de abajo
+            hace el resto — no une nada por su cuenta. */}
+        {sugerencias.length > 0 && selInsumos.length === 0 && (
+          <div style={{ padding: '9px 14px', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 6 }}>
+              Parecen el mismo insumo escrito distinto — tocá para tildarlos:
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {sugerencias.slice(0, 4).map(g => (
+                <button
+                  key={g.cabeza}
+                  className="btn btn-ghost btn-xs"
+                  style={{ fontSize: 11 }}
+                  title={g.insumos.map(i => i.display).join('\n')}
+                  onClick={() => setSelInsumos(g.insumos.map(i => i.clave))}
+                >
+                  🔎 {g.cabeza} <strong>({g.insumos.length})</strong>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── LA BARRA DE SELECCIÓN (16-set) ─────────────────────────
             Solo existe cuando hay algo tildado: una barra vacía arriba de la
             lista es ruido permanente para una acción que se usa de a ratos. */}
@@ -1332,7 +1419,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               title={selInsumos.length < 2
                 ? 'Elegí al menos dos para poder unirlos'
                 : 'Son el mismo insumo escrito distinto: se suman en una sola fila y su saldo vuelve a cerrar'}
-              onClick={unirSeleccionados}
+              onClick={abrirUnir}
             >
               🤝 Unir como el mismo insumo
             </button>
@@ -1393,7 +1480,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                                 // La clasificación que ya tenga, si la tiene. NO se
                                 // propone una por defecto: un código plausible puesto
                                 // solo para llenar el campo se acepta sin mirar (regla 8).
-                                codigo: clasifDe.get(normInsumo(ins.display)) || '',
+                                codigo: clasifInsumo(ins) || '',
                                 guardando: false,
                               })}
                             >
@@ -1425,9 +1512,17 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                                 marcarlo: la mayoría se consume. */}
                             <select
                               className="fi"
-                              style={{ width: 'auto', fontSize: 10, padding: '1px 4px' }}
+                              style={{
+                                width: 'auto', fontSize: 10, padding: '1px 4px',
+                                // El automático se ve, pero en gris: es una
+                                // deducción, no algo que alguien contestó.
+                                fontStyle: ins.destinoAutomatico ? 'italic' : 'normal',
+                                color: ins.destinoAutomatico ? 'var(--tm)' : undefined,
+                              }}
                               value={ins.destino || ''}
-                              title="Qué va a pasar con este insumo. Cambia si su saldo significa «lo que queda por vender» o es otra cosa."
+                              title={ins.destinoAutomatico
+                                ? 'Sale solo de estar en el registro de activos fijos (7.1): la empresa lo usa y lo deprecia, no es mercadería esperando comprador. Alquilarlo tampoco lo convierte en mercadería. Si igual lo vas a vender, cambialo acá.'
+                                : 'Qué va a pasar con este insumo. Cambia si su saldo significa «lo que queda por vender» o es otra cosa.'}
                               onChange={e => guardarDestino(ins, e.target.value || null)}
                             >
                               <option value="">— destino —</option>
@@ -1437,17 +1532,31 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             </select>
                           </div>
                           <div style={{ marginTop: 2, display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                            {ins.tipos.map(t => (
-                              <span key={t} className={`badge ${TIPO_BADGE[t] || 'b-gray'}`} style={{ fontSize: 9 }}>{t}</span>
-                            ))}
-                            {/* La clasificación DE VERDAD (IUPC / servicios /
-                                propias). Las chapitas de arriba son el `tipo`,
-                                que se deriva de ella — ver `tipoDeCategoria`. */}
-                            {clasifDe.get(normInsumo(ins.display)) && (
+                            {/* ── QUÉ CHAPITA SE MUESTRA (16-set) ───────
+                                Gabriel: «sigue saliendo etiquetas de la
+                                clasificacion vieja, no salen los de la nueva».
+                                Salían LAS DOS, y encima podían contradecirse:
+                                la COMBA mostraba «material» al lado de
+                                «[37] Herramienta manual».
+                                No son dos opiniones — el `tipo` se DERIVA de la
+                                clasificación (`tipoDeCategoria`). Así que cuando
+                                hay clasificación, manda ella y el tipo sobra.
+                                Cuando no la hay, se muestra el tipo en gris: no
+                                es una clasificación, es lo único que se sabe. */}
+                            {clasifInsumo(ins) ? (
                               <span className="badge b-purple" style={{ fontSize: 9 }}
-                                title="Clasificación del catálogo. Se decide acá o en Catálogo — es la misma.">
-                                🗂 {etiquetaCategoria(clasifDe.get(normInsumo(ins.display)))}
+                                title={`Clasificación del catálogo (${clasifInsumo(ins)}). Es la misma que se ve en Catálogo. Entra al inventario como «${tipoDeCategoria(clasifInsumo(ins))}».`}>
+                                🗂 {etiquetaCategoria(clasifInsumo(ins))}
                               </span>
+                            ) : (
+                              <>
+                                {ins.tipos.map(t => (
+                                  <span key={t} className="badge b-gray" style={{ fontSize: 9, opacity: 0.75 }}
+                                    title="Todavía sin clasificar: esto es solo el tipo que se adivinó del texto. Usá «Clasificar» para ponerle la clasificación de verdad.">
+                                    {t} · sin clasificar
+                                  </span>
+                                ))}
+                              </>
                             )}
                             {ins.esAnticipo && (
                               <span className="badge b-purple" style={{ fontSize: 9 }} title="Este ítem es un anticipo a proveedores / contratistas (activo exigible)">
@@ -1481,8 +1590,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             )}
                             {ins.destino && DESTINO_INFO[ins.destino] && (
                               <span className={`badge ${DESTINO_INFO[ins.destino].badge}`} style={{ fontSize: 9 }}
-                                title={DESTINO_INFO[ins.destino].ayuda}>
+                                title={ins.destinoAutomatico
+                                  ? `${DESTINO_INFO[ins.destino].ayuda} — sale solo de estar en el registro 7.1; nadie tuvo que elegirlo.`
+                                  : DESTINO_INFO[ins.destino].ayuda}>
                                 {DESTINO_INFO[ins.destino].icono} {labelDestino(ins.destino)}
+                                {ins.destinoAutomatico && <span style={{ opacity: 0.7 }}> · por el 7.1</span>}
                               </span>
                             )}
                             {/* ── TANDA 7: qué se transformó ────────────
@@ -1674,6 +1786,92 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── UNIR: EL CHOQUE DE CLASIFICACIONES (16-set) ───────────
+            Unir es decir «son el MISMO insumo». Si vienen clasificados
+            distinto, una de las dos clasificaciones está mal y hay que
+            resolverlo ACÁ — adentro de una sola fila ya no se ve. */}
+        {modalUnir && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }}>
+            <div className="card" style={{ width: '100%', maxWidth: 560, padding: 20, background: 'var(--bg-c)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)', maxHeight: '86vh', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>
+                  Unir {modalUnir.elegidos.length} insumos
+                </h4>
+                <button className="btn btn-ghost btn-xs" onClick={() => setModalUnir(null)}>✕</button>
+              </div>
+
+              <div style={{ fontSize: 11.5, color: 'var(--ts)', marginBottom: 10, lineHeight: 1.5 }}>
+                Van a pasar a ser <strong>una sola fila</strong> del inventario, con sus cantidades sumadas.
+              </div>
+
+              <div style={{ display: 'grid', gap: 5, marginBottom: 14 }}>
+                {modalUnir.elegidos.map(({ insumo, codigo }) => (
+                  <div key={insumo.clave} style={{
+                    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                    fontSize: 11.5, padding: '6px 9px', borderRadius: 5,
+                    background: 'var(--tint-neutral)',
+                  }}>
+                    <strong style={{ flex: 1, minWidth: 160 }}>{insumo.display}</strong>
+                    {codigo ? (
+                      <span className="badge b-purple" style={{ fontSize: 9 }}>🗂 {etiquetaCategoria(codigo)}</span>
+                    ) : (
+                      <span className="badge b-gray" style={{ fontSize: 9 }}>sin clasificar</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {modalUnir.choca && (
+                <div style={{
+                  padding: '9px 11px', borderRadius: 6, marginBottom: 12,
+                  border: '1px solid var(--amber)',
+                  background: 'color-mix(in srgb, var(--amber) 12%, var(--bg-c))',
+                  fontSize: 11.5, lineHeight: 1.5,
+                }}>
+                  <strong>⚠ Están clasificados distinto.</strong> Si son el mismo insumo, una de
+                  las {modalUnir.codigos.length} clasificaciones está mal. Elegí con cuál quedan
+                  los {modalUnir.elegidos.length} — o cerrá esto y revisalos antes de unirlos.
+                </div>
+              )}
+
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>
+                  Clasificación para los {modalUnir.elegidos.length} {modalUnir.choca ? '' : '(opcional)'}:
+                </label>
+                <SelectorClasificacion
+                  listId={LIST_CLASIF}
+                  opciones={opcionesClasificacion}
+                  value={modalUnir.codigoFinal}
+                  onChange={(cod) => setModalUnir(prev => ({ ...prev, codigoFinal: cod }))}
+                  className="fi"
+                  style={{ width: '100%' }}
+                  placeholder="Escribí el nombre o el código…"
+                />
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 5, lineHeight: 1.45 }}>
+                  {modalUnir.codigoFinal
+                    ? <>Los {modalUnir.elegidos.length} quedan como <strong>{etiquetaCategoria(modalUnir.codigoFinal)}</strong>.</>
+                    : <>Si lo dejás vacío se unen igual y cada uno conserva lo que tenía.</>}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="btn btn-ghost btn-sm" disabled={modalUnir.guardando}
+                  onClick={() => setModalUnir(null)}>Cancelar</button>
+                <button
+                  className="btn btn-green btn-sm" style={{ fontWeight: 600 }}
+                  disabled={modalUnir.guardando}
+                  onClick={async () => {
+                    setModalUnir(prev => ({ ...prev, guardando: true }));
+                    await unirSeleccionados(modalUnir.codigoFinal || null);
+                  }}
+                >
+                  {modalUnir.guardando ? 'Uniendo…' : '🤝 Unir como el mismo insumo'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

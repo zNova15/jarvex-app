@@ -618,6 +618,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     // mismo insumo, así que no pueden tener dos destinos distintos.
     let destino = null;
     let saldoVendible = true;
+    let destinoAutomatico = false;
     if (destinoDe) {
       for (const v of ins.variantes) {
         const d = destinoDe.get(normInsumo(v));
@@ -627,6 +628,31 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
           break;
         }
       }
+    }
+    // ── EL ACTIVO FIJO YA CONTESTÓ LA PREGUNTA (16-set-2026) ──────
+    // Gabriel: «me parece que los activos fijos deberia salir directamente
+    // como "uso de empresa" en lugar de tener que elegir, estos usualmente los
+    // usaremos o alquilaremos, por ejemplo, la motocarga kratoz se alquilará».
+    //
+    // Tiene razón y además es lo COHERENTE: que una compra esté cargada en el
+    // registro 7.1 significa que la empresa la va a usar por años y la va a
+    // depreciar. Eso YA dice que no es mercadería esperando comprador —
+    // preguntarlo de nuevo con un desplegable es pedir dos veces la misma
+    // respuesta, y dejarlo vacío hace que su saldo cuente como «lo que queda
+    // por colocar» y que la motocarga aparezca en el botón rojo de negativos.
+    //
+    // ALQUILARLA NO LO CAMBIA: alquilar es explotar un bien propio, no
+    // venderlo. El bien sigue siendo de la empresa y sigue depreciándose; el
+    // cajón «Para revender» es para lo que se compró para volver a venderlo.
+    //
+    // 🔴 LA DECISIÓN EXPLÍCITA SIEMPRE GANA. Esto solo rellena el vacío: si
+    // una persona marcó «Para revender» sobre algo que además está en el 7.1
+    // —una máquina que se activó y después se decidió vender—, manda ella.
+    // Por eso va DESPUÉS del bucle y solo cuando `destino` sigue en null.
+    if (!destino && (ins.activosCargados || 0) > 0) {
+      destino = 'activo_uso';
+      saldoVendible = false;
+      destinoAutomatico = true;
     }
     // ── TANDA 7: lo que se transformó ────────────────────────────
     const transf = efectoDe.get(ins.clave) || null;
@@ -707,6 +733,9 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       // significa «lo que queda por colocar» o es otra cosa.
       activosCargados: ins.activosCargados || 0,
       destino,
+      // `destinoAutomatico`: nadie lo eligió — se derivó de estar en el 7.1.
+      // La pantalla lo dice, para que se distinga de una decisión tomada.
+      destinoAutomatico,
       saldoVendible,
       // Tanda 7: qué se consumió y qué salió de este insumo, o null si nunca
       // entró en una transformación (que es el caso de casi todo).
