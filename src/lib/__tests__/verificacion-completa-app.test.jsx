@@ -156,7 +156,13 @@ describe('Verificación dentro de la aplicación (E2E Component & Logic)', () =>
 
     // Insumo con compra y venta calcula margen
     expect(html).toContain('CEMENTO PORTLAND TIPO I');
-    expect(html).toContain('Categorizar');
+    // 16-set: el botón dejó de llamarse «Categorizar». Categorizaba con ocho
+    // cajones («materiales», «epp», «herramientas») que NO son la taxonomía de
+    // la app desde el 13-set, y además escribía una fila que violaba el CHECK
+    // de la mig 195 y rebotaba en el push. Ahora clasifica con IUPC / servicios
+    // / propias, igual que Catálogo y la bandeja.
+    expect(html).toContain('Clasificar');
+    expect(html).not.toContain('Materiales de construcción');   // el vocabulario viejo
 
     // Anticipo detectado con badge
     expect(html).toContain('anticipo');

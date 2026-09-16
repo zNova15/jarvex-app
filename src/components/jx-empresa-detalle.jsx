@@ -45,7 +45,7 @@ import { setEmpresaActivaId, limpiarEmpresaActiva } from "../lib/empresa-activa.
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { db } from "../db/jarvex.db";
 import { extraerLineasDeFacturas } from "../lib/analisis-insumos.js";
-import { resolverPares, construirGrupos, normInsumo } from "../lib/insumo-correlacion.js";
+import { resolverPares, construirGrupos, normInsumo, crearParesDeCluster } from "../lib/insumo-correlacion.js";
 import {
   inventarioDeEmpresa, resumenFinancieroEmpresa, filtrarInventario, filtrarPorFlujo,
   saldosNegativos, tieneSaldoNegativo, aniosDeLineas, labelUnidad,
@@ -62,7 +62,11 @@ import {
 } from "../lib/transformacion.js";
 import { decidirCotejo } from "../lib/cotejo-sunat-db.js";
 import { aprenderClasificacion } from "../lib/clasificar-items.js";
-import { decidir } from "../lib/bandeja-categorizacion-db.js";
+import { agregarAlCatalogoYDecidir } from "../lib/bandeja-categorizacion-db.js";
+// Import ESTÁTICO (regla 1): el selector de clasificación es el MISMO que usan
+// Catálogo y la bandeja — una sola forma de elegir una clasificación en la app.
+import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
+import { categoriasParaElegir, tipoDeCategoria, etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
 // Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
 // pantalla, que es la única que lo usa.
 import { PanelAnticipos } from "./jx-anticipos.jsx";
@@ -76,6 +80,10 @@ import { uploadPendingEvidencias } from "../sync/EvidenceUploader.js";
 import { MODO_PAGO_LABEL } from "../lib/pagos.js";
 
 const { useState: uSD, useMemo: uMD } = React;
+// El <datalist> de clasificaciones se monta UNA vez por pantalla (ver la
+// nota de rendimiento en jx-selector-clasificacion.jsx): con 200 filas,
+// repetir las ~95 <option> en cada una serían miles de nodos de más.
+const LIST_CLASIF = 'jx-clasif-inventario';
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 const fmtMonto = (n, moneda = 'PEN') =>
@@ -307,6 +315,85 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // (tanda 3): un arbitraje, un seguro, una detracción. No es mercadería que
   // entre ni salga, así que no tiene cantidades que sumar. Ver
   // `insumo-o-servicio.js`.
+  // ── UNIR INSUMOS SIN SALIR DEL INVENTARIO (16-set-2026) ───────────
+  //
+  // Gabriel: «busco rapidamente "Comba" y me salen cosas que compre y que
+  // vendi y rapidamente podria correlacionar pero necesito que se haga
+  // facilmente alli».
+  //
+  // Y es el lugar correcto para hacerlo: acá se ve lo que el motor de
+  // Correlaciones NO puede ver — cuánto se compró, cuánto se vendió, el saldo
+  // en rojo y la última operación de cada uno. Un par que en Correlaciones es
+  // un juicio sobre dos textos, acá es evidente: comprás 72 y vendés 70 de
+  // algo que se llama parecido.
+  //
+  // Escribe en la MISMA tabla `insumo_correlaciones` que la pantalla de
+  // Correlaciones y con la misma función (`crearParesDeCluster`), así que las
+  // dos son la misma decisión vista desde dos lados. No es un atajo con reglas
+  // propias: pasa por `yaResueltos` igual que allá, y por eso no duplica filas
+  // ni puede pisar una decisión anterior.
+  const [selInsumos, setSelInsumos] = uSD([]);      // claves de `ins.clave`
+  const uniendoRef = React.useRef(false);
+  const togglearSel = (clave) => setSelInsumos(prev =>
+    prev.includes(clave) ? prev.filter(c => c !== clave) : [...prev, clave]);
+
+  const unirSeleccionados = async () => {
+    // Guard SÍNCRONO (regla 2): el guard por estado se activa recién después
+    // del await y en esa ventana un segundo clic escribe los pares de nuevo.
+    if (uniendoRef.current) return;
+    uniendoRef.current = true;
+    const showToast = window.__showToast || (() => {});
+    try {
+      const elegidos = (inv.insumos || []).filter(i => selInsumos.includes(i.clave));
+      if (elegidos.length < 2) { showToast('Elegí al menos dos insumos para unir', 'amber'); return; }
+      // TODAS las variantes de cada uno: si «comba 20 lb» ya agrupa tres
+      // formas de escribirlo, unirlo con «comba octagonal» tiene que enlazar
+      // las tres, no solo la que se muestra.
+      const nombres = [...new Set(elegidos.flatMap(i =>
+        [...(i.variantes || []), i.display].filter(Boolean)))];
+      // El canónico es el nombre más largo: el más descriptivo, mismo criterio
+      // que usa Correlaciones.
+      const canonico = nombres.reduce((m, n) => (n.length > m.length ? n : m), nombres[0]);
+      const pares = crearParesDeCluster(nombres, canonico, 'mismo', { yaResueltos: resueltos });
+      if (!pares.length) {
+        showToast('Estos ya estaban unidos — no había nada nuevo que guardar', 'blue');
+        setSelInsumos([]);
+        return;
+      }
+      for (const par of pares) {
+        await corrHook.create({
+          id: window.__newId(),
+          nombre_a: par.nombre_a, nombre_b: par.nombre_b,
+          relacion: 'mismo', canonico: par.canonico,
+          fuente: 'manual', deleted_at: null,
+        });
+      }
+      setSelInsumos([]);
+      showToast(`✓ ${elegidos.length} insumos unidos bajo «${String(canonico).slice(0, 28)}» (${pares.length} enlaces)`, 'green');
+    } catch (e) {
+      showToast('Error al unir: ' + (e.message || e), 'red');
+    } finally {
+      uniendoRef.current = false;
+    }
+  };
+
+  // ── CLASIFICAR Y CORRELACIONAR SIN SALIR DEL INVENTARIO (16-set) ──
+  const clasHook = window.__hooks.useClasificaciones?.() || { data: [] };
+  const decCatHook = window.__hooks.useInsumoCategorias?.() || { data: [] };
+  const opcionesClasificacion = uMD(
+    () => categoriasParaElegir((clasHook.data || []).filter(c => c && !c.deleted_at)),
+    [clasHook.data],
+  );
+  // La clasificación que YA tiene cada descripción, para no volver a preguntar
+  // lo contestado y para mostrarla en la fila.
+  const clasifDe = uMD(() => {
+    const m = new Map();
+    for (const d of (decCatHook.data || [])) {
+      if (!d || d.deleted_at || !d.familia || !d.norm) continue;
+      m.set(String(d.norm), d.familia);
+    }
+    return m;
+  }, [decCatHook.data]);
   const decisHook = window.__hooks.useCotejoDecisiones();
   const descartadasInv = uMD(() => noInventariables(decisHook.data || []), [decisHook.data]);
   // ── TANDA 6: el hecho y la decisión ──────────────────────────────
@@ -393,59 +480,98 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     return porFlujo;
   }, [inv, busca, tipoFiltro, flujoFiltro, soloNegativos, soloRebajados, destinoFiltro]);
 
-  const guardarRecategorizacion = async (insumo, cat, subcat) => {
+  // ── CLASIFICAR UN INSUMO DESDE EL INVENTARIO (16-set-2026) ────────
+  //
+  // Gabriel: «veo que en inventario tienen las categorías de epp, material,
+  // herramienta, etc. Y cuando quiero categorizar rápidamente allí solo me
+  // deja con esos mencionado, esta mal, deberia categorizar con base en los
+  // indices unificados y la clasificacion que tenemos nosotros».
+  //
+  // Tenía razón dos veces:
+  //
+  // 1. EL VOCABULARIO ERA OTRO. El desplegable ofrecía ocho cajones
+  //    («materiales», «herramientas», «epp»…) que NO son la taxonomía de la
+  //    app desde el 13-set (regla 8 del CLAUDE.md): insumos por IUPC del INEI,
+  //    servicios S01…S13, complementarias, y las propias de la tabla
+  //    `clasificaciones`. Medido el 16-set en producción: de las 340 filas de
+  //    `insumo_categoria`, CERO usan un valor de ese desplegable — las 339
+  //    decididas están en códigos IUPC («65», «37», «48»), servicios («S11»)
+  //    y «administrativos». Clasificar desde acá escribía en un idioma que no
+  //    lee ninguna otra pantalla.
+  //
+  // 2. 🔴 Y LA FILA NI SIQUIERA PODÍA SINCRONIZAR. Llamaba a `decidir()` con
+  //    `decision: 'catalogo'` y SIN `catalogo_insumo_id`, que es exactamente
+  //    lo que prohíbe el CHECK `insumo_categoria_catalogo_coherente` de la
+  //    mig 195. Dexie no valida CHECKs (regla 9): la fila se guardaba local y
+  //    rebotaba en el push con 23514, dejando el sync en reintento eterno.
+  //    Por eso en el servidor hay 0 filas mal formadas — nunca llegaron.
+  //
+  // Ahora se usa `agregarAlCatalogoYDecidir`, que es el único camino que arma
+  // las dos piezas juntas y en UNA transacción: la fila del catálogo de la
+  // empresa (o la reusa si ya existe) y la decisión que la apunta. Y se le
+  // pasan TODAS las variantes de nombre del insumo: `insumo_categoria` se
+  // indexa por `norm`, así que decidir solo el representante dejaría a las
+  // otras preguntando para siempre.
+  const guardarRecategorizacion = async (insumo, codigo) => {
     const showToast = window.__showToast || (() => {});
+    if (!codigo) { showToast('Elegí una clasificación', 'amber'); return; }
+    const userId = window.__currentUserId || null;
     try {
+      // El puente al vocabulario viejo vive en UN solo lugar (regla 8):
+      // `tipoDeCategoria()`. El sello que queda en la línea de la factura
+      // sigue siendo el `tipo` —es lo que pinta las chapitas de la lista y lo
+      // que decide a qué tabla de inventario va— pero ahora se DERIVA de la
+      // clasificación en vez de ser la respuesta.
+      const tipo = tipoDeCategoria(codigo);
       const database = window.__db || db;
       if (database?.accounting_movements && Array.isArray(insumo.lineas)) {
         for (const l of insumo.lineas) {
           if (!l.movId) continue;
           try {
             const mv = await database.accounting_movements.get(l.movId);
-            if (mv) {
-              let notas = mv.notas;
-              if (typeof notas === 'string') {
-                try { notas = JSON.parse(notas); } catch { notas = {}; }
-              }
-              if (notas && Array.isArray(notas.items_factura) && notas.items_factura[l.itemIdx]) {
-                notas.items_factura[l.itemIdx].tipo_insumo = cat;
-                notas.items_factura[l.itemIdx].categoria = cat;
-                if (subcat) notas.items_factura[l.itemIdx].subcategoria = subcat;
-                await database.accounting_movements.update(mv.id, {
-                  notas: JSON.stringify(notas),
-                  updated_at: new Date().toISOString(),
-                });
-              }
+            if (!mv) continue;
+            let notas = mv.notas;
+            if (typeof notas === 'string') { try { notas = JSON.parse(notas); } catch { notas = {}; } }
+            if (notas && Array.isArray(notas.items_factura) && notas.items_factura[l.itemIdx]) {
+              notas.items_factura[l.itemIdx].tipo_insumo = tipo;
+              notas.items_factura[l.itemIdx].categoria = tipo;
+              notas.items_factura[l.itemIdx].clasificacion = codigo;
+              await database.accounting_movements.update(mv.id, {
+                notas: JSON.stringify(notas),
+                updated_at: new Date().toISOString(),
+              });
             }
           } catch (e) {
             console.warn('Error actualizando comprobante:', e);
           }
         }
       }
+      const variantes = [...new Set([...(insumo.variantes || []), insumo.display].filter(Boolean))]
+        .map(v => ({ norm: normInsumo(v), muestra: v }));
+      await agregarAlCatalogoYDecidir(
+        { norm: normInsumo(insumo.display), muestra: insumo.display, unidades: new Set() },
+        {
+          companyId: company?.id || null,
+          familia: codigo,
+          nombre: insumo.display,
+          userId,
+          nota: 'Clasificado desde el inventario de la empresa',
+          variantes,
+        },
+      );
       try {
         await aprenderClasificacion({
-          descripcion: insumo.display,
-          categoria: cat,
-          subcategoria: subcat,
-          fuente: 'manual',
-          userId: window.__currentUser?.id,
-        });
-        await decidir({
-          norm: normInsumo(insumo.display),
-          muestra: insumo.display,
-          decision: 'catalogo',
-          familia: cat,
-          subfamilia: subcat || null,
-          company_id: company?.id || null,
-          fuente: 'manual',
+          descripcion: insumo.display, categoria: codigo,
+          subcategoria: null, fuente: 'manual', userId,
         });
       } catch (e) {
         console.warn('Error aprendiendo clasificación:', e);
       }
-      showToast('✓ Categoría actualizada y recordada en el catálogo', 'green');
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'insumo_categoria' } })); } catch {}
+      showToast(`✓ «${String(insumo.display).slice(0, 28)}» → ${etiquetaCategoria(codigo)}`, 'green');
     } catch (err) {
       console.error(err);
-      showToast('Error al guardar categoría', 'red');
+      showToast('Error al guardar la clasificación: ' + (err.message || err), 'red');
     }
   };
 
@@ -518,7 +644,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     try {
       const { fila, error } = construirTransformacion({ ...borrador, companyId: company?.id });
       if (error) { showToast(error, 'red'); return false; }
-      const userId = window.__currentUser?.id || null;
+      // `window.__currentUser` NO EXISTE — nunca lo definió nadie, así que
+      // esto era siempre null y las transformaciones quedaban sin autor y con
+      // idempotency_key «null_tr_…». El global que el Provider sí publica es
+      // `window.__currentUserId` (ver useAuth.js).
+      const userId = window.__currentUserId || null;
       const now = new Date().toISOString();
       const id = window.__newId();
       await (window.__db || db).transformaciones.add({
@@ -554,7 +684,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   const cambiarEstadoTransf = async (t, estado) => {
     const showToast = window.__showToast || (() => {});
     try {
-      const userId = window.__currentUser?.id || null;
+      // `window.__currentUser` NO EXISTE — nunca lo definió nadie, así que
+      // esto era siempre null y las transformaciones quedaban sin autor y con
+      // idempotency_key «null_tr_…». El global que el Provider sí publica es
+      // `window.__currentUserId` (ver useAuth.js).
+      const userId = window.__currentUserId || null;
       await (window.__db || db).transformaciones.update(t.id, {
         estado,
         updated_at: new Date().toISOString(), updated_by: userId,
@@ -1176,6 +1310,42 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           </div>
         )}
 
+        <ClasificacionDatalist id={LIST_CLASIF} opciones={opcionesClasificacion} />
+
+        {/* ── LA BARRA DE SELECCIÓN (16-set) ─────────────────────────
+            Solo existe cuando hay algo tildado: una barra vacía arriba de la
+            lista es ruido permanente para una acción que se usa de a ratos. */}
+        {selInsumos.length > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            padding: '9px 14px', borderBottom: '1px solid var(--border)',
+            // `color-mix` sobre --blue y no un token nuevo: el test de tokens CSS
+            // falla si se usa un var(--x) que nadie define, y con razón — un fondo
+            // muerto no se ve en ninguno de los dos temas.
+            background: 'color-mix(in srgb, var(--blue) 12%, var(--bg-c))',
+            position: 'sticky', top: 0, zIndex: 5,
+          }}>
+            <strong style={{ fontSize: 12 }}>{selInsumos.length} seleccionado(s)</strong>
+            <button
+              className="btn btn-green btn-xs" style={{ fontWeight: 600 }}
+              disabled={selInsumos.length < 2}
+              title={selInsumos.length < 2
+                ? 'Elegí al menos dos para poder unirlos'
+                : 'Son el mismo insumo escrito distinto: se suman en una sola fila y su saldo vuelve a cerrar'}
+              onClick={unirSeleccionados}
+            >
+              🤝 Unir como el mismo insumo
+            </button>
+            <button className="btn btn-ghost btn-xs" onClick={() => setSelInsumos([])}>
+              Limpiar
+            </button>
+            <span style={{ fontSize: 10.5, color: 'var(--ts)', lineHeight: 1.4, flex: 1, minWidth: 220 }}>
+              Se guarda en el mismo lugar que Correlaciones, así que vale para toda la app.
+              Para deshacerlo o para decir que son distintos, entrá a <strong>Correlaciones</strong>.
+            </span>
+          </div>
+        )}
+
         {filtrados.length === 0 ? (
           <div className="card-p" style={{ color: 'var(--tm)', fontSize: 12, fontStyle: 'italic' }}>
             {inv.insumos.length === 0
@@ -1186,6 +1356,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <div style={{ overflowX: 'auto' }}>
             <table className="tbl">
               <thead><tr>
+                <th style={{ width: 28 }} title="Tildá dos o más para unirlos como el mismo insumo"></th>
                 <th>Insumo / Categoría</th>
                 <th style={{ textAlign: 'right' }}>Compras</th>
                 <th style={{ textAlign: 'right' }}>Ventas</th>
@@ -1200,6 +1371,15 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                   return (
                     <React.Fragment key={ins.clave}>
                       <tr>
+                        <td style={{ textAlign: 'center', verticalAlign: 'top', paddingTop: 10 }}>
+                          <input
+                            type="checkbox"
+                            checked={selInsumos.includes(ins.clave)}
+                            onChange={() => togglearSel(ins.clave)}
+                            title="Unir este insumo con otro que sea el mismo escrito distinto"
+                            style={{ cursor: 'pointer' }}
+                          />
+                        </td>
                         <td className="col-p">
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                             <strong>{ins.display}</strong>
@@ -1210,12 +1390,14 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                               title="Re-categorizar este insumo y guardar en catálogo"
                               onClick={() => setModalCategorizar({
                                 insumo: ins,
-                                categoria: (ins.tipos && ins.tipos[0]) || 'materiales',
-                                subcategoria: '',
+                                // La clasificación que ya tenga, si la tiene. NO se
+                                // propone una por defecto: un código plausible puesto
+                                // solo para llenar el campo se acepta sin mirar (regla 8).
+                                codigo: clasifDe.get(normInsumo(ins.display)) || '',
                                 guardando: false,
                               })}
                             >
-                              🏷 Categorizar
+                              🏷 Clasificar
                             </button>
                             {/* ── TANDA 7 ──────────────────────────────
                                 Arranca el modal con este insumo ya puesto como
@@ -1258,6 +1440,15 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {ins.tipos.map(t => (
                               <span key={t} className={`badge ${TIPO_BADGE[t] || 'b-gray'}`} style={{ fontSize: 9 }}>{t}</span>
                             ))}
+                            {/* La clasificación DE VERDAD (IUPC / servicios /
+                                propias). Las chapitas de arriba son el `tipo`,
+                                que se deriva de ella — ver `tipoDeCategoria`. */}
+                            {clasifDe.get(normInsumo(ins.display)) && (
+                              <span className="badge b-purple" style={{ fontSize: 9 }}
+                                title="Clasificación del catálogo. Se decide acá o en Catálogo — es la misma.">
+                                🗂 {etiquetaCategoria(clasifDe.get(normInsumo(ins.display)))}
+                              </span>
+                            )}
                             {ins.esAnticipo && (
                               <span className="badge b-purple" style={{ fontSize: 9 }} title="Este ítem es un anticipo a proveedores / contratistas (activo exigible)">
                                 anticipo
@@ -1434,7 +1625,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                       </tr>
                       {abiertoEste && (
                         <tr>
-                          <td colSpan={7} style={{ background: 'var(--tint-neutral)' }}>
+                          <td colSpan={8} style={{ background: 'var(--tint-neutral)' }}>
                             <div style={{ display: 'grid', gap: 4, padding: '6px 2px' }}>
                               {ins.variantes.length > 1 && (
                                 <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
@@ -1490,7 +1681,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
             <div className="card" style={{ width: '100%', maxWidth: 440, padding: 20, background: 'var(--bg-c)', borderRadius: 8, boxShadow: '0 8px 30px rgba(0,0,0,0.3)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Categorizar Insumo</h4>
+                <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Clasificar insumo</h4>
                 <button className="btn btn-ghost btn-xs" onClick={() => setModalCategorizar(null)}>✕</button>
               </div>
               <div style={{ fontSize: 12, marginBottom: 12, padding: 8, background: 'var(--tint-neutral)', borderRadius: 6 }}>
@@ -1501,33 +1692,30 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                   </div>
                 )}
               </div>
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Categoría principal:</label>
-                <select
-                  className="fi" style={{ width: '100%' }}
-                  value={modalCategorizar.categoria}
-                  onChange={e => setModalCategorizar({ ...modalCategorizar, categoria: e.target.value })}
-                >
-                  <option value="materiales">Materiales de construcción</option>
-                  <option value="servicios">Servicios (alquiler, fletes, consultoría...)</option>
-                  <option value="herramientas">Herramientas</option>
-                  <option value="maquinaria">Maquinaria y equipos</option>
-                  <option value="epp">EPP e Implementos de Seguridad</option>
-                  <option value="anticipo">Anticipos a proveedores / contratistas</option>
-                  <option value="gastos_generales">Gastos generales</option>
-                  <option value="otros">Otros</option>
-                </select>
-              </div>
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>Subcategoría / Subfamilia (opcional):</label>
-                <input
-                  className="fi" style={{ width: '100%' }}
-                  placeholder="ej. fierro, cemento, flete de transporte, alquiler..."
-                  value={modalCategorizar.subcategoria}
-                  onChange={e => setModalCategorizar({ ...modalCategorizar, subcategoria: e.target.value })}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, marginBottom: 4 }}>
+                  Clasificación:
+                </label>
+                {/* El MISMO selector buscable de Catálogo y la bandeja: insumos
+                    por IUPC, servicios S01…S13, complementarias y las propias
+                    de la empresa. Escribí dos letras del nombre o el código. */}
+                <SelectorClasificacion
+                  listId={LIST_CLASIF}
+                  opciones={opcionesClasificacion}
+                  value={modalCategorizar.codigo}
+                  onChange={(cod) => setModalCategorizar(prev => ({ ...prev, codigo: cod }))}
+                  className="fi"
+                  style={{ width: '100%' }}
+                  placeholder="Escribí el nombre o el código (ej. 37, tuberia, S03)…"
                 />
-                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
-                  El sistema recordará esta categorización para futuras compras y para las demás empresas.
+                <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 6, lineHeight: 1.45 }}>
+                  {modalCategorizar.codigo ? (
+                    <>Va a quedar como <strong>{etiquetaCategoria(modalCategorizar.codigo)}</strong>
+                      {' '}· entra al inventario como <strong>{tipoDeCategoria(modalCategorizar.codigo)}</strong>.</>
+                  ) : (
+                    <>Es la misma clasificación que usa el Catálogo — lo que decidas acá se ve allá,
+                      y al revés. Si no encontrás la que necesitás, se crea desde el Catálogo.</>
+                  )}
                 </div>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -1540,10 +1728,10 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                 </button>
                 <button
                   className="btn btn-blue btn-sm"
-                  disabled={modalCategorizar.guardando}
+                  disabled={modalCategorizar.guardando || !modalCategorizar.codigo}
                   onClick={async () => {
                     setModalCategorizar(prev => ({ ...prev, guardando: true }));
-                    await guardarRecategorizacion(modalCategorizar.insumo, modalCategorizar.categoria, modalCategorizar.subcategoria);
+                    await guardarRecategorizacion(modalCategorizar.insumo, modalCategorizar.codigo);
                     setModalCategorizar(null);
                   }}
                 >
