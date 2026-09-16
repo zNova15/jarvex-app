@@ -56,7 +56,7 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
     setGuardando(claveDescarte(h.movimiento_id, h.regla));
     try {
       const now = new Date().toISOString();
-      const userId = window.__useAuth?.()?.profile?.id || null;
+      const userId = window.__currentUserId || null;   // hook NO: rompe el handler (ver useAuth.js)
       const id = window.__newId();
       await window.__db.revision_descartes.add({
         id,

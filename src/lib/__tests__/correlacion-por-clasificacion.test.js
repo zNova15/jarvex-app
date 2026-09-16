@@ -157,3 +157,73 @@ describe('el id es el contenido, como en sugerirCandidatos', () => {
     expect(a.id).toBe(b.id);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// EL GRUPO QUE NO SE PODÍA CERRAR (16-set-2026).
+//
+// Caso REAL de producción, con los nombres textuales. Al insumo «MARTILLO» del
+// catálogo le quedaron pegadas tres descripciones que no son el mismo martillo,
+// y Gabriel ya había unido dos de ellas. La tarjeta volvía a proponer las TRES
+// una y otra vez: sacar la que sobra es estado local que no se guarda, y la
+// única salida —«Son distintos» sobre el grupo— pisaba la unión ya hecha.
+// El rastro en la base fueron tres filas idénticas del mismo par.
+// ═══════════════════════════════════════════════════════════════════
+const PLASTICO  = 'MARTILLO PLASTICO SUPERFLEX 0.57KG BAHCO';
+const BOLA      = 'MARTILLO DE BOLA 350G 28MM MADERA DEXTER';
+const DEMOLEDOR = 'MARTILLO DEMOLEDOR TOTAL 1700KW';
+
+const filaCorr = (a, b, relacion) => ({
+  id: `${a}|${b}`, nombre_a: normInsumo(a), nombre_b: normInsumo(b),
+  relacion, fuente: 'manual', canonico: normInsumo(a),
+  updated_at: '2026-09-16T03:02:32Z', deleted_at: null, demo: false,
+});
+
+const candidatoMartillo = (corr) => {
+  const paresResueltos = resolverPares(corr, { demo: false });
+  const { grupoDe } = construirGrupos(paresResueltos);
+  return candidatosPorMismoInsumo({
+    decisiones: [dec(PLASTICO, 'MART'), dec(BOLA, 'MART'), dec(DEMOLEDOR, 'MART')],
+    nombresVisibles: [PLASTICO, DEMOLEDOR, BOLA],
+    paresResueltos, grupoDe,
+    nombresCatalogo: new Map([['MART', 'MARTILLO']]),
+  });
+};
+
+describe('🔴 un grupo con un par ya unido adentro', () => {
+  it('sin nada decidido todavía, propone las tres juntas', () => {
+    const c = candidatoMartillo([]);
+    expect(c).toHaveLength(1);
+    expect(c[0].esGrupo).toBe(true);
+    expect(c[0].variantes).toHaveLength(3);
+  });
+
+  it('con dos ya unidas, vuelve como el PAR que falta — no como el grupo entero', () => {
+    const c = candidatoMartillo([filaCorr(PLASTICO, BOLA, 'mismo')]);
+    expect(c).toHaveLength(1);
+    // Antes volvían las TRES, con la pregunta ya contestada adentro.
+    expect(c[0].esGrupo).toBe(false);
+    expect(c[0].variantes).toHaveLength(2);
+    expect(c[0].variantes).toContain(DEMOLEDOR);
+    // El grupo unido entra UNA vez, por su nombre más descriptivo.
+    expect(c[0].variantes.filter(v => v !== DEMOLEDOR)).toHaveLength(1);
+  });
+
+  it('contestado ese par, el candidato DESAPARECE (no vuelve por el tercero)', () => {
+    // «el de plástico no es el demoledor» implica que el de bola tampoco lo es:
+    // bola y plástico son el mismo insumo. No se pregunta dos veces.
+    const c = candidatoMartillo([
+      filaCorr(PLASTICO, BOLA, 'mismo'),
+      filaCorr(PLASTICO, DEMOLEDOR, 'distinto'),
+    ]);
+    expect(c).toHaveLength(0);
+  });
+
+  it('si las tres terminan unidas, tampoco vuelve', () => {
+    const c = candidatoMartillo([
+      filaCorr(PLASTICO, BOLA, 'mismo'),
+      filaCorr(PLASTICO, DEMOLEDOR, 'mismo'),
+      filaCorr(BOLA, DEMOLEDOR, 'mismo'),
+    ]);
+    expect(c).toHaveLength(0);
+  });
+});

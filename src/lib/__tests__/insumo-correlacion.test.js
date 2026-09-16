@@ -477,3 +477,73 @@ describe('construirGrupos + convertirALaBase', () => {
     expect(convertirALaBase('x', 'und', 1, new Map())).toBe(null);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// LA MEDIDA PEGADA A SU UNIDAD (16-set-2026).
+//
+// Gabriel: «en mi inventario solo se ven 3 cosas que tienen compra y venta,
+// falta aun». Medido en producción: los pares compra↔venta de GASOMI no daban
+// score BAJO, daban CERO — el chequeo de medidas exige conjuntos de números
+// idénticos y un lado traía «200mm» donde el otro traía «200». Por eso bajar
+// el umbral nunca recuperó ninguno. Los nombres son textuales de la base.
+// ═══════════════════════════════════════════════════════════════════
+describe('🔴 el número pegado a su unidad no puede anular el par', () => {
+  const U = 0.55;
+  it('«200mm» y «200 mm» son la misma medida', () => {
+    expect(scoreNombres('TUBO PVC-U 200mm S-25 UF ALCANTARILLADO',
+                        'TUBO PVC-U 200 mm S-25 UF ALCANTARILLADO')).toBeGreaterThanOrEqual(U);
+  });
+  it('«2.40» y «2.40mt» también', () => {
+    expect(scoreNombres('PLANCHA NEGRA LISA 1/2 x 1.20 x 2.40',
+                        'PLANCHA NEGRA LISA 1/2 x 1.20 x 2.40mt')).toBeGreaterThanOrEqual(U);
+  });
+  it('la «x» multiplicadora se despega: «x90» es «x 90»', () => {
+    expect(scoreNombres('CODO INY 3/4 x90 SP PRESION',
+                        'CODO INY 3/4 x 90 SP PRESION')).toBeGreaterThanOrEqual(U);
+  });
+
+  // 🔴 Y NO AFLOJA LAS MEDIDAS — las afina. Los cuatro controles adversariales
+  // de la lib siguen en cero, más los dos que destapó este cambio.
+  it.each([
+    ['REDUCCION 1" X 1/2', 'REDUCCION 2 1/2" A 1"'],
+    ['CLAVO DE 8', 'CLAVO DE 4'],
+    ['ACEITE 10W30', 'ACEITE 20W50'],
+    ['TUBO PVC-U 200mm S-25 UF ALCANTARILLADO', 'TUBO PVC-U 160 mm S-25 UF ALCANTARILLADO'],
+    ['CODO INY 2" x 45 SP DESAGUE', 'CODO INY 2" x 90 SP DESAGUE'],
+    ['TUBO PVC-U 3/4" C-10 SP PRESION HT', 'TUBO PVC-U 2 1/2" C-7.5 SP PRESION'],
+  ])('sigue en cero: %s vs %s', (a, b) => {
+    expect(scoreNombres(a, b)).toBe(0);
+  });
+
+  // Despegar TODA letra de todo dígito convertía «B5», «A4» y «S50» en medidas
+  // y hacía perder 13 pares que Gabriel ya había marcado «mismo». No se hace.
+  it('los códigos de modelo NO son medidas: «B5» sigue siendo una palabra', () => {
+    expect(scoreNombres('DIESEL B5 S-50 UV', 'DIESEL B5 UV')).toBeGreaterThanOrEqual(U);
+    expect(scoreNombres('HOJA BOND A4 X 500 UND MARCA REPORT',
+                        'PAPEL BOND X 500 HOJAS MARCA ATLAS')).toBeGreaterThanOrEqual(U);
+  });
+});
+
+describe('🔴 un lote no puede pisar lo que alguien decidió mirando el par', () => {
+  const resueltos = resolverPares([{
+    id: '1', nombre_a: 'martillo a', nombre_b: 'martillo b', relacion: 'mismo',
+    fuente: 'manual', updated_at: '2026-09-16T03:00:00Z', deleted_at: null, demo: false,
+  }]);
+  const vars = ['MARTILLO A', 'MARTILLO B', 'MARTILLO C'];
+
+  it('unir el grupo no vuelve a escribir el par que ya estaba unido', () => {
+    const pares = crearParesDeCluster(vars, 'MARTILLO A', 'mismo', { yaResueltos: resueltos });
+    expect(pares).toHaveLength(2);                       // los 3 menos el ya resuelto
+    expect(pares.some(p => p.nombre_a === 'martillo a' && p.nombre_b === 'martillo b')).toBe(false);
+  });
+
+  it('«Son distintos» sobre el grupo NO destruye esa unión', () => {
+    const pares = crearParesDeCluster(vars, null, 'distinto', { yaResueltos: resueltos });
+    expect(pares.some(p => p.nombre_a === 'martillo a' && p.nombre_b === 'martillo b')).toBe(false);
+    expect(pares).toHaveLength(2);
+  });
+
+  it('sin `yaResueltos` se comporta igual que siempre', () => {
+    expect(crearParesDeCluster(vars, 'MARTILLO A', 'mismo')).toHaveLength(3);
+  });
+});

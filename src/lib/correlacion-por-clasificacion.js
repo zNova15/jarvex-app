@@ -74,6 +74,19 @@ export function candidatosPorMismoInsumo({
   }
   if (!crudoPorNorm.size) return [];
 
+  // Lo ya contestado, A NIVEL DE GRUPO. 🔴 La clave tiene que ser el GRUPO y no
+  // el nombre: si «martillo de plástico» y «martillo de bola» están unidos y
+  // alguien declaró que el de PLÁSTICO no es el demoledor, el de BOLA tampoco
+  // lo es. Preguntando por nombre suelto, esa segunda pregunta volvía sola y el
+  // candidato no se terminaba nunca.
+  const claveGrupo = (n) => (grupoDe && grupoDe.get(n)) || n;
+  const contestadoEntreGrupos = new Set();
+  for (const f of (paresResueltos ? paresResueltos.values() : [])) {
+    const ga = claveGrupo(normInsumo(f.nombre_a));
+    const gb = claveGrupo(normInsumo(f.nombre_b));
+    if (ga && gb) contestadoEntreGrupos.add([ga, gb].sort().join('|'));
+  }
+
   // 1. Agrupar las descripciones decididas por el insumo al que apuntan.
   const porInsumo = new Map();
   for (const d of (decisiones || [])) {
@@ -93,26 +106,53 @@ export function candidatosPorMismoInsumo({
   for (const [insumoId, miembros] of porInsumo.entries()) {
     if (miembros.size < 2) continue;
 
-    // 2. Sacar lo que ya está unido: si TODOS pertenecen al mismo grupo
-    //    confirmado, la pregunta ya está contestada.
-    const norms = [...miembros.keys()];
-    if (grupoDe) {
-      const grupos = new Set(norms.map(n => grupoDe.get(n) || `solo:${n}`));
-      if (grupos.size === 1 && !String([...grupos][0]).startsWith('solo:')) continue;
+    // 2. COLAPSAR LO QUE YA ESTÁ UNIDO: un grupo confirmado cuenta como UN
+    //    solo nombre, representado por el más descriptivo de sus miembros.
+    //
+    //    🔴 ESTO ES LO QUE ROMPÍA EL BUCLE (16-set-2026). Caso real: al insumo
+    //    «MARTILLO» del catálogo le quedaron pegadas tres descripciones —un
+    //    martillo de plástico, uno de bola y un demoledor— y Gabriel ya había
+    //    unido las dos primeras. Sin colapsar, la tarjeta volvía a proponer las
+    //    TRES una y otra vez, porque los pares contra el demoledor seguían sin
+    //    decidir (paso 3). Sacar el demoledor a mano no servía: eso es estado
+    //    local de la tarjeta y no se guarda en ningún lado. Y la única salida
+    //    que la pantalla ofrecía —«Son distintos» sobre el grupo— escribía
+    //    TODOS los pares como distintos, pisando la unión correcta que ya
+    //    existía. En producción quedó el rastro: tres filas idénticas del mismo
+    //    par, y ninguna del tercer nombre.
+    //
+    //    Colapsando, el candidato vuelve como el PAR que realmente falta
+    //    decidir —«¿el martillo de plástico es el demoledor?»—, que es lo que
+    //    el texto de ayuda promete desde siempre: «vuelve a aparecer sola,
+    //    como par, para decidirla mirándola».
+    const repDeGrupo = new Map();
+    for (const n of miembros.keys()) {
+      const g = (grupoDe && grupoDe.get(n)) || `solo:${n}`;
+      const actual = repDeGrupo.get(g);
+      const crudo = miembros.get(n);
+      // El más largo representa al grupo: mismo criterio que el canónico de
+      // `sugerirCandidatos`. El desempate por texto lo hace determinista.
+      if (!actual || crudo.length > actual.length
+        || (crudo.length === actual.length && crudo < actual)) repDeGrupo.set(g, crudo);
     }
+    // Todos en el mismo grupo confirmado → la pregunta ya está contestada.
+    if (repDeGrupo.size < 2) continue;
 
     // 3. Y sacar los pares ya contestados. Un candidato solo sobrevive si
-    //    queda al menos UN par sin decidir entre sus miembros: si todos los
-    //    pares ya se contestaron (aunque sea «distinto»), no hay nada que
-    //    preguntar de nuevo.
-    const nombres = norms.map(n => miembros.get(n));
+    //    queda al menos UN par sin decidir ENTRE LOS REPRESENTANTES: si el
+    //    martillo de plástico ya se declaró distinto del demoledor, el de bola
+    //    —que está unido al de plástico— también lo está, por transitividad.
+    //    Preguntarlo de nuevo sería pedir la misma respuesta dos veces.
+    const nombres = [...repDeGrupo.values()];
     let hayPregunta = false;
     for (let i = 0; i < nombres.length && !hayPregunta; i++) {
       for (let j = i + 1; j < nombres.length; j++) {
-        if (!paresResueltos || !paresResueltos.has(parClave(nombres[i], nombres[j]))) {
-          hayPregunta = true;
-          break;
-        }
+        const ga = claveGrupo(normInsumo(nombres[i]));
+        const gb = claveGrupo(normInsumo(nombres[j]));
+        if (contestadoEntreGrupos.has([ga, gb].sort().join('|'))) continue;
+        if (paresResueltos && paresResueltos.has(parClave(nombres[i], nombres[j]))) continue;
+        hayPregunta = true;
+        break;
       }
     }
     if (!hayPregunta) continue;

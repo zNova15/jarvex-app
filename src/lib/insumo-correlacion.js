@@ -42,6 +42,14 @@ const normParaScore = (s) => String(s || '')
   .replace(/[̀-ͯ]/g, '')
   .replace(/(\d)\s*\/\s*(\d)/g, '$1∕$2')
   .replace(/[^a-z0-9∕]+/g, ' ')
+  // 🔴 EL «x90» DE LOS CODOS (16-set-2026). «CODO INY 3/4 x90 SP PRESION»
+  // (compra) y «CODO INY 3/4 x 90 SP PRESION» (venta) son el mismo codo, pero
+  // sin este despegue el primero lleva el token «x90» y el segundo «x» + «90»:
+  // el 90 aparece como medida de un solo lado y el chequeo de scoreDeTokens
+  // anula el par. Solo la «x» multiplicadora, que ya es stopword — despegar
+  // TODA letra de todo dígito convertía «B5», «A4» y «S50» en medidas y hacía
+  // perder 13 pares que Gabriel ya había marcado como el mismo insumo.
+  .replace(/(^|\s)x(\d)/g, '$1x $2')
   .replace(/\s+/g, ' ')
   .trim();
 
@@ -309,7 +317,26 @@ function scoreDeTokens(ta, tb) {
   // de 4). Si solo UNO trae números ("Cemento Sol" vs "Cemento Sol x 42.5kg")
   // no se anula: puede ser el mismo insumo con la presentación explícita —
   // justamente el tipo de duda que decide el admin en el panel.
-  const numsA = ta.filter(t => /^\d/.test(t)), numsB = tb.filter(t => /^\d/.test(t));
+  //
+  // 🔴 LA MEDIDA ES EL NÚMERO, NO EL NÚMERO PEGADO A SU UNIDAD (16-set-2026).
+  // «TUBO PVC-U 200mm S-25» y «TUBO PVC-U 200 mm S-25» son el MISMO tubo: uno
+  // es la compra y el otro la venta. Comparando los tokens enteros, un lado
+  // trae «200mm» y el otro «200» — distintos, y el par entero se anulaba. No
+  // era que el score diera bajo: daba CERO, por eso bajar el umbral nunca
+  // recuperó ninguno. Medido el 16-set en GASOMI: así se perdían los tubos de
+  // alcantarillado, que son justo la mercadería que se compra y se revende.
+  //
+  // Se compara el PREFIJO NUMÉRICO y nada más: «200mm»→200, «2.40mt»→2 40,
+  // «75gr»→75. La tokenización NO se toca — «200mm» sigue siendo un token, así
+  // que el cociente de palabras lo sigue castigando (los tubos salen en 0,78,
+  // no en 1) y un nombre no se alarga por despegarle la unidad. Despegar de
+  // verdad costaba 13 pares que Gabriel ya había marcado «mismo».
+  //
+  // Sigue separando lo que tiene que separar: 160mm ≠ 200mm, y los cuatro
+  // controles adversariales de la lib siguen en cero.
+  const medidaDe = (t) => (t.match(/^[0-9∕]+/) || [t])[0];
+  const numsA = ta.filter(t => /^\d/.test(t)).map(medidaDe);
+  const numsB = tb.filter(t => /^\d/.test(t)).map(medidaDe);
   if (numsA.length && numsB.length) {
     for (const n of numsA) if (!numsB.includes(n)) return 0;
     for (const n of numsB) if (!numsA.includes(n)) return 0;
@@ -631,15 +658,41 @@ export function sugerirCandidatos(nombres, paresResueltos, grupoDe, opts = {}) {
 }
 
 // Genera los pares de correlación correspondientes a un cluster completo de N variantes
+/**
+ * @param opts.yaResueltos  el Map de `resolverPares()`. Si viene, el cluster NO
+ *   vuelve a escribir los pares que ya tienen respuesta:
+ *
+ *   🔴 DOS COSAS QUE PASARON DE VERDAD (16-set-2026, en producción).
+ *   1. DUPLICADOS: aceptar un grupo que contenía un par ya unido escribía ese
+ *      par OTRA VEZ. Quedaron tres filas idénticas de
+ *      «martillo plastico superflex ↔ martillo de bola».
+ *   2. PEOR — «Son distintos» sobre un grupo escribía TODOS sus pares como
+ *      distintos, incluido uno que ya era «mismo». Como `resolverPares` se
+ *      queda con el más reciente a igual `fuente`, una acción en lote borraba
+ *      una decisión correcta tomada a mano. Un botón de grupo no puede
+ *      deshacer lo que alguien decidió mirando un par.
+ *
+ *   Cambiar de opinión sobre un par sigue siendo posible: se hace desde su
+ *   fila en «Decisiones tomadas», que es donde se ve qué se está cambiando.
+ */
 export function crearParesDeCluster(variantes, canonico, relacion = 'mismo', opts = {}) {
   const normVars = [...new Set((variantes || []).map(normInsumo).filter(Boolean))];
   if (normVars.length < 2) return [];
   const canonicoFinal = canonico ? normInsumo(canonico) : normVars[0];
   const pares = [];
   const ahora = new Date().toISOString();
+  const yaResueltos = opts.yaResueltos || null;
+  const saltar = (a, b) => {
+    if (!yaResueltos) return false;
+    const previa = yaResueltos.get(parClave(a, b))?.relacion;
+    if (!previa) return false;
+    return previa === relacion            // misma respuesta: no duplicar
+      || (previa === 'mismo' && relacion === 'distinto');   // no pisar una unión
+  };
 
   for (let i = 0; i < normVars.length; i++) {
     for (let j = i + 1; j < normVars.length; j++) {
+      if (saltar(normVars[i], normVars[j])) continue;
       pares.push({
         nombre_a: normVars[i],
         nombre_b: normVars[j],

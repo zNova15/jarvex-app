@@ -822,7 +822,11 @@ function AnalisisInsumosPage({ showToast }) {
     if (decidiendoRef.current) return;
     decidiendoRef.current = true;
     try {
-      const userId = window.__useAuth?.()?.profile?.id || null;
+      // Ver la nota en guardarDestino (jx-empresa-detalle): __useAuth es el
+      // hook, y desde un handler tira "Invalid hook call". Acá el throw caía en
+      // el catch y salía como toast rojo — por eso el ámbito `inventario` tenía
+      // CERO filas el 16-set, con el botón «No van al inventario» ya soltado.
+      const userId = window.__currentUserId || null;
       await decidirCotejo({
         ambito: AMBITO_NO_INVENTARIO,
         llave: llaveNoInventario(nombreCrudo),
@@ -841,7 +845,7 @@ function AnalisisInsumosPage({ showToast }) {
   /** Deshacer: la descripción vuelve a las listas y al inventario. */
   const recuperarNombre = async (llave) => {
     try {
-      const userId = window.__useAuth?.()?.profile?.id || null;
+      const userId = window.__currentUserId || null;   // hook NO, ver descartarNombre
       await decidirCotejo({ ambito: AMBITO_NO_INVENTARIO, llave, decision: null }, userId);
       showToast?.('✓ Vuelve a la lista y al inventario', 'green');
     } catch (e) {
@@ -887,8 +891,13 @@ function AnalisisInsumosPage({ showToast }) {
       const canonicoCrudo = relacion === 'mismo'
         ? (muestraDe.get(normInsumo(cluster.canonico))?.nombre || cluster.canonico)
         : null;
-      const pares = crearParesDeCluster(cluster.variantes, canonicoCrudo, relacion);
-      if (!pares.length) return 'saltada';
+      // `yaResueltos`: no reescribir lo ya contestado ni dejar que un
+      // «Son distintos» de grupo pise una unión hecha a mano (ver la lib).
+      const pares = crearParesDeCluster(cluster.variantes, canonicoCrudo, relacion, { yaResueltos: resueltos });
+      if (!pares.length) {
+        if (!silencioso) showToast?.('Estos ya estaban decididos — no había nada nuevo que guardar', 'blue');
+        return 'saltada';
+      }
       for (const p of pares) {
         await corrHook.create({
           id: window.__newId(),

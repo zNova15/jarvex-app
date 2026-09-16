@@ -475,7 +475,14 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // Se marca sobre TODAS las variantes del grupo: el insumo se muestra con el
   // nombre de un proveedor y puede volver a aparecer con el de otro.
   const guardarDestino = async (ins, destino) => {
-    const userId = window.__useAuth?.()?.profile?.id || null;
+    // 🔴 `window.__currentUserId`, NO `window.__useAuth()`. __useAuth ES el hook
+    // de React: llamarlo desde un onChange —fuera de la fase de render— tira
+    // "Invalid hook call" (ver useAuth.js y Sentry JARVEX-APP-D). Y como esta
+    // línea vivía ANTES del try, el handler moría acá: sin escritura, sin toast,
+    // el select volviendo solo a "— destino —". Medido el 16-set: la tanda 6
+    // llevaba desde su deploy con CERO filas `destino_inv` en cotejo_decisiones.
+    // El Provider espeja el id en window justo para los llamadores no-React.
+    const userId = window.__currentUserId || null;
     const showToast = window.__showToast || (() => {});
     try {
       for (const v of (ins.variantes || [])) {

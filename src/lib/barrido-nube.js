@@ -35,8 +35,11 @@ const esModoPrueba = () => { try { return getCurrentMode() === 'prueba'; } catch
 const filaDelModo = (r, esPrueba) => (esPrueba ? r.demo === true : r.demo !== true);
 const ahora = () => new Date().toISOString();
 
+// __useAuth ES el hook de React y esto corre desde handlers, nunca en render:
+// el try lo tapaba devolviendo null, así que TODA fila de ia_recomendaciones
+// quedaba sin `created_by`. El Provider espeja el id en window para esto.
 const quienSoy = () => {
-  try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; }
+  try { return window.__currentUserId || null; } catch { return null; }
 };
 
 /** La tabla existe? (una versión vieja de Dexie abierta no la tiene todavía) */
