@@ -487,6 +487,16 @@ function AnalisisInsumosPage({ showToast }) {
     () => lineasTodas.filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0),
     [lineasTodas]
   );
+  // Compras Y VENTAS de la entidad, sin notas (tanda 3, 15-sep-2026): lo que
+  // alimenta el Catálogo y la bandeja de clasificación. Una descripción que la
+  // entidad solo VENDE (nunca la compró) tiene que poder clasificarse igual —
+  // ver el encabezado de `agruparDescripciones`. El comparador de precios de
+  // abajo (`compras`) sigue siendo solo-compra a propósito: un precio de venta
+  // no es un precio de proveedor.
+  const lineasParaCatalogo = uM(
+    () => lineasEntidad.filter(l => !l.esNota),
+    [lineasEntidad]
+  );
   const compras = uM(
     () => lineasEntidad.filter(l => l.clase === 'compra' && !l.esNota && l.precio > 0),
     [lineasEntidad]
@@ -1210,7 +1220,7 @@ function AnalisisInsumosPage({ showToast }) {
         <CatalogoCanonicoTab
           showToast={showToast}
           empresaFija={empresaVista}
-          compras={compras}
+          compras={lineasParaCatalogo}
           vistaInicial={vistaCatalogo}
         />
       )}

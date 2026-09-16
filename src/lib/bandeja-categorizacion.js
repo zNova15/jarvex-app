@@ -153,7 +153,17 @@ export function resolverCategorias(rows, { companyId = null, demo = false } = {}
 
 /** Una fila por DESCRIPCIÓN, con lo que esa descripción movió en total.
  *  Espeja el criterio de la pestaña de mapeo: se decide por texto, no por
- *  factura, y las ventas y notas de crédito ya vienen filtradas de afuera.
+ *  factura. Las notas de crédito/débito ya vienen filtradas de afuera.
+ *
+ *  ── LAS VENTAS TAMBIÉN ENTRAN (tanda 3, 15-sep-2026) ──────────────
+ *  🔴 Hasta acá esta función descartaba todo lo que no fuera `clase: 'compra'`,
+ *  así que una descripción que una entidad SOLO VENDE (nunca la compró; la
+ *  produce, la ensambla, o es el espejo de una compra intercompany sin ítems
+ *  propios) nunca llegaba a la bandeja — ni a proponerle catálogo ni a
+ *  correlacionarla. Medido en JARVEX el 15-set: de 46 líneas vendidas, la
+ *  correlación solo encontraba compra para 1. Dejar entrar la venta no
+ *  inventa una compra que no existe: le da a esa descripción su propia fila
+ *  para clasificar, igual que a cualquier compra.
  *
  *  `grupoDe` (tanda 4, 15-sep-2026): el mapa de Correlaciones. Cuando viene,
  *  las descripciones que YA se correlacionaron como «el mismo insumo» salen
@@ -161,7 +171,7 @@ export function resolverCategorias(rows, { companyId = null, demo = false } = {}
 export function agruparDescripciones(compras, { grupoDe = null } = {}) {
   const porNorm = new Map();
   for (const c of (compras || [])) {
-    if (c?.clase && c.clase !== 'compra') continue;
+    if (c?.clase && c.clase !== 'compra' && c.clase !== 'venta') continue;
     const norm = claveMapeo(c?.nombre);
     if (!norm) continue;
     const cur = porNorm.get(norm) || {

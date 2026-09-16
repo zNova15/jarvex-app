@@ -180,8 +180,14 @@ describe('el agrupado por descripción', () => {
     expect([...filas[0].monedas]).toContain('USD');    // y queda el marcador
   });
 
-  it('las ventas no entran', () => {
+  it('🔴 las ventas SÍ entran (tanda 3, 15-sep-2026): una descripción que solo se vende también se clasifica', () => {
     const { filas } = armar([{ ...compra('CEMENTO', 100), clase: 'venta' }]);
+    expect(filas).toHaveLength(1);
+    expect(filas[0].importe).toBe(100);
+  });
+
+  it('otras clases (ni compra ni venta) no entran', () => {
+    const { filas } = armar([{ ...compra('CEMENTO', 100), clase: 'otra_cosa' }]);
     expect(filas).toHaveLength(0);
   });
 });
