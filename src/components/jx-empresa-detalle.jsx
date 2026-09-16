@@ -67,7 +67,7 @@ import { agregarAlCatalogoYDecidir } from "../lib/bandeja-categorizacion-db.js";
 // Catálogo y la bandeja — una sola forma de elegir una clasificación en la app.
 import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { categoriasParaElegir, tipoDeCategoria, etiquetaCategoria } from "../lib/indices-unificados-iupc.js";
-import { sugerirPorCabeza } from "../lib/sugerencia-inventario.js";
+import { sugerirPorCabeza, cabezaDe } from "../lib/sugerencia-inventario.js";
 // Import ESTÁTICO (regla 1 del CLAUDE.md): viaja en el mismo chunk que esta
 // pantalla, que es la única que lo usa.
 import { PanelAnticipos } from "./jx-anticipos.jsx";
@@ -360,12 +360,23 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
     // Qué clasificación tiene hoy cada uno (por cualquiera de sus variantes).
     const conClasif = elegidos.map(i => ({ insumo: i, codigo: clasifInsumo(i) }));
     const codigos = [...new Set(conClasif.map(c => c.codigo).filter(Boolean))];
+    // ── LA BROCHA Y LA PRENSA (16-set) ─────────────────────────────
+    // Caso real: se unieron «BROCHAS DE 4 PULGADAS» con «PRENSA DE 4
+    // PULGADAS DE FIERRO NODULAR» — ninguna de las dos tenía clasificación
+    // todavía, así que el aviso de arriba (que compara clasificaciones) no
+    // tenía nada que comparar y no dijo nada. Compartían "4 pulgadas", nada
+    // más. Este aviso es independiente y mira otra cosa: si sus PRIMERAS
+    // PALABRAS son distintas («brocha» vs «prensa»), es la misma señal que
+    // usa `sugerirPorCabeza()` para AGRUPAR — acá se usa al revés, para
+    // frenar antes de unir algo que ni la sugerencia propondría junto.
+    const cabezas = [...new Set(elegidos.map(i => cabezaDe(i.display)).filter(Boolean))];
     setModalUnir({
       elegidos: conClasif,
       codigos,
       // Con UNA sola clasificación presente (o ninguna) no hay nada que
       // resolver: se propone esa misma y el modal es una confirmación corta.
       choca: codigos.length > 1,
+      cabezasDistintas: cabezas.length > 1 ? cabezas : null,
       codigoFinal: codigos[0] || '',
       guardando: false,
     });
@@ -1130,8 +1141,16 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: 10, borderBottom: '1px solid var(--border)' }}>
-
+        {/* ── LA BARRA DE FILTROS (reordenada 16-set-2026) ───────────
+            Gabriel: «los filtros estan super esparcidos. No hay orden».
+            Eran siete cosas en una sola fila que fue creciendo tanda tras
+            tanda: dos botones que decían «Todos» sin decir de qué, un grupo
+            sin etiqueta, y filtros mezclados con acciones que no filtran nada
+            (Correlaciones navega, Transformar abre un modal). Ahora son DOS
+            filas con un trabajo cada una: la de arriba ESTRECHA la lista
+            (buscador + los filtros, todos etiquetados), la de abajo actúa
+            sobre ella (Correlaciones, Transformar) y muestra el resultado. */}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '10px 10px 8px' }}>
           <input
             className="fi" style={{ flex: 1, minWidth: 180 }}
             placeholder="Buscar insumo (sin tildes, busca también las variantes de nombre)"
@@ -1154,7 +1173,11 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               </button>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          {/* «Tipo:» — antes era el segundo «Todos» de la fila, indistinguible
+              del de Flujo salvo por el color. Con la etiqueta puesta, los dos
+              leen «Flujo: Todos» y «Tipo: Todos» y ya no compiten. */}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--tm)', marginRight: 2 }}>Tipo:</span>
             <button className={`btn btn-xs ${tipoFiltro === '' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTipoFiltro('')}>Todos</button>
             {tiposPresentes.map(t => (
               <button key={t} className={`btn btn-xs ${tipoFiltro === t ? 'btn-amber' : 'btn-ghost'}`} onClick={() => { setTipoFiltro(t); setTope(PASO_LISTA); }}>{t}</button>
@@ -1177,10 +1200,18 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               (GASOMI E001-275, S/ 38.500 con una nota de S/ 690) y sus cinco
               ítems estaban perdidos entre cientos de filas. Misma solución
               que el botón rojo: un filtro que solo existe si hay algo. */}
+          {rebajados.total > 0 && (
+            <button className={`btn btn-xs ${soloRebajados ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={toggleRebajados}
+              title="Una nota de crédito rebajó en PARTE la factura de estas líneas: la compra sigue siendo real y se cuenta entera, así que la cantidad puede estar por encima de lo que finalmente quedó">
+              {soloRebajados ? 'ver todos' : `${rebajados.total} con NC parcial`}
+            </button>
+          )}
           {/* ── TANDA 6: filtrar por qué va a pasar con cada insumo ────
               «Activos fijos» son los que YA están en el 7.1 (un hecho, sale
               del vínculo de la tabla). Los demás son la decisión que alguien
-              tomó en el selector de cada fila. */}
+              tomó en el selector de cada fila — o la dedujo el 7.1 (destino
+              automático), ver `guardarDestino`. */}
           {(conteoDestinos.activos_cargados > 0
             || DESTINOS.some(d => conteoDestinos[d] > 0)) && (
             <select className="fi" style={{ width: 'auto', fontSize: 11 }}
@@ -1195,13 +1226,19 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               ))}
             </select>
           )}
-          {rebajados.total > 0 && (
-            <button className={`btn btn-xs ${soloRebajados ? 'btn-amber' : 'btn-ghost'}`}
-              onClick={toggleRebajados}
-              title="Una nota de crédito rebajó en PARTE la factura de estas líneas: la compra sigue siendo real y se cuenta entera, así que la cantidad puede estar por encima de lo que finalmente quedó">
-              {soloRebajados ? 'ver todos' : `${rebajados.total} con NC parcial`}
-            </button>
-          )}
+        </div>
+
+        {/* ── LA FILA DE ACCIONES (16-set) ───────────────────────────
+            Separada de los filtros a propósito: nada de esto ESTRECHA la
+            lista de arriba — Correlaciones navega a otra pantalla y
+            Transformar abre un modal. Mezclada con los filtros, antes se leía
+            como una opción más de «qué mostrar» y no lo era. El contador de
+            resultados vive acá, pegado a lo último que puede haber cambiado
+            cuántos hay. */}
+        <div style={{
+          display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+          padding: '6px 10px 10px', borderBottom: '1px solid var(--border)',
+        }}>
           <button
             className="btn btn-xs btn-ghost"
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
@@ -1231,7 +1268,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
               {verTransf ? 'ocultar' : `${resumenTransf.registradas} transformación(es)`}
             </button>
           )}
-          <span style={{ fontSize: 11, color: 'var(--tm)' }}>{filtrados.length} insumo(s)</span>
+          <span style={{ fontSize: 11, color: 'var(--tm)', marginLeft: 'auto' }}>{filtrados.length} insumo(s)</span>
         </div>
 
         {/* ── LAS TRANSFORMACIONES REGISTRADAS (tanda 7) ─────────────
@@ -1823,6 +1860,26 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                   </div>
                 ))}
               </div>
+
+              {/* ── DOS AVISOS DISTINTOS, POR DOS SEÑALES DISTINTAS ────
+                  El de clasificación mira lo que YA decidió una persona; este
+                  mira el TEXTO — sirve incluso cuando ninguno tiene
+                  clasificación todavía, que es justo el caso que se escapó:
+                  «BROCHAS DE 4 PULGADAS» unida con «PRENSA DE 4 PULGADAS DE
+                  FIERRO NODULAR» compartía la medida y nada más. */}
+              {modalUnir.cabezasDistintas && (
+                <div style={{
+                  padding: '9px 11px', borderRadius: 6, marginBottom: 10,
+                  border: '1px solid var(--red)',
+                  background: 'color-mix(in srgb, var(--red) 10%, var(--bg-c))',
+                  fontSize: 11.5, lineHeight: 1.5,
+                }}>
+                  <strong>⚠ No empiezan igual:</strong> {modalUnir.cabezasDistintas.map((c, i) => (
+                    <React.Fragment key={c}>{i > 0 && ' / '}«{c}»</React.Fragment>
+                  ))}. Si solo comparten una medida o una marca, probablemente
+                  NO son el mismo insumo — mirá los nombres completos arriba antes de unir.
+                </div>
+              )}
 
               {modalUnir.choca && (
                 <div style={{

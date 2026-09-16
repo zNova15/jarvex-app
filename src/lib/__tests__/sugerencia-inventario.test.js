@@ -99,3 +99,26 @@ describe('primero lo que resuelve más filas', () => {
     expect(g[1].insumos).toHaveLength(2);
   });
 });
+
+describe('🔴 LA BROCHA Y LA PRENSA (16-set-2026): el caso real que se coló', () => {
+  // Se unieron por error «BROCHAS DE 4 PULGADAS» con «PRENSA DE 4 PULGADAS DE
+  // FIERRO NODULAR» — compartían la medida y nada más. Ninguna de las dos
+  // tenía clasificación todavía, así que el aviso de clasificaciones (que
+  // compara lo YA decidido) no tenía nada que comparar. El aviso de cabezas
+  // en jx-empresa-detalle.jsx usa exactamente esta función para frenarlo:
+  // si hubiera existido antes, `cabezaDe` de las dos daba distinto y el
+  // modal de unir habría mostrado el aviso en rojo.
+  it('brocha y prensa NO comparten cabeza', () => {
+    expect(cabezaDe('BROCHAS DE 4 PULGADAS')).toBe('brochas');
+    expect(cabezaDe('PRENSA DE 4 PULGADAS DE FIERRO NODULAR')).toBe('prensa');
+    expect(cabezaDe('BROCHAS DE 4 PULGADAS')).not.toBe(cabezaDe('PRENSA DE 4 PULGADAS DE FIERRO NODULAR'));
+  });
+
+  it('por eso tampoco se hubieran propuesto juntas en el buscador', () => {
+    const g = sugerirPorCabeza([
+      ins('BROCHAS DE 4 PULGADAS'),
+      ins('PRENSA DE 4 PULGADAS DE FIERRO NODULAR'),
+    ]);
+    expect(g).toEqual([]);
+  });
+});
