@@ -1173,7 +1173,18 @@ function AnalisisInsumosPage({ showToast }) {
                     {[...insumoSel.compras].reverse().map((c, i) => (
                       <tr key={`${c.movId}_${i}`}>
                         <td>{c.fecha}</td><td style={{ fontFamily: 'monospace' }}>{c.doc}</td><td>{c.proveedorNombre}</td>
-                        <td style={{ color: 'var(--tm)' }}>{c.nombre}</td>
+                        <td style={{ color: 'var(--tm)' }}>
+                          {c.nombre}
+                          {/* Tanda 2: el detalle de una compra espejo se lee del
+                              otro libro. Quien abra ESE comprobante no va a
+                              encontrar esta línea adentro — hay que decirlo. */}
+                          {c.heredadaDe && (
+                            <span className="badge b-purple" style={{ fontSize: 9, marginLeft: 5 }}
+                              title="Compra a otra empresa del grupo. La factura espejo se crea sola y sin detalle (si lo trajera, el almacén contaría dos veces lo mismo): esta línea se lee de la venta del otro lado, que es el mismo comprobante.">
+                              ↩ del otro libro
+                            </span>
+                          )}
+                        </td>
                         <td style={{ textAlign: 'right' }}>{c.cantidad} {c.unidad}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtPrecio(c.precio, c.moneda)}</td>
                       </tr>

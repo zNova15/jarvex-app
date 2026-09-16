@@ -702,3 +702,75 @@ describe('factorConocido — lo aritmético se propone, lo demás se pregunta', 
     expect(factorConocido('', 'und')).toBe(null);
   });
 });
+
+// ── TANDA 2: LA MERCADERÍA DE LA COMPRA ESPEJO ENTRA, Y SE DICE ───────
+// El caso real: CONSORCIO EL INCA le compró 46 herramientas a JARVEX y en su
+// inventario no existía ninguna, porque la compra espejo se crea sin ítems
+// (para que el almacén no cuente dos veces lo mismo) y nadie leía el puntero.
+describe('inventarioDeEmpresa — el detalle heredado del espejo intercompany', () => {
+  const VENTA = {
+    id: 'v9', company_id: 'jarvex', date: '2026-07-06', clase: 'venta', type: 'income',
+    currency: 'PEN', amount: 400, document_number: 'E001-2', third_party_name: 'CONSORCIO EL INCA',
+    is_intercompany: true,
+    notas: { items_factura: [
+      { descripcion: 'MARTILLO DE BOLA', unidad: 'und', cantidad: 4, precio_unitario: 50 },
+      { descripcion: 'PALANA CUCHARA', unidad: 'und', cantidad: 4, precio_unitario: 50 },
+    ] },
+  };
+  const ESPEJO = {
+    id: 'c9', company_id: 'elinca', date: '2026-07-06', clase: 'compra', type: 'cost',
+    currency: 'PEN', amount: 400, document_number: 'E001-2', third_party_name: 'JARVEX',
+    is_intercompany: true, recepcion_status: 'no_aplica',
+    notas: { desglose_heredado_de: 'v9' },
+  };
+
+  it('la mercadería entra al inventario del COMPRADOR y queda contada aparte', () => {
+    const lineas = extraerLineasDeFacturas([VENTA, ESPEJO]);
+    const inv = inventarioDeEmpresa(lineas, { companyId: 'elinca' });
+    expect(inv.insumos).toHaveLength(2);
+    expect(inv.totales.lineasCompra).toBe(2);
+    // Se cuenta aparte para poder decirlo: el comprobante del comprador no
+    // tiene esas líneas adentro, se leen del libro del vendedor.
+    expect(inv.totales.lineasHeredadas).toBe(2);
+    expect(inv.totales.facturasHeredadas).toBe(1);
+    expect(inv.insumos.every(i => i.heredadas === 1)).toBe(true);
+    expect(inv.totales.gastos.find(g => g.moneda === 'PEN').monto).toBe(400);
+  });
+
+  it('la venta sigue siendo del VENDEDOR: los dos lados del mismo papel, no un duplicado', () => {
+    const lineas = extraerLineasDeFacturas([VENTA, ESPEJO]);
+    const jarvex = inventarioDeEmpresa(lineas, { companyId: 'jarvex' });
+    expect(jarvex.totales.lineasVenta).toBe(2);
+    expect(jarvex.totales.lineasCompra).toBe(0);
+    expect(jarvex.totales.lineasHeredadas).toBe(0);
+  });
+
+  it('sin el detalle heredado el inventario del comprador estaba VACÍO', () => {
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas([ESPEJO]), { companyId: 'elinca' });
+    expect(inv.insumos).toHaveLength(0);
+  });
+
+  it('si la venta de origen se anuló, esa mercadería no cuenta acá tampoco', () => {
+    const NC = {
+      id: 'ncv9', company_id: 'jarvex', date: '2026-07-20', clase: 'venta', type: 'income',
+      document_type: 'nota_credito', currency: 'PEN', amount: -400,
+      document_number: 'E001-70', related_movement_id: 'v9', nota_motivo: 'anulación',
+    };
+    const inv = inventarioDeEmpresa(extraerLineasDeFacturas([VENTA, NC, ESPEJO]), { companyId: 'elinca' });
+    expect(inv.insumos).toHaveLength(0);
+    expect(inv.totales.lineasAnuladas).toBe(2);
+    expect(inv.totales.facturasAnuladas).toBe(1);
+  });
+
+  it('resumenFinancieroEmpresa deja de llamar «sin detalle» a lo que la tabla sí muestra', () => {
+    const lineas = extraerLineasDeFacturas([VENTA, ESPEJO]);
+    const heredanDetalle = new Set(lineas.filter(l => l.heredadaDe).map(l => l.movId));
+    const sinSaberlo = resumenFinancieroEmpresa([ESPEJO], { companyId: 'elinca' });
+    expect(sinSaberlo.sinItems).toBe(1);
+    const sabiendolo = resumenFinancieroEmpresa([ESPEJO], { companyId: 'elinca', heredanDetalle });
+    expect(sabiendolo.sinItems).toBe(0);
+    expect(sabiendolo.detalleHeredado).toBe(1);
+    // …y el dinero no se toca: es el mismo movimiento, contado igual.
+    expect(sabiendolo.total.costos).toBe(sinSaberlo.total.costos);
+  });
+});

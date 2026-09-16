@@ -263,10 +263,20 @@ export function factorConocido(desde, hacia) {
 // anulados. Se separa lo INTERCO (facturación entre empresas del grupo) porque
 // para el grupo no es plata nueva — el mismo corte que hace el Consolidado.
 export function resumenFinancieroEmpresa(movs, opts = {}) {
-  const { companyId = null, moneda = 'PEN', demo = false } = opts;
+  const {
+    companyId = null, moneda = 'PEN', demo = false,
+    // Tanda 2: los comprobantes que NO tienen ítems propios pero SÍ muestran
+    // detalle, leído de la venta de origen en el libro de la otra empresa
+    // (`extraerLineasDeFacturas` → `heredadaDe`). Llega RESUELTO desde el
+    // llamador —un Set de movId— por el mismo motivo que `esActivo` y
+    // `destinoDe`: esta es la lib BASE y no importa capas de arriba.
+    // Sin esto el resumen diría «factura sin detalle» de una factura cuyo
+    // detalle está en la tabla de abajo.
+    heredanDetalle = null,
+  } = opts;
   const cero = () => ({ ingresos: 0, costos: 0, gastos: 0 });
   const total = cero(), externo = cero(), interco = { ingresos: 0, costos: 0 };
-  let nMovs = 0, sinItems = 0, cancelados = 0, notas = 0;
+  let nMovs = 0, sinItems = 0, cancelados = 0, notas = 0, detalleHeredado = 0;
   const otrasMonedas = new Map();
 
   for (const m of (movs || [])) {
@@ -282,7 +292,10 @@ export function resumenFinancieroEmpresa(movs, opts = {}) {
     // venga la fila): sin el stringify, un objeto daría "[object Object]" y
     // TODA factura de Captura Mágica se contaría como "sin detalle".
     const notasTxt = typeof m.notas === 'string' ? m.notas : (m.notas ? JSON.stringify(m.notas) : '');
-    if (!notasTxt.includes('items_factura')) sinItems++;
+    if (!notasTxt.includes('items_factura')) {
+      if (heredanDetalle && heredanDetalle.has(m.id)) detalleHeredado++;
+      else sinItems++;
+    }
     if (['nota_credito', 'nota_debito'].includes(m.document_type)) notas++;
 
     const a = Number(m.amount || 0);
@@ -308,7 +321,7 @@ export function resumenFinancieroEmpresa(movs, opts = {}) {
     total: conUtilidad(total),
     externo: conUtilidad(externo),
     interco,
-    nMovs, sinItems, cancelados, notas,
+    nMovs, sinItems, cancelados, notas, detalleHeredado,
     otrasMonedas: [...otrasMonedas.entries()]
       .map(([m2, n]) => ({ moneda: m2, movs: n }))
       .sort((x, y) => y.movs - x.movs),
@@ -471,6 +484,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
   } = opts;
   const porInsumo = new Map();
   const facturasAnuladas = new Set();
+  const facturasHeredadas = new Set();
   const noInv = new Set();
   const totales = {
     insumos: 0, lineasCompra: 0, lineasVenta: 0, lineasSinPrecio: 0,
@@ -478,6 +492,10 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     anticipos: new Map(),
     // Tanda 1: lo que la nota de crédito se llevó, y lo que solo rebajó.
     lineasAnuladas: 0, facturasAnuladas: 0, lineasRebajadas: 0,
+    // Tanda 2: lo que entró por una compra espejo, leyendo el detalle de la
+    // venta de la otra empresa del grupo. Se cuenta aparte porque es mercadería
+    // que ESTÁ en el inventario y cuyo detalle NO está en el comprobante.
+    lineasHeredadas: 0, facturasHeredadas: 0,
     // Tanda 3: lo que una persona marcó como «esto no va al inventario».
     lineasNoInventariables: 0, nombresNoInventariables: 0,
   };
@@ -505,6 +523,15 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     // Rebajada por una nota PARCIAL: la compra sigue siendo real (no se
     // descarta), pero la cantidad de acá está sin rebajar. Ver `lineasRebajadas`.
     if (l.rebajada) totales.lineasRebajadas++;
+    // ── EL DETALLE QUE SE LEE DEL OTRO LADO (tanda 2) ────────────────
+    // La compra espejo no trae sus ítems: los presta la venta de origen. La
+    // mercadería es de esta empresa y cuenta como cualquier otra, pero se
+    // cuenta aparte para poder DECIRLO — quien mire el comprobante no va a
+    // encontrar ahí las líneas que ve en esta tabla.
+    if (l.heredadaDe) {
+      totales.lineasHeredadas++;
+      if (l.movId) facturasHeredadas.add(l.movId);
+    }
     // ── «ESTO NO VA AL INVENTARIO» (tanda 3) ─────────────────────────
     // Una persona dijo que esta descripción no es mercadería: un arbitraje,
     // un seguro, una detracción. No es un bien que entre ni salga, así que no
@@ -528,6 +555,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
         _venta: nuevoLado(),
         recepcion: { conDato: 0, recibido: 0 },
         rebajadas: 0,
+        heredadas: 0,
         activosCargados: 0,
         lineas: [],
       });
@@ -535,6 +563,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
     const ins = porInsumo.get(clave);
     ins.variantes.add(l.nombre);
     if (l.rebajada) ins.rebajadas++;
+    if (l.heredadaDe) ins.heredadas++;
     // ── EL HECHO: esta línea ya es un activo fijo (tanda 6) ──────────
     // No es una opinión ni una propuesta: hay una fila en `activos_fijos`
     // apuntando a esta línea de esta factura. El dato existía desde siempre;
@@ -668,6 +697,9 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
       // Cuántas de sus líneas vienen de una factura que una nota de crédito
       // rebajó en parte: la cantidad de este insumo está SIN rebajar.
       rebajadas: ins.rebajadas || 0,
+      // Cuántas de sus líneas vienen prestadas de la venta de la otra empresa
+      // (tanda 2): la fila lo dice con la chapita «↩ del otro libro».
+      heredadas: ins.heredadas || 0,
       // ── TANDA 6 ──────────────────────────────────────────────────
       // `activosCargados`: cuántas de sus compras ya están en el registro
       // 7.1 (un hecho). `destino`: qué dijo una persona que va a pasar con
@@ -727,6 +759,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
         margenEconomicoPen: null,
         margenPct: null,
         rebajadas: 0,
+        heredadas: 0,
         activosCargados: 0,
         destino: dest?.destino || null,
         saldoVendible: dest ? dest.saldoVendible !== false : true,
@@ -746,6 +779,7 @@ export function inventarioDeEmpresa(lineas, opts = {}) {
 
   totales.insumos = insumos.length;
   totales.facturasAnuladas = facturasAnuladas.size;
+  totales.facturasHeredadas = facturasHeredadas.size;
   totales.nombresNoInventariables = noInv.size;
   // Tanda 7: cuántos insumos tocó una transformación, y cuántos existen SOLO
   // porque salieron de una (los que no tienen ni una factura detrás).

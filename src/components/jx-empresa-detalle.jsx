@@ -155,6 +155,17 @@ const PASO_LISTA = 50;   // insumos por tanda (GASOMI tiene cientos)
 function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios = [], consorcioSocios = [], trabajosBS = [], onVolver, seccionInicial = null }) {
   // ── Hooks: TODOS antes de cualquier return (regla crítica 3) ──────
   const movsHook = window.__hooks.useAccountingMovements(company?.id);
+  // ── EL LIBRO DE AL LADO, SOLO PARA LEER EL PROPIO (tanda 2, 15-set-2026) ──
+  // La compra espejo intercompany no trae sus ítems: los presta la VENTA de la
+  // otra empresa del grupo (ver `extraerLineasDeFacturas`). Ese origen vive por
+  // definición fuera de `movsHook`, que está filtrado por empresa — sin esta
+  // segunda lectura la herencia no encontraría nunca de dónde leer, y las 98
+  // compras espejo del grupo (S/ 2,32 M, 290 líneas) seguirían entrando al
+  // inventario sin una sola línea de mercadería.
+  // 🔴 Se usa SOLO como índice de orígenes. Todo lo que se muestra sigue
+  // saliendo de `movs` —el libro de ESTA empresa— y el detalle heredado se
+  // muestra marcado, nunca como si estuviera cargado en el comprobante.
+  const movsGrupoHook = window.__hooks.useAccountingMovements();
   const corrHook = window.__hooks.useInsumoCorrelaciones();
   const personalHook = window.__hooks.usePersonal?.() || { data: [] };
   // Secciones nuevas del desglose (tanda 2E): los hooks ya aceptan company_id,
@@ -245,11 +256,22 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   }).sort((a, b) => trabajoAbierto(b.estado) - trabajoAbierto(a.estado)
     || String(a.nombre || '').localeCompare(String(b.nombre || ''))), [trabajosBS, consorcios, company?.id]);
 
-  const resumen = uMD(
-    () => resumenFinancieroEmpresa(movs, { companyId: company?.id, moneda, demo: esPrueba }),
-    [movs, company?.id, moneda, esPrueba]
+  const movsGrupo = movsGrupoHook.data || [];
+  const lineas = uMD(
+    () => extraerLineasDeFacturas(movs, { demo: esPrueba, origenes: movsGrupo }),
+    [movs, movsGrupo, esPrueba]
   );
-  const lineas = uMD(() => extraerLineasDeFacturas(movs, { demo: esPrueba }), [movs, esPrueba]);
+  // Las compras espejo cuyo detalle se leyó del otro libro: el resumen las
+  // descuenta de «facturas sin detalle» para no decir dos cosas distintas
+  // sobre el mismo comprobante (la tabla de abajo SÍ muestra sus líneas).
+  const heredanDetalle = uMD(
+    () => new Set(lineas.filter(l => l.heredadaDe).map(l => l.movId)),
+    [lineas]
+  );
+  const resumen = uMD(
+    () => resumenFinancieroEmpresa(movs, { companyId: company?.id, moneda, demo: esPrueba, heredanDetalle }),
+    [movs, company?.id, moneda, esPrueba, heredanDetalle]
+  );
   const resueltos = uMD(() => resolverPares(corrHook.data || [], { demo: esPrueba }), [corrHook.data, esPrueba]);
   const { grupoDe, grupos, factorDe } = uMD(() => construirGrupos(resueltos), [resueltos]);
   // ── Bloques temporales (Tanda 3) ─────────────────────────────────────
@@ -815,6 +837,20 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         {inv.totales.lineasNota > 0 && <> {inv.totales.lineasNota} línea(s) de nota de crédito/débito quedan fuera de las cantidades.</>}
       </div>
 
+      {/* ── LA COMPRA A OTRA EMPRESA DEL GRUPO YA TRAE SU MERCADERÍA (tanda 2) ──
+          El espejo intercompany se carga solo y SIN ítems, a propósito: si los
+          trajera, el almacén del comprador contaría dos veces lo mismo. El
+          detalle se lee de la venta de origen y se dice que es prestado. */}
+      {inv.totales.lineasHeredadas > 0 && (
+        <div className="card card-p" style={{ marginBottom: 10, borderLeft: '3px solid var(--purple)', fontSize: 11.5, color: 'var(--ts)' }}>
+          <strong>Compras a otra empresa del grupo</strong> — <strong>{inv.totales.facturasHeredadas} factura(s)</strong>{' '}
+          de esta empresa no tienen el detalle cargado en el comprobante (la compra espejo se crea sola y sin ítems,
+          para que el almacén no cuente dos veces la misma mercadería). Sus <strong>{inv.totales.lineasHeredadas} línea(s)</strong>{' '}
+          se leen de la venta del otro lado —el mismo comprobante, visto desde el libro de la empresa que lo emitió— y
+          cuentan en este inventario como cualquier otra compra. En la lista salen con la chapita «↩ del otro libro».
+          Si esa venta se anuló con una nota de crédito, sus líneas no cuentan acá tampoco.
+        </div>
+      )}
       {/* ── LO QUE LA NOTA DE CRÉDITO SE LLEVÓ (tanda 1, 15-set-2026) ──
           Gabriel: «si una factura se llega a anular con una nota de crédito,
           los insumos de dicha factura dejan de existir también en nuestro
@@ -1283,6 +1319,12 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {ins.rebajadas > 0 && (
                               <span className="badge b-amber" style={{ fontSize: 9 }} title="Una nota de crédito rebajó en PARTE la factura de estas líneas. La compra sigue siendo real y se cuenta entera, así que la cantidad puede estar por encima de lo que quedó.">
                                 NC parcial ({ins.rebajadas})
+                              </span>
+                            )}
+                            {ins.heredadas > 0 && (
+                              <span className="badge b-purple" style={{ fontSize: 9 }}
+                                title="Estas líneas llegaron por una COMPRA a otra empresa del grupo. Esa factura espejo se carga sola y sin detalle (si lo trajera, el almacén contaría dos veces lo mismo), así que el detalle se lee de la venta del otro lado: mismo comprobante, misma mercadería, leída desde el libro que sí la tiene cargada.">
+                                ↩ del otro libro ({ins.heredadas})
                               </span>
                             )}
                           </div>
