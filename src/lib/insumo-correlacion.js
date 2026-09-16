@@ -29,7 +29,7 @@ export const normInsumo = (s) => String(s || '')
 // se sugería como el mismo insumo que "REDUCCION 2 1/2\" A 1" (de 2-1/2 a 1)
 // — son dos reducciones DISTINTAS, solo comparten los dígitos 1 y 2 sueltos.
 // normInsumo() convierte "1/2" en dos tokens "1" y "2" (la "/" se pierde en el
-// `[^a-z0-9]+` → espacio), así que el chequeo de MEDIDAS de scoreTokens —que
+// `[^a-z0-9]+` → espacio), así que el chequeo de MEDIDAS de scoreDeTokens —que
 // compara por PERTENENCIA a un conjunto, no por posición— veía {1,1,2} contra
 // {2,1,2,1}: mismos dígitos, conjuntos "compatibles", score alto. Conservando
 // "1/2" como el token atómico "1∕2" (barra de fracción U+2215, sobrevive al
@@ -263,9 +263,47 @@ export const tokenMatch = (t, u) => {
 // cuenta como palabra y qué como medida.
 export const tokensParaScore = (nombre) => tokensDe(normParaScore(nombre));
 
-export function scoreNombres(a, b) {
-  const ta = tokensDe(normParaScore(a));
-  const tb = tokensDe(normParaScore(b));
+// ── LA CONTENCIÓN (tanda 1, 15-set-2026) ────────────────────────────
+// Cuando TODAS las palabras del nombre corto aparecen en el largo, es el mismo
+// insumo escrito con más detalle — no dos cosas que se parecen. El cociente
+// `m / max` castiga justo ese caso, porque el denominador crece con lo que el
+// nombre largo agrega aunque del lado corto no sobre NADA:
+//
+//   «PRENSA DE 4 PULGADAS»  vs  «PRENSA DE 4 PULGADAS DE FIERRO NODULAR» → 0,60
+//   «PALANA CUCHARA»        vs  «PALANA CUCHARA M/BELLOTA»               → 0,50
+//   «CINTA MASKING»         vs  «CINTA MASKING TAPE 2 X 20YDS»           → 0,40
+//
+// Y ésa es EXACTAMENTE la forma del cruce compra↔venta, que es lo que Gabriel
+// vino a buscar: el proveedor factura con modelo y código, la venta se factura
+// con marca, y casi siempre uno de los dos es el otro con más detalle.
+//
+// Medido contra los 257 pares que Gabriel YA decidió (el único juez honesto
+// que hay): recupera 4 «mismo» que hoy el motor no propone, NO pierde ninguno
+// de los 133 que ya proponía, y NO suma ni un solo «distinto» a la cola. En
+// JARVEX, las ventas que encuentran alguna compra para correlacionar pasan de
+// 1 a 7 de 46.
+//
+// 🔴 EL PISO ES 0,60 Y NO 1,0, A PROPÓSITO. Contener no es ser igual: «LENTES
+// DE SEGURIDAD» está contenido en «LENTES DE SEGURIDAD ANTIMPACTO» y Gabriel
+// los marcó DISTINTOS. Lo que la regla afirma es «esto merece la pregunta»,
+// no «esto es lo mismo»: apenas cruza el umbral (0,55) y queda entre las
+// sugerencias de menor score, nunca arriba de todo.
+//
+// 🔴 VA DESPUÉS DEL CHEQUEO DE MEDIDAS Y NUNCA ANTES. «TAPON 1/2» está
+// contenido en «TAPON 2 1/2 AGUA» y son dos medidas distintas; el `return 0`
+// de las medidas ya los separó y esta regla no los resucita. Verificado
+// también contra los cuatro controles adversariales de la lib (REDUCCION
+// 1"x1/2 vs 2-1/2"a1, clavo 8 vs 4, aceite 10W30 vs 20W50): los cuatro siguen
+// en cero.
+//
+// El mínimo de DOS palabras evita que un nombre de una sola («DISCOS»,
+// «CEMENTO») quede contenido en media base de datos.
+const PISO_CONTENCION = 0.60;
+
+// El cálculo, UNA sola vez: `scoreNombres` y el sugeridor son la misma regla
+// con distinta entrada (nombres crudos / tokens ya precomputados) y tenerla
+// escrita dos veces era una invitación a que divergieran.
+function scoreDeTokens(ta, tb) {
   if (!ta.length || !tb.length) return 0;
   // MEDIDAS: si AMBOS nombres traen números y difieren → 0 (clavo de 8 ≠ clavo
   // de 4). Si solo UNO trae números ("Cemento Sol" vs "Cemento Sol x 42.5kg")
@@ -282,7 +320,17 @@ export function scoreNombres(a, b) {
     const j = tb.findIndex((u, i) => !usados.has(i) && tokenMatch(t, u));
     if (j >= 0) { usados.add(j); m++; }
   }
-  return m / Math.max(ta.length, tb.length);
+  const largo = Math.max(ta.length, tb.length);
+  const corto = Math.min(ta.length, tb.length);
+  const base = m / largo;
+  // `m` nunca puede pasar de `corto` (cada match consume un índice distinto),
+  // así que `m === corto` es «del lado corto no quedó ni una palabra suelta».
+  if (m === corto && corto >= 2) return Math.max(base, PISO_CONTENCION);
+  return base;
+}
+
+export function scoreNombres(a, b) {
+  return scoreDeTokens(tokensDe(normParaScore(a)), tokensDe(normParaScore(b)));
 }
 
 // Para PINTAR la diferencia entre dos nombres candidatos a "mismo insumo"
@@ -290,7 +338,7 @@ export function scoreNombres(a, b) {
 // junto a "REDUCCION 2 1/2\" A 1"": «marcá de un color distinto las
 // diferencias, para agilizar la decisión»).
 //
-// Usa el MISMO tokenMatch() que scoreNombres()/scoreTokens(): lo que queda
+// Usa el MISMO tokenMatch() que scoreNombres()/scoreDeTokens(): lo que queda
 // resaltado es EXACTAMENTE lo que el motor no pudo emparejar, nunca una
 // sorpresa distinta de por qué se sugirió el par. Devuelve las palabras en su
 // forma ORIGINAL (con tildes y mayúsculas, tal como las escribió cada
@@ -316,24 +364,13 @@ export function resaltarDiferencias(a, b) {
   return { a: marcar(crudoA, tA, tB), b: marcar(crudoB, tB, tA) };
 }
 
-// Score sobre tokens YA precomputados (camino caliente del sugeridor: evita
-// re-normalizar cada nombre miles de veces — hallazgo de rendimiento de la
-// revisión adversarial: 2000 nombres tardaban ~13 s re-normalizando por par).
-function scoreTokens(ta, tb) {
-  if (!ta.length || !tb.length) return 0;
-  const numsA = ta.filter(t => /^\d/.test(t)), numsB = tb.filter(t => /^\d/.test(t));
-  if (numsA.length && numsB.length) {
-    for (const n of numsA) if (!numsB.includes(n)) return 0;
-    for (const n of numsB) if (!numsA.includes(n)) return 0;
-  }
-  const usados = new Set();
-  let m = 0;
-  for (const t of ta) {
-    const j = tb.findIndex((u, i) => !usados.has(i) && tokenMatch(t, u));
-    if (j >= 0) { usados.add(j); m++; }
-  }
-  return m / Math.max(ta.length, tb.length);
-}
+// El sugeridor usa `scoreDeTokens` directamente sobre tokens YA precomputados
+// (camino caliente: evita re-normalizar cada nombre miles de veces — hallazgo
+// de rendimiento de la revisión adversarial: 2000 nombres tardaban ~13 s
+// re-normalizando por par). Antes esto era una función `scoreTokens` con el
+// cálculo COPIADO de `scoreNombres`; ahora es la misma, porque el sugeridor y
+// la pantalla tienen que dar el mismo número o el panel mostraría un score
+// distinto del que decidió proponer el par.
 
 // Propone pares AÚN NO decididos entre los nombres dados.
 // nombres: lista de nombres (crudos); paresResueltos: de resolverPares();
@@ -395,7 +432,7 @@ export function sugerirPares(nombres, paresResueltos, grupoDe, opts = {}) {
         vistos.add(k);
         if (paresResueltos && paresResueltos.has(k)) continue;               // ya decidido
         if (grupoDe && grupoDe.get(a) && grupoDe.get(a) === grupoDe.get(b)) continue;  // ya agrupados
-        const s = scoreTokens(toks[ia], toks[ib]);
+        const s = scoreDeTokens(toks[ia], toks[ib]);
         if (s >= umbral) out.push({ nombre_a: a, nombre_b: b, score: Math.round(s * 100) / 100 });
       }
     }

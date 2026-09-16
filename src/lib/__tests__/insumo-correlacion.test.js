@@ -83,6 +83,56 @@ describe('scoreNombres', () => {
   });
 });
 
+// ── LA CONTENCIÓN (tanda 1, 15-set-2026) ────────────────────────────
+// Gabriel, mirando el inventario de JARVEX: de 46 líneas vendidas UNA SOLA
+// aparecía con compra y venta. Midiendo el motor contra los 195 nombres de
+// compra de la empresa: 45 de las 46 quedaban debajo del umbral.
+//
+// La causa no era la tokenización sino el DENOMINADOR: `m / max(largos)`
+// castiga al nombre corto contra el largo aunque del lado corto no sobre ni
+// una palabra — que es exactamente la forma del cruce compra↔venta (el
+// proveedor factura con modelo, la venta se factura con marca).
+//
+// Calibrado contra los 257 pares que Gabriel YA decidió en producción:
+// recupera 4 «mismo», no pierde ninguno de los 133 previos, y no suma ni un
+// «distinto» a la cola.
+describe('scoreNombres — contención (el corto entero dentro del largo)', () => {
+  it('el caso de JARVEX: PALANA CUCHARA está entera dentro de PALANA CUCHARA M/BELLOTA', () => {
+    // Sin la regla daba 0,50 y el panel no lo proponía nunca.
+    expect(scoreNombres('PALANA CUCHARA', 'PALANA CUCHARA M/BELLOTA')).toBeGreaterThanOrEqual(0.55);
+  });
+  it('el nombre largo agrega detalle, no cambia el insumo', () => {
+    expect(scoreNombres('PRENSA DE 4 PULGADAS', 'PRENSA DE 4 PULGADAS DE FIERRO NODULAR')).toBeGreaterThanOrEqual(0.55);
+    expect(scoreNombres('CINTA MASKING', 'CINTA MASKING TAPE 2 X 20YDS')).toBeGreaterThanOrEqual(0.55);
+  });
+  it('es simétrica: da igual cuál se pase primero', () => {
+    expect(scoreNombres('PALANA CUCHARA M/BELLOTA', 'PALANA CUCHARA'))
+      .toBe(scoreNombres('PALANA CUCHARA', 'PALANA CUCHARA M/BELLOTA'));
+  });
+
+  // 🔴 Los tres invariantes que la regla NO puede romper.
+  it('NO resucita medidas distintas: el chequeo de medidas corre ANTES', () => {
+    // "TAPON 1/2" está contenido en "TAPON 2 1/2 AGUA", y son medidas
+    // distintas — Gabriel los marcó DISTINTOS en producción.
+    expect(scoreNombres('TAPON 1/2 AGUA', 'TAPON 2 1/2 AGUA (HECHIZO)')).toBe(0);
+    expect(scoreNombres('REDUCCION 1" X 1/2', 'REDUCCION 2 1/2" A 1')).toBe(0);
+    expect(scoreNombres('clavo de 8', 'clavo de 4')).toBe(0);
+  });
+  it('contener no es ser igual: el piso es 0,60, no 1', () => {
+    // "LENTES DE SEGURIDAD" está contenido en "LENTES DE SEGURIDAD
+    // ANTIMPACTO" y Gabriel los marcó DISTINTOS. La regla dice «esto merece
+    // la pregunta», no «esto es lo mismo»: tiene que quedar apenas sobre el
+    // umbral, entre las sugerencias de menor score.
+    const s = scoreNombres('LENTES DE SEGURIDAD', 'LENTES DE SEGURIDAD ANTIMPACTO');
+    expect(s).toBeGreaterThanOrEqual(0.55);
+    expect(s).toBeLessThan(0.75);
+  });
+  it('un nombre de UNA sola palabra no queda contenido en media base', () => {
+    expect(scoreNombres('DISCOS', 'DISCO DE CORTE DE 7 PULGADAS PARA FIERRO')).toBeLessThan(0.55);
+    expect(scoreNombres('CEMENTO', 'CEMENTO DISOLVENTE 1/4 GALON ESPECIAL DORADO')).toBeLessThan(0.55);
+  });
+});
+
 describe('resaltarDiferencias — para pintar el par en la UI (14-sep-2026)', () => {
   it('resalta solo las palabras SIN contraparte en el otro nombre', () => {
     const r = resaltarDiferencias('Clavo 8 pulg', "Clavos de 8''");
