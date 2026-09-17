@@ -1,5 +1,5 @@
 import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
-import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat } from '../lib/openrouter.js';
+import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, armarCadenaOpenRouter } from '../lib/openrouter.js';
 import { resolverTexto } from '../lib/modelos-ia.js';
 import { promptClasificacion } from '../lib/prompt-clasificacion.js';
 
@@ -236,8 +236,9 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
     let motor = 'claude';
     if (cfgOR.activo) {
       try {
+        const cadenaOR = armarCadenaOpenRouter('auto', cfgOR);
         const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+          modelo: cadenaOR.modelo, respaldos: cadenaOR.respaldos, politica: cfgOR.politica,
           system: sys, user: usr, maxTokens: 2000,
         }), Math.min(deadline, Date.now() + 18000));
         data = normalizarRespuestaOR(cruda);
@@ -343,29 +344,56 @@ async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null
   // ámbitos: si el pedido se cayera a otro modelo por detrás, la comparación
   // entre modelos mediría una mezcla. Si el elegido falla, falla y se dice.
   const t = resolverTexto(elegido, 'clasificacion');
-  // cfg.respaldos trae 2 gratuitos (ver MODELO_FALLBACK_DEFAULT); acá solo se
-  // usa el PRIMERO —el segundo gratuito le cede su lugar al de pago— y
-  // `construirCuerpoOR` de todos modos recorta a 3 entradas en total.
-  const respaldosAuto = [...cfg.respaldos.slice(0, 1), RESPALDO_PAGO_CLASIFICACION];
+  // 🔴 EN 'auto' EL TERCER CUPO NO ES `armarCadenaOpenRouter` A SECAS. Ese
+  // helper (agregado anoche en lib/openrouter.js) deja 'auto' en 2 gratuitos
+  // y solo abre el 3er cupo para cuando alguien ELIGE un modelo a mano. Para
+  // estas tres ayudas Gabriel decidió lo de arriba: el 3er cupo de 'auto'
+  // también se usa, y va para GPT-OSS 120B — no para un tercer gratuito.
+  const cadenaAuto = armarCadenaOpenRouter('auto', cfg);
+  const cadenaOR = t.auto
+    ? { modelo: cadenaAuto.modelo, respaldos: [...cadenaAuto.respaldos, RESPALDO_PAGO_CLASIFICACION] }
+    : armarCadenaOpenRouter(t.modelo, cfg);
   let data;
   try {
     const cruda = await openrouterChat(cfg.apiKey, construirCuerpoOR({
-      modelo: t.auto ? cfg.modelo : t.modelo,
-      respaldos: t.auto ? respaldosAuto : [],
+      modelo: cadenaOR.modelo,
+      respaldos: cadenaOR.respaldos,
       politica: cfg.politica,
       system: sys, user: usr, maxTokens, razonamiento: 'bajo',
     }), Date.now() + 25000);
     data = normalizarRespuestaOR(cruda);
   } catch (err) {
-    console.warn(`[${modo}] OpenRouter falló:`, (err && (err.upstreamStatus || err.message)) || err);
-    const e = new Error('openrouter');
-    e.status = 503;
-    e.mensaje = err?.politicaImposible
-      ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
-      : t.auto
-        ? 'Ni los modelos gratuitos ni el respaldo de pago respondieron (suele ser saturación pasajera). Tocá el botón otra vez.'
-        : 'El modelo elegido no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
-    throw e;
+    // Si el modelo ELEGIDO A MANO era de pago y respondió 402 (sin saldo en
+    // OpenRouter), degradamos a la cadena gratuita para no dejar el botón
+    // bloqueado. En 'auto' esto no aplica: el pago YA es el último cupo de la
+    // MISMA llamada, así que si falló, fallaron los tres juntos.
+    if (!t.auto && err?.sinCredito) {
+      console.warn(`[${modo}] modelo elegido sin crédito (402), reintento con cadena gratuita`);
+      try {
+        const crudaAuto = await openrouterChat(cfg.apiKey, construirCuerpoOR({
+          modelo: cadenaAuto.modelo,
+          respaldos: cadenaAuto.respaldos,
+          politica: cfg.politica,
+          system: sys, user: usr, maxTokens, razonamiento: 'bajo',
+        }), Date.now() + 25000);
+        data = normalizarRespuestaOR(crudaAuto);
+      } catch (err2) {
+        err = err2;
+      }
+    }
+    if (!data) {
+      console.warn(`[${modo}] OpenRouter falló:`, (err && (err.upstreamStatus || err.message)) || err);
+      const e = new Error('openrouter');
+      e.status = 503;
+      e.mensaje = err?.politicaImposible
+        ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
+        : err?.sinCredito
+          ? 'El servicio de OpenRouter no tiene saldo disponible (402) y la cadena gratuita tampoco respondió. Revisa tu cuenta de OpenRouter o reintenta en un momento.'
+          : t.auto
+            ? 'Ni los modelos gratuitos ni el respaldo de pago respondieron (suele ser saturación pasajera). Tocá el botón otra vez.'
+            : 'El modelo elegido no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
+      throw e;
+    }
   }
   const text = data.content?.[0]?.text || '';
   const jm = text.match(/\{[\s\S]*\}/);
