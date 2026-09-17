@@ -524,12 +524,40 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
           console.warn('[captura-magica] relectura de ítems, OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
             puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
           if (!puedeRespaldar) throw e;
-          data = await conRespaldoAnotado(llamarClaude, e);
-          engine = 'mistral-ocr+claude(respaldo)';
+          try {
+            data = await conRespaldoAnotado(llamarClaude, e);
+            engine = 'mistral-ocr+claude(respaldo)';
+          } catch (eClaude) {
+            const esClaudeSinSaldo = eClaude?.upstreamStatus === 400 &&
+              /credit balance is too low|insufficient.*credit|billing/i.test(eClaude?.upstreamText || '');
+            if (esClaudeSinSaldo) {
+              console.warn('[captura-magica] relectura ítems: Claude no tiene saldo, reportando error real de OpenRouter');
+              throw e;
+            }
+            throw eClaude;
+          }
         }
       }
     } else {
-      data = await llamarClaude();
+      if (!apiKey) {
+        return res.status(503).json({
+          error: 'No está configurado el motor de IA para procesar ítems (falta OPENROUTER_API_KEY en Vercel).',
+          code: 'ia_no_configurada',
+        });
+      }
+      try {
+        data = await llamarClaude();
+      } catch (eClaude) {
+        const esClaudeSinSaldo = eClaude?.upstreamStatus === 400 &&
+          /credit balance is too low|insufficient.*credit|billing/i.test(eClaude?.upstreamText || '');
+        if (esClaudeSinSaldo) {
+          return res.status(503).json({
+            error: 'El servicio de IA secundario (Claude) no tiene saldo disponible y OpenRouter no está activo. Avisa al administrador para que configure OPENROUTER_API_KEY en Vercel.',
+            code: 'ia_no_configurada',
+          });
+        }
+        throw eClaude;
+      }
     }
 
     let extracted;
@@ -624,23 +652,21 @@ function respondError(e, res, isProd) {
   if (e && e.openrouter && e.sinCredito) {
     console.error('[captura-magica] OpenRouter sin crédito');
     return res.status(402).json({
-      error: 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
+      error: 'El modelo elegido en OpenRouter requiere crédito y la cuenta no tiene saldo disponible (402). Cambia el modelo a "Gratuitos" en Administración → Modelos de IA o recarga saldo en OpenRouter.',
       code: 'ia_sin_credito',
     });
   }
   if (e && e.upstreamStatus === 400 && /credit balance is too low|insufficient.*credit|billing/i.test(e.upstreamText || '')) {
-    // El saldo que falta es el de ANTHROPIC, que acá es el RESPALDO. Si además
-    // se llegó hasta él porque OpenRouter (el titular, gratuito) había fallado,
-    // eso va en el log: son dos fallas distintas y la de arriba suele ser la
-    // que se arregla con código, no con plata.
     console.error('[captura-magica] Anthropic sin crédito',
       e.trasOpenRouter ? `— se llegó al respaldo porque OpenRouter falló con ${e.trasOpenRouter}: ${e.trasOpenRouterTexto || ''}` : '— era el motor titular');
     return res.status(402).json({
       error: e.trasOpenRouter
-        ? 'La lectura gratuita falló y el respaldo de pago no tiene saldo. Avisa al administrador: hay que revisar la configuración de la IA y recargar el saldo.'
-        : 'El servicio de IA no tiene crédito disponible. Avisa al administrador para que recargue el saldo.',
-      code: 'ia_sin_credito',
-      ...(isProd ? {} : { tras_openrouter: e.trasOpenRouter || null, detalle_openrouter: e.trasOpenRouterTexto || null }),
+        ? `El motor gratuito de IA (OpenRouter) no pudo responder (${e.trasOpenRouter}) y el respaldo de Claude no tiene saldo. Por favor espera unos segundos y pulsa Reintentar.`
+        : 'El servicio de IA secundario (Claude) no tiene saldo disponible. Revisa que MISTRAL_API_KEY y OPENROUTER_API_KEY estén configuradas en Vercel.',
+      code: e.trasOpenRouter ? 'ia_saturada' : 'ia_sin_credito',
+      tras_openrouter: e.trasOpenRouter || null,
+      detalle_openrouter: e.trasOpenRouterTexto || null,
+      detail: (e.upstreamText || '').slice(0, 500) || null,
     });
   }
   if (e && e.upstreamStatus) {
@@ -648,9 +674,9 @@ function respondError(e, res, isProd) {
     console.error(`[captura-magica] upstream error (${motor}):`, e.upstreamStatus, (e.upstreamText || '').slice(0, 200));
     return res.status(e.upstreamStatus).json({
       error: e.upstreamStatus === 429
-        ? 'El servicio de IA está saturado (429) — reintenta en un minuto (la fila tiene botón Reintentar)'
+        ? 'El servicio de IA está saturado (429) — espera unos segundos y pulsa Reintentar'
         : `El servicio de IA (${motor}) respondió ${e.upstreamStatus}`,
-      ...(isProd ? {} : { detail: (e.upstreamText || '').slice(0, 500) }),
+      detail: (e.upstreamText || '').slice(0, 500) || null,
     });
   }
   const sanitized = sanitizeError(e, 'Error consultando la IA');
@@ -898,6 +924,9 @@ export default async function handler(req, res) {
   // camino común deja de depender de ese saldo.
   //
   // Si el OCR falla o devuelve pocas páginas, se cae a la visión de siempre.
+  let ocr = null;
+  let ocrError = null;
+  let ocrTextoCorto = false;
   if (mistralKey) {
     try {
       const r = await mistralOcr(cleanBase64, mimeEfectivo, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : elegidoOcr.modelo);
@@ -908,9 +937,11 @@ export default async function handler(req, res) {
       if (r.texto && r.texto.length >= 20 && sirveParaSctr) {
         ocr = r;
       } else {
-        console.warn('[captura-magica] Mistral OCR sin texto/páginas utilizables — uso Claude visión');
+        ocrTextoCorto = true;
+        console.warn('[captura-magica] Mistral OCR sin texto/páginas utilizables (longitud: ' + (r?.texto?.length || 0) + ')');
       }
     } catch (e) {
+      ocrError = e;
       console.warn('[captura-magica] Mistral OCR falló, uso Claude visión:', (e && (e.upstreamStatus || e.message)) || e);
       // Si se cayó por TIEMPO (o ya no queda presupuesto para estructurar), el
       // fallback de visión —que es MÁS lento— solo consumiría el reloj otra vez
@@ -926,6 +957,8 @@ export default async function handler(req, res) {
       }
       // ocr queda null → path de visión ↓
     }
+  } else {
+    ocrError = new Error('sin_mistral_key');
   }
 
   // ── Paso 2: Claude estructura. UNA sola llamada: sobre el TEXTO del OCR (si lo
@@ -955,38 +988,32 @@ export default async function handler(req, res) {
     // Estimamos los ítems contando las filas de la tabla que devolvió el OCR y
     // damos ~55 tokens por ítem (JSON minificado, precios de 10 decimales) más
     // 900 de cabecera/totales, con techo de 16k (modelo) y piso de 4000.
-    // 🔴 Contar SOLO las filas de tabla markdown dejaba en 0 la estimación de
-    // toda FOTO: el OCR de una imagen devuelve el detalle como texto corrido,
-    // sin grilla, así que el presupuesto caía al piso justo en el documento
-    // más largo. Caso del 7-sep-2026: una image.jpg de 894 KB fallando con
-    // "demasiadas líneas de detalle". `estimarItems` mira varias señales
-    // (tabla, líneas que arrancan con cantidad, unidades de medida) y toma la
-    // mayor — sobrestimar no cuesta nada, el techo es un tope, no una reserva.
     const itemsEstimados = ocr ? estimarItems(ocr.texto) : 0;
     const maxTokensCalc = Math.min(16000, Math.max(4000, 900 + itemsEstimados * 55));
 
     // ── ¿Quién estructura? ──────────────────────────────────────────
-    // Lo que llega como TEXTO LIMPIO del OCR va a OpenRouter con un modelo
-    // gratuito: facturas, guías y —desde el 8-set-2026— el paquete SCTR, que
-    // es la misma tarea (leer texto rotulado y llenar un formulario). El
-    // certificado de calidad NO: ahí no se transcribe, se JUZGA si el
-    // certificado cumple una especificación técnica, y esa comparación es
-    // exactamente donde un modelo chico se equivoca caro. El fallback de
-    // visión tampoco: los gratuitos ZDR de la cadena no leen PDF.
     const caminoBarato = !!ocr && !esCert;
     const usaOpenRouter = caminoBarato && cfgOR.activo;
-    // Sin OpenRouter y sin Claude no hay con qué leer este documento.
-    if (!usaOpenRouter && !apiKey) {
+    if (!usaOpenRouter && !apiKey && !(!ocr && mimeEfectivo.startsWith('image/') && cfgOR.activo)) {
+      if (ocrError?.message === 'sin_mistral_key') {
+        return res.status(503).json({
+          error: 'No está configurado el servicio de OCR (falta MISTRAL_API_KEY en las variables de entorno de Vercel). Avisa al administrador.',
+          code: 'ia_no_configurada',
+        });
+      }
+      if (!cfgOR.activo) {
+        return res.status(503).json({
+          error: 'No está configurado el motor de IA (falta OPENROUTER_API_KEY en Vercel). Avisa al administrador.',
+          code: 'ia_no_configurada',
+        });
+      }
       return res.status(503).json({
-        error: 'ANTHROPIC_API_KEY no configurada en Vercel. Pídele al admin que la agregue en Project Settings → Environment Variables.',
+        error: 'No se pudo procesar este documento: el OCR no devolvió texto y no hay motor de visión secundario configurado.',
+        code: 'sin_motor_vision',
       });
     }
 
     const llamarClaude = () => anthropicMessages(apiKey, {
-      // El respaldo del paquete SCTR se queda en el modelo grande aunque vaya
-      // por texto: clasificar en qué página empieza cada documento del trámite
-      // es criterio, no transcripción, y son poquísimos paquetes al año — la
-      // diferencia de costo es irrelevante y la de acierto no.
       model: (caminoBarato && !esSctr) ? CLAUDE_STRUCT_MODEL : CLAUDE_VISION_MODEL,
       max_tokens: maxTokensCalc,
       system: systemPrompt,
@@ -998,11 +1025,37 @@ export default async function handler(req, res) {
     let proveedorIa = null;
     let respaldoUsado = null;
 
-    if (usaOpenRouter) {
-      // Presupuesto REPARTIDO: si OpenRouter se cuelga y se come todo el
-      // reloj, el respaldo de Claude no llega a correr y la asistente espera
-      // 55 s para recibir un error igual. Le damos poco más de la mitad de lo
-      // que queda y guardamos el resto para el respaldo.
+    // ── Intento de visión gratuita con OpenRouter para imágenes cuando el OCR no dio texto ──
+    if (!ocr && mimeEfectivo.startsWith('image/') && cfgOR.activo && !esCert && !esSctr) {
+      try {
+        const crudaVision = await openrouterChat(cfgOR.apiKey, {
+          model: 'inclusionai/ling-3.0-flash-vl:free',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: userInstruction },
+                { type: 'image_url', image_url: { url: `data:${mimeEfectivo};base64,${cleanBase64}` } },
+              ],
+            },
+          ],
+          max_tokens: 4000,
+          temperature: 0,
+          provider: {
+            ...(cfgOR.politica === 'zdr' ? { zdr: true } : { data_collection: 'deny' }),
+            allow_fallbacks: true,
+          },
+        }, deadline);
+        data = normalizarRespuestaOR(crudaVision);
+        engine = 'openrouter-vision(gratis)';
+        proveedorIa = data.proveedor;
+      } catch (eVision) {
+        console.warn('[captura-magica] OpenRouter visión falló:', (eVision && (eVision.upstreamStatus || eVision.message)) || eVision);
+      }
+    }
+
+    if (!data && usaOpenRouter) {
       const restante = Math.max(deadline - Date.now(), 1000);
       const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
       const cadenaOR = armarCadenaOpenRouter(elegidoTexto.auto ? 'auto' : elegidoTexto.modelo, cfgOR);
@@ -1013,8 +1066,6 @@ export default async function handler(req, res) {
           politica: cfgOR.politica,
           system: systemPrompt,
           user: content[0].text,
-          // Techo PROPIO: los gratuitos razonan en voz alta y el de Claude los
-          // corta a la mitad en facturas largas. Ver presupuestoSalida().
           maxTokens: presupuestoSalida(itemsEstimados),
         }), deadlineOR);
         data = normalizarRespuestaOR(cruda);
@@ -1044,16 +1095,106 @@ export default async function handler(req, res) {
         }
         if (!data) {
           const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
-          console.warn('[captura-magica] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
-            puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
-          if (!puedeRespaldar) throw e;
-          respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
-          data = await conRespaldoAnotado(llamarClaude, e);
-          engine = 'mistral-ocr+claude(respaldo)';
+          if (puedeRespaldar) {
+            try {
+              respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
+              data = await conRespaldoAnotado(llamarClaude, e);
+              engine = 'mistral-ocr+claude(respaldo)';
+            } catch (eClaude) {
+              const esClaudeSinSaldo = eClaude?.upstreamStatus === 400 &&
+                /credit balance is too low|insufficient.*credit|billing/i.test(eClaude?.upstreamText || '');
+              if (esClaudeSinSaldo) {
+                console.warn('[captura-magica] Claude de respaldo sin saldo. Reportando error real de OpenRouter.');
+                throw e;
+              }
+              throw eClaude;
+            }
+          } else {
+            throw e;
+          }
         }
       }
-    } else {
-      data = await llamarClaude();
+    } else if (!data) {
+      if (apiKey) {
+        try {
+          data = await llamarClaude();
+          engine = ocr ? 'mistral-ocr+claude' : 'claude-vision';
+        } catch (eClaude) {
+          const esClaudeSinSaldo = eClaude?.upstreamStatus === 400 &&
+            /credit balance is too low|insufficient.*credit|billing/i.test(eClaude?.upstreamText || '');
+          if (esClaudeSinSaldo) {
+            console.warn('[captura-magica] Claude sin saldo en branch titular/visión. Evaluando causa previa.');
+            if (ocrError) {
+              if (ocrError.message === 'sin_mistral_key') {
+                return res.status(503).json({
+                  error: 'El OCR no está configurado (falta MISTRAL_API_KEY en las variables de entorno de Vercel) y Claude no tiene saldo disponible. Avisa al administrador para que configure MISTRAL_API_KEY.',
+                  code: 'ia_no_configurada',
+                });
+              }
+              if (ocrError.upstreamStatus === 401) {
+                return res.status(503).json({
+                  error: 'La clave de Mistral OCR (MISTRAL_API_KEY) en Vercel no es válida (401). Avisa al administrador para que la actualice.',
+                  code: 'ia_no_configurada',
+                });
+              }
+              if (ocrError.upstreamStatus === 402) {
+                return res.status(402).json({
+                  error: 'El servicio de Mistral OCR no tiene saldo disponible (402). Avisa al administrador para que recargue el saldo de Mistral.',
+                  code: 'ia_sin_credito',
+                });
+              }
+              return res.status(502).json({
+                error: `Mistral OCR falló (${ocrError.upstreamStatus || ocrError.message}) y el servicio secundario no tiene saldo disponible.`,
+                detail: ocrError.upstreamText || ocrError.message,
+              });
+            }
+            if (ocrTextoCorto) {
+              return res.status(422).json({
+                error: 'No se detectó texto legible suficiente en este comprobante (menos de 20 caracteres detectados por el OCR). Asegúrate de subir una foto o PDF nítido y completo.',
+                code: 'doc_ilegible',
+              });
+            }
+            if (!cfgOR.activo) {
+              return res.status(503).json({
+                error: 'No está configurado el motor de IA de OpenRouter (falta OPENROUTER_API_KEY en Vercel) y Claude no tiene saldo disponible.',
+                code: 'ia_no_configurada',
+              });
+            }
+          }
+          throw eClaude;
+        }
+      } else {
+        if (ocrError) {
+          if (ocrError.message === 'sin_mistral_key') {
+            return res.status(503).json({
+              error: 'El OCR no está configurado (falta MISTRAL_API_KEY en Vercel). Avisa al administrador.',
+              code: 'ia_no_configurada',
+            });
+          }
+          if (ocrError.upstreamStatus === 401) {
+            return res.status(503).json({
+              error: 'La clave de Mistral OCR (MISTRAL_API_KEY) no es válida (401). Avisa al administrador.',
+              code: 'ia_no_configurada',
+            });
+          }
+          if (ocrError.upstreamStatus === 402) {
+            return res.status(402).json({
+              error: 'El servicio de Mistral OCR no tiene saldo disponible (402). Avisa al administrador para que recargue el saldo de Mistral.',
+              code: 'ia_sin_credito',
+            });
+          }
+          throw ocrError;
+        }
+        if (ocrTextoCorto) {
+          return res.status(422).json({
+            error: 'No se detectó texto legible suficiente en este comprobante (menos de 20 caracteres detectados por el OCR). Asegúrate de subir una foto o PDF nítido y completo.',
+            code: 'doc_ilegible',
+          });
+        }
+        return res.status(503).json({
+          error: 'No se pudo procesar el documento automáticamente.',
+        });
+      }
     }
 
     // ── RESCATE DE LA CABECERA ────────────────────────────────────
