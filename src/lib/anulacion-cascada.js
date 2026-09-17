@@ -9,8 +9,9 @@
 //
 // ── LO MEDIDO EN PRODUCCIÓN (17-set-2026) ─────────────────────────
 // 22 facturas tienen nota de crédito. 21 están ANULADAS (las notas cubren el
-// importe entero) y las 21 siguen VIVAS en el sistema, en 7 empresas y desde
-// 2023. Lo que eso venía costando, contado:
+// importe entero) y las 21 siguen VIVAS en el sistema, en 6 empresas y desde
+// 2023: S/ 1.724.651,07 y US$ 54.874,04 sumando sin deber. Lo que eso venía
+// costando, contado:
 //   · 8 tienen detracción PENDIENTE — la app reclama el depósito de un
 //     comprobante que ya no existe. Una es de S/ 478.808,08.
 //   · 11 figuran PAGADAS: el asiento les acredita caja o banco por plata que
@@ -185,7 +186,7 @@ export function planDeAnulacion(facturaId, {
 /**
  * Todas las facturas anuladas por nota de crédito que siguen vivas.
  *
- * Es la lista de la pasada: en producción son 21, en 7 empresas y desde 2023.
+ * Es la lista de la pasada: en producción son 21, en 6 empresas y desde 2023.
  * Ordenadas por importe descendente, que es el orden en que conviene mirarlas
  * —la primera son S/ 508.745,84— y no por fecha.
  */

@@ -1035,7 +1035,7 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
 
   // Las facturas anuladas que siguen vivas Y que están a la vista con los
   // filtros puestos: el botón de lote no puede tocar nada que no se esté
-  // mostrando. En producción son 21 en total, en 7 empresas y desde 2023.
+  // mostrando. En producción son 21 en total, en 6 empresas y desde 2023.
   // Solo para el rótulo del botón: si hay espejo, decirlo antes de apretarlo.
   const espejoDelHallazgo = (h) => {
     if (h?.regla !== 'factura_anulada_viva') return null;
@@ -1307,7 +1307,7 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   /**
    * LA PASADA: todas las facturas anuladas que siguen vivas, de una vez.
    *
-   * En producción son 21, en 7 empresas y desde 2023 — de a una son 21
+   * En producción son 21, en 6 empresas y desde 2023 — de a una son 21
    * ventanas. Se salta las que tienen algo que frene (plata aplicada, par
    * interco registrado) y lo dice al final, en vez de abortar toda la tanda
    * por una.

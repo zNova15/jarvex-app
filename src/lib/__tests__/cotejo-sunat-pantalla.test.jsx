@@ -336,7 +336,7 @@ describe('El escáner permite borrar la copia de un comprobante duplicado', () =
 });
 
 // ── LA ANULACIÓN EN CASCADA (tanda 9, 17-set-2026) ─────────────────
-// Medido: 21 facturas anuladas por nota de crédito siguen vivas, en 7 empresas
+// Medido: 21 facturas anuladas por nota de crédito siguen vivas, en 6 empresas
 // y desde 2023. La E001-43 de S/ 9.000 está cargada DOS VECES —venta en una
 // empresa, compra en la otra— y la misma nota anula las dos.
 const VENTA_ANULADA_INTERCO = {

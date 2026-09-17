@@ -2,7 +2,7 @@
 // ANULACIÓN EN CASCADA POR NOTA DE CRÉDITO (tanda 9, 17-set-2026)
 //
 // Lo medido en producción: 22 facturas con nota de crédito, 21 ANULADAS y las
-// 21 todavía vivas, en 7 empresas y desde 2023. 8 con detracción pendiente
+// 21 todavía vivas, en 6 empresas y desde 2023 (S/ 1.724.651,07 + US$ 54.874,04). 8 con detracción pendiente
 // (una de S/ 478.808), 11 marcadas pagadas, y la E001-43 de S/ 9.000 cargada
 // de los dos lados —venta en AGENCIA DE VIAJES, compra en EL INCA— anulada por
 // la misma nota. Ése es el caso que da nombre a la tanda.
