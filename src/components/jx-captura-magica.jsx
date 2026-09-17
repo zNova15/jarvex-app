@@ -23,7 +23,8 @@ import { sugerirFacturasParaGuia, clasificarOrigenGuia, guiasEsperandoFactura,
          referenciasPendientes } from "../lib/guias.js";
 import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
-  ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA, yaLeidaConIA,
+  ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA, ESTADO_ILEGIBLE,
+  yaLeidaConIA, esIlegible,
 } from "../lib/captura-campo.js";
 import {
   clasificarPartes, permiteCrearProveedor, permiteCrearEmpresaGrupo,
@@ -317,7 +318,8 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
         // Traemos pendientes Y leídas: las pestañas filtran en memoria.
         const rows = await window.__db.evidencias
           .filter(e => e.tipo_evidencia === 'factura_campo' && !e.deleted_at
-            && (!e.campo_revision || e.campo_revision === ESTADO_PENDIENTE || e.campo_revision === ESTADO_LEIDA))
+            && (!e.campo_revision || e.campo_revision === ESTADO_PENDIENTE
+              || e.campo_revision === ESTADO_LEIDA || e.campo_revision === ESTADO_ILEGIBLE))
           .toArray();
         rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
         if (!cancel) setFilas(rows);
@@ -386,6 +388,16 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
         return;
       }
       const resultados = await onInyectar([file]);
+      // LA FOTO NO TIENE NADA QUE LEER (17-set-2026). No es un error de la IA
+      // ni de la conexión: el archivo está en blanco o ilegible, y reintentar
+      // no lo va a cambiar. Se marca 'ilegible' para que el aviso llegue al
+      // PORTAL DE CAMPO, que es donde está la única persona capaz de arreglarlo
+      // — y ojalá todavía con el comprobante en la mano.
+      if (Array.isArray(resultados) && resultados.includes('ilegible')) {
+        await setEstado(ev, ESTADO_ILEGIBLE, { silencioso: true });
+        showToast?.('Esta foto no tiene nada legible. Quedó marcada ⚠ ILEGIBLE y el portal de campo ya le avisa a quien la subió que la saque de nuevo.', 'red');
+        return;
+      }
       // Solo pasa a "Trabajadas" si la lectura TERMINÓ ('revisar' o
       // 'duplicado'). Antes se marcaba 'leida' incondicionalmente: con la IA
       // caída (timeout, sin crédito — pasó el 22-jul) la foto desaparecía de
@@ -418,7 +430,9 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       const ok = await setEstado(ev, estado);
       if (ok) {
         showToast?.(estado === ESTADO_REGISTRADA ? '✓ Marcada como registrada'
-          : estado === ESTADO_PENDIENTE ? '↩ Devuelta a Pendientes' : 'Comprobante descartado', 'green');
+          : estado === ESTADO_PENDIENTE ? '↩ Devuelta a Pendientes'
+          : estado === ESTADO_ILEGIBLE ? '⚠ Pedida de nuevo — el portal de campo ya le avisa a quien la subió. Queda en Pendientes hasta que llegue la foto nueva.'
+          : 'Comprobante descartado', estado === ESTADO_ILEGIBLE ? 'amber' : 'green');
       }
     } finally {
       procesandoRef.current = false;
@@ -489,6 +503,9 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
                     {yaLeidaConIA(ev) && pestana !== ESTADO_LEIDA && (
                       <span className="badge b-green" style={{ fontSize: 9 }} title="Ya se leyó con IA. Revisá el resultado en la bandeja de abajo y cerrala como Registrada o Descartada.">🤖 ya leída</span>
                     )}
+                    {esIlegible(ev) && (
+                      <span className="badge b-red" style={{ fontSize: 9 }} title="La foto no tiene nada legible. El portal de campo ya le avisa a quien la subió que la saque de nuevo.">⚠ ilegible — pedida de nuevo</span>
+                    )}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
                     {String(ev.created_at || '').slice(0, 10)} · {ev.nombre_archivo}
@@ -499,6 +516,13 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
                       {(pestana === ESTADO_LEIDA || yaLeidaConIA(ev)) ? '🤖 Leer otra vez' : '🤖 Leer con IA'}
                     </button>
                     <button className="btn btn-green btn-xs" onClick={() => marcar(ev, ESTADO_REGISTRADA)} title="Ya la confirmaste en la bandeja de abajo (o la registraste a mano)">✓ Registrada</button>
+                    {/* Pedirla de nuevo SIN descartarla: descartar la cierra y
+                        el comprobante queda sin registrar y sin que nadie lo
+                        sepa. Esto le avisa a quien la subió. */}
+                    {!esIlegible(ev) && (
+                      <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, ESTADO_ILEGIBLE)}
+                        title="La foto no se puede leer: avisarle a quien la subió para que la saque de nuevo">⚠ No se lee</button>
+                    )}
                     {pestana === ESTADO_LEIDA && (
                       <button className="btn btn-ghost btn-xs" onClick={() => marcar(ev, ESTADO_PENDIENTE)} title="Devolverla a la bandeja principal">↩ A pendientes</button>
                     )}
@@ -1059,7 +1083,10 @@ function CapturaMagicaPage({ showToast }) {
         ...x, status: 'error', error: msg, errorCode: esAbort ? 'timeout_cliente' : (e.code || null),
         intentos: (x.intentos || 0) + 1,
       } : x));
-      return 'error';
+      // 'ilegible' se distingue de un error cualquiera: no es que la lectura
+      // fallara, es que el archivo no tiene nada que leer. Quien llama usa eso
+      // para avisarle al portal de campo (ver RecibidasDeCampo → leerConIA).
+      return e?.code === 'doc_ilegible' ? 'ilegible' : 'error';
     } finally {
       enVuelo.current.delete(id);
     }

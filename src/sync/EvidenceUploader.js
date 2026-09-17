@@ -1,6 +1,7 @@
 import { db, UPLOAD_STATUS } from '../db/jarvex.db';
 import { supabase } from '../lib/supabase';
 import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
+import { evaluarCalidadComprobante } from '../lib/calidad-foto';
 import { captureException } from '../instrument.js';
 import { uploadToR2, r2WriteEnabled } from '../lib/r2-storage';
 
@@ -333,19 +334,41 @@ export async function uploadPendingEvidencias() {
 
 // ── Guardar evidencia localmente (con blob) ───────────────────────────
 
-export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by, demo, campo_revision }) {
+export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_relacionado, registro_relacionado_id, nombre_archivo, mime_type, blob, observaciones, fecha, created_by, demo, campo_revision, exigirLegible }) {
   // Optimizar ANTES de guardar: HEIC de iPhone → JPEG (si no, nadie lo ve en
   // desktop), reescala a 1920px y comprime (~20× menos storage/egress), y
   // corrige el MIME real (los File de iOS llegan con type vacío y se
   // etiquetaban 'image/jpeg' aunque fueran HEIC → imagen rota en los visores).
+  let medida = null;
   try {
     const opt = await optimizarImagenEvidencia(blob, nombre_archivo || '');
     if (opt?.blob) {
       blob = opt.blob;
       mime_type = opt.mime || mime_type;
       if (opt.convertida && opt.nombre) nombre_archivo = opt.nombre;
+      medida = opt.medida || null;
     }
   } catch { /* si la optimización falla, se guarda el original tal cual */ }
+
+  // ── ¿LA FOTO SIRVE? (17-set-2026) ───────────────────────────────────
+  // Solo para lo que después HAY QUE LEER (el portal de campo lo pide con
+  // exigirLegible). Una firma de EPP o una foto de avance no se leen con OCR
+  // y pueden ser legítimamente planas, así que no se juzgan.
+  //
+  // Se mide acá, sobre los bytes FINALES, y no en la pantalla: el JPEG blanco
+  // del 16-set lo produjo la optimización, así que validar el archivo que
+  // eligió la persona no lo habría atrapado. Tira como el tope de tamaño de
+  // abajo — el portal ya sabe atajar un throw de esta función.
+  if (exigirLegible && medida) {
+    const veredicto = evaluarCalidadComprobante(medida);
+    if (!veredicto.ok) {
+      const e = new Error(veredicto.motivo);
+      e.code = 'foto_ilegible';
+      e.bpp = veredicto.bpp;
+      throw e;
+    }
+  }
+
   const tope = esDocumento(mime_type, nombre_archivo) ? MAX_DOC_BYTES : MAX_PHOTO_BYTES;
   if (blob.size > tope) {
     throw new Error(`Archivo muy grande (${(blob.size / 1024 / 1024).toFixed(1)} MB). Máximo ${tope / 1024 / 1024} MB.`);

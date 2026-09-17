@@ -65,6 +65,11 @@ export const ESTADO_PENDIENTE = 'pendiente';
 export const ESTADO_LEIDA = 'leida';
 export const ESTADO_REGISTRADA = 'registrada';
 export const ESTADO_DESCARTADA = 'descartada';
+// 'ilegible' (mig 219, 17-set-2026): la foto no se puede leer y hay que
+// sacarla de nuevo. NO cierra nada —el comprobante sigue sin registrarse, así
+// que sigue contando como pendiente— pero es lo que el PORTAL DE CAMPO muestra
+// en rojo. Es el único estado que viaja de vuelta a quien tiene el papel.
+export const ESTADO_ILEGIBLE = 'ilegible';
 
 // Filas que muestra cada pestaña. Las evidencias viejas sin campo_revision
 // cuentan como pendientes (no se pierden de vista).
@@ -72,15 +77,23 @@ export function filtrarBandeja(filas, pestana) {
   const rows = (filas || []).filter(e => !e.deleted_at && e.tipo_evidencia === 'factura_campo');
   if (pestana === ESTADO_LEIDA) return rows.filter(e => e.campo_revision === ESTADO_LEIDA);
   // Pendientes = todo lo que sigue ABIERTO, leído o no. Sale solo cuando se
-  // cierra como registrada/descartada.
+  // cierra como registrada/descartada. Las ILEGIBLES siguen acá a propósito:
+  // el comprobante todavía no se registró, así que el pendiente no se resolvió
+  // — se resuelve cuando la vuelven a subir o cuando se descarta a mano.
   return rows.filter(e => !e.campo_revision
     || e.campo_revision === ESTADO_PENDIENTE
-    || e.campo_revision === ESTADO_LEIDA);
+    || e.campo_revision === ESTADO_LEIDA
+    || e.campo_revision === ESTADO_ILEGIBLE);
 }
 
 /** ¿Esta foto ya pasó por la IA? Marca visual dentro de Pendientes. */
 export function yaLeidaConIA(ev) {
   return ev?.campo_revision === ESTADO_LEIDA;
+}
+
+/** ¿Está marcada como imposible de leer? */
+export function esIlegible(ev) {
+  return ev?.campo_revision === ESTADO_ILEGIBLE;
 }
 
 // ¿El error del UPDATE es "falta aplicar la migración 164"? Postgres devuelve

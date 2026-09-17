@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   identidadDePerfil, armarObservacionCampo, parseObservacionCampo, filtrarBandeja, yaLeidaConIA,
-  esFaltaMigracion164, esPdf, ESTADO_LEIDA, ESTADO_PENDIENTE,
+  esFaltaMigracion164, esPdf, ESTADO_LEIDA, ESTADO_PENDIENTE, esIlegible,
 } from '../captura-campo.js';
 
 describe('identidadDePerfil — bug del nombre (1-sep)', () => {
@@ -88,6 +88,15 @@ describe('pestañas de la bandeja', () => {
     const vistos = [...filtrarBandeja(filas, ESTADO_PENDIENTE), ...filtrarBandeja(filas, ESTADO_LEIDA)].map(f => f.id);
     expect(vistos).not.toContain(3);
     expect(vistos).not.toContain(4);
+  });
+
+  // 17-set-2026: 'ilegible' avisa al portal de campo que hay que repetir la
+  // foto, pero NO cierra nada — el comprobante sigue sin registrarse.
+  it('una ILEGIBLE sigue en Pendientes: pedirla de nuevo no la resuelve', () => {
+    const conIlegible = [...filas, { id: 8, tipo_evidencia: 'factura_campo', campo_revision: 'ilegible' }];
+    expect(filtrarBandeja(conIlegible, ESTADO_PENDIENTE).map(f => f.id)).toContain(8);
+    expect(esIlegible(conIlegible[7])).toBe(true);
+    expect(esIlegible(filas[0])).toBe(false);
   });
 });
 

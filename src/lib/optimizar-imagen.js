@@ -163,9 +163,14 @@ async function decodificar(blob) {
 
 /**
  * Optimiza una imagen de evidencia. Devuelve SIEMPRE algo utilizable:
- *   { blob, mime, nombre, convertida }
+ *   { blob, mime, nombre, convertida, medida }
  * - convertida=true → blob nuevo JPEG (nombre re-extensionado a .jpg)
  * - convertida=false → blob original con el MIME REAL detectado
+ * - medida = { bytes, ancho, alto } del blob QUE SE DEVUELVE, o null si no se
+ *   pudo medir (un PDF, un HEIC que este navegador no decodifica). Lo consume
+ *   `evaluarCalidadComprobante` para decidir si la foto sirve — y tiene que
+ *   describir el archivo FINAL, porque el blanco del 16-set-2026 lo produjo la
+ *   optimización, no el original.
  */
 export async function optimizarImagenEvidencia(blob, nombre = '') {
   const ext = extDe(nombre);
@@ -175,22 +180,23 @@ export async function optimizarImagenEvidencia(blob, nombre = '') {
   const pareceImagen = tipo.startsWith('image/') ||
     ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'gif', 'bmp'].includes(ext) || tipo === '';
   if (!pareceImagen || tipo === 'application/pdf' || ext === 'pdf') {
-    return { blob, mime: tipo || 'application/octet-stream', nombre, convertida: false };
+    return { blob, mime: tipo || 'application/octet-stream', nombre, convertida: false, medida: null };
   }
 
   const heic = tipo.includes('hei') || ['heic', 'heif'].includes(ext) || await esHeicBytes(blob);
 
   // PNG chico (firmas): respetar tal cual.
   if (!heic && (tipo === 'image/png' || ext === 'png') && blob.size <= PNG_KEEP_BYTES) {
-    return { blob, mime: 'image/png', nombre, convertida: false };
+    return { blob, mime: 'image/png', nombre, convertida: false, medida: null };
   }
 
   const dec = await decodificar(blob);
   if (!dec) {
     // No se pudo decodificar acá (p.ej. HEIC en Chrome): subir el original con
     // su MIME VERDADERO para que los visores no intenten pintarlo como JPEG.
+    // Sin dimensiones no hay `medida`: lo que no se pudo mirar no se juzga.
     const mimeReal = heic ? 'image/heic' : (tipo || 'application/octet-stream');
-    return { blob, mime: mimeReal, nombre, convertida: false };
+    return { blob, mime: mimeReal, nombre, convertida: false, medida: null };
   }
 
   try {
@@ -229,9 +235,13 @@ export async function optimizarImagenEvidencia(blob, nombre = '') {
     // realmente achica el archivo; si no, dejar el original.
     if (heic || jpeg.size < blob.size) {
       const nombreJpg = nombre ? nombre.replace(/\.[a-z0-9]+$/i, '') + '.jpg' : 'foto.jpg';
-      return { blob: jpeg, mime: 'image/jpeg', nombre: nombreJpg, convertida: true };
+      return {
+        blob: jpeg, mime: 'image/jpeg', nombre: nombreJpg, convertida: true,
+        medida: { bytes: jpeg.size, ancho: canvas.width, alto: canvas.height },
+      };
     }
-    return { blob, mime: tipo || 'image/jpeg', nombre, convertida: false };
+    // Se queda el original: la medida es la SUYA (sus dimensiones, su peso).
+    return { blob, mime: tipo || 'image/jpeg', nombre, convertida: false, medida: { bytes: blob.size, ancho: w, alto: h } };
   } catch (e) {
     if (dec.bmp?.close) { try { dec.bmp.close(); } catch {} }
     dec.liberar?.();
@@ -239,6 +249,6 @@ export async function optimizarImagenEvidencia(blob, nombre = '') {
       console.warn('[optimizar-imagen] el lienzo salió de un solo color — se sube el archivo ORIGINAL sin optimizar');
     }
     const mimeReal = heic ? 'image/heic' : (tipo || 'application/octet-stream');
-    return { blob, mime: mimeReal, nombre, convertida: false };
+    return { blob, mime: mimeReal, nombre, convertida: false, medida: null };
   }
 }

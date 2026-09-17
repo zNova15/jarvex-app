@@ -20,6 +20,7 @@ import { supabase } from "../lib/supabase";
 import { RUBROS, rubroLabel } from "../lib/rubros.js";
 import {
   identidadDePerfil, armarObservacionCampo, ACEPTA_IMAGEN, ACEPTA_PDF, esPdf,
+  ESTADO_ILEGIBLE, parseObservacionCampo,
 } from '../lib/captura-campo.js';
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
@@ -132,7 +133,7 @@ function ConfigPortalAdmin({ empresasTodas, companiesHook, showToast }) {
 const FI16 = { fontSize: 16 };
 const MAX_FOTOS_CAMPO = 3;
 // Actualizar en cada deploy que toque este portal (ver sello en el header).
-const PORTAL_BUILD = 'v5 · 1-sep';
+const PORTAL_BUILD = 'v6 · 17-set';
 
 // Miniatura + quitar (mismo patrón del Reporte Diario móvil).
 function ThumbFotoCampo({ file, onQuitar }) {
@@ -160,6 +161,70 @@ function ThumbFotoCampo({ file, onQuitar }) {
       <button onClick={onQuitar} title="Quitar"
         style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: 'var(--red)', color: '#fff', fontSize: 11, lineHeight: '20px', padding: 0, cursor: 'pointer' }}>✕</button>
     </span>
+  );
+}
+
+// ── FOTOS QUE HAY QUE VOLVER A SACAR (17-set-2026) ────────────────────
+//
+// El agujero que esto tapa: cuando una foto llega ilegible, el único que se
+// entera es contabilidad, días después, y el aviso muere en la bandeja de esa
+// PC. La persona que sacó la foto —la única que puede repetirla, y solo
+// mientras tenga el comprobante— nunca se enteraba. El 16-set se subieron dos
+// facturas en blanco y así fue exactamente como pasó.
+//
+// Se consulta al SERVIDOR y no al Dexie local a propósito: la marca la pone
+// contabilidad desde otra máquina, y el teléfono que subió la foto puede no
+// ser el mismo que abre el portal hoy. La cuenta compartida de campo ve todas
+// las 'factura_campo' que ella misma creó (cerco RLS `campo_cerco_select`).
+function FotosPorRepetir() {
+  const [filas, setFilas] = uS([]);
+
+  uE(() => {
+    let cancel = false;
+    const cargar = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('evidencias')
+          .select('id,nombre_archivo,created_at,observaciones')
+          .eq('tipo_evidencia', 'factura_campo')
+          .eq('campo_revision', ESTADO_ILEGIBLE)
+          .order('created_at', { ascending: false })
+          .limit(20);
+        if (!error && !cancel) setFilas(data || []);
+      } catch {}
+    };
+    cargar();
+    const iv = setInterval(cargar, 60000);
+    window.addEventListener('jx_sync_pull', cargar);
+    return () => { cancel = true; clearInterval(iv); window.removeEventListener('jx_sync_pull', cargar); };
+  }, []);
+
+  if (!filas.length) return null;
+  return (
+    <div className="card card-p" style={{ background: 'rgba(231,76,60,0.10)', border: '1px solid rgba(231,76,60,0.45)' }}>
+      <div style={{ fontSize: 13.5, fontWeight: 800, color: 'var(--red)' }}>
+        ⚠ {filas.length === 1 ? 'Una foto no se pudo leer' : `${filas.length} fotos no se pudieron leer`}
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--ts)', marginTop: 4, lineHeight: 1.55 }}>
+        Contabilidad no pudo sacar los datos de {filas.length === 1 ? 'esta foto' : 'estas fotos'}.
+        Si todavía tenés el comprobante, <strong>sacale la foto de nuevo</strong> y mandala acá.
+      </div>
+      <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+        {filas.map(f => {
+          const { quien, comentario } = parseObservacionCampo(f.observaciones);
+          return (
+            <div key={f.id} style={{ fontSize: 11.5, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-c)' }}>
+              <div style={{ fontWeight: 700 }}>
+                {String(f.created_at || '').slice(0, 10)} · {f.nombre_archivo}
+              </div>
+              <div style={{ color: 'var(--tm)' }}>
+                {quien ? `La subió ${quien}` : 'Sin nombre'}{comentario ? ` · ${comentario}` : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -261,6 +326,9 @@ function CapturaCampoPage({ showToast }) {
   const [quien, setQuien] = uS('');         // solo se usa con la cuenta de campo
   const [comentario, setComentario] = uS('');
   const [fotos, setFotos] = uS([]);
+  // Fotos que el control de calidad frenó: quedan a la vista, en rojo, con el
+  // motivo — la persona todavía tiene el comprobante delante y puede repetirla.
+  const [rechazos, setRechazos] = uS([]);
   const [torpedoAbierto, setTorpedoAbierto] = uS(false);   // tabla de RUCs desplegable (pedido 31-ago)
   const enviandoRef = uR(false);            // anti doble-tap (regla crítica 2)
   const [enviando, setEnviando] = uS(false);
@@ -278,6 +346,7 @@ function CapturaCampoPage({ showToast }) {
   const recibirFotos = (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length) setFotos(prev => [...prev, ...files].slice(0, MAX_FOTOS_CAMPO));
+    setRechazos([]);   // foto nueva = borrón y cuenta nueva sobre el aviso rojo
     e.target.value = '';
   };
 
@@ -296,32 +365,56 @@ function CapturaCampoPage({ showToast }) {
       // Guardar quitando cada foto ya persistida: si algo falla a mitad, un
       // reintento NO re-guarda las que ya entraron (evita duplicados).
       let pendientes = [...fotos];
+      const rechazadas = [];
       for (const f of fotos) {
-        await window.__saveEvidenciaLocal({
-          id: window.__newId(),
-          // SIN obra (pedido 31-ago): la asigna contabilidad al registrarla en
-          // Captura Mágica. El archivo va a la carpeta 'captura-campo/' del
-          // bucket (EvidenceUploader usa esa carpeta cuando obra_id es null).
-          obra_id: null,
-          tipo_evidencia: 'factura_campo',
-          modulo_relacionado: 'captura_campo',
-          registro_relacionado_id: null,
-          nombre_archivo: f.name || (esPdf(f) ? 'factura.pdf' : 'factura.jpg'),
-          mime_type: f.type || '',
-          blob: f,
-          observaciones: obs,
-          campo_revision: 'pendiente',
-          created_by: userId,
-          ...(esPrueba ? { demo: true } : {}),
-        });
+        try {
+          await window.__saveEvidenciaLocal({
+            id: window.__newId(),
+            // SIN obra (pedido 31-ago): la asigna contabilidad al registrarla en
+            // Captura Mágica. El archivo va a la carpeta 'captura-campo/' del
+            // bucket (EvidenceUploader usa esa carpeta cuando obra_id es null).
+            obra_id: null,
+            tipo_evidencia: 'factura_campo',
+            modulo_relacionado: 'captura_campo',
+            registro_relacionado_id: null,
+            nombre_archivo: f.name || (esPdf(f) ? 'factura.pdf' : 'factura.jpg'),
+            mime_type: f.type || '',
+            blob: f,
+            observaciones: obs,
+            campo_revision: 'pendiente',
+            created_by: userId,
+            // 🔴 ACÁ SE FRENA LA FOTO INSERVIBLE, Y ES EL ÚNICO MOMENTO ÚTIL
+            // (17-set-2026): quien la sacó todavía tiene el comprobante en la
+            // mano. Si el aviso llega cuando contabilidad intenta leerla, días
+            // después, el papel ya no está. Ver src/lib/calidad-foto.js.
+            exigirLegible: true,
+            ...(esPrueba ? { demo: true } : {}),
+          });
+        } catch (e) {
+          // La foto NO sirve: se la deja en la lista, marcada, para que la
+          // saquen de nuevo. Las demás del lote siguen su camino.
+          if (e?.code === 'foto_ilegible') {
+            rechazadas.push({ nombre: f.name || 'la foto', motivo: e.message || 'No se puede leer.' });
+            continue;
+          }
+          throw e;
+        }
         pendientes = pendientes.filter(x => x !== f);
-        setFotos(pendientes);
       }
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'captura-campo' } })); } catch {}
-      // Empujar la subida YA si hay señal (si no, la cola offline la sube sola).
-      try { uploadPendingEvidencias(); } catch {}
-      showToast?.(`✓ ${fotos.length} archivo(s) guardado(s)${esPrueba ? ' (modo prueba)' : ' — contabilidad las revisará'}. Podés seguir con tu día.`, 'green');
-      setComentario('');
+      setFotos(pendientes);
+      setRechazos(rechazadas);
+      const enviadas = fotos.length - rechazadas.length;
+      if (enviadas > 0) {
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias', source: 'captura-campo' } })); } catch {}
+        // Empujar la subida YA si hay señal (si no, la cola offline la sube sola).
+        try { uploadPendingEvidencias(); } catch {}
+        setComentario('');
+      }
+      if (rechazadas.length) {
+        showToast?.(`${rechazadas.length} foto(s) NO se enviaron porque no se pueden leer — hay que sacarlas de nuevo. Mirá el detalle en rojo.`, 'red');
+      } else {
+        showToast?.(`✓ ${enviadas} archivo(s) guardado(s)${esPrueba ? ' (modo prueba)' : ' — contabilidad las revisará'}. Podés seguir con tu día.`, 'green');
+      }
     } catch (e) {
       showToast?.('Error al guardar (las fotos ya guardadas se conservan): ' + (e.message || e), 'red');
     } finally {
@@ -348,6 +441,8 @@ function CapturaCampoPage({ showToast }) {
           Sacale foto al comprobante APENAS te lo den — así no se pierde. Contabilidad la revisa y la registra después; no tenés que llenar nada más.
         </div>
       </div>
+
+      <FotosPorRepetir />
 
       <EstadoSubidasCampo showToast={showToast} />
 
@@ -377,7 +472,28 @@ function CapturaCampoPage({ showToast }) {
         </div>
         {fotos.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
-            {fotos.map((f, i) => <ThumbFotoCampo key={i} file={f} onQuitar={() => setFotos(prev => prev.filter((_, j) => j !== i))} />)}
+            {fotos.map((f, i) => <ThumbFotoCampo key={i} file={f} onQuitar={() => { setRechazos([]); setFotos(prev => prev.filter((_, j) => j !== i)); }} />)}
+          </div>
+        )}
+        {rechazos.length > 0 && (
+          <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 8,
+                        background: 'rgba(231,76,60,0.10)', border: '1px solid rgba(231,76,60,0.45)' }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>
+              ⚠ {rechazos.length === 1 ? 'Esta foto no se envió' : `${rechazos.length} fotos no se enviaron`}
+            </div>
+            <div style={{ display: 'grid', gap: 8, marginTop: 7 }}>
+              {rechazos.map((r, i) => (
+                <div key={i} style={{ fontSize: 12, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 700 }}>{r.nombre}</div>
+                  <div style={{ color: 'var(--ts)' }}>{r.motivo}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 8, fontWeight: 600 }}>
+              Quitala con la ✕ y sacá la foto otra vez. No la mandamos así a propósito:
+              si llega ilegible, nadie se entera hasta dentro de unos días y para entonces
+              el comprobante de papel ya se perdió.
+            </div>
           </div>
         )}
 
