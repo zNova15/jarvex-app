@@ -35,20 +35,12 @@ const avisar = () => {
   } catch { /* SSR / tests */ }
 };
 
-/**
- * Las cuentas que tienen sentido como CONTRAPARTIDA de un asiento.
- *
- * No es una restricción dura —se puede elegir cualquiera del plan— sino lo que
- * se ofrece primero: son las cinco que aparecen en el 99 % de los asientos y
- * tenerlas a un clic evita buscarlas entre 1.792.
- */
-export const CONTRAPARTIDAS_FRECUENTES = [
-  { codigo: '101', cuando: 'Se pagó o se cobró en efectivo, de la caja.' },
-  { codigo: '104', cuando: 'Salió o entró por el banco (transferencia, cheque, Yape).' },
-  { codigo: '42',  cuando: 'Queda a deber a un proveedor.' },
-  { codigo: '41',  cuando: 'Queda a deber al personal (planilla).' },
-  { codigo: '121', cuando: 'Se le factura a un cliente y todavía no cobró.' },
-];
+// Qué cuentas se ofrecen como CONTRAPARTIDA ya no es una lista fija acá: la
+// arma `opcionesContrapartida()` en `contrapartida.js` según el comprobante
+// —pagado o pendiente, compra o venta, sobre o bajo el umbral de
+// bancarización— y es la misma función que usa el generador del asiento. Dos
+// listas de contrapartidas en dos archivos era garantía de que un día
+// dijeran cosas distintas.
 
 /** ¿Se puede guardar esta cuenta? Misma forma que valida el CHECK de la mig 220. */
 export function validarCuentaManual(codigo) {
@@ -148,4 +140,4 @@ export async function fijarCuentaEnLote(ids = [], cambios = {}, ctx = {}) {
   return out;
 }
 
-export default { CONTRAPARTIDAS_FRECUENTES, validarCuentaManual, fijarCuentaManual, fijarCuentaEnLote };
+export default { validarCuentaManual, fijarCuentaManual, fijarCuentaEnLote };

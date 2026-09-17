@@ -8,7 +8,7 @@
 // libro), y que el ASIENTO respete lo que la persona eligió — que es el punto
 // de todo esto.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { validarCuentaManual, CONTRAPARTIDAS_FRECUENTES } from '../cuenta-manual-db.js';
+import { validarCuentaManual } from '../cuenta-manual-db.js';
 import { generarAsiento } from '../asientos.js';
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../cuenta-de-comprobante.js';
 import { esCuentaValida } from '../pcge.js';
@@ -58,13 +58,9 @@ describe('validar la cuenta antes de guardarla', () => {
     expect(validarCuentaManual('631').nombre).toBe('Transporte, correos y gastos de viaje');
   });
 
-  it('las contrapartidas frecuentes existen todas y explican cuándo van', () => {
-    expect(CONTRAPARTIDAS_FRECUENTES.length).toBeGreaterThan(3);
-    for (const c of CONTRAPARTIDAS_FRECUENTES) {
-      expect(esCuentaValida(c.codigo)).toBe(true);
-      expect(c.cuando.length).toBeGreaterThan(15);
-    }
-  });
+  // Las contrapartidas que se ofrecen se probaban acá cuando eran una lista
+  // fija; ahora las arma `opcionesContrapartida()` según el comprobante y se
+  // prueban en `contrapartida.test.js`, contra el PCGE igual que antes.
 });
 
 describe('el asiento respeta lo que eligió la persona', () => {

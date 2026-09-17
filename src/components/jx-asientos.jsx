@@ -9,7 +9,9 @@ import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import {
   nombreDeCuenta, cuenta as cuentaPcge, buscarCuentas, hijosDe, cuentaMadreDe, NIVEL_MAXIMO,
 } from "../lib/pcge.js";
-import { fijarCuentaManual, fijarCuentaEnLote, CONTRAPARTIDAS_FRECUENTES } from "../lib/cuenta-manual-db.js";
+import { fijarCuentaManual, fijarCuentaEnLote } from "../lib/cuenta-manual-db.js";
+import { opcionesContrapartida, avisoEfectivoSobreUmbral, CAJA } from "../lib/contrapartida.js";
+import { cargarBancarizados } from "../lib/bancarizado-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
@@ -123,9 +125,26 @@ function BadgeCuenta({ cuentas }) {
       'El comprobante tiene cosas de naturalezas distintas y va a más de una cuenta:\n' + detalle));
   }
 
+  // ── LOS BADGES DE LA CONTRAPARTIDA (17-set) ──────────────────────
+  // Son una pregunta distinta de la cuenta de gasto: el gasto puede estar
+  // perfecto y la plata salir de una cuenta que no puede ser.
+  const cp = c.contrapartida || {};
   if (c.contrapartidaManual) {
     badges.push(B('b-green', '✎ contrapartida a mano',
       'La cuenta de caja/banco/por pagar la eligió una persona, en vez de derivarla del método de pago.'));
+  } else if (cp.porDefinir) {
+    badges.push(B('b-red', '⚠ contrapartida por definir',
+      (cp.porque || 'No se sabe de dónde salió la plata.')
+      + ' Está puesta en la cuenta genérica 10 para que el asiento cuadre; elegí de qué cuenta salió.'));
+  } else if (cp.origen === 'constancia') {
+    badges.push(B('b-green', 'plata por el banco',
+      'La contrapartida salió de la constancia de transferencia o depósito cargada en el comprobante.'));
+  } else if (cp.origen === 'detraccion') {
+    badges.push(B('b-amber', 'banco (por la detracción)', cp.porque || ''));
+  }
+
+  if (cp.aviso) {
+    badges.push(B('b-red', '⚠ efectivo sobre el umbral', cp.aviso));
   }
 
   if (c.revisar && !c.provisional) {
@@ -146,7 +165,13 @@ function BadgeCuenta({ cuentas }) {
  * SUGERIDAS —lo que la app dedujo, y las hermanas de la que ya está puesta— y
  * el buscador es para cuando ninguna sirve.
  */
-function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocus }) {
+function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocus, bloqueada = null }) {
+  // `bloqueada` = { codigo, motivo }: la cuenta no se puede elegir y se
+  // muestra apagada con el motivo, tanto en las sugeridas como en el
+  // buscador. No se esconde a propósito: escondida, alguien la busca entre
+  // las 1.792 y la pone sin enterarse de por qué no estaba.
+  const estaBloqueada = (codigo) => !!bloqueada
+    && (codigo === bloqueada.codigo || String(codigo).startsWith(bloqueada.codigo));
   const [q, setQ] = uS('');
   const resultados = uM(() => {
     const t = q.trim();
@@ -182,21 +207,30 @@ function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocu
             Sugeridas para este comprobante
           </div>
         )}
-        {(q.trim() ? resultados : sugeridas).map(c => (
+        {(q.trim() ? resultados : sugeridas).map(c => {
+          const veda = estaBloqueada(c.codigo);
+          return (
           <div
             key={c.codigo}
-            onClick={() => onElegir(c.codigo)}
+            onClick={() => { if (!veda) onElegir(c.codigo); }}
+            title={veda ? bloqueada.motivo : undefined}
             style={{
-              padding: '6px 10px', cursor: 'pointer', fontSize: 12.5,
+              padding: '6px 10px', cursor: veda ? 'not-allowed' : 'pointer', fontSize: 12.5,
               borderBottom: '1px solid var(--border)',
+              opacity: veda ? 0.6 : 1,
               background: valor === c.codigo ? 'rgba(242,183,5,.12)' : undefined,
             }}
           >
-            <span className="col-m" style={{ fontWeight: 600 }}>{c.codigo}</span>{' '}
+            <span className="col-m" style={{ fontWeight: 600 }}>{veda ? '⛔ ' : ''}{c.codigo}</span>{' '}
             <span>{c.nombre}</span>
-            {c.porque && <div style={{ color: 'var(--tm)', fontSize: 11.5, lineHeight: 1.4 }}>{c.porque}</div>}
+            {(veda ? bloqueada.motivo : c.porque) && (
+              <div style={{ color: veda ? 'var(--red)' : 'var(--tm)', fontSize: 11.5, lineHeight: 1.4 }}>
+                {veda ? bloqueada.motivo : c.porque}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
         {q.trim() && resultados.length === 0 && (
           <div style={{ padding: 14, textAlign: 'center', color: 'var(--tm)', fontSize: 12.5 }}>
             Ninguna cuenta del PCGE coincide con «{q}».
@@ -251,11 +285,36 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
     return out;
   }, [cuentasAsiento, deducida]);
 
+  // ── LAS OPCIONES DE CONTRAPARTIDA SE REDUCEN SEGÚN EL COMPROBANTE ──
+  // Pedido de Gabriel (17-set): «toda compra mayor a 2 mil soles está sujeta a
+  // bancarización, por lo tanto eso no puede ser a efectivo y las opciones se
+  // reducen a transferencias, depósitos o contrarrestar con alguna factura».
+  // Un comprobante pendiente ofrece la deuda primero; uno pagado, el banco;
+  // una venta, la cuenta por cobrar. La caja aparece apagada cuando la ley la
+  // prohíbe, con el motivo escrito.
+  const opciones = uM(() => opcionesContrapartida(movimiento || {}), [movimiento]);
+  const cajaProhibida = uM(() => opciones.some(o => o.prohibida), [opciones]);
+  // El escape: si la compra se pagó en efectivo DE VERDAD —pasa, y es una
+  // infracción de quien pagó, no de quien asienta— el libro tiene que poder
+  // decirlo. Lo que no puede es decirlo en silencio.
+  const [admiteEfectivo, setAdmiteEfectivo] = uS(false);
+  const motivoVeda = uM(
+    () => opciones.find(o => o.prohibida)?.cuando || '',
+    [opciones],
+  );
+
   const contrapartidasSugeridas = uM(
-    () => CONTRAPARTIDAS_FRECUENTES
-      .map(c => ({ ...cuentaPcge(c.codigo), porque: c.cuando }))
+    () => opciones
+      .map(c => ({ ...cuentaPcge(c.codigo), porque: c.cuando, prohibida: c.prohibida }))
       .filter(c => c.codigo),
-    [],
+    [opciones],
+  );
+
+  // La consecuencia tributaria, cuando la contrapartida elegida es la caja en
+  // una compra que estaba sujeta a bancarización.
+  const avisoEfectivo = uM(
+    () => avisoEfectivoSobreUmbral(movimiento || {}, contra),
+    [movimiento, contra],
   );
 
   // Guard SÍNCRONO: el doble clic acá escribiría dos versiones del mismo
@@ -267,9 +326,15 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
     try {
       const cambios = { cuenta, contrapartida: contra };
       const ids = [asiento.movimiento_id, ...(aplicarATodos ? hermanos.map(h => h.id) : [])];
+      // Si se eligió la caja en una compra sujeta a bancarización, la
+      // auditoría tiene que decir que se hizo a sabiendas: esa decisión le
+      // cuesta a la empresa el crédito fiscal y la deducción del gasto.
+      const motivo = avisoEfectivo
+        ? `Libro Diario · se declara pago en EFECTIVO pese a la bancarización en ${movimiento?.document_number || 'el comprobante'} (pierde crédito fiscal y deducción, art. 8 Ley 28194)`
+        : '';
 
       if (ids.length > 1) {
-        const r = await fijarCuentaEnLote(ids, cambios, { userId });
+        const r = await fijarCuentaEnLote(ids, cambios, { userId, motivo });
         if (r.fallaron.length) {
           showToast?.(`Se corrigieron ${r.ok}, fallaron ${r.fallaron.length}: ${r.fallaron[0].error}`, 'amber');
         } else {
@@ -279,7 +344,7 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
         return;
       }
 
-      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, { userId });
+      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, { userId, motivo });
       if (!r.ok) { showToast?.(r.error, 'red'); return; }
       showToast?.(
         r.vuelveAAutomatico
@@ -341,12 +406,39 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
 
           <div>
             <label className="flabel">Contrapartida (de dónde salió o entró la plata)</label>
+            {!cuentasAsiento.contrapartidaManual && cuentasAsiento.contrapartida?.porque && (
+              <div style={{
+                fontSize: 11.5, lineHeight: 1.45, marginBottom: 7,
+                color: cuentasAsiento.contrapartida.porDefinir ? 'var(--red)' : 'var(--tm)',
+              }}>
+                {cuentasAsiento.contrapartida.porDefinir ? '⚠ ' : ''}
+                {cuentasAsiento.contrapartida.porque}
+              </div>
+            )}
             <SelectorCuenta
               valor={contra}
               sugeridas={contrapartidasSugeridas}
               onElegir={setContra}
               placeholder="Buscar la cuenta de caja, banco o por pagar…"
+              bloqueada={cajaProhibida && !admiteEfectivo ? { codigo: CAJA, motivo: motivoVeda } : null}
             />
+            {cajaProhibida && !admiteEfectivo && (
+              <button
+                className="btn btn-ghost btn-xs"
+                style={{ marginTop: 6 }}
+                onClick={() => setAdmiteEfectivo(true)}
+                title="Habilitar la caja igual, asumiendo la consecuencia tributaria">
+                Se pagó en efectivo igual →
+              </button>
+            )}
+            {avisoEfectivo && (
+              <div style={{
+                marginTop: 7, padding: '8px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.45,
+                background: 'rgba(231,76,60,.10)', color: 'var(--red)',
+              }}>
+                ⚠ {avisoEfectivo}
+              </div>
+            )}
           </div>
 
           {/* LOS OTROS DEL MISMO PROVEEDOR.
@@ -488,10 +580,30 @@ function LibroDiarioPage({ showToast }) {
     return (mov) => cuentasDeComprobante(mov, { familiaDe });
   }, [catalogoInsumos, insumoCategorias, terminosCustom, empresaId]);
 
+  // ── LA EVIDENCIA BANCARIA QUE EL ASIENTO IGNORABA (17-set) ─────────
+  // Las constancias de transferencia y los depósitos multi-factura ya estaban
+  // cargados en la app; el generador nunca los miraba y deducía la
+  // contrapartida solo de `metodo_pago`, que dice 'efectivo' en 1.617 de 1.742
+  // movimientos porque es el valor con el que nace la captura. Con esto, una
+  // factura con su constancia se asienta contra el banco sola.
+  const [bancarizadoIds, setBancarizadoIds] = uS(() => new Set());
+  uE(() => {
+    let vivo = true;
+    const cargar = () => cargarBancarizados(window.__db)
+      .then(s => { if (vivo) setBancarizadoIds(s); })
+      .catch(() => {});
+    cargar();
+    // Si se carga una constancia mientras la pantalla está abierta, el asiento
+    // tiene que cambiar solo: es el mismo evento que usa el resto de la app.
+    const onCambio = () => cargar();
+    window.addEventListener('jx_data_changed', onCambio);
+    return () => { vivo = false; window.removeEventListener('jx_data_changed', onCambio); };
+  }, []);
+
   // Asientos generados al vuelo
   const asientosTodos = uM(
-    () => generarAsientosBatch(movsFiltrados, { repartoDe }),
-    [movsFiltrados, repartoDe],
+    () => generarAsientosBatch(movsFiltrados, { repartoDe, bancarizadoIds }),
+    [movsFiltrados, repartoDe, bancarizadoIds],
   );
   const descuadrados = uM(() => asientosTodos.filter(a => !a.cuadra), [asientosTodos]);
 

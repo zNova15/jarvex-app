@@ -8,6 +8,7 @@
 
 import { desglosarIgv, describirIgv } from './igv-desglose.js';
 import { fmtFechaLarga } from './fecha.js';
+import { resolverContrapartida, avisoEfectivoSobreUmbral } from './contrapartida.js';
 
 function r2(n) {
   const v = Number(n);
@@ -278,14 +279,29 @@ function construirAsiento(movimiento, opts = {}) {
     : '';
   const tipo = m.type || 'expense';
   const pagado = m.payment_status === 'paid';
-  // Columna real: metodo_pago (payment_method no existe en la tabla — antes
-  // TODO caía a la cuenta genérica '10' por leer el campo equivocado).
-  // La CONTRAPARTIDA: la otra pata del asiento. Sale del método de pago, que
-  // muchas veces viene vacío y manda todo a la cuenta genérica '10'. Desde la
-  // mig 220 la contadora puede fijarla a mano, y lo que ella elija manda:
-  // sabe si eso se pagó de la caja chica o salió del banco.
+  // ── LA CONTRAPARTIDA: la otra pata del asiento ───────────────────
+  // Hasta el 17-set salía SOLO de `metodo_pago`, y ese campo dice 'efectivo'
+  // en 1.617 de 1.742 movimientos porque es el valor con el que nace la
+  // captura, no algo que alguien haya elegido. Resultado: 111 compras pagadas
+  // de S/ 2.000 o más se asentaban contra la caja 101, que es exactamente lo
+  // que prohíbe la Ley de Bancarización.
+  //
+  // Ahora la decide `contrapartida.js` con lo que la app SÍ sabe —la
+  // constancia de transferencia cargada, la detracción depositada, el método
+  // de pago, el umbral del D.L. 1529— y cuando no alcanza para saberlo deja la
+  // cuenta genérica 10 «por definir» en vez de afirmar una caja imposible.
+  // Lo que la contadora haya puesto a mano (mig 220) le sigue ganando a todo.
   const contrapartidaManual = m.cuenta_pcge_contrapartida || null;
-  const cuentaCaja = contrapartidaManual || cuentaCajaOBanco(m.metodo_pago || m.payment_method);
+  const contra = resolverContrapartida(m, {
+    bancarizado: opts?.bancarizadoIds instanceof Set
+      ? (opts.bancarizadoIds.has(m.id)
+        // Un par interco es UN comprobante y UNA transferencia: la constancia
+        // de una pata vale para las dos (misma regla que el reporte contable).
+        || !!(m.is_intercompany && m.related_movement_id && opts.bancarizadoIds.has(m.related_movement_id)))
+      : false,
+    tipoCambio: opts?.tipoCambio ?? null,
+  });
+  const cuentaCaja = contra.cuenta || cuentaCajaOBanco(m.metodo_pago || m.payment_method);
   const partidas = [];
   const desc = String(m.description || '').trim() || '(sin descripción)';
   // Columna real: document_number (documento/doc_numero/factura no existen —
@@ -414,6 +430,21 @@ function construirAsiento(movimiento, opts = {}) {
       // La contrapartida se corrige aparte de la cuenta de gasto: una puede
       // estar puesta a mano y la otra no.
       contrapartidaManual: !!contrapartidaManual,
+      // De dónde salió la contrapartida y si quedó sin definir. Es lo que el
+      // Libro Diario muestra como badge y lo que hace que estas filas se
+      // puedan aislar: una contrapartida provisional con cara de definitiva es
+      // el mismo error que tenía la cuenta de gasto antes de la tanda 2.
+      contrapartida: {
+        cuenta: pagado ? cuentaCaja : (partidas[partidas.length - 1]?.cuenta || null),
+        origen: contra.origen,
+        confianza: contra.confianza,
+        porque: contra.porque,
+        porDefinir: contra.porDefinir && pagado,
+        prohibeEfectivo: contra.prohibeEfectivo,
+        // Si igual terminó en la caja (porque alguien la puso a mano sabiendo
+        // lo que hacía), el asiento lleva la consecuencia tributaria escrita.
+        aviso: pagado ? avisoEfectivoSobreUmbral(m, cuentaCaja) : null,
+      },
       revisar: naturaleza.revisar,
       partida: naturaleza.lineas.length > 1,
       detalle: naturaleza.lineas.map(l => ({
@@ -474,6 +505,10 @@ export const ESTADOS_CUENTA = [
   { v: 'revisar',     label: 'Marcadas para revisar' },
   { v: 'partida',     label: 'Repartidas en varias cuentas' },
   { v: 'manual',      label: 'Puestas a mano' },
+  // Los dos de la CONTRAPARTIDA (17-set). Son preguntas distintas de las de
+  // arriba: la cuenta del gasto puede estar perfecta y la de la plata no.
+  { v: 'contrapartida_por_definir', label: '⚠ Contrapartida por definir' },
+  { v: 'efectivo_sobre_umbral',     label: '⚠ Efectivo sobre el umbral' },
 ];
 
 /**
@@ -495,6 +530,10 @@ export function cumpleEstadoCuenta(asiento, estado) {
     case 'revisar':     return !c.provisional && c.revisar === true;
     case 'partida':     return c.partida === true;
     case 'manual':      return c.manual === true;
+    // La contrapartida puesta a mano nunca está «por definir», igual que la
+    // cuenta de gasto: la decisión humana cierra la pregunta.
+    case 'contrapartida_por_definir': return c.contrapartida?.porDefinir === true && c.contrapartidaManual !== true;
+    case 'efectivo_sobre_umbral':     return !!c.contrapartida?.aviso;
     default:            return true;
   }
 }

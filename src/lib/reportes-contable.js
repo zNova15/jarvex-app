@@ -17,37 +17,12 @@
 import { consumoPorObraModeloB } from './costo-obra.js';
 import { requiereBancarizacion } from './tipo-cambio.js';
 
-/** Set de ids de movimientos bancarizados: con evidencia directa (no fallida)
- * O cubiertos al 100% por partes cuyos depósitos multi-factura siguen vivos
- * (mig 137 — la constancia vive en el depósito, no en el movimiento). */
-export async function cargarBancarizados(db) {
-  const set = new Set();
-  try {
-    const evs = await db.evidencias
-      .filter(e => e.modulo_relacionado === 'accounting_movements' && e.tipo_evidencia === 'bancarizacion' && !e.deleted_at && e.registro_relacionado_id && e.sync_status !== 'failed')
-      .toArray();
-    for (const e of evs) set.add(e.registro_relacionado_id);
-  } catch {}
-  try {
-    const partes = await db.pagos_partes.filter(p => !p.deleted_at && p.accounting_movement_id).toArray();
-    const deps = db.depositos_bancarizacion
-      ? await db.depositos_bancarizacion.filter(d => !d.deleted_at).toArray().catch(() => [])
-      : [];
-    const depIds = new Set(deps.map(d => d.id));
-    const porMov = new Map();
-    for (const p of partes) { const a = porMov.get(p.accounting_movement_id) || []; a.push(p); porMov.set(p.accounting_movement_id, a); }
-    for (const [movId, arr] of porMov) {
-      if (set.has(movId)) continue;
-      const m = await db.accounting_movements.get(movId);
-      if (!m || m.deleted_at) continue;
-      const suma = arr.reduce((t, p) => t + (Number(p.monto) || 0), 0);
-      if (suma >= (Number(m.amount) || 0) - 0.01 && arr.every(p => !p.deposito_id || depIds.has(p.deposito_id))) {
-        set.add(movId);
-      }
-    }
-  } catch {}
-  return set;
-}
+// La evidencia bancaria (constancias + depósitos multi-factura) se carga desde
+// `bancarizado-db.js`: desde el 17-set el Libro Diario también la necesita para
+// deducir la contrapartida del asiento, y no tiene por qué arrastrar toda la
+// agregación de reportes en su chunk para preguntar una sola cosa. Se
+// re-exporta para que los llamadores de siempre no cambien.
+export { cargarBancarizados } from './bancarizado-db.js';
 
 // Clase CANÓNICA única (clase manda), igual que el resto de la app
 // (jx-contabilidad): así cada movimiento es compra XOR venta y no se cuenta doble.
