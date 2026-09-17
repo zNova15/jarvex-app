@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   leerConfig, construirCuerpo, normalizarRespuesta, errorDelCuerpo, openrouterChat,
   presupuestoSalida, MODELO_DEFAULT, MODELO_FALLBACK_DEFAULT, MAX_MODELOS_CADENA,
+  armarCadenaOpenRouter,
 } from '../../../lib/openrouter.js';
 
 // El adaptador vive en /lib (lo consume api/captura-magica.js, que no se
@@ -19,13 +20,13 @@ describe('leerConfig — el motor no se prende solo', () => {
     expect(c.respaldos).toEqual(MODELO_FALLBACK_DEFAULT.split(','));
   });
 
-  it('la cadena por defecto termina en el auto-router, que sobrevive a la rotación', () => {
-    // Ningún modelo gratuito es permanente (los :free de DeepSeek, Llama y Qwen
-    // ya desaparecieron). 'openrouter/free' elige entre los gratuitos VIVOS, así
-    // que es el último eslabón antes de caer a Claude.
+  it('la cadena por defecto tiene exactamente 1 respaldo gratuito (total 2 modelos gratuitos)', () => {
+    // La cadena gratuita tiene 2 modelos en total (titular + 1 respaldo) para
+    // dejar libre el 3er lugar si el usuario elige un modelo en otra herramienta
+    // (categorización, correlación, mapeo) respetando el límite de 3 de OpenRouter.
     const c = leerConfig({ OPENROUTER_API_KEY: 'k' });
-    expect(c.respaldos.at(-1)).toBe('openrouter/free');
-    expect(c.respaldos.length).toBeGreaterThanOrEqual(2);
+    expect(c.respaldos).toEqual(['inclusionai/ling-3.0-flash-vl:free']);
+    expect(c.respaldos.length).toBe(1);
   });
 
   it('IA_POSTPROCESO=anthropic revierte SIN borrar la key (rollback de un env var)', () => {
@@ -288,3 +289,66 @@ describe('openrouterChat — el 200 con error NO se puede dar por bueno', () => 
     expect(JSON.parse(init.body).model).toBe('a/uno');
   });
 });
+
+describe('armarCadenaOpenRouter — cadena de 2 para auto, y 3 con modelo elegido', () => {
+  it('en modo auto usa exactamente 2 modelos (titular + 1 respaldo gratuito)', () => {
+    const c = armarCadenaOpenRouter('auto');
+    expect(c.modelo).toBe(MODELO_DEFAULT);
+    expect(c.respaldos).toEqual([MODELO_FALLBACK_DEFAULT]);
+    const total = [c.modelo, ...c.respaldos];
+    expect(total).toHaveLength(2);
+  });
+
+  it('sin parámetro (null o undefined) se comporta como auto (2 modelos)', () => {
+    const c1 = armarCadenaOpenRouter(null);
+    expect([c1.modelo, ...c1.respaldos]).toHaveLength(2);
+
+    const c2 = armarCadenaOpenRouter(undefined);
+    expect([c2.modelo, ...c2.respaldos]).toHaveLength(2);
+  });
+
+  it('con modelo elegido usa el elegido + 2 gratuitos como respaldo (exactamente 3 modelos)', () => {
+    const c = armarCadenaOpenRouter('openai/gpt-oss-120b');
+    expect(c.modelo).toBe('openai/gpt-oss-120b');
+    expect(c.respaldos).toEqual([MODELO_DEFAULT, MODELO_FALLBACK_DEFAULT]);
+    const total = [c.modelo, ...c.respaldos];
+    expect(total).toHaveLength(3);
+    expect(total).toHaveLength(MAX_MODELOS_CADENA);
+  });
+
+  it('construirCuerpo con armarCadenaOpenRouter nunca supera el límite de 3 de OpenRouter', () => {
+    const base = { system: 'sys', user: 'usr', maxTokens: 1000 };
+
+    const autoCadena = armarCadenaOpenRouter('auto');
+    const bAuto = construirCuerpo({ ...autoCadena, ...base });
+    expect(bAuto.models).toHaveLength(2);
+
+    const elegidoCadena = armarCadenaOpenRouter('openai/gpt-oss-120b');
+    const bElegido = construirCuerpo({ ...elegidoCadena, ...base });
+    expect(bElegido.models).toHaveLength(3);
+    expect(bElegido.models.length).toBeLessThanOrEqual(MAX_MODELOS_CADENA);
+  });
+
+  it('si el elegido ya es uno de los gratuitos, no se duplica', () => {
+    const c = armarCadenaOpenRouter(MODELO_DEFAULT);
+    expect(c.modelo).toBe(MODELO_DEFAULT);
+    expect(c.respaldos).not.toContain(MODELO_DEFAULT);
+    const total = [c.modelo, ...c.respaldos];
+    expect(total.length).toBeLessThanOrEqual(MAX_MODELOS_CADENA);
+  });
+
+  it('respeta la configuración pasada en cfg', () => {
+    const customCfg = {
+      modelo: 'mi/titular:free',
+      respaldos: ['mi/respaldo:free'],
+    };
+    const cAuto = armarCadenaOpenRouter('auto', customCfg);
+    expect(cAuto.modelo).toBe('mi/titular:free');
+    expect(cAuto.respaldos).toEqual(['mi/respaldo:free']);
+
+    const cElegido = armarCadenaOpenRouter('anthropic/claude-3-haiku', customCfg);
+    expect(cElegido.modelo).toBe('anthropic/claude-3-haiku');
+    expect(cElegido.respaldos).toEqual(['mi/titular:free', 'mi/respaldo:free']);
+  });
+});
+

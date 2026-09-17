@@ -1,5 +1,5 @@
 import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
-import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat } from '../lib/openrouter.js';
+import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, armarCadenaOpenRouter } from '../lib/openrouter.js';
 import { resolverTexto } from '../lib/modelos-ia.js';
 import { promptClasificacion } from '../lib/prompt-clasificacion.js';
 
@@ -236,8 +236,9 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
     let motor = 'claude';
     if (cfgOR.activo) {
       try {
+        const cadenaOR = armarCadenaOpenRouter('auto', cfgOR);
         const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          modelo: cfgOR.modelo, respaldos: cfgOR.respaldos, politica: cfgOR.politica,
+          modelo: cadenaOR.modelo, respaldos: cadenaOR.respaldos, politica: cfgOR.politica,
           system: sys, user: usr, maxTokens: 2000,
         }), Math.min(deadline, Date.now() + 18000));
         data = normalizarRespuestaOR(cruda);
@@ -332,23 +333,45 @@ async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null
   // ámbitos: si el pedido se cayera a otro modelo por detrás, la comparación
   // entre modelos mediría una mezcla. Si el elegido falla, falla y se dice.
   const t = resolverTexto(elegido, 'clasificacion');
+  const cadenaOR = armarCadenaOpenRouter(t.auto ? 'auto' : t.modelo, cfg);
   let data;
   try {
     const cruda = await openrouterChat(cfg.apiKey, construirCuerpoOR({
-      modelo: t.auto ? cfg.modelo : t.modelo,
-      respaldos: t.auto ? cfg.respaldos : [],
+      modelo: cadenaOR.modelo,
+      respaldos: cadenaOR.respaldos,
       politica: cfg.politica,
       system: sys, user: usr, maxTokens, razonamiento: 'bajo',
     }), Date.now() + 25000);
     data = normalizarRespuestaOR(cruda);
   } catch (err) {
-    console.warn(`[${modo}] OpenRouter falló:`, (err && (err.upstreamStatus || err.message)) || err);
-    const e = new Error('openrouter');
-    e.status = 503;
-    e.mensaje = err?.politicaImposible
-      ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
-      : 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
-    throw e;
+    // Si el modelo elegido era de pago y respondió 402 (sin saldo en OpenRouter),
+    // degradamos automáticamente a la cadena de gratuitas para no dejar al usuario bloqueado.
+    if (!t.auto && err?.sinCredito) {
+      console.warn(`[${modo}] modelo elegido sin crédito (402), reintento con cadena gratuita`);
+      try {
+        const cadenaAuto = armarCadenaOpenRouter('auto', cfg);
+        const crudaAuto = await openrouterChat(cfg.apiKey, construirCuerpoOR({
+          modelo: cadenaAuto.modelo,
+          respaldos: cadenaAuto.respaldos,
+          politica: cfg.politica,
+          system: sys, user: usr, maxTokens, razonamiento: 'bajo',
+        }), Date.now() + 25000);
+        data = normalizarRespuestaOR(crudaAuto);
+      } catch (err2) {
+        err = err2;
+      }
+    }
+    if (!data) {
+      console.warn(`[${modo}] OpenRouter falló:`, (err && (err.upstreamStatus || err.message)) || err);
+      const e = new Error('openrouter');
+      e.status = 503;
+      e.mensaje = err?.politicaImposible
+        ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
+        : err?.sinCredito
+        ? 'El servicio de OpenRouter no tiene saldo disponible (402) y la cadena gratuita tampoco respondió. Revisa tu cuenta de OpenRouter o reintenta en un momento.'
+        : 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
+      throw e;
+    }
   }
   const text = data.content?.[0]?.text || '';
   const jm = text.match(/\{[\s\S]*\}/);

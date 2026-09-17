@@ -237,7 +237,7 @@ import { requireAuth, rateLimit, sanitizeError, validateFileBytes } from '../lib
 // HEIC/HEIF → JPEG. Puro JS/WASM (heic-decode usa libheif-js): sin binario
 // nativo que compilar, corre igual en cualquier función de Vercel.
 import heicConvert from 'heic-convert';
-import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida } from '../lib/openrouter.js';
+import { leerConfig as leerConfigOR, construirCuerpo as construirCuerpoOR, normalizarRespuesta as normalizarRespuestaOR, openrouterChat, presupuestoSalida, armarCadenaOpenRouter } from '../lib/openrouter.js';
 import { estimarItems } from '../lib/ocr-items.js';
 import { modeloOcr, textoPaginadoSctr } from '../lib/mistral-ocr.js';
 // El CATÁLOGO lo sirve api/bases-analizar.js (acción 'modelos') para los dos
@@ -484,10 +484,11 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
     if (usaOpenRouter) {
       const restante = Math.max(deadline - Date.now(), 1000);
       const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
+      const cadenaOR = armarCadenaOpenRouter(elegidoTexto.auto ? 'auto' : elegidoTexto.modelo, cfgOR);
       try {
         const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
-          respaldos: elegidoTexto.auto ? cfgOR.respaldos : [],
+          modelo: cadenaOR.modelo,
+          respaldos: cadenaOR.respaldos,
           politica: cfgOR.politica,
           system: SYSTEM_PROMPT_ITEMS,
           user: userTexto,
@@ -497,12 +498,35 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
         engine = 'mistral-ocr+openrouter';
         proveedorIa = data.proveedor;
       } catch (e) {
-        const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
-        console.warn('[captura-magica] relectura de ítems, OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
-          puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
-        if (!puedeRespaldar) throw e;
-        data = await conRespaldoAnotado(llamarClaude, e);
-        engine = 'mistral-ocr+claude(respaldo)';
+        // Si el modelo elegido era de pago y respondió 402 (sin crédito), degradamos
+        // de inmediato a la cadena gratuita de OpenRouter en vez de caer ciegamente a Claude.
+        if (!elegidoTexto.auto && e?.sinCredito) {
+          console.warn('[captura-magica] relectura ítems: modelo elegido sin crédito (402), reintento con cadena gratuita');
+          try {
+            const cadenaAuto = armarCadenaOpenRouter('auto', cfgOR);
+            const crudaAuto = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+              modelo: cadenaAuto.modelo,
+              respaldos: cadenaAuto.respaldos,
+              politica: cfgOR.politica,
+              system: SYSTEM_PROMPT_ITEMS,
+              user: userTexto,
+              maxTokens: presupuestoSalida(itemsEstimados),
+            }), deadlineOR);
+            data = normalizarRespuestaOR(crudaAuto);
+            engine = 'mistral-ocr+openrouter(gratis-fallback)';
+            proveedorIa = data.proveedor;
+          } catch (e2) {
+            e = e2;
+          }
+        }
+        if (!data) {
+          const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
+          console.warn('[captura-magica] relectura de ítems, OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
+            puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
+          if (!puedeRespaldar) throw e;
+          data = await conRespaldoAnotado(llamarClaude, e);
+          engine = 'mistral-ocr+claude(respaldo)';
+        }
       }
     } else {
       data = await llamarClaude();
@@ -981,12 +1005,11 @@ export default async function handler(req, res) {
       // que queda y guardamos el resto para el respaldo.
       const restante = Math.max(deadline - Date.now(), 1000);
       const deadlineOR = Math.min(deadline, Date.now() + Math.max(20000, Math.floor(restante * 0.55)));
+      const cadenaOR = armarCadenaOpenRouter(elegidoTexto.auto ? 'auto' : elegidoTexto.modelo, cfgOR);
       try {
         const cruda = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-          // Un modelo elegido a mano va SOLO, sin respaldos: si se pidió para
-          // compararlo, tiene que contestar él. Ver lib/modelos-ia.js.
-          modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
-          respaldos: elegidoTexto.auto ? cfgOR.respaldos : [],
+          modelo: cadenaOR.modelo,
+          respaldos: cadenaOR.respaldos,
           politica: cfgOR.politica,
           system: systemPrompt,
           user: content[0].text,
@@ -998,20 +1021,36 @@ export default async function handler(req, res) {
         engine = 'mistral-ocr+openrouter';
         proveedorIa = data.proveedor;
       } catch (e) {
-        // El respaldo NO es opcional: los modelos gratuitos tienen tope de 20
-        // requests/minuto compartido, así que un lote de facturas puede
-        // toparse. Que se caiga a Claude es la diferencia entre "tardó un
-        // poco más" y "la fila quedó en Error".
-        // Un AbortError acá NO significa "se acabó el tiempo": significa que se
-        // acabó la MITAD que le tocaba a OpenRouter. La otra mitad es
-        // justamente para esto, así que el único guard válido es el reloj real.
-        const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
-        console.warn('[captura-magica] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
-          puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
-        if (!puedeRespaldar) throw e;
-        respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
-        data = await conRespaldoAnotado(llamarClaude, e);
-        engine = 'mistral-ocr+claude(respaldo)';
+        // Si el modelo elegido era de pago y respondió 402 (sin crédito), degradamos
+        // de inmediato a la cadena gratuita de OpenRouter en vez de caer ciegamente a Claude.
+        if (!elegidoTexto.auto && e?.sinCredito) {
+          console.warn('[captura-magica] modelo elegido sin crédito (402), reintento con cadena gratuita');
+          try {
+            const cadenaAuto = armarCadenaOpenRouter('auto', cfgOR);
+            const crudaAuto = await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
+              modelo: cadenaAuto.modelo,
+              respaldos: cadenaAuto.respaldos,
+              politica: cfgOR.politica,
+              system: systemPrompt,
+              user: content[0].text,
+              maxTokens: presupuestoSalida(itemsEstimados),
+            }), deadlineOR);
+            data = normalizarRespuestaOR(crudaAuto);
+            engine = 'mistral-ocr+openrouter(gratis-fallback)';
+            proveedorIa = data.proveedor;
+          } catch (e2) {
+            e = e2;
+          }
+        }
+        if (!data) {
+          const puedeRespaldar = !!apiKey && (deadline - Date.now()) > 12000;
+          console.warn('[captura-magica] OpenRouter falló:', (e && (e.upstreamStatus || e.message)) || e,
+            puedeRespaldar ? '— caigo a Claude' : '— sin margen para respaldo');
+          if (!puedeRespaldar) throw e;
+          respaldoUsado = `openrouter:${e?.upstreamStatus || 'error'}`;
+          data = await conRespaldoAnotado(llamarClaude, e);
+          engine = 'mistral-ocr+claude(respaldo)';
+        }
       }
     } else {
       data = await llamarClaude();
@@ -1039,10 +1078,11 @@ export default async function handler(req, res) {
         + `Su detalle NO entra en la respuesta, así que esta vez devuelve "items": [] (array VACÍO) y NO intentes listar las líneas. `
         + `Todo lo demás —tipo de documento, serie-correlativo, fechas, moneda, emisor, receptor, TOTALES, detracción y nota_ref— extraelo completo y con precisión. `
         + `Responde SOLO con el JSON minificado.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }];
+      const cadenaRescate = armarCadenaOpenRouter(elegidoTexto.auto ? 'auto' : elegidoTexto.modelo, cfgOR);
       const dataRescate = usaOpenRouter
         ? normalizarRespuestaOR(await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
-            modelo: elegidoTexto.auto ? cfgOR.modelo : elegidoTexto.modelo,
-            respaldos: elegidoTexto.auto ? cfgOR.respaldos : [], politica: cfgOR.politica,
+            modelo: cadenaRescate.modelo,
+            respaldos: cadenaRescate.respaldos, politica: cfgOR.politica,
             system: systemPrompt, user: contentSinItems[0].text, maxTokens: 4000,
           }), deadline))
         : await anthropicMessages(apiKey, {
