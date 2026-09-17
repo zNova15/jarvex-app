@@ -6,7 +6,10 @@ import {
   ESTADOS_CUENTA, cumpleEstadoCuenta, contarEstadosDeCuenta,
 } from "../lib/asientos";
 import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
-import { nombreDeCuenta } from "../lib/pcge.js";
+import {
+  nombreDeCuenta, cuenta as cuentaPcge, buscarCuentas, hijosDe, cuentaMadreDe, NIVEL_MAXIMO,
+} from "../lib/pcge.js";
+import { fijarCuentaManual, fijarCuentaEnLote, CONTRAPARTIDAS_FRECUENTES } from "../lib/cuenta-manual-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
@@ -104,7 +107,7 @@ function BadgeCuenta({ cuentas }) {
       (c.detalle?.[0]?.porque || 'No se pudo deducir la cuenta de este comprobante.')
       + ' Está puesta en una cuenta provisional para que el asiento cuadre; elegí la correcta.'));
   } else if (c.manual) {
-    badges.push(B('b-green', '✎ cuenta a mano', 'La cuenta se eligió a mano en el movimiento. Manda sobre lo que deduzca la app.'));
+    badges.push(B('b-green', '✎ cuenta a mano', 'La cuenta la eligió una persona. Manda sobre lo que deduzca la app, hasta que alguien la vuelva a automático.'));
   } else if (c.confianza === 'baja') {
     badges.push(B('b-amber', 'cuenta deducida (poco segura)',
       'La cuenta salió de clasificar el texto de los ítems y la coincidencia fue floja. Vale la pena mirarla.'));
@@ -120,6 +123,11 @@ function BadgeCuenta({ cuentas }) {
       'El comprobante tiene cosas de naturalezas distintas y va a más de una cuenta:\n' + detalle));
   }
 
+  if (c.contrapartidaManual) {
+    badges.push(B('b-green', '✎ contrapartida a mano',
+      'La cuenta de caja/banco/por pagar la eligió una persona, en vez de derivarla del método de pago.'));
+  }
+
   if (c.revisar && !c.provisional) {
     badges.push(B('b-amber', 'revisar',
       (c.detalle || []).map(d => d.porque).filter(Boolean).join('\n')
@@ -127,6 +135,267 @@ function BadgeCuenta({ cuentas }) {
   }
 
   return badges.length ? <>{badges}</> : null;
+}
+
+/**
+ * Buscador de cuenta del PCGE.
+ *
+ * Es el mismo problema que el del Plan de Cuentas pero al revés: allá se
+ * navega el árbol, acá hay que encontrar UNA cuenta entre 1.792 sin perder de
+ * vista el comprobante que se está mirando. Por eso arranca mostrando las
+ * SUGERIDAS —lo que la app dedujo, y las hermanas de la que ya está puesta— y
+ * el buscador es para cuando ninguna sirve.
+ */
+function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocus }) {
+  const [q, setQ] = uS('');
+  const resultados = uM(() => {
+    const t = q.trim();
+    if (!t) return [];
+    return buscarCuentas(t, { nivelMax: NIVEL_MAXIMO }).slice(0, 40);
+  }, [q]);
+
+  const elegida = valor ? cuentaPcge(valor) : null;
+
+  return (
+    <div>
+      {elegida && (
+        <div style={{ marginBottom: 8, padding: '7px 10px', borderRadius: 6, background: 'rgba(46,204,113,.10)', fontSize: 12.5 }}>
+          <strong className="col-m">{elegida.codigo}</strong> {elegida.nombre}
+          <button className="btn btn-ghost btn-xs" style={{ float: 'right' }}
+            onClick={() => onElegir(null)} title="Quitar esta cuenta y volver a la automática">✕</button>
+        </div>
+      )}
+
+      <div className="search-bar" style={{ marginBottom: 8 }}>
+        {window.JxIcon ? <window.JxIcon name="search" size={13} color="var(--tm)"/> : null}
+        <input
+          autoFocus={autoFocus}
+          placeholder={placeholder || 'Buscar por código (63) o por nombre (transporte, alquiler…)'}
+          value={q}
+          onChange={e => setQ(e.target.value)}
+        />
+      </div>
+
+      <div style={{ maxHeight: 210, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+        {!q.trim() && sugeridas.length > 0 && (
+          <div style={{ padding: '5px 9px', fontSize: 10.5, color: 'var(--tm)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)' }}>
+            Sugeridas para este comprobante
+          </div>
+        )}
+        {(q.trim() ? resultados : sugeridas).map(c => (
+          <div
+            key={c.codigo}
+            onClick={() => onElegir(c.codigo)}
+            style={{
+              padding: '6px 10px', cursor: 'pointer', fontSize: 12.5,
+              borderBottom: '1px solid var(--border)',
+              background: valor === c.codigo ? 'rgba(242,183,5,.12)' : undefined,
+            }}
+          >
+            <span className="col-m" style={{ fontWeight: 600 }}>{c.codigo}</span>{' '}
+            <span>{c.nombre}</span>
+            {c.porque && <div style={{ color: 'var(--tm)', fontSize: 11.5, lineHeight: 1.4 }}>{c.porque}</div>}
+          </div>
+        ))}
+        {q.trim() && resultados.length === 0 && (
+          <div style={{ padding: 14, textAlign: 'center', color: 'var(--tm)', fontSize: 12.5 }}>
+            Ninguna cuenta del PCGE coincide con «{q}».
+          </div>
+        )}
+        {!q.trim() && sugeridas.length === 0 && (
+          <div style={{ padding: 14, textAlign: 'center', color: 'var(--tm)', fontSize: 12.5 }}>
+            Escribí para buscar entre las 1.792 cuentas del plan.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Corregir la cuenta de un asiento.
+ *
+ * Lo que se guarda NO es el asiento: es la decisión sobre el movimiento
+ * (`cuenta_pcge` y `cuenta_pcge_contrapartida`). El asiento se sigue derivando
+ * —importe, fecha, IGV— y ahora respeta lo que se elija acá.
+ */
+function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, showToast }) {
+  const cuentasAsiento = asiento?.cuentas || {};
+  const deducida = cuentasAsiento.detalle?.[0]?.cuenta || null;
+
+  const [cuenta, setCuenta] = uS(movimiento?.cuenta_pcge || null);
+  const [contra, setContra] = uS(movimiento?.cuenta_pcge_contrapartida || null);
+  const [aplicarATodos, setAplicarATodos] = uS(false);
+  const [guardando, setGuardando] = uS(false);
+  const enCursoRef = uR(false);
+
+  // Las sugeridas: lo que la app dedujo para ESTE comprobante, y las hermanas
+  // de esa cuenta. Es lo que se quiere el 90 % de las veces — corregir de 602 a
+  // 603, no buscar una cuenta de otro elemento.
+  const sugeridas = uM(() => {
+    const out = [];
+    const vistos = new Set();
+    const agregar = (codigo, porque) => {
+      if (!codigo || vistos.has(codigo)) return;
+      const c = cuentaPcge(codigo);
+      if (!c) return;
+      vistos.add(codigo);
+      out.push({ ...c, porque });
+    };
+    for (const d of cuentasAsiento.detalle || []) {
+      agregar(d.cuenta, d.porque || (cuentasAsiento.provisional ? 'La que está puesta provisionalmente.' : 'La que dedujo la app.'));
+    }
+    // Las hermanas: mismas primeras dos cifras.
+    const madre = deducida ? cuentaMadreDe(deducida) : null;
+    if (madre) for (const h of hijosDe(madre.codigo)) agregar(h.codigo, '');
+    return out;
+  }, [cuentasAsiento, deducida]);
+
+  const contrapartidasSugeridas = uM(
+    () => CONTRAPARTIDAS_FRECUENTES
+      .map(c => ({ ...cuentaPcge(c.codigo), porque: c.cuando }))
+      .filter(c => c.codigo),
+    [],
+  );
+
+  // Guard SÍNCRONO: el doble clic acá escribiría dos versiones del mismo
+  // movimiento y dejaría el sync en reintento.
+  const guardar = async () => {
+    if (enCursoRef.current) return;
+    enCursoRef.current = true;
+    setGuardando(true);
+    try {
+      const cambios = { cuenta, contrapartida: contra };
+      const ids = [asiento.movimiento_id, ...(aplicarATodos ? hermanos.map(h => h.id) : [])];
+
+      if (ids.length > 1) {
+        const r = await fijarCuentaEnLote(ids, cambios, { userId });
+        if (r.fallaron.length) {
+          showToast?.(`Se corrigieron ${r.ok}, fallaron ${r.fallaron.length}: ${r.fallaron[0].error}`, 'amber');
+        } else {
+          showToast?.(`✓ ${r.ok} comprobantes de ${movimiento?.third_party_name || 'ese proveedor'} corregidos.`, 'green');
+        }
+        onClose();
+        return;
+      }
+
+      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, { userId });
+      if (!r.ok) { showToast?.(r.error, 'red'); return; }
+      showToast?.(
+        r.vuelveAAutomatico
+          ? '✓ Vuelve a la cuenta que deduce la app.'
+          : `✓ Cuenta corregida${cuenta ? ` a ${cuenta} ${cuentaPcge(cuenta)?.nombre || ''}` : ''}.`,
+        'green',
+      );
+      onClose();
+    } catch (e) {
+      showToast?.('No se pudo guardar: ' + (e?.message || e), 'red');
+    } finally {
+      setGuardando(false);
+      enCursoRef.current = false;
+    }
+  };
+
+  const sinCambios = (cuenta || null) === (movimiento?.cuenta_pcge || null)
+    && (contra || null) === (movimiento?.cuenta_pcge_contrapartida || null);
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 620 }}>
+        <div className="modal-hd">
+          <div className="modal-hd-left">Corregir la cuenta</div>
+          <button className="btn btn-ghost btn-xs" onClick={onClose}>
+            {window.JxIcon ? <window.JxIcon name="x" size={13}/> : '✕'}
+          </button>
+        </div>
+
+        <div style={{ fontSize: 12.5, color: 'var(--tm)', marginBottom: 12, lineHeight: 1.5 }}>
+          <strong style={{ color: 'var(--ts)' }}>{asiento.glosa}</strong><br/>
+          {fmtDate(asiento.fecha)} · {fmtS(asiento.sumDebe)}
+          {cuentasAsiento.provisional && (
+            <div style={{ color: 'var(--red)', marginTop: 4 }}>
+              ⚠ {cuentasAsiento.detalle?.[0]?.porque || 'No se pudo deducir la cuenta de este comprobante.'}
+            </div>
+          )}
+          {cuentasAsiento.partida && (
+            <div style={{ color: 'var(--amber)', marginTop: 4 }}>
+              Este comprobante está repartido en {cuentasAsiento.detalle.length} cuentas
+              ({cuentasAsiento.detalle.map(d => d.cuenta).join(', ')}). Elegir una lo manda
+              ENTERO a esa cuenta y se pierde el reparto.
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gap: 14 }}>
+          <div>
+            <label className="flabel">
+              Cuenta del {asiento.type === 'income' ? 'ingreso' : 'gasto'}
+            </label>
+            <SelectorCuenta
+              valor={cuenta}
+              sugeridas={sugeridas}
+              onElegir={setCuenta}
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="flabel">Contrapartida (de dónde salió o entró la plata)</label>
+            <SelectorCuenta
+              valor={contra}
+              sugeridas={contrapartidasSugeridas}
+              onElegir={setContra}
+              placeholder="Buscar la cuenta de caja, banco o por pagar…"
+            />
+          </div>
+
+          {/* LOS OTROS DEL MISMO PROVEEDOR.
+              Es lo que hace usable la pila de «cuentas por definir»: son 345 en
+              producción y se repiten por proveedor —treinta facturas del mismo
+              grifo son todas 603—. De a una serían treinta decisiones idénticas.
+              Solo se ofrecen los que están en el MISMO estado (sin cuenta a
+              mano): pisar una decisión que otro ya tomó, en lote y sin verla,
+              sería el peor botón de la app. */}
+          {hermanos.length > 0 && (cuenta || contra) && (
+            <label style={{
+              display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer',
+              padding: '9px 11px', borderRadius: 6, background: 'rgba(242,183,5,.10)', fontSize: 12.5,
+            }}>
+              <input type="checkbox" checked={aplicarATodos} style={{ marginTop: 2 }}
+                onChange={e => setAplicarATodos(e.target.checked)} />
+              <span>
+                Aplicar también a los otros <strong>{hermanos.length}</strong> comprobantes
+                de <strong>{movimiento?.third_party_name || 'este proveedor'}</strong> que
+                siguen sin cuenta definida, en el período que estás viendo.
+                <div style={{ color: 'var(--tm)', fontSize: 11.5, marginTop: 2 }}>
+                  No toca los que ya tienen una cuenta puesta a mano.
+                </div>
+              </span>
+            </label>
+          )}
+
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.5 }}>
+            La línea del IGV no se toca acá: sale del desglose real del comprobante.
+            Si el IGV está mal, lo que está mal es el comprobante.
+          </div>
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
+          <button
+            className="btn btn-sm"
+            onClick={() => { setCuenta(null); setContra(null); }}
+            disabled={!cuenta && !contra}
+            title="Borrar las dos cuentas elegidas a mano y dejar que la app las deduzca">
+            Volver a automático
+          </button>
+          <button className="btn btn-amber btn-sm" onClick={guardar} disabled={guardando || sinCambios}>
+            {guardando ? 'Guardando…' : 'Guardar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ╔════════════════════════════════════════════════════════════╗
@@ -152,6 +421,15 @@ function LibroDiarioPage({ showToast }) {
   const [estadoCuenta, setEstadoCuenta] = uS('todas');
   const [evPorMov, setEvPorMov] = uS(() => new Map());   // mov_id → evidencia (cruda)
   const [visor, setVisor] = uS(null);                    // { url, mime, nombre, _blob }
+  const [editando, setEditando] = uS(null);              // el asiento cuya cuenta se está corrigiendo
+
+  // Quién corrige. La cuenta manual le gana a la app para siempre, así que
+  // lleva firma (mig 220).
+  const auth = window.__useAuth?.();
+  const userId = auth?.profile?.id ?? null;
+  const rolActual = auth?.profile?.rol || '';
+  const puedeCorregir = rolActual === 'admin'
+    || (window.__hasPerm?.(rolActual, 'Libro Diario', 'w') ?? false);
 
   // Años disponibles a partir de los movimientos
   const aniosDisp = uM(() => {
@@ -237,6 +515,29 @@ function LibroDiarioPage({ showToast }) {
     [asientosPorCuenta, soloDescuadrados]
   );
   const movsById = uM(() => new Map(movsFiltrados.map(m => [m.id, m])), [movsFiltrados]);
+
+  /**
+   * Los OTROS comprobantes del mismo proveedor que siguen sin cuenta definida.
+   *
+   * Se acota a lo que está a la vista (empresa + período + filtros): ofrecer
+   * corregir 300 comprobantes de golpe, de meses que no se están mirando, es
+   * un botón que nadie debería tocar. Y se excluyen los que YA tienen cuenta a
+   * mano: pisar en lote una decisión que otro tomó, sin verla, sería peor que
+   * no tener el botón.
+   */
+  const hermanosDe = (asiento) => {
+    const propio = movsById.get(asiento?.movimiento_id);
+    const ruc = String(propio?.third_party_ruc || '').replace(/\D/g, '');
+    if (!propio || !ruc) return [];
+    const mismoEstado = new Set(
+      asientosTodos.filter(a => cumpleEstadoCuenta(a, 'por_definir')).map(a => a.movimiento_id),
+    );
+    return movsFiltrados.filter(m =>
+      m.id !== propio.id
+      && String(m.third_party_ruc || '').replace(/\D/g, '') === ruc
+      && !m.cuenta_pcge
+      && mismoEstado.has(m.id));
+  };
 
   // Totales globales — SOLO S/ (hallazgo inspección 1-sep): los asientos en
   // USD se sumaban como si fueran soles en totales/PDF/Excel. Cada asiento
@@ -734,6 +1035,13 @@ function LibroDiarioPage({ showToast }) {
                                     con cara de definitivo es exactamente lo que hizo que
                                     nadie revisara las 1.742 filas que decían 60. */}
                                 {a.cuentas && <BadgeCuenta cuentas={a.cuentas}/>}
+                                {puedeCorregir && a.movimiento_id && (
+                                  <button className="btn btn-ghost btn-xs" style={{ padding: '0 5px' }}
+                                    title="Corregir la cuenta de este asiento"
+                                    onClick={() => setEditando(a)}>
+                                    {window.JxIcon ? <window.JxIcon name="edit" size={11}/> : '✎'}
+                                  </button>
+                                )}
                                 {evPorMov.has(a.movimiento_id) && (
                                   <button className="btn btn-ghost btn-xs" style={{ padding: '0 5px', color: 'var(--blue, #3498DB)' }}
                                     title="Ver el comprobante adjunto (factura/imagen)"
@@ -808,6 +1116,17 @@ function LibroDiarioPage({ showToast }) {
             <button className="btn btn-amber btn-sm" onClick={cerrarVisor}>Cerrar</button>
           </div>
         </window.Modal>
+      )}
+
+      {editando && (
+        <ModalCuenta
+          asiento={editando}
+          movimiento={movsById.get(editando.movimiento_id) || null}
+          hermanos={hermanosDe(editando)}
+          userId={userId}
+          showToast={showToast}
+          onClose={() => setEditando(null)}
+        />
       )}
     </div>
   );

@@ -280,7 +280,12 @@ function construirAsiento(movimiento, opts = {}) {
   const pagado = m.payment_status === 'paid';
   // Columna real: metodo_pago (payment_method no existe en la tabla — antes
   // TODO caía a la cuenta genérica '10' por leer el campo equivocado).
-  const cuentaCaja = cuentaCajaOBanco(m.metodo_pago || m.payment_method);
+  // La CONTRAPARTIDA: la otra pata del asiento. Sale del método de pago, que
+  // muchas veces viene vacío y manda todo a la cuenta genérica '10'. Desde la
+  // mig 220 la contadora puede fijarla a mano, y lo que ella elija manda:
+  // sabe si eso se pagó de la caja chica o salió del banco.
+  const contrapartidaManual = m.cuenta_pcge_contrapartida || null;
+  const cuentaCaja = contrapartidaManual || cuentaCajaOBanco(m.metodo_pago || m.payment_method);
   const partidas = [];
   const desc = String(m.description || '').trim() || '(sin descripción)';
   // Columna real: document_number (documento/doc_numero/factura no existen —
@@ -301,7 +306,9 @@ function construirAsiento(movimiento, opts = {}) {
       });
     } else {
       partidas.push({
-        cuenta: '121',
+        // 121 Facturas por cobrar, salvo que la contadora haya fijado otra
+        // (131 si el cliente es una relacionada, por ejemplo).
+        cuenta: contrapartidaManual || '121',
         descripcion: `Factura por cobrar — ${desc}`,
         debe: total,
         haber: 0,
@@ -362,9 +369,11 @@ function construirAsiento(movimiento, opts = {}) {
         haber: total,
       });
     } else {
-      // Pendiente: planilla → 41, resto → 42
+      // Pendiente: planilla → 41, resto → 42. La contadora puede fijar otra
+      // (mig 220): un anticipo pendiente puede no ser una cuenta comercial.
+      const cuentaDeuda = contrapartidaManual || (esPlanilla ? '41' : '42');
       partidas.push({
-        cuenta: esPlanilla ? '41' : '42',
+        cuenta: cuentaDeuda,
         descripcion: esPlanilla
           ? `Remuneraciones por pagar — ${desc}`
           : `Cuenta por pagar — ${desc}`,
@@ -402,6 +411,9 @@ function construirAsiento(movimiento, opts = {}) {
       confianza: naturaleza.confianza,
       provisional: naturaleza.provisional,
       manual: naturaleza.manual,
+      // La contrapartida se corrige aparte de la cuenta de gasto: una puede
+      // estar puesta a mano y la otra no.
+      contrapartidaManual: !!contrapartidaManual,
       revisar: naturaleza.revisar,
       partida: naturaleza.lineas.length > 1,
       detalle: naturaleza.lineas.map(l => ({
