@@ -303,18 +303,28 @@ Confianza: 0.85+ concepto inequívoco · 0.6-0.85 probable · <0.6 ambiguo, que 
 // sobre lo mismo —qué ES esto, si DOS son lo mismo, y CONTRA QUÉ del
 // presupuesto va— y las tres comparten este motor.
 //
-// 🔴 SOLO OPENROUTER GRATIS, SIN RESPALDO PAGO. Pedido explícito de Gabriel:
-// «no quiero que esté de respaldo Haiku; si falla, que se pueda pulsar el
-// botón y reintentar, nada más». Estos botones se pueden disparar cientos de
-// veces mientras se despacha la cola de 700+ descripciones de UNA empresa: con
-// un respaldo pago, una racha de saturación del gratuito se convierte en
-// factura sin que nadie lo haya pedido. Si el gratuito no está, se dice y el
-// botón queda listo para reintentar — que es exactamente lo que se pidió.
-// (Las otras tres acciones de este endpoint —cuenta PCGE, sugerir_insumo,
-// costo/gasto— siguen como estaban, con Claude: son otro caudal.)
+// 🔴 DOS GRATUITOS Y UN RESPALDO DE PAGO EN EL ÚLTIMO CUPO (17-sep-2026).
+// Hasta hoy la cadena era SOLO gratuita (titular + 2 respaldos gratis, pedido
+// explícito de Gabriel: «no quiero que esté de respaldo Haiku; si falla, que
+// se pueda pulsar el botón y reintentar»). En la práctica, con la cola de
+// 700+ descripciones de una empresa despachándose sola, una racha de
+// saturación de Novita (el único proveedor con ZDR real — ver
+// docs/ia-postproceso-openrouter.md §"El flag zdr…") dejaba SECA toda la
+// cadena y el botón de reintentar no alcanzaba a absorber el volumen.
+//
+// Gabriel decidió el cambio: bajar a DOS gratuitos y dejar el TERCER (y
+// último) cupo de la cadena para GPT-OSS 120B — no Haiku ni Sonnet, sino el
+// modelo de pago más barato del catálogo (`lib/modelos-ia.js`, ya
+// `recomendadoEn: ['clasificacion']`, USD 0,037/0,17 por millón). Sigue
+// siendo la MISMA llamada a OpenRouter con `models` de 3 entradas —no dos
+// requests, no un segundo motor que mantener— así que solo se paga cuando los
+// DOS gratuitos ya fallaron los dos. (Las otras tres acciones de este
+// endpoint —cuenta PCGE, sugerir_insumo, costo/gasto— siguen como estaban,
+// con Claude: son otro caudal.)
 //
 // Devuelve { parsed, data } o lanza un Error con .status y .mensaje listos
 // para responder.
+const RESPALDO_PAGO_CLASIFICACION = 'openai/gpt-oss-120b';
 async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null }) {
   const cfg = leerConfigOR();
   if (!cfg.activo) {
@@ -326,17 +336,22 @@ async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null
   // EL MODELO DE ESTE ÁMBITO (tanda 2). Mismo mecanismo que Captura Mágica y
   // Licitaciones: el navegador manda lo que el admin eligió en Administración →
   // Modelos de IA, y la lista blanca de lib/modelos-ia.js impide que pida uno
-  // caro que no esté aprobado. 'auto' = la cadena de gratuitos de siempre.
+  // caro que no esté aprobado. 'auto' = la cadena de hoy: titular gratis + 1
+  // respaldo gratis + GPT-OSS 120B (pago) en el último cupo.
   //
   // 🔴 UN MODELO ELEGIDO NO LLEVA RESPALDOS, igual que en los otros dos
   // ámbitos: si el pedido se cayera a otro modelo por detrás, la comparación
   // entre modelos mediría una mezcla. Si el elegido falla, falla y se dice.
   const t = resolverTexto(elegido, 'clasificacion');
+  // cfg.respaldos trae 2 gratuitos (ver MODELO_FALLBACK_DEFAULT); acá solo se
+  // usa el PRIMERO —el segundo gratuito le cede su lugar al de pago— y
+  // `construirCuerpoOR` de todos modos recorta a 3 entradas en total.
+  const respaldosAuto = [...cfg.respaldos.slice(0, 1), RESPALDO_PAGO_CLASIFICACION];
   let data;
   try {
     const cruda = await openrouterChat(cfg.apiKey, construirCuerpoOR({
       modelo: t.auto ? cfg.modelo : t.modelo,
-      respaldos: t.auto ? cfg.respaldos : [],
+      respaldos: t.auto ? respaldosAuto : [],
       politica: cfg.politica,
       system: sys, user: usr, maxTokens, razonamiento: 'bajo',
     }), Date.now() + 25000);
@@ -347,7 +362,9 @@ async function pedirJsonALaIA({ sys, usr, maxTokens = 1200, modo, elegido = null
     e.status = 503;
     e.mensaje = err?.politicaImposible
       ? 'Ningún modelo gratuito cumple hoy la política de datos configurada — avisale al admin.'
-      : 'El modelo gratuito no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
+      : t.auto
+        ? 'Ni los modelos gratuitos ni el respaldo de pago respondieron (suele ser saturación pasajera). Tocá el botón otra vez.'
+        : 'El modelo elegido no respondió (suele estar saturado unos segundos). Tocá el botón otra vez.';
     throw e;
   }
   const text = data.content?.[0]?.text || '';
