@@ -117,6 +117,7 @@ function montarBrowserFalso() {
     // El cerco de las operaciones entre empresas: una pata de un par
     // REGISTRADO no se toca desde el escáner. Vacío = nada bloqueado.
     useIntercompanyTransactions: () => ({ data: globalThis.__INTERCO_TX || [], loading: false }),
+    useAnticipoAplicaciones: () => ({ data: globalThis.__ANTICIPOS || [], loading: false }),
   };
 }
 
@@ -126,13 +127,21 @@ beforeAll(async () => {
   Pantalla = await import('../../components/jx-cotejo-sunat.jsx');
 });
 
-afterEach(() => { globalThis.__CORTES = []; globalThis.__DECISIONES = []; });
+afterEach(() => {
+  globalThis.__CORTES = []; globalThis.__DECISIONES = [];
+  globalThis.__INTERCO_TX = []; globalThis.__ANTICIPOS = [];
+});
 
 const renderComparativa = (movs = [MOV_CARGADO]) => renderToString(
   React.createElement(Pantalla.ComparativaSunat, {
     company: COMPANIES[0], companies: COMPANIES, movs,
     anio: 2026, mes: 7, showToast: () => {}, userId: 'u1',
   }));
+
+// El render del servidor mete comentarios entre nodos de texto
+// (`Dar de baja<!-- --> y su espejo`), asi que las frases se miran en el texto
+// plano.
+const plano = (html) => html.replace(/<!--.*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
 
 const renderEscaner = (movs) => renderToString(
   React.createElement(Pantalla.EscanerIncoherencias, {
@@ -323,5 +332,66 @@ describe('El escáner permite borrar la copia de un comprobante duplicado', () =
     const html = renderEscaner([DUPLICADO_ORIGINAL, DUPLICADO_COPIA]);
     expect(html).toContain('FF01-11086');
     expect(html).toContain('está cargado 2 veces');
+  });
+});
+
+// ── LA ANULACIÓN EN CASCADA (tanda 9, 17-set-2026) ─────────────────
+// Medido: 21 facturas anuladas por nota de crédito siguen vivas, en 7 empresas
+// y desde 2023. La E001-43 de S/ 9.000 está cargada DOS VECES —venta en una
+// empresa, compra en la otra— y la misma nota anula las dos.
+const VENTA_ANULADA_INTERCO = {
+  id: 'f-venta-43', company_id: JARVEX, clase: 'venta', type: 'income',
+  document_type: 'factura', document_number: 'E001-43', date: '2026-07-07',
+  amount: 9000, currency: 'PEN', payment_status: 'pending',
+  is_intercompany: true, related_movement_id: 'f-compra-43',
+  created_at: '2026-07-07T10:00:00Z',
+};
+const COMPRA_ESPEJO_43 = {
+  ...VENTA_ANULADA_INTERCO, id: 'f-compra-43', company_id: INCA,
+  clase: 'compra', type: 'cost', payment_status: 'paid',
+  related_movement_id: 'f-venta-43',
+};
+const NOTA_43_VENTA = {
+  ...VENTA_ANULADA_INTERCO, id: 'nc-43-v', document_type: 'nota_credito',
+  document_number: 'E001-5', date: '2026-07-20', amount: -9000,
+  related_movement_id: 'f-venta-43', created_at: '2026-07-20T10:00:00Z',
+};
+const NOTA_43_COMPRA = {
+  ...NOTA_43_VENTA, id: 'nc-43-c', company_id: INCA, clase: 'compra', type: 'cost',
+  related_movement_id: 'f-compra-43',
+};
+const CASCADA = [VENTA_ANULADA_INTERCO, COMPRA_ESPEJO_43, NOTA_43_VENTA, NOTA_43_COMPRA];
+
+describe('El escáner da de baja en cascada', () => {
+  it('cuando hay espejo, el botón lo dice ANTES de apretarlo', () => {
+    const html = plano(renderEscaner(CASCADA));
+    expect(html).toContain('Dar de baja la factura y su espejo');
+    expect(html).toContain('el mismo comprobante cargado en el otro libro');
+  });
+
+  it('sin espejo, el botón es solo por la factura', () => {
+    const html = plano(renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
+    expect(html).toContain('Dar de baja la factura');
+    expect(html).not.toContain('Dar de baja la factura y su espejo');
+  });
+
+  it('el botón dice lo que deja de exigirse, no solo lo que deja de sumar', () => {
+    const html = renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]);
+    expect(html).toContain('detracción');
+    expect(html).toContain('bancarización');
+    expect(html).toContain('PLE');
+  });
+
+  it('con varias anuladas a la vista ofrece darlas de baja todas de una', () => {
+    // De a una serían 21 ventanas en produccion.
+    const html = plano(renderEscaner([...CASCADA, FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
+    expect(html).toMatch(/Dar de baja las \d+ anuladas/);
+    // Las dos patas del par cuentan como dos: las dos siguen vivas.
+    expect(html).toContain('Dar de baja las 3 anuladas');
+  });
+
+  it('con una sola no ofrece el lote: seria un boton para un caso', () => {
+    const html = plano(renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
+    expect(html).not.toMatch(/Dar de baja las \d+ anuladas/);
   });
 });
