@@ -222,6 +222,11 @@ const TRANSACTIONAL_TABLES = [
   // (solo el admin escribe — RLS lo garantiza en el server) y todos la PULLean
   // (el rol campo incluido: necesita el timeout de sesión como cualquier device).
   'app_config',
+  // El tipo de cambio de SUNAT por fecha (mig 222, tanda 7). FK-less y sin
+  // company_id: es un dato público del país. FUERA de TABLA_TO_MODULO porque el
+  // gate real es la RLS (la escribe contabilidad, la lee cualquiera) — mapearla
+  // a un módulo dejaría su push bloqueado client-side para roles que sí pueden.
+  'tipos_cambio',
 ];
 
 // Mapeo tabla Dexie → nombre legible de módulo para UI y logs.
@@ -416,6 +421,7 @@ const MASTER_TABLES = [
   { tabla: 'sunat_cortes',                 query: () => supabase.from('sunat_cortes').select('*').is('deleted_at', null) },
   { tabla: 'cotejo_decisiones',            query: () => supabase.from('cotejo_decisiones').select('*').is('deleted_at', null) },
   { tabla: 'app_config',                   query: () => supabase.from('app_config').select('*').is('deleted_at', null) },
+  { tabla: 'tipos_cambio',                 query: () => supabase.from('tipos_cambio').select('*').is('deleted_at', null) },
   { tabla: 'intercompany_transactions',    query: () => supabase.from('intercompany_transactions').select('*').is('deleted_at', null) },
   // Compras
   { tabla: 'insumos_pendientes',    query: () => supabase.from('insumos_pendientes').select('*').is('deleted_at', null) },

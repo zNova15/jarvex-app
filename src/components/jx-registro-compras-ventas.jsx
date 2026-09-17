@@ -36,7 +36,9 @@ import {
   totalesCompras, totalesVentas,
 } from "../lib/registro-compras-ventas.js";
 import { nombreTabla10, nombreTabla2 } from "../lib/tablas-sunat.js";
-import { obtenerTipoCambio } from "../lib/tipo-cambio.js";
+import { sembrarTiposCambio } from "../lib/tipo-cambio.js";
+import { planDePasada, tasaDeComprobante, validarTasaManual } from "../lib/tipo-cambio-pasada.js";
+import { ejecutarPasada, guardarTasa } from "../lib/tipo-cambio-db.js";
 import {
   analizarComprobantesParaSire, generateReemplazoPropuestaRCE, generateReemplazoPropuestaRVIE,
   buildSireZipPackage, downloadSireZip, buildSireFilenameBase,
@@ -47,7 +49,7 @@ import { escanear, aplicarDecisionesEscaner, hallazgosPendientes } from "../lib/
 import { enPeriodo } from "../lib/fecha.js";
 import { EscanerIncoherencias } from "./jx-cotejo-sunat.jsx";
 
-const { useState: uS, useMemo: uM, useEffect: uE } = React;
+const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
 const MESES = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SETIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
 const n2 = (v) => (typeof v === 'number' ? v.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : (v ?? ''));
@@ -75,6 +77,11 @@ export function RegistroComprasVentas({
   const [seleccion, setSeleccion] = uS(() => new Set());
   const [escanerAbierto, setEscanerAbierto] = uS(false);
   const [busy, setBusy] = uS(false);
+  // La pasada de tipos de cambio (tanda 7): su progreso, y lo que haya que
+  // cargar a mano cuando SUNAT no publicó ese día (feriado, domingo).
+  const [pasada, setPasada] = uS(null);
+  const [aMano, setAMano] = uS({});
+  const pasadaRef = uR(false);
 
   // La CTA sale del asiento, que es donde ya se resolvió la cuenta: la deducida
   // de lo que se compró, o la que la contadora corrigió a mano. Si el
@@ -90,21 +97,22 @@ export function RegistroComprasVentas({
     return (m) => porMov.get(m?.id) || '';
   }, [asientos]);
 
-  // El tipo de cambio del día de la operación, de lo que haya cacheado. Si no
-  // hay, la fila lo avisa en vez de poner el 3,75 de referencia.
-  // Se acepta SOLO la tasa de ESE día. `obtenerTipoCambio` devuelve la fecha
-  // anterior más cercana cuando no tiene la exacta, y el cache tiene seis
-  // fechas: declarar el tipo de cambio de otro día es declarar mal. Si no está
-  // la del día, la fila avisa que falta (la tarea que trae la tasa SUNAT de
-  // cada día es decisión de Gabriel y va con la tanda de dólares).
-  const tasaDe = React.useCallback((ymd) => {
+  // ── EL TIPO DE CAMBIO (tanda 7) ──────────────────────────────────
+  // Sale de la tabla `tipos_cambio` (mig 222): la tasa que SUNAT publicó para
+  // ESA fecha, pedida una sola vez en la vida y guardada para las dos PCs. Si
+  // la fecha no está, la fila avisa que falta — antes acá había seis tasas
+  // escritas a mano en el código y estaban mal por un 11 %.
+  const { data: tasas = [] } = window.__hooks?.useTiposCambio?.() || { data: [] };
+  // El resto de la app convierte monedas con funciones SÍNCRONAS
+  // (`convertirMoneda`, `obtenerTipoCambio`), así que se les siembra el cache
+  // con lo que hay en la base en vez de volverlas asíncronas.
+  uE(() => { try { sembrarTiposCambio(tasas); } catch { /* noop */ } }, [tasas]);
+
+  const tasaDe = React.useCallback((ymd, mov) => {
     if (!ymd) return 0;
-    try {
-      const r = obtenerTipoCambio(ymd);
-      if (!r || r.fuente === 'default' || r.fecha !== ymd) return 0;
-      return Number(r.venta) || 0;
-    } catch { return 0; }
-  }, []);
+    const t = tasaDeComprobante(mov || { date: ymd, currency: 'USD', clase: 'compra' }, tasas);
+    return t ? t.valor : 0;
+  }, [tasas]);
 
   const registro = uM(
     () => armarRegistro({ movimientos: movsPeriodo, movsById, cuentaDe, tasaDe }),
@@ -308,6 +316,60 @@ export function RegistroComprasVentas({
     }
   };
 
+  // ── LA PASADA DE TIPOS DE CAMBIO ─────────────────────────────────
+  // Cubre TODOS los períodos de la empresa, no solo el que se está mirando:
+  // «hay que darle una pasada y colocarle el tipo de cambio que aceptó SUNAT
+  // el día de la emisión» (Gabriel). En producción son 42 comprobantes en USD
+  // sobre 23 fechas, del 11-set-2024 al 3-set-2026 — se corre una vez y la
+  // tarjeta desaparece.
+  const movsEmpresa = uM(
+    () => (movs || []).filter(m => m && !m.deleted_at && (!company?.id || m.company_id === company.id)),
+    [movs, company?.id],
+  );
+  const planTC = uM(() => planDePasada(movsEmpresa, tasas), [movsEmpresa, tasas]);
+
+  // Guard SÍNCRONO: dos clics acá serían dos tandas de pedidos a SUNAT y el
+  // segundo se comería el rate limit del primero.
+  const correrPasada = async () => {
+    if (pasadaRef.current) return;
+    pasadaRef.current = true;
+    setPasada({ corriendo: true, hecho: 0, de: planTC.fechas.length });
+    try {
+      const r = await ejecutarPasada({
+        movs: movsEmpresa, tasas, userId,
+        onProgreso: (p) => setPasada({ corriendo: true, ...p }),
+      });
+      setPasada({ corriendo: false, ...r });
+      if (r.cortada === 'limite') {
+        showToast?.(
+          `Se trajeron ${r.fechasTraidas} fechas y SUNAT cortó por exceso de consultas. `
+          + 'Lo hecho quedó guardado: volvé a darle en un minuto y sigue desde donde quedó.', 'amber');
+      } else if (r.fallaron.length) {
+        showToast?.(`✓ ${r.comprobantes} comprobantes con su tipo de cambio. ${r.fallaron.length} fechas quedaron sin tasa: cargalas a mano.`, 'amber');
+      } else if (r.comprobantes) {
+        showToast?.(`✓ ${r.comprobantes} comprobantes quedaron con el tipo de cambio de SUNAT de su fecha.`, 'green');
+      } else {
+        showToast?.('No había nada que completar.', 'blue');
+      }
+    } catch (e) {
+      setPasada(null);
+      showToast?.('La pasada se cortó: ' + (e?.message || e), 'red');
+    } finally {
+      pasadaRef.current = false;
+    }
+  };
+
+  const guardarAMano = async (fecha) => {
+    const v = validarTasaManual(aMano[fecha]);
+    if (!v.ok) return showToast?.(v.error, 'red');
+    const r = await guardarTasa(
+      { fecha, venta: v.valor, compra: v.valor, fuente: 'manual', nota: 'Copiada del portal de SUNAT' },
+      { userId });
+    if (!r.ok) return showToast?.(r.error, 'red');
+    setAMano(p => ({ ...p, [fecha]: '' }));
+    showToast?.(`✓ Tipo de cambio del ${fecha} guardado. Volvé a darle a la pasada para estamparlo.`, 'green');
+  };
+
   const nombreZip = uM(() => {
     const cod = esCompras ? LIBRO_RCE_REEMPLAZO : LIBRO_RVIE_REEMPLAZO;
     try { return `${buildSireFilenameBase(ruc, periodoObj, cod, true, false)}.zip`; } catch { return ''; }
@@ -407,6 +469,80 @@ export function RegistroComprasVentas({
           </div>
         </div>
       </div>
+
+      {/* ── LA PASADA DE TIPOS DE CAMBIO (tanda 7) ─────────────────
+          Solo aparece si hay algo que completar, y desaparece cuando no queda
+          nada: una tarjeta permanente que dice «0 pendientes» es ruido. */}
+      {(planTC.comprobantes > 0 || pasada) && (
+        <div className="card card-p" style={{ marginBottom: 12, padding: 12, background: 'rgba(52,152,219,.08)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 260, fontSize: 12.5, lineHeight: 1.5 }}>
+              <strong>Tipos de cambio por completar</strong><br/>
+              <span style={{ color: 'var(--tm)' }}>
+                {planTC.comprobantes} comprobante{planTC.comprobantes === 1 ? '' : 's'} en moneda extranjera
+                {' '}sin tipo de cambio, en <b>{planTC.fechas.length}</b> fecha{planTC.fechas.length === 1 ? '' : 's'}
+                {' '}distinta{planTC.fechas.length === 1 ? '' : 's'} — de todos los períodos, no solo del que estás viendo.
+                {planTC.consultas > 0
+                  ? ` Se le pide a SUNAT ${planTC.consultas} vez${planTC.consultas === 1 ? '' : 'es'} (una por fecha) y queda guardado para siempre.`
+                  : ' Las tasas ya están guardadas: solo falta estamparlas.'}
+              </span>
+            </div>
+            <button className="btn btn-amber btn-sm" onClick={correrPasada} disabled={pasada?.corriendo || planTC.comprobantes === 0}>
+              {pasada?.corriendo
+                ? `Trayendo… ${pasada.hecho || 0}/${pasada.de || planTC.fechas.length}`
+                : (planTC.consultas > 0
+                  ? (planTC.consultas === 1 ? 'Traer el tipo de cambio que falta' : `Traer los ${planTC.consultas} tipos de cambio`)
+                  : 'Completar los comprobantes')}
+            </button>
+          </div>
+
+          {pasada?.corriendo && pasada.fecha && (
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 8 }}>
+              Consultando el {pasada.fecha}… Se pide de a una fecha a propósito: la API de SUNAT corta si se
+              la golpea seguido.
+            </div>
+          )}
+
+          {pasada && !pasada.corriendo && (
+            <div style={{ fontSize: 12, marginTop: 8, lineHeight: 1.55 }}>
+              {pasada.fechasTraidas > 0 && <>Se trajeron <b>{pasada.fechasTraidas}</b> tasas nuevas de SUNAT. </>}
+              {pasada.fechasYaEstaban > 0 && <>{pasada.fechasYaEstaban} ya estaban guardadas. </>}
+              {pasada.comprobantes > 0 && <>Quedaron con su tipo de cambio <b>{pasada.comprobantes}</b> comprobantes. </>}
+              {pasada.cortada === 'limite' && (
+                <span style={{ color: 'var(--amber)' }}>
+                  SUNAT cortó por exceso de consultas. Lo hecho quedó guardado: dale de nuevo en un minuto y sigue desde donde quedó.
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* LAS QUE NO SE PUDIERON, A MANO. Pasa de verdad: SUNAT no publica
+              tasa los domingos ni los feriados, y una factura con fecha de
+              domingo existe. Copiarla del portal es la única salida honesta —
+              la alternativa sería inventarla. */}
+          {pasada && !pasada.corriendo && pasada.fallaron?.some(f => f.fecha) && (
+            <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 6 }}>
+                Estas fechas quedaron sin tasa. Buscalas en el portal de SUNAT y cargalas acá:
+              </div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {[...new Map(pasada.fallaron.filter(f => f.fecha).map(f => [f.fecha, f])).values()].map(f => (
+                  <div key={f.fecha} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+                    <b style={{ minWidth: 88 }}>{f.fecha}</b>
+                    <input
+                      className="fi" style={{ maxWidth: 110 }} inputMode="decimal" placeholder="3.36"
+                      value={aMano[f.fecha] || ''}
+                      onChange={e => setAMano(p => ({ ...p, [f.fecha]: e.target.value }))}
+                    />
+                    <button className="btn btn-ghost btn-xs" onClick={() => guardarAMano(f.fecha)}>Guardar</button>
+                    <span style={{ color: 'var(--tm)', fontSize: 11 }}>{f.error}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Totales, una tarjeta por moneda. Nunca sumadas entre sí: soles con
           dólares en la misma bolsa da un número que no es plata de nada. */}

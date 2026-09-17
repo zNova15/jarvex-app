@@ -94,6 +94,7 @@ function montarBrowserFalso() {
   g.__hooks = {
     useCotejoDecisiones: () => ({ data: globalThis.__DECISIONES || [], loading: false }),
     useSunatCortes: () => ({ data: globalThis.__CORTES || [], loading: false }),
+    useTiposCambio: () => ({ data: globalThis.__TASAS || [], loading: false }),
   };
 }
 
@@ -103,7 +104,7 @@ beforeAll(async () => {
   Registro = await import('../../components/jx-registro-compras-ventas.jsx');
 });
 
-afterEach(() => { globalThis.__CORTES = []; globalThis.__DECISIONES = []; });
+afterEach(() => { globalThis.__CORTES = []; globalThis.__DECISIONES = []; globalThis.__TASAS = []; });
 
 const render = (movs = [COMPRA, VENTA], extra = {}) => renderToString(
   React.createElement(Registro.RegistroComprasVentas, {
@@ -178,5 +179,61 @@ describe('el escáner de incoherencias, como ventana y por período', () => {
   it('arranca cerrado: es una interrupción del trabajo del mes, no un lugar donde se vive', () => {
     const html = render([COMPRA, VENTA, VENTA_SIN_ESPEJO]);
     expect(html).not.toContain('Analizar de nuevo');
+  });
+});
+
+// ── LA PASADA DE TIPOS DE CAMBIO (tanda 7) ─────────────────────────
+// «Para los comprobantes en dólares hay que darle una pasada y colocarle el
+// tipo de cambio que aceptó SUNAT el día de la emisión» (Gabriel, 17-set).
+const COMPRA_USD = {
+  id: 'm-usd', company_id: JARVEX, clase: 'compra', type: 'cost',
+  document_type: 'factura', document_number: 'F001-500',
+  third_party_ruc: '20100047218', third_party_name: 'KOPLAST INDUSTRIAL',
+  description: 'Insumos importados', amount: 1000, currency: 'USD',
+  payment_status: 'paid', date: '2026-07-03',
+};
+// Otra del MISMO día: tiene que contar como UNA fecha, no dos consultas.
+const COMPRA_USD_MISMO_DIA = { ...COMPRA_USD, id: 'm-usd2', document_number: 'F001-501', amount: 2000 };
+// La tasa real del 3-jul-2026 cargada, para el caso «ya está guardada».
+const TASA_3JUL = { id: 't-3jul', fecha: '2026-07-03', moneda: 'USD', compra: 3.54, venta: 3.55, fuente: 'sunat', created_at: '2026-09-17T10:00:00Z' };
+
+describe('los comprobantes en dólares y su tipo de cambio', () => {
+  it('avisa cuántos faltan y cuántas CONSULTAS son, que no es lo mismo', () => {
+    const html = render([COMPRA, VENTA, COMPRA_USD, COMPRA_USD_MISMO_DIA]);
+    expect(html).toContain('Tipos de cambio por completar');
+    // El render del servidor mete comentarios entre nodos de texto, así que se
+    // mira el texto plano.
+    const plano = html.replace(/<!--.*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    expect(plano).toContain('2 comprobantes en moneda extranjera');
+    expect(plano).toContain('en 1 fecha distinta');
+    // Dos comprobantes del mismo día = UNA consulta, no dos.
+    expect(plano).toContain('Se le pide a SUNAT 1 vez (una por fecha)');
+    expect(html).toContain('Traer el tipo de cambio que falta');
+  });
+
+  it('con la tasa ya guardada no pide nada a SUNAT: solo falta estamparla', () => {
+    globalThis.__TASAS = [TASA_3JUL];
+    const html = render([COMPRA, VENTA, COMPRA_USD, COMPRA_USD_MISMO_DIA]);
+    expect(html).toContain('Las tasas ya están guardadas');
+    expect(html).toContain('Completar los comprobantes');
+  });
+
+  it('la fila muestra la tasa de su fecha, sin estamparla todavía', () => {
+    globalThis.__TASAS = [TASA_3JUL];
+    const html = render([COMPRA_USD]);
+    // Una COMPRA se declara con la de VENTA: es la que se paga.
+    expect(html).toContain('3.55');
+    expect(html).toContain('USD');
+  });
+
+  it('sin tasa para esa fecha, la fila avisa que falta y no inventa un número', () => {
+    const html = render([COMPRA_USD]);
+    expect(html).toContain('⚠');
+    expect(html).not.toContain('3.37');   // el referencial NO se declara
+  });
+
+  it('sin nada en moneda extranjera, la tarjeta no aparece', () => {
+    const html = render([COMPRA, VENTA]);
+    expect(html).not.toContain('Tipos de cambio por completar');
   });
 });

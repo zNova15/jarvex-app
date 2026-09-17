@@ -485,6 +485,15 @@ export function useInsumoCategorias() {
 
 // El cotejo contra SUNAT: cómo quedó cada mes (mig 196, tanda 14 entrega 5).
 // Una fila por empresa+periodo+libro; chica y global, se trae entera.
+// El tipo de cambio de SUNAT por fecha (mig 222, tanda 7). Es la tabla que hace
+// que la tasa de un día se pida UNA sola vez en la vida: la deja el device que
+// la pidió primero y la otra PC la encuentra ya guardada.
+export function useTiposCambio() {
+  return useOfflineData('tipos_cambio', q =>
+    q.filter(t => !t.deleted_at).toArray()
+  , []);
+}
+
 export function useSunatCortes() {
   return useOfflineData('sunat_cortes', q =>
     q.filter(c => !c.deleted_at).toArray()

@@ -6,6 +6,8 @@ import {
   convertirMoneda,
   requiereBancarizacion,
   registrarTipoCambio,
+  sembrarTiposCambio,
+  TIPO_CAMBIO_DEFAULT,
 } from '../tipo-cambio.js';
 
 describe('tipo-cambio: umbrales y conversión', () => {
@@ -14,10 +16,33 @@ describe('tipo-cambio: umbrales y conversión', () => {
     expect(UMBRAL_BANCARIZACION_USD).toBe(500);
   });
 
-  it('obtiene tipo de cambio referencial o histórico', () => {
-    const tc = obtenerTipoCambio('2026-09-12');
-    expect(tc.venta).toBeGreaterThan(3.5);
+  // Este test decía `venta > 3.5` y con eso clavaba una tasa INVENTADA: el
+  // cache traía 3,745/3,755 escritos a mano para el 12-set-2026 y la real de
+  // SUNAT es 3,363/3,371 (verificado el 17-set). Un dato inventado es peor que
+  // ninguno: sin tasa la pantalla avisa que falta, con una falsa declara mal y
+  // nadie se entera. Ahora lo que se prueba es que se sepa DISTINGUIR.
+  it('sin ninguna tasa cargada, avisa que lo que devuelve es referencial', () => {
+    const tc = obtenerTipoCambio('2024-01-15');
+    expect(tc.fuente).toBe('default');
+    expect(tc.venta).toBe(TIPO_CAMBIO_DEFAULT);
     expect(tc.compra).toBeLessThanOrEqual(tc.venta);
+  });
+
+  it('sembrado con las tasas de la base, devuelve la de SUNAT y lo dice', () => {
+    // La tasa REAL del 12-set-2026, medida contra SUNAT.
+    sembrarTiposCambio([{ fecha: '2026-09-12', compra: 3.363, venta: 3.371, fuente: 'sunat' }]);
+    const tc = obtenerTipoCambio('2026-09-12');
+    expect(tc.venta).toBe(3.371);
+    expect(tc.fuente).toBe('sunat');
+  });
+
+  it('una tasa cargada a mano le gana a la que trajo la API', () => {
+    sembrarTiposCambio([{ fecha: '2026-03-03', compra: 3.10, venta: 3.11, fuente: 'sunat' }]);
+    sembrarTiposCambio([{ fecha: '2026-03-03', compra: 3.20, venta: 3.21, fuente: 'manual' }]);
+    expect(obtenerTipoCambio('2026-03-03').venta).toBe(3.21);
+    // Y no se deja pisar de nuevo por la de la API.
+    sembrarTiposCambio([{ fecha: '2026-03-03', compra: 3.10, venta: 3.11, fuente: 'sunat' }]);
+    expect(obtenerTipoCambio('2026-03-03').venta).toBe(3.21);
   });
 
   it('permite registrar tipos de cambio personalizados', () => {

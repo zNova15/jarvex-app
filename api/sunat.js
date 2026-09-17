@@ -128,6 +128,99 @@ async function handleSendBill(req, res) {
   }
 }
 
+/**
+ * El tipo de cambio de UNA fecha. Una fecha por request: así lo pide la app,
+ * que consulta una sola vez por fecha y guarda el resultado (mig 222).
+ *
+ * Cadena de proveedores, igual que la del RUC: cada token va a SU API.
+ * El gratuito de apis.net.pe funciona sin token pero tira 429 al tercer pedido
+ * seguido desde la misma IP — medido el 17-set-2026. Por eso la app espacía los
+ * pedidos y guarda cada fecha para no volver a pedirla nunca.
+ */
+async function handleTipoCambio(req, res) {
+  try {
+    await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 40 });
+
+    const fecha = String((req.query || {}).tipoCambio || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+      return res.status(422).json({ error: 'La fecha tiene que ser YYYY-MM-DD' });
+    }
+    // Una fecha futura no tiene tasa publicada: se corta acá para no gastar
+    // cuota preguntando por algo que no existe.
+    if (fecha > new Date().toISOString().slice(0, 10)) {
+      return res.status(422).json({ error: 'Esa fecha todavía no tiene tipo de cambio publicado' });
+    }
+
+    const providers = [];
+    if (process.env.DECOLECTA_TOKEN) {
+      providers.push({
+        id: 'decolecta',
+        url: `https://api.decolecta.com/v1/tipo-cambio/sunat?date=${fecha}`,
+        token: process.env.DECOLECTA_TOKEN,
+      });
+    }
+    providers.push({
+      id: 'apis.net.pe/v1',
+      url: `https://api.apis.net.pe/v1/tipo-cambio-sunat?fecha=${fecha}`,
+      token: null,
+    });
+
+    let data = null, last = null, source = null;
+    for (const p of providers) {
+      let upstream;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        upstream = await fetch(p.url, {
+          signal: ctrl.signal,
+          headers: { Accept: 'application/json', ...(p.token ? { Authorization: `Bearer ${p.token}` } : {}) },
+        });
+        clearTimeout(timer);
+      } catch {
+        last = { id: p.id, status: 0 };
+        continue;
+      }
+      if (upstream.ok) {
+        try { data = await upstream.json(); } catch { last = { id: p.id, status: 200 }; continue; }
+        source = p.id;
+        break;
+      }
+      console.warn(`[sunat/tc] ${p.id} respondió ${upstream.status} para ${fecha}`);
+      last = { id: p.id, status: upstream.status };
+    }
+
+    const venta = Number(data?.venta ?? data?.precio_venta ?? 0);
+    const compra = Number(data?.compra ?? data?.precio_compra ?? 0) || venta;
+    if (!data || !(venta > 0)) {
+      // 429 y 404 se distinguen porque la app reacciona distinto: con el 429
+      // espera y reintenta; con el 404 (día sin publicación: feriado, domingo)
+      // ofrece cargarla a mano.
+      if (last && last.status === 429) {
+        return res.status(429).json({ error: 'Demasiadas consultas de tipo de cambio — esperá un momento y seguí' });
+      }
+      if (last && last.status === 404) {
+        return res.status(404).json({ error: `SUNAT no publicó tipo de cambio para el ${fecha} (feriado o fin de semana)` });
+      }
+      return res.status(503).json({
+        error: `No se pudo consultar el tipo de cambio del ${fecha}${last ? ` (${last.id} respondió ${last.status || 'timeout'})` : ''} — cargalo a mano desde el portal de SUNAT`,
+      });
+    }
+
+    return res.status(200).json({
+      fecha,
+      moneda: 'USD',
+      compra: Math.round(compra * 10000) / 10000,
+      venta: Math.round(venta * 10000) / 10000,
+      fuente: 'sunat',
+      source,
+    });
+  } catch (e) {
+    const { status, body } = sanitizeError(e);
+    return res.status(status).json(body);
+  }
+}
+
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -135,6 +228,20 @@ export default async function handler(req, res) {
   // POST → envío SOAP al billService de SUNAT (consolidado de sunat-bill)
   if (req.method === 'POST') {
     return handleSendBill(req, res);
+  }
+
+  // GET ?tipoCambio=YYYY-MM-DD → la tasa que SUNAT publicó ESE día.
+  //
+  // Va acá y no en un endpoint propio porque es la misma cosa: consultarle un
+  // dato público a SUNAT a través del mismo proveedor, con la misma
+  // autenticación y el mismo rate limit. La cuenta está en plan Pro y el
+  // límite de 12 funciones ya no aplica, pero multiplexar sigue siendo menos
+  // superficie que autenticar.
+  //
+  // DESDE EL NAVEGADOR NO SE PUEDE: apis.net.pe no manda cabeceras CORS, así
+  // que la app pedía la tasa y el fetch moría en silencio. Por eso el proxy.
+  if (req.method === 'GET' && (req.query || {}).tipoCambio) {
+    return handleTipoCambio(req, res);
   }
 
   // GET → consulta de info de RUC vía decolecta/apis.net.pe

@@ -202,6 +202,15 @@ db.version(60).stores({
 // una entidad contra la familia canónica del grupo (que GASOMI le diga
 // «FIERROS Y ACEROS» y EL INCA «MATERIAL DE FIERRO» a lo mismo se decide una
 // vez). Re-declara las dos tablas de la v58 sumando el índice; aditivo.
+// Versión 60: EL TIPO DE CAMBIO POR FECHA (mig 222, tanda 7). Una fila por día
+// con la tasa que publicó SUNAT. Se indexa `fecha` porque la única pregunta que
+// se le hace es «¿tengo la de ESTE día?», y `[fecha+moneda]` para cuando haya
+// más de una moneda. No tiene company_id: la tasa es del país, no de la
+// empresa. Aditivo.
+db.version(60).stores({
+  tipos_cambio: 'id, fecha, moneda, [fecha+moneda], fuente, deleted_at, sync_status',
+});
+
 db.version(59).stores({
   catalogo_insumos:       'id, norm, familia, tipo, origen, activo, company_id, [company_id+norm], deleted_at, sync_status',
   catalogo_disgregacion:  'id, padre_norm, hijo_norm, company_id, deleted_at, sync_status',

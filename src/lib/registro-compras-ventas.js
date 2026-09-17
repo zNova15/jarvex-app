@@ -158,7 +158,12 @@ function tipoCambioDe(m, tasaDe) {
   if (moneda === 'PEN') return { valor: '', aviso: null };
   const propio = Number(m.tipo_cambio || 0);
   if (propio > 0) return { valor: propio, aviso: null };
-  const buscada = typeof tasaDe === 'function' ? Number(tasaDe(ymdDe(m.date || m.created_at)) || 0) : 0;
+  // Se le pasa la fecha Y el movimiento: la fecha es lo único que hace falta
+  // para encontrar la tasa, pero una COMPRA se declara con la de venta y una
+  // VENTA con la de compra, y eso solo se sabe mirando el comprobante.
+  const buscada = typeof tasaDe === 'function'
+    ? Number(tasaDe(ymdDe(m.date || m.created_at), m) || 0)
+    : 0;
   if (buscada > 0) return { valor: buscada, aviso: null };
   return {
     valor: '',

@@ -17,17 +17,57 @@
 export const UMBRAL_BANCARIZACION_PEN = 2000;
 export const UMBRAL_BANCARIZACION_USD = 500;
 
-export const TIPO_CAMBIO_DEFAULT = 3.75; // Tipo de cambio referencial PEN/USD
+// Último recurso cuando no hay NINGUNA tasa para una fecha. Medido contra
+// SUNAT el 17-set-2026 (3,363 compra / 3,371 venta el 12-set). Solo se usa para
+// no dividir por cero en conversiones informativas: nada que se declare sale de
+// acá — `obtenerTipoCambio` lo devuelve marcado con `fuente:'default'` y quien
+// declara tiene que rechazarlo.
+export const TIPO_CAMBIO_DEFAULT = 3.37;
 
-// Cache en memoria de tipos de cambio por fecha (YYYY-MM-DD -> { compra, venta, fuente })
-const CACHE_TC = new Map([
-  ['2026-09-12', { compra: 3.745, venta: 3.755, fecha: '2026-09-12', fuente: 'sunat' }],
-  ['2026-09-01', { compra: 3.742, venta: 3.752, fecha: '2026-09-01', fuente: 'sunat' }],
-  ['2026-08-01', { compra: 3.738, venta: 3.748, fecha: '2026-08-01', fuente: 'sunat' }],
-  ['2026-07-01', { compra: 3.790, venta: 3.805, fecha: '2026-07-01', fuente: 'sunat' }],
-  ['2026-06-01', { compra: 3.780, venta: 3.792, fecha: '2026-06-01', fuente: 'sunat' }],
-  ['2026-01-01', { compra: 3.705, venta: 3.715, fecha: '2026-01-01', fuente: 'sunat' }],
-]);
+// ── EL CACHE ARRANCA VACÍO, Y ESO ES UN ARREGLO ───────────────────
+// Acá había seis tasas escritas a mano en el código. Se verificaron contra
+// SUNAT el 17-set-2026 y estaban MAL: para el 12-set-2026 decía compra 3,745 /
+// venta 3,755 cuando la real es 3,363 / 3,371 — un 11 % de error en un archivo
+// que sirve para convertir plata. Eran números de relleno que nadie midió.
+//
+// Un dato inventado es peor que ninguno: sin tasa, la pantalla avisa que falta;
+// con una tasa falsa, declara mal y nadie se entera. Las tasas de verdad viven
+// ahora en la tabla `tipos_cambio` (mig 222), se piden una vez por fecha y
+// quedan guardadas para las dos PCs. Este cache en memoria sigue existiendo
+// como puente: `sembrarTiposCambio()` lo llena con lo que hay en la base.
+const CACHE_TC = new Map();
+
+// La clave del cache en localStorage. Versionada: ver el comentario en
+// `cargarCacheStorage()`.
+const CLAVE_CACHE = 'jx_tc_cache_v2';
+
+/**
+ * Llena el cache con las tasas guardadas en la base (mig 222).
+ *
+ * Lo llama la app al arrancar y cada vez que la pasada trae fechas nuevas, así
+ * `obtenerTipoCambio()` y `convertirMoneda()` —que son síncronos y los usa
+ * media app— ven las tasas reales sin tener que volverse asíncronos.
+ */
+export function sembrarTiposCambio(filas = []) {
+  let n = 0;
+  for (const t of filas || []) {
+    if (!t || t.deleted_at) continue;
+    const f = String(t.fecha || '').slice(0, 10);
+    const venta = Number(t.venta);
+    if (!f || !(venta > 0)) continue;
+    const previa = CACHE_TC.get(f);
+    // Una cargada a mano le gana a la de la API, igual que en `tasaVigente()`.
+    if (previa && previa.fuente === 'manual' && t.fuente !== 'manual') continue;
+    CACHE_TC.set(f, {
+      compra: Number(t.compra) || venta,
+      venta,
+      fecha: f,
+      fuente: t.fuente === 'manual' ? 'manual' : 'sunat',
+    });
+    n++;
+  }
+  return n;
+}
 
 /**
  * Carga o inicializa el cache persistido en localStorage si está disponible.
@@ -35,7 +75,13 @@ const CACHE_TC = new Map([
 function cargarCacheStorage() {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    const raw = window.localStorage.getItem('jx_tc_cache');
+    // 🔴 LA CLAVE CAMBIÓ A PROPÓSITO (17-set-2026). La vieja —`jx_tc_cache`—
+    // tiene guardadas, en las PCs que ya usaron la app, las seis tasas
+    // INVENTADAS que estaban escritas en este archivo: se sembraban en el
+    // cache y de ahí se persistían. Borrarlas del código no alcanzaba, volvían
+    // solas al recargar. Se ignora la clave vieja y se la borra.
+    try { window.localStorage.removeItem('jx_tc_cache'); } catch { /* noop */ }
+    const raw = window.localStorage.getItem(CLAVE_CACHE);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -52,7 +98,7 @@ function guardarCacheStorage() {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     const arr = [...CACHE_TC.values()].slice(-180); // guardar hasta 180 días
-    window.localStorage.setItem('jx_tc_cache', JSON.stringify(arr));
+    window.localStorage.setItem(CLAVE_CACHE, JSON.stringify(arr));
   } catch { /* noop */ }
 }
 
