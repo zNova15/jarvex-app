@@ -29,13 +29,24 @@ const fmtDate = fmtFechaLarga;
 // ─── Mapeos PCGE ─────────────────────────────────────────────
 
 /**
- * Devuelve el código de cuenta de gasto según category.
- * - materiales/insumos → 60 (Compras)
- * - servicios/subcontrato/alquiler → 63 (Servicios prestados por terceros)
- * - planilla/sueldos/personal → 62 (Gastos de personal)
- * - tributos/impuestos → 64 (Gastos por tributos)
- * - financiero/intereses → 67 (Gastos financieros)
- * - default → 65 (Otros gastos de gestión)
+ * Cuenta de gasto/ingreso inferida del campo `category`.
+ *
+ * ⚠️ ESTO YA NO ES LA FUENTE PRINCIPAL, Y NO DEBERÍA VOLVER A SERLO.
+ *
+ * Se escribió creyendo que `category` decía la naturaleza del gasto
+ * («materiales», «servicios»). No dice eso: dice el TIPO DE DOCUMENTO. Medido
+ * en producción el 17-set-2026, sobre 1.742 movimientos vivos, los únicos
+ * cuatro valores existentes eran 'Factura' (1.710), 'Nota de Crédito' (28),
+ * 'Recibo Honorarios' (3) y 'Boleta' (1). Ninguno coincide con ningún regex de
+ * abajo, así que TODO caía al `return` final: costo → 60, gasto → 65,
+ * ingreso → 70. Las contadoras veían la 60 en todo porque era lo único que
+ * esta función podía devolver.
+ *
+ * Ahora la cuenta sale de lo que se COMPRÓ (`cuenta-de-comprobante.js`, que
+ * lee los ítems del comprobante y los clasifica). Esto queda como último
+ * recurso para un movimiento sin ítems y sin cuenta elegida a mano — y cuando
+ * se usa, el asiento lo marca como provisional en vez de hacerlo pasar por
+ * bueno.
  */
 export function mapTypeToCategoria(type, category) {
   const cat = String(category || '').toLowerCase().trim();
@@ -95,7 +106,7 @@ export function cuentaCajaOBanco(payment_method) {
  * @returns {{numero:string, fecha:string, glosa:string, type:string, partidas:Array,
  *            sumDebe:number, sumHaber:number, delta:number, cuadra:boolean, extorno:boolean}}
  */
-export function generarAsiento(movimiento) {
+export function generarAsiento(movimiento, opts = {}) {
   const m = movimiento || {};
   const totalCrudo = r2(Number(m.amount || 0));
 
@@ -114,7 +125,7 @@ export function generarAsiento(movimiento) {
       subtotal: m.subtotal != null ? Math.abs(Number(m.subtotal)) : m.subtotal,
       igv_amount: m.igv_amount != null ? Math.abs(Number(m.igv_amount)) : m.igv_amount,
       payment_status: 'pending',
-    });
+    }, opts);
     const REN = [
       ['Cobro de ', 'Extorno cobro — '],
       ['Factura por cobrar — ', 'Extorno cta. por cobrar — '],
@@ -135,7 +146,7 @@ export function generarAsiento(movimiento) {
     });
   }
 
-  return finalizarAsiento(construirAsiento(m));
+  return finalizarAsiento(construirAsiento(m, opts));
 }
 
 // Suma final + campos de cuadre POR ASIENTO (herramienta de descuadre,
@@ -165,7 +176,94 @@ function finalizarAsiento(asiento) {
   };
 }
 
-function construirAsiento(movimiento) {
+/**
+ * Las líneas de gasto/ingreso del asiento, con su cuenta y su parte de la base.
+ *
+ * Orden de precedencia, de lo más confiable a lo menos:
+ *   1. `cuenta_pcge` — la cuenta que eligió una contadora a mano. Manda sobre
+ *      todo, incluso sobre el reparto: es una persona corrigiendo a la máquina.
+ *   2. El REPARTO que trae `repartoDe(mov)` (lo arma `cuenta-de-comprobante.js`
+ *      leyendo los ítems del comprobante). Puede ser más de una línea: una
+ *      factura de ferretería con materiales y herramientas va a 602 y a 656.
+ *   3. `mapTypeToCategoria` — el último recurso, marcado provisional.
+ *
+ * La base se prorratea por las porciones y el redondeo se ajusta en la línea
+ * más grande, para que la suma dé EXACTAMENTE la base imponible: si no, el
+ * asiento descuadra por un centavo y aparece en la herramienta de descuadre
+ * como si fuera un problema de datos.
+ */
+/**
+ * Cuando el comprobante se parte en varias cuentas, cada línea dice de qué es.
+ * Sin esto, el Libro Diario muestra la misma glosa dos veces con dos importes
+ * distintos y no hay forma de saber cuál es cuál.
+ */
+function sufijoLinea(linea, cuantas) {
+  if (cuantas < 2) return '';
+  const fams = Array.isArray(linea.familias) ? linea.familias.filter(Boolean) : [];
+  return fams.length ? ` — ${fams.join(', ')}` : '';
+}
+
+function lineasDeNaturaleza(m, base, opts) {
+  const esIngreso = (m.type || 'expense') === 'income';
+  const tipo = m.type || 'expense';
+
+  if (m.cuenta_pcge) {
+    return {
+      lineas: [{ cuenta: m.cuenta_pcge, importe: base }],
+      provisional: false, manual: true, revisar: false,
+      origen: 'manual', confianza: 'manual',
+    };
+  }
+
+  const reparto = typeof opts?.repartoDe === 'function' ? opts.repartoDe(m) : null;
+
+  // Un reparto PROVISIONAL quiere decir «no se pudo deducir nada de los
+  // ítems». En ese caso la cuenta vieja inferida de `category` no es peor —
+  // es la misma incertidumbre, pero al menos mira el campo, y para la planilla
+  // (`category: 'planilla'`) acierta donde una cuenta provisional fija no. Se
+  // usa ésa y se mantiene el aviso de provisional.
+  if (reparto?.provisional) {
+    return {
+      lineas: [{ cuenta: mapTypeToCategoria(esIngreso ? 'income' : tipo, m.category), importe: base }],
+      provisional: true, manual: false, revisar: true,
+      origen: reparto.origen, confianza: reparto.confianza,
+      porque: reparto.lineas?.[0]?.porque || '',
+    };
+  }
+
+  if (reparto?.lineas?.length) {
+    const lineas = reparto.lineas.map(l => ({
+      cuenta: l.cuenta,
+      cuentaMadre: l.cuentaMadre,
+      importe: r2(base * l.porcion),
+      familias: l.familias,
+      confianza: l.confianza,
+      revisar: l.revisar,
+      porque: l.porque,
+    }));
+    // El resto del redondeo va a la línea mayor (la primera: vienen ordenadas).
+    const suma = lineas.reduce((s, l) => s + l.importe, 0);
+    const resto = r2(base - suma);
+    if (resto !== 0 && lineas.length) lineas[0].importe = r2(lineas[0].importe + resto);
+    return {
+      lineas,
+      provisional: reparto.provisional === true,
+      manual: false,
+      revisar: reparto.revisar === true,
+      origen: reparto.origen,
+      confianza: reparto.confianza,
+    };
+  }
+
+  // Sin reparto: la inferencia vieja, dicha como lo que es.
+  return {
+    lineas: [{ cuenta: mapTypeToCategoria(esIngreso ? 'income' : tipo, m.category), importe: base }],
+    provisional: true, manual: false, revisar: true,
+    origen: 'ninguno', confianza: 'ninguna',
+  };
+}
+
+function construirAsiento(movimiento, opts = {}) {
   const m = movimiento || {};
   const desglose = desglosarIgv(m);
   const { total, subtotal, igv } = desglose;
@@ -189,6 +287,9 @@ function construirAsiento(movimiento) {
   // la glosa nunca mostraba el número del comprobante).
   const docRef = m.document_number || m.documento || m.doc_numero || m.factura || '';
 
+  // Las cuentas de gasto/ingreso y cómo se reparte la base entre ellas.
+  const naturaleza = lineasDeNaturaleza(m, subtotal, opts);
+
   if (tipo === 'income') {
     // ─── Ingreso (venta) ─────────────────────────────────
     if (pagado) {
@@ -206,14 +307,14 @@ function construirAsiento(movimiento) {
         haber: 0,
       });
     }
-    // Si el usuario eligió una cuenta PCGE explícita, úsala; si no, infiere de category
-    const cuentaIngreso = m.cuenta_pcge || mapTypeToCategoria('income', m.category);
-    partidas.push({
-      cuenta: cuentaIngreso,
-      descripcion: desc + noGravNota,
-      debe: 0,
-      haber: subtotal,
-    });
+    for (const l of naturaleza.lineas) {
+      partidas.push({
+        cuenta: l.cuenta,
+        descripcion: desc + noGravNota + sufijoLinea(l, naturaleza.lineas.length),
+        debe: 0,
+        haber: l.importe,
+      });
+    }
     if (igv > 0) {
       partidas.push({
         cuenta: '4011',
@@ -224,15 +325,23 @@ function construirAsiento(movimiento) {
     }
   } else {
     // ─── Costo / Gasto ───────────────────────────────────
-    const cuentaGasto = m.cuenta_pcge || mapTypeToCategoria(tipo, m.category);
-    const esPlanilla = cuentaGasto === '62';
+    // La planilla se reconoce por la cuenta 62 PELADA (o su 621
+    // Remuneraciones), no por «cualquier cosa que caiga en el elemento 62».
+    // Desde que la cuenta sale de los ítems, una factura de CAPACITACIÓN va a
+    // la 624 y una de alimentación del personal a la 625 — las dos son 62 y
+    // ninguna es planilla: llevan su IGV normal y se le deben a un proveedor
+    // (42), no al trabajador (41).
+    const esPlanilla = naturaleza.lineas.length === 1
+      && (naturaleza.lineas[0].cuenta === '62' || naturaleza.lineas[0].cuenta === '621');
 
-    partidas.push({
-      cuenta: cuentaGasto,
-      descripcion: desc + noGravNota,
-      debe: subtotal,
-      haber: 0,
-    });
+    for (const l of naturaleza.lineas) {
+      partidas.push({
+        cuenta: l.cuenta,
+        descripcion: desc + noGravNota + sufijoLinea(l, naturaleza.lineas.length),
+        debe: l.importe,
+        haber: 0,
+      });
+    }
     if (igv > 0 && !esPlanilla) {
       partidas.push({
         cuenta: '4011',
@@ -285,6 +394,21 @@ function construirAsiento(movimiento) {
     type: tipo,
     movimiento_id: m.id,
     desglose,
+    // De dónde salió la cuenta y cuánto se le puede creer. El Libro Diario lo
+    // muestra como badge: una cuenta provisional con cara de definitiva es
+    // justo lo que hizo que nadie mirara las 1.742 filas que decían 60.
+    cuentas: {
+      origen: naturaleza.origen,
+      confianza: naturaleza.confianza,
+      provisional: naturaleza.provisional,
+      manual: naturaleza.manual,
+      revisar: naturaleza.revisar,
+      partida: naturaleza.lineas.length > 1,
+      detalle: naturaleza.lineas.map(l => ({
+        cuenta: l.cuenta, cuentaMadre: l.cuentaMadre, importe: l.importe,
+        familias: l.familias || [], porque: l.porque || '',
+      })),
+    },
     partidas: partidas.map(p => ({
       cuenta: p.cuenta,
       descripcion: p.descripcion,
@@ -297,12 +421,22 @@ function construirAsiento(movimiento) {
 /**
  * Procesa un array de movimientos y devuelve sus asientos.
  * Filtra registros eliminados (deleted_at) y anulados (cancelled).
+ *
+ * @param {object} [opts]
+ *   repartoDe(mov) → el reparto de cuentas del comprobante, o null.
+ *     Se INYECTA en vez de importarse: quien lo arma es
+ *     `cuenta-de-comprobante.js`, que necesita el catálogo de insumos y el
+ *     clasificador IUPC —datos de Dexie y un diccionario de 938 términos— y
+ *     nada de eso tiene por qué viajar en el chunk del Libro Diario. Esta lib
+ *     sigue siendo pura y sin dependencias.
+ *     Sin `repartoDe`, el asiento sale como salía: con la cuenta inferida del
+ *     campo `category`, pero ahora marcada `provisional`.
  */
-export function generarAsientosBatch(movimientos) {
+export function generarAsientosBatch(movimientos, opts = {}) {
   const arr = Array.isArray(movimientos) ? movimientos : [];
   return arr
     .filter(m => m && !m.deleted_at && m.payment_status !== 'cancelled')
-    .map(generarAsiento)
+    .map(m => generarAsiento(m, opts))
     .sort((a, b) => {
       const da = new Date(a.fecha).getTime() || 0;
       const db = new Date(b.fecha).getTime() || 0;

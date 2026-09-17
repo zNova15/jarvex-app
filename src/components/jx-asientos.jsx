@@ -4,6 +4,7 @@ import autoTable from "jspdf-autotable";
 import { generarAsientosBatch, explicarDescuadre } from "../lib/asientos";
 import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import { nombreDeCuenta } from "../lib/pcge.js";
+import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
@@ -80,6 +81,51 @@ const TIPO_LABEL = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
 // cuenta de cinco dígitos siempre dice algo.
 const cuentaNombre = (codigo) => nombreDeCuenta(codigo);
 
+/**
+ * Cómo se supo a qué cuenta iba este asiento, dicho en la propia fila.
+ *
+ * Solo aparece cuando hay algo que mirar: si la cuenta salió del catálogo de
+ * la empresa —o sea, si una persona ya decidió qué es ese insumo— no lleva
+ * badge. Lo que sí se avisa es lo que la máquina dedujo del texto y, sobre
+ * todo, lo que NO pudo deducir.
+ */
+function BadgeCuenta({ cuentas }) {
+  const c = cuentas || {};
+  const badges = [];
+  const B = (clase, texto, titulo) => (
+    <span key={texto} className={`badge ${clase}`} style={{ fontSize: 10 }} title={titulo}>{texto}</span>
+  );
+
+  if (c.provisional) {
+    badges.push(B('b-red', '⚠ cuenta por definir',
+      (c.detalle?.[0]?.porque || 'No se pudo deducir la cuenta de este comprobante.')
+      + ' Está puesta en una cuenta provisional para que el asiento cuadre; elegí la correcta.'));
+  } else if (c.manual) {
+    badges.push(B('b-green', '✎ cuenta a mano', 'La cuenta se eligió a mano en el movimiento. Manda sobre lo que deduzca la app.'));
+  } else if (c.confianza === 'baja') {
+    badges.push(B('b-amber', 'cuenta deducida (poco segura)',
+      'La cuenta salió de clasificar el texto de los ítems y la coincidencia fue floja. Vale la pena mirarla.'));
+  } else if (c.confianza === 'media') {
+    badges.push(B('b-amber', 'cuenta deducida', 'La cuenta salió de clasificar el texto de los ítems del comprobante.'));
+  }
+
+  if (c.partida) {
+    const detalle = (c.detalle || [])
+      .map(d => `${d.cuenta} ${nombreDeCuenta(d.cuenta)} — ${fmtS(d.importe)}${d.familias?.length ? ` (${d.familias.join(', ')})` : ''}`)
+      .join('\n');
+    badges.push(B('b-blue', `partido en ${c.detalle?.length || 2}`,
+      'El comprobante tiene cosas de naturalezas distintas y va a más de una cuenta:\n' + detalle));
+  }
+
+  if (c.revisar && !c.provisional) {
+    badges.push(B('b-amber', 'revisar',
+      (c.detalle || []).map(d => d.porque).filter(Boolean).join('\n')
+      || 'Hay algo en este comprobante que conviene mirar a mano.'));
+  }
+
+  return badges.length ? <>{badges}</> : null;
+}
+
 // ╔════════════════════════════════════════════════════════════╗
 // ║  LIBRO DIARIO                                              ║
 // ╚════════════════════════════════════════════════════════════╝
@@ -130,8 +176,41 @@ function LibroDiarioPage({ showToast }) {
     });
   }, [movs, empresaId, anio, mes, tipoFiltro]);
 
+  // ── DE DÓNDE SALE LA CUENTA DE CADA ASIENTO (17-set-2026) ──────────
+  // Hasta hoy salía de `mapTypeToCategoria(type, category)`, y `category` NO
+  // es la naturaleza del gasto: contiene el tipo de documento ('Factura' en
+  // 1.710 de 1.742 movimientos). Ningún regex coincidía, así que TODO caía al
+  // default y el libro decía 60 en cada costo, 65 en cada gasto y 70 en cada
+  // venta. Ése es el «solo un ejemplo de los diferentes fallos» que
+  // reportaron las contadoras con la F055-6246 de MARVISUR.
+  //
+  // Ahora sale de lo que se COMPRÓ: los ítems del comprobante, clasificados
+  // con el catálogo de la empresa primero y con el IUPC después, y traducidos
+  // a cuenta por `pcge-puente.js`.
+  //
+  // El resolvedor se arma UNA vez con lo que hay en Dexie y se le inyecta al
+  // generador. `generarAsientosBatch` sigue sin importar nada de esto: es una
+  // lib pura y el diccionario de 938 términos no tiene por qué viajar en su
+  // chunk.
+  const { data: catalogoInsumos } = (window.__hooks?.useCatalogoInsumos?.() ?? { data: [] });
+  const { data: insumoCategorias } = (window.__hooks?.useInsumoCategorias?.() ?? { data: [] });
+  const { data: terminosCustom } = (window.__hooks?.useClasificacionTerminos?.() ?? { data: [] });
+
+  const repartoDe = uM(() => {
+    const familiaDe = crearResolvedorDeFamilia({
+      catalogo: catalogoInsumos || [],
+      alias: insumoCategorias || [],
+      terminosCustom: terminosCustom || [],
+      companyId: empresaId !== 'all' ? empresaId : null,
+    });
+    return (mov) => cuentasDeComprobante(mov, { familiaDe });
+  }, [catalogoInsumos, insumoCategorias, terminosCustom, empresaId]);
+
   // Asientos generados al vuelo
-  const asientosTodos = uM(() => generarAsientosBatch(movsFiltrados), [movsFiltrados]);
+  const asientosTodos = uM(
+    () => generarAsientosBatch(movsFiltrados, { repartoDe }),
+    [movsFiltrados, repartoDe],
+  );
   const descuadrados = uM(() => asientosTodos.filter(a => !a.cuadra), [asientosTodos]);
   // Vista: con "solo descuadrados" activo, la tabla, los totales y los exports
   // muestran únicamente los asientos con Δ propio — así la contadora aísla el
@@ -587,6 +666,12 @@ function LibroDiarioPage({ showToast }) {
                                     IGV {describirIgv(a.desglose)}
                                   </span>
                                 )}
+                                {/* DE DÓNDE SALIÓ LA CUENTA. Solo se avisa cuando hay algo
+                                    que mirar: lo que el catálogo resolvió no lleva badge,
+                                    porque ya lo decidió una persona. Un asiento provisional
+                                    con cara de definitivo es exactamente lo que hizo que
+                                    nadie revisara las 1.742 filas que decían 60. */}
+                                {a.cuentas && <BadgeCuenta cuentas={a.cuentas}/>}
                                 {evPorMov.has(a.movimiento_id) && (
                                   <button className="btn btn-ghost btn-xs" style={{ padding: '0 5px', color: 'var(--blue, #3498DB)' }}
                                     title="Ver el comprobante adjunto (factura/imagen)"

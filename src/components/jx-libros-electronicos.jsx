@@ -8,6 +8,7 @@ import {
 } from '../lib/sunat-ple.js';
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
+import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de-comprobante.js';
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -86,9 +87,29 @@ function LibrosElectronicosPage({ showToast }) {
   );
 
   // Asientos (Libro Diario / Mayor)
+  //
+  // El PLE que se le declara a SUNAT lleva la MISMA cuenta que muestra el
+  // Libro Diario en pantalla. Si esta pantalla generara los asientos sin el
+  // reparto, el libro en pantalla diría 63 y el archivo declarado diría 60 —
+  // dos verdades distintas del mismo mes, y la que llega a SUNAT sería la
+  // equivocada. Por eso el resolvedor se arma también acá.
+  const { data: catalogoInsumos } = window.__hooks?.useCatalogoInsumos?.() || { data: [] };
+  const { data: insumoCategorias } = window.__hooks?.useInsumoCategorias?.() || { data: [] };
+  const { data: terminosCustom } = window.__hooks?.useClasificacionTerminos?.() || { data: [] };
+
+  const repartoDe = uM(() => {
+    const familiaDe = crearResolvedorDeFamilia({
+      catalogo: catalogoInsumos || [],
+      alias: insumoCategorias || [],
+      terminosCustom: terminosCustom || [],
+      companyId: companyId || null,
+    });
+    return (mov) => cuentasDeComprobante(mov, { familiaDe });
+  }, [catalogoInsumos, insumoCategorias, terminosCustom, companyId]);
+
   const asientos = uM(
-    () => generarAsientosBatch(movsPeriodo),
-    [movsPeriodo]
+    () => generarAsientosBatch(movsPeriodo, { repartoDe }),
+    [movsPeriodo, repartoDe]
   );
 
   // Totales para card resumen
