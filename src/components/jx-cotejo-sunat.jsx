@@ -51,8 +51,12 @@ import { candidatasDeNota } from '../lib/notas-credito.js';
 import { esVentaMov } from '../lib/costo-obra.js';
 import { getCurrentMode } from '../lib/app-mode-core.js';
 import { setEmpresaActivaId } from '../lib/empresa-activa.js';
+import { enPeriodo } from '../lib/fecha.js';
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
+
+// Para decir el ámbito del escáner en palabras cuando se lo abre por período.
+const MESES_ESCANER = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','setiembre','octubre','noviembre','diciembre'];
 
 /**
  * Abre el comprobante en Movimientos Contables con foco en la fila y el modal
@@ -939,12 +943,18 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
 // ═══════════════════════════════════════════════════════════════════
 // PESTAÑA 2 — EL ESCÁNER DE INCOHERENCIAS
 // ═══════════════════════════════════════════════════════════════════
-export function EscanerIncoherencias({ company, companies, movs, showToast, userId, empresaFija }) {
+export function EscanerIncoherencias({ company, companies, movs, showToast, userId, empresaFija, periodo = null }) {
   // Por defecto mira TODO el grupo: la incoherencia más cara que se midió
   // —una venta marcada intercompany sin su costo del otro lado— es imposible
   // de ver parado en una sola empresa. Con una empresa fijada por navegación,
   // se respeta ese ámbito.
-  const [soloEmpresa, setSoloEmpresa] = uS(!!empresaFija);
+  const [soloEmpresa, setSoloEmpresa] = uS(!!empresaFija || !!periodo);
+  // ── ÁMBITO POR PERÍODO (17-set) ─────────────────────────────────
+  // Abierto desde el Registro de Compras y Ventas, el escáner arranca mirando
+  // el MES que se está cerrando: es la pregunta que se hace ahí («¿puedo
+  // declarar este mes?»), no «¿está todo bien desde siempre?». El check lo
+  // suelta para ver el histórico sin salir de la ventana.
+  const [soloPeriodo, setSoloPeriodo] = uS(!!periodo);
   const [familia, setFamilia] = uS('todas');
   const enCursoRef = uR(false);
   const abriendoRef = uR(false);
@@ -977,10 +987,16 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
     const porEmpresa = soloEmpresa && company?.id
       ? conDec.filter(h => h.companyId === company.id)
       : conDec;
-    return familia === 'todas' ? porEmpresa : porEmpresa.filter(h => h.familia === familia);
+    // El período se acota DESPUÉS de escanear, igual que la empresa: una nota
+    // de crédito de este mes puede apuntar a una factura de marzo, y el
+    // hallazgo se cuenta en el mes de la nota.
+    const porPeriodo = (soloPeriodo && periodo)
+      ? porEmpresa.filter(h => enPeriodo(h.fecha, Number(periodo.anio), Number(periodo.mes)))
+      : porEmpresa;
+    return familia === 'todas' ? porPeriodo : porPeriodo.filter(h => h.familia === familia);
     // `corrida` está en las deps a propósito: es el botón «analizar de nuevo».
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [movs, companies, decisiones, soloEmpresa, company?.id, familia, corrida]);
+  }, [movs, companies, decisiones, soloEmpresa, company?.id, familia, corrida, soloPeriodo, periodo?.anio, periodo?.mes]);
 
   const pendientes = uM(() => hallazgosPendientes(hallazgos), [hallazgos]);
   const resumen = uM(() => resumirHallazgos(pendientes), [pendientes]);
@@ -1187,6 +1203,12 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
           />
           Solo {company?.name || 'esta empresa'}
         </label>
+        {periodo && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <input type="checkbox" checked={soloPeriodo} onChange={e => setSoloPeriodo(e.target.checked)} />
+            Solo {MESES_ESCANER[(Number(periodo.mes) || 1) - 1]} {periodo.anio}
+          </label>
+        )}
         <button className="btn" onClick={exportar} disabled={!hallazgos.length}>Exportar (.csv)</button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, fontSize: 12, alignItems: 'center' }}>
           {ultimaCorrida && (
@@ -1203,7 +1225,8 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
         <div className="card card-p" style={{ padding: 24, textAlign: 'center', color: 'var(--tm)' }}>
           ✓ No hay incoherencias pendientes
           {familia !== 'todas' ? ' en esta familia' : ''}
-          {soloEmpresa ? ` en ${company?.name || 'esta empresa'}` : ' en todo el grupo'}.
+          {soloEmpresa ? ` en ${company?.name || 'esta empresa'}` : ' en todo el grupo'}
+          {soloPeriodo && periodo ? `, en ${MESES_ESCANER[(Number(periodo.mes) || 1) - 1]} de ${periodo.anio}` : ''}.
         </div>
       ) : (
         <div style={{ display: 'grid', gap: 8 }}>

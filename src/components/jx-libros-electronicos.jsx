@@ -13,8 +13,7 @@ import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
-import { ComparativaSunat, EscanerIncoherencias } from './jx-cotejo-sunat.jsx';
-import { ReemplazoPropuestaSire } from './jx-reemplazo-sire.jsx';
+import { ComparativaSunat } from './jx-cotejo-sunat.jsx';
 import { RegistroComprasVentas } from './jx-registro-compras-ventas.jsx';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -40,11 +39,18 @@ function LibrosElectronicosPage({ showToast }) {
   const empresaFija = useEmpresaBloqueada();
   const companyId = empresaFija || companyIdRaw;
   const [busy, setBusy] = uS(false);
-  // Las tres caras de esta pantalla: generar los PLE (lo de siempre), cotejar
-  // contra SUNAT (entrega 5) y el escáner (entrega 6). Van acá y no en el menú
-  // porque comparten el ámbito exacto —empresa + año + mes— y es donde la
-  // contadora ya entra a hacer justamente esto.
-  const [tab, setTab] = uS('ple');
+  // ── LAS CARAS DE ESTA PANTALLA, Y CUÁL VA PRIMERO (17-set) ────────
+  // Arranca en el REGISTRO DE COMPRAS Y VENTAS, no en la generación de PLE:
+  // «los registros de compra y venta deberían estar en primer plano» (Gabriel).
+  // Es lo que se mira todos los meses; el .txt del PLE se genera una vez y se
+  // sube. Las otras dos caras —el registro y el cotejo— comparten el ámbito
+  // exacto (empresa + año + mes) y por eso viven acá y no en el menú.
+  //
+  // El reemplazo SIRE y el escáner de incoherencias YA NO son pestañas: se
+  // mudaron adentro del registro (tandas 5 y 6). El SIRE es una de sus tres
+  // exportaciones, con la selección por comprobante en la propia fila; el
+  // escáner es una ventana que se abre desde ahí, apuntada al período.
+  const [tab, setTab] = uS('registro');
   const userId = (() => { try { return window.__useAuth?.()?.profile?.id || null; } catch { return null; } })();
 
   const { data: companies = [] } = window.__hooks.useCompanies();
@@ -317,14 +323,9 @@ function LibrosElectronicosPage({ showToast }) {
       {/* Las caras de esta pantalla */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {[
-          ['ple', '📄 Generar libros (PLE)'],
-          // La hoja de trabajo de la contadora, en el formato de su Excel
-          // modelo (tanda 4). Va primero después del PLE porque es lo que se
-          // mira TODOS los meses; el .txt se genera una vez y se sube.
           ['registro', '📊 Registro de Compras y Ventas'],
-          ['sire', '📦 Reemplazo SIRE (.zip)'],
           ['sunat', '🔍 SUNAT vs JARVEX'],
-          ['escaner', '🩺 Escáner de incoherencias'],
+          ['ple', '📄 Generar libros (PLE)'],
         ].map(([k, label]) => (
           <button
             key={k}
@@ -339,24 +340,16 @@ function LibrosElectronicosPage({ showToast }) {
       {tab === 'registro' && (
         <RegistroComprasVentas
           company={company}
+          companies={companies}
+          movs={movs}
           movsPeriodo={movsPeriodo}
           movsById={movsById}
           asientos={asientos}
           anio={anio}
           mes={mes}
           showToast={showToast}
-        />
-      )}
-
-      {tab === 'sire' && (
-        <ReemplazoPropuestaSire
-          company={company}
-          companies={companies}
-          movs={movs}
-          anio={anio}
-          mes={mes}
-          showToast={showToast}
           userId={userId}
+          empresaFija={empresaFija}
         />
       )}
 
@@ -369,17 +362,6 @@ function LibrosElectronicosPage({ showToast }) {
           mes={mes}
           showToast={showToast}
           userId={userId}
-        />
-      )}
-
-      {tab === 'escaner' && (
-        <EscanerIncoherencias
-          company={company}
-          companies={companies}
-          movs={movs}
-          showToast={showToast}
-          userId={userId}
-          empresaFija={empresaFija}
         />
       )}
 
