@@ -1,7 +1,10 @@
 import React from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { generarAsientosBatch, explicarDescuadre } from "../lib/asientos";
+import {
+  generarAsientosBatch, explicarDescuadre,
+  ESTADOS_CUENTA, cumpleEstadoCuenta, contarEstadosDeCuenta,
+} from "../lib/asientos";
 import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import { nombreDeCuenta } from "../lib/pcge.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
@@ -146,6 +149,7 @@ function LibroDiarioPage({ showToast }) {
   const [tipoFiltro, setTipoFiltro] = uS('all');
   // Herramienta de descuadre + visor de comprobantes (pedido contadoras 31-ago).
   const [soloDescuadrados, setSoloDescuadrados] = uS(false);
+  const [estadoCuenta, setEstadoCuenta] = uS('todas');
   const [evPorMov, setEvPorMov] = uS(() => new Map());   // mov_id → evidencia (cruda)
   const [visor, setVisor] = uS(null);                    // { url, mime, nombre, _blob }
 
@@ -212,12 +216,25 @@ function LibroDiarioPage({ showToast }) {
     [movsFiltrados, repartoDe],
   );
   const descuadrados = uM(() => asientosTodos.filter(a => !a.cuadra), [asientosTodos]);
+
+  // ── FILTRO POR ESTADO DE LA CUENTA (pedido de Gabriel, 17-set) ─────
+  // Sin esto, los asientos con la cuenta sin definir quedan mezclados entre
+  // los buenos y hay que ir a buscarlos badge por badge. Son 345 de 1.742 en
+  // producción: una lista por la que se puede pasar de a tandas, pero solo si
+  // se la puede aislar.
+  const cuentasPorEstado = uM(() => contarEstadosDeCuenta(asientosTodos), [asientosTodos]);
+  const asientosPorCuenta = uM(
+    () => (estadoCuenta === 'todas' ? asientosTodos : asientosTodos.filter(a => cumpleEstadoCuenta(a, estadoCuenta))),
+    [asientosTodos, estadoCuenta],
+  );
+
   // Vista: con "solo descuadrados" activo, la tabla, los totales y los exports
   // muestran únicamente los asientos con Δ propio — así la contadora aísla el
-  // problema en un click (herramienta de descuadre, 31-ago).
+  // problema en un click (herramienta de descuadre, 31-ago). Los dos filtros se
+  // combinan: «por definir Y descuadrado» es una pregunta legítima.
   const asientos = uM(
-    () => (soloDescuadrados ? descuadrados : asientosTodos),
-    [asientosTodos, descuadrados, soloDescuadrados]
+    () => (soloDescuadrados ? asientosPorCuenta.filter(a => !a.cuadra) : asientosPorCuenta),
+    [asientosPorCuenta, soloDescuadrados]
   );
   const movsById = uM(() => new Map(movsFiltrados.map(m => [m.id, m])), [movsFiltrados]);
 
@@ -341,7 +358,11 @@ function LibroDiarioPage({ showToast }) {
       const pageWidth = 297;
       // Vista parcial marcada: sin esto, un export con "Solo descuadrados"
       // activo parecía un Libro Diario completo.
-      const periodoTxt = periodoLabel + (soloDescuadrados ? ' — SOLO DESCUADRADOS' : '');
+      // Lo exportado es lo que se ve. Si el papel no dice con qué filtro
+      // salió, alguien lo va a leer como el libro completo del mes.
+      const filtroTxt = (soloDescuadrados ? ' — SOLO DESCUADRADOS' : '')
+        + (estadoCuenta !== 'todas' ? ' — ' + (ESTADOS_CUENTA.find(e => e.v === estadoCuenta)?.label || estadoCuenta).toUpperCase() : '');
+      const periodoTxt = periodoLabel + filtroTxt;
 
       // Header
       doc.setFillColor(14, 22, 32);
@@ -425,7 +446,7 @@ function LibroDiarioPage({ showToast }) {
         doc.text(`Página ${i} de ${pages}`, pageWidth - 14, ph - 8, { align: 'right' });
       }
 
-      const fname = `LibroDiario_${(empresaActual?.name || 'todas').replace(/\s+/g, '-')}_${anio}-${mes}${soloDescuadrados ? '_solo-descuadrados' : ''}.pdf`;
+      const fname = `LibroDiario_${(empresaActual?.name || 'todas').replace(/\s+/g, '-')}_${anio}-${mes}${soloDescuadrados ? '_solo-descuadrados' : ''}${estadoCuenta !== 'todas' ? '_' + estadoCuenta : ''}.pdf`;
       doc.save(fname);
       showToast?.('PDF generado', 'green');
     } catch (e) {
@@ -468,10 +489,10 @@ function LibroDiarioPage({ showToast }) {
 
       window.__reports.generateExcel({
         // Máx 31 chars de sheetName en xlsx — 'DESC' marca la vista parcial.
-        sheetName: `Libro Diario ${anio}${soloDescuadrados ? ' DESC' : ''}`,
+        sheetName: `Libro Diario ${anio}${soloDescuadrados ? ' DESC' : ''}${estadoCuenta !== 'todas' ? ' ' + estadoCuenta.slice(0, 8) : ''}`,
         columnas,
         filas,
-        filename: `LibroDiario_${(empresaActual?.name || 'todas').replace(/\s+/g, '-')}_${anio}-${mes}${soloDescuadrados ? '_solo-descuadrados' : ''}.xlsx`,
+        filename: `LibroDiario_${(empresaActual?.name || 'todas').replace(/\s+/g, '-')}_${anio}-${mes}${soloDescuadrados ? '_solo-descuadrados' : ''}${estadoCuenta !== 'todas' ? '_' + estadoCuenta : ''}.xlsx`,
       });
       showToast?.('Excel generado', 'green');
     } catch (e) {
@@ -534,6 +555,17 @@ function LibroDiarioPage({ showToast }) {
               {TIPO_FILTRO.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
             </select>
           </div>
+          <div>
+            <label style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>Estado de la cuenta</label>
+            <select className="fi" value={estadoCuenta} onChange={e => setEstadoCuenta(e.target.value)} style={{ width: '100%' }}
+              title="Aísla los asientos según cuánto se le puede creer a su cuenta. «Por definir» son los que no se pudieron deducir de los ítems del comprobante.">
+              {ESTADOS_CUENTA.map(e => (
+                <option key={e.v} value={e.v}>
+                  {e.label}{e.v !== 'todas' ? ` (${cuentasPorEstado[e.v] || 0})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: descuadrados.length ? 'var(--red)' : 'var(--tm)', cursor: 'pointer', paddingBottom: 8 }}
               title="Mostrar solo los asientos cuyo propio debe ≠ haber — ahí vive el descuadre del total">
@@ -549,7 +581,9 @@ function LibroDiarioPage({ showToast }) {
         <div className="card card-p" style={{ borderLeft: '3px solid var(--blue)' }}>
           <div style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>Movimientos</div>
           <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--ts)', marginTop: 4 }}>
-            {soloDescuadrados ? `${asientos.length} de ${movsFiltrados.length}` : movsFiltrados.length}
+            {(soloDescuadrados || estadoCuenta !== 'todas')
+              ? `${asientos.length} de ${movsFiltrados.length}`
+              : movsFiltrados.length}
           </div>
         </div>
         <div className="card card-p" style={{ borderLeft: '3px solid var(--amber)' }}>
@@ -584,15 +618,43 @@ function LibroDiarioPage({ showToast }) {
             </div>
           )}
         </div>
+        {/* La pila de cuentas sin definir. Mismo patrón que la tarjeta de
+            cuadre: el número se ve sin buscarlo y se entra de un click. */}
+        <div className="card card-p"
+          style={{
+            borderLeft: `3px solid ${cuentasPorEstado.por_definir ? 'var(--amber)' : 'var(--green)'}`,
+            cursor: cuentasPorEstado.por_definir ? 'pointer' : 'default',
+          }}
+          title={cuentasPorEstado.por_definir
+            ? 'Click: ver solo los asientos cuya cuenta no se pudo deducir del comprobante'
+            : 'Todos los asientos del período tienen su cuenta determinada'}
+          onClick={() => {
+            if (!cuentasPorEstado.por_definir) return;
+            setEstadoCuenta(v => (v === 'por_definir' ? 'todas' : 'por_definir'));
+          }}>
+          <div style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>Cuentas por definir</div>
+          <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: cuentasPorEstado.por_definir ? 'var(--amber)' : 'var(--green)' }}>
+            {cuentasPorEstado.por_definir || 'OK'}
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+            {cuentasPorEstado.por_definir
+              ? (estadoCuenta === 'por_definir' ? 'viéndolas' : 'click para verlas')
+              : 'todas deducidas o puestas a mano'}
+          </div>
+        </div>
       </div>
 
       {/* Tabla de asientos */}
       {asientos.length === 0 ? (
         <div className="card card-p empty-state">
-          <p style={{ color: (soloDescuadrados && asientosTodos.length > 0) ? 'var(--green)' : 'var(--tm)' }}>
-            {(soloDescuadrados && asientosTodos.length > 0)
-              ? '✓ Ningún asiento descuadrado en este filtro — todos cuadran.'
-              : 'No hay movimientos en el período seleccionado. Registra movimientos contables y los asientos se generarán automáticamente.'}
+          <p style={{ color: (asientosTodos.length > 0 && (soloDescuadrados || estadoCuenta !== 'todas')) ? 'var(--green)' : 'var(--tm)' }}>
+            {asientosTodos.length === 0
+              ? 'No hay movimientos en el período seleccionado. Registra movimientos contables y los asientos se generarán automáticamente.'
+              : soloDescuadrados
+                ? '✓ Ningún asiento descuadrado en este filtro — todos cuadran.'
+                : estadoCuenta === 'por_definir'
+                  ? '✓ Ningún asiento con la cuenta sin definir en este período — todas se dedujeron del comprobante o se pusieron a mano.'
+                  : `✓ Ningún asiento en «${ESTADOS_CUENTA.find(e => e.v === estadoCuenta)?.label || estadoCuenta}» en este período.`}
           </p>
         </div>
       ) : (

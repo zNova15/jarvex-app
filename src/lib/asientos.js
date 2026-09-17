@@ -444,6 +444,59 @@ export function generarAsientosBatch(movimientos, opts = {}) {
     });
 }
 
+// ── EN QUÉ ESTADO ESTÁ LA CUENTA DE UN ASIENTO ────────────────
+//
+// Sirve para aislarlos en el Libro Diario. Lo pidió Gabriel al probar la
+// tanda 2: los asientos cuya cuenta no se pudo deducir quedaban mezclados
+// entre los buenos y había que buscarlos badge por badge. En producción son
+// 345 de 1.742 — una lista por la que se puede pasar de a tandas, pero solo si
+// se la puede separar del resto.
+//
+// Vive acá y no en la pantalla porque es una propiedad del ASIENTO, no de cómo
+// se lo muestre: el mismo criterio tiene que valer para el filtro, para los
+// exports y para cualquier reporte que lo pregunte después.
+export const ESTADOS_CUENTA = [
+  { v: 'todas',       label: 'Todas las cuentas' },
+  { v: 'por_definir', label: '⚠ Cuenta por definir' },
+  { v: 'floja',       label: 'Deducidas poco seguras' },
+  { v: 'revisar',     label: 'Marcadas para revisar' },
+  { v: 'partida',     label: 'Repartidas en varias cuentas' },
+  { v: 'manual',      label: 'Puestas a mano' },
+];
+
+/**
+ * ¿Este asiento está en ese estado?
+ *
+ * Los estados NO son excluyentes en el dato —un asiento partido puede además
+ * ser de confianza baja— pero sí en el filtro: se elige por el que uno lo
+ * buscaría. `por_definir` y `manual` sí son excluyentes de verdad, y hay un
+ * test que lo vigila: una cuenta elegida a mano nunca está «por definir».
+ */
+export function cumpleEstadoCuenta(asiento, estado) {
+  const c = asiento?.cuentas;
+  // Un asiento generado sin el reparto no se da por bueno solo por ser viejo:
+  // que no sepamos de dónde salió su cuenta es justo estar «por definir».
+  if (!c) return estado === 'por_definir' || estado === 'todas';
+  switch (estado) {
+    case 'por_definir': return c.provisional === true;
+    case 'floja':       return !c.provisional && c.confianza === 'baja';
+    case 'revisar':     return !c.provisional && c.revisar === true;
+    case 'partida':     return c.partida === true;
+    case 'manual':      return c.manual === true;
+    default:            return true;
+  }
+}
+
+/** Cuántos asientos hay en cada estado. Para los contadores del desplegable. */
+export function contarEstadosDeCuenta(asientos = []) {
+  const out = { todas: asientos.length };
+  for (const e of ESTADOS_CUENTA) {
+    if (e.v === 'todas') continue;
+    out[e.v] = asientos.filter(a => cumpleEstadoCuenta(a, e.v)).length;
+  }
+  return out;
+}
+
 /**
  * Explica en lenguaje de contadora POR QUÉ un asiento no cuadra.
  * Devuelve null si el asiento cuadra. La herramienta de descuadre del Libro
