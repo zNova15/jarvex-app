@@ -7,7 +7,7 @@ import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } f
 import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
-import { getEvidenciaSrc } from "../lib/evidencias-url.js";
+import { descargarEvidencia } from "../lib/evidencias-url.js";
 import { derivarTypeContable, destinoDesdeSelector } from "../lib/clasificacion-contable.js";
 import { valeLaPenaConsultar, compararSugerencia } from "../lib/sugerencia-clasificacion.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
@@ -363,13 +363,19 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
     if (procesandoRef.current) return;
     procesandoRef.current = true;
     try {
-      // getEvidenciaSrc devuelve { url, isBlob } (o null) — NO un string.
-      const src = await getEvidenciaSrc(ev);
-      if (!src?.url) { showToast?.('Este archivo aún no terminó de subir desde el teléfono — probá en un rato.', 'amber'); return; }
-      const resp = await fetch(src.url);
-      if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} }
-      if (!resp.ok) throw new Error(`descarga falló (${resp.status})`);
-      const blob = await resp.blob();
+      // `descargarEvidencia` firma, baja y —si la URL firmada no sirve— vuelve
+      // a firmar saltando R2. Antes esto era un fetch pelado y una foto que
+      // vivía solo en Supabase Storage moría en «descarga falló (404)».
+      let blob;
+      try {
+        blob = await descargarEvidencia(ev);
+      } catch (eDesc) {
+        if (eDesc?.message === 'sin-archivo') {
+          showToast?.('Este archivo aún no terminó de subir desde el teléfono — probá en un rato.', 'amber');
+          return;
+        }
+        throw eDesc;
+      }
       const file = new File([blob], ev.nombre_archivo || 'factura-campo.jpg', { type: ev.mime_type || blob.type || 'image/jpeg' });
       // El HEIC de iPhone (13-set) ya lo convierte el SERVER antes de mandarlo
       // a leer (ver api/captura-magica.js) — acá solo queda filtrar lo que de

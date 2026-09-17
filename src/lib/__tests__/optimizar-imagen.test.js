@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encodarHastaObjetivo, ESCALONES } from '../optimizar-imagen.js';
+import { encodarHastaObjetivo, ESCALONES, pixelesUniformes } from '../optimizar-imagen.js';
 
 // La escalera de compresión, sin canvas ni navegador. `encode(dim, q)` se
 // simula: modela que a menor calidad, menor tamaño.
@@ -66,5 +66,41 @@ describe('encodarHastaObjetivo — la escalera que acota el peso', () => {
       async (dim, q) => blob(q === 0.78 ? 300 * 1024 : 100 * 1024),
       150 * 1024);
     expect(out.size).toBe(100 * 1024);   // 300 KB no cumplía un techo de 150
+  });
+});
+
+// Incidente del 16-set-2026: dos facturas del portal de campo se guardaron
+// como un JPEG BLANCO de 720×1600 (7.508 bytes, las dos idénticas byte a
+// byte). El decoder decía que sí, pero al lienzo no llegaba nada.
+describe('pixelesUniformes — el detector de lienzo en blanco', () => {
+  // RGBA plano, como getImageData: n píxeles del mismo color.
+  const planos = (n, [r, g, b]) => Uint8ClampedArray.from(
+    Array.from({ length: n }, () => [r, g, b, 255]).flat());
+
+  it('detecta el blanco liso, que es como salía la factura perdida', () => {
+    expect(pixelesUniformes(planos(64, [255, 255, 255]))).toBe(true);
+  });
+
+  it('detecta cualquier color liso, no solo el blanco', () => {
+    expect(pixelesUniformes(planos(64, [0, 0, 0]))).toBe(true);
+    expect(pixelesUniformes(planos(64, [17, 90, 200]))).toBe(true);
+  });
+
+  it('un solo píxel distinto ya NO es uniforme: la foto se conserva', () => {
+    const d = planos(64, [255, 255, 255]);
+    d[4 * 40] = 30;   // una marca de tinta en algún lado
+    expect(pixelesUniformes(d)).toBe(false);
+  });
+
+  it('tolera el ruido mínimo del reescalado (no descarta una foto buena)', () => {
+    const d = planos(64, [255, 255, 255]);
+    d[4] = 254; d[8] = 253;
+    expect(pixelesUniformes(d)).toBe(true);
+  });
+
+  it('ante datos vacíos o ausentes NO acusa blanco (la duda no descarta nada)', () => {
+    expect(pixelesUniformes(null)).toBe(false);
+    expect(pixelesUniformes(new Uint8ClampedArray([]))).toBe(false);
+    expect(pixelesUniformes(new Uint8ClampedArray([255, 255, 255, 255]))).toBe(false);
   });
 });

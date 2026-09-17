@@ -86,28 +86,79 @@ const extDe = (nombre) => {
   return m ? m[1].toLowerCase() : '';
 };
 
+/**
+ * ¿Son TODOS los píxeles el mismo color? (RGBA plano, como lo devuelve
+ * getImageData). Es la firma de un lienzo que quedó en blanco: la foto de un
+ * comprobante jamás es un color plano.
+ *
+ * 🔴 POR QUÉ EXISTE (17-set-2026). Dos facturas del portal de campo se
+ * guardaron como un JPEG BLANCO de 720×1600 y 7.508 bytes — las dos idénticas
+ * byte a byte, porque un blanco liso del mismo tamaño siempre comprime igual.
+ * Mistral OCR devolvió 1 carácter y la lectura moría con «la IA devolvió un
+ * JSON inválido», un mensaje que mandaba a mirar la IA cuando lo que se había
+ * subido no tenía nada adentro. La foto original se perdió: el blob local se
+ * borra tras subir.
+ */
+export function pixelesUniformes(data, tolerancia = 2) {
+  if (!data || data.length < 8) return false;
+  const [r0, g0, b0] = [data[0], data[1], data[2]];
+  for (let i = 4; i < data.length; i += 4) {
+    if (Math.abs(data[i] - r0) > tolerancia
+      || Math.abs(data[i + 1] - g0) > tolerancia
+      || Math.abs(data[i + 2] - b0) > tolerancia) return false;
+  }
+  return true;
+}
+
+// Muestrea el lienzo en 8×8 (256 bytes, nada de leer 4 MB de píxeles) y dice si
+// quedó de un solo color. Ante cualquier error devuelve false: la duda NUNCA
+// puede descartar una conversión buena.
+const TAM_MUESTRA = 8;
+function lienzoEnBlanco(canvas) {
+  try {
+    const m = document.createElement('canvas');
+    m.width = TAM_MUESTRA; m.height = TAM_MUESTRA;
+    const ctx = m.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0, TAM_MUESTRA, TAM_MUESTRA);
+    return pixelesUniformes(ctx.getImageData(0, 0, TAM_MUESTRA, TAM_MUESTRA).data);
+  } catch { return false; }
+}
+
 async function decodificar(blob) {
   // createImageBitmap es lo más rápido y no toca el DOM.
   try { return { bmp: await createImageBitmap(blob) }; } catch {}
-  // Fallback <img>: Safari decodifica HEIC por acá aunque createImageBitmap falle.
-  // Con TIMEOUT: un decoder colgado sin onload/onerror dejaría la promesa
-  // eterna y saveEvidenciaLocal nunca guardaría (ya pasó en este repo con
-  // compressImage). 15s y se rinde → el caller sube el original.
+  // Fallback <img>: Safari decodifica HEIC por acá aunque createImageBitmap falle,
+  // y los WebView embebidos (abrir el portal desde WhatsApp) a veces no traen
+  // createImageBitmap. Con TIMEOUT: un decoder colgado sin onload/onerror dejaría
+  // la promesa eterna y saveEvidenciaLocal nunca guardaría (ya pasó en este repo
+  // con compressImage). 15s y se rinde → el caller sube el original.
+  let url = null;
   try {
-    const url = URL.createObjectURL(blob);
-    try {
-      const img = new Image();
-      img.decoding = 'async';
-      const ok = await new Promise((res) => {
-        const t = setTimeout(() => res(false), 15000);
-        img.onload = () => { clearTimeout(t); res(true); };
-        img.onerror = () => { clearTimeout(t); res(false); };
-        img.src = url;
-      });
-      if (ok && img.naturalWidth > 0) return { img };
+    url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.decoding = 'async';
+    const ok = await new Promise((res) => {
+      const t = setTimeout(() => res(false), 15000);
+      img.onload = () => { clearTimeout(t); res(true); };
+      img.onerror = () => { clearTimeout(t); res(false); };
+      img.src = url;
+    });
+    if (!ok || !(img.naturalWidth > 0)) {
+      URL.revokeObjectURL(url);
       return null;
-    } finally { URL.revokeObjectURL(url); }
-  } catch { return null; }
+    }
+    // 🔴 `onload` NO garantiza que la imagen esté DECODIFICADA: con
+    // decoding='async' el navegador puede diferir el decode, y si para entonces
+    // la object URL ya se revocó, `drawImage` no pinta nada y el lienzo sale en
+    // blanco. Por eso acá se espera el decode Y se revoca recién cuando el
+    // caller terminó de dibujar (`liberar`), no en un finally que corre antes.
+    try { if (img.decode) await img.decode(); } catch {}
+    const liberar = () => { try { URL.revokeObjectURL(url); } catch {} };
+    return { img, liberar };
+  } catch {
+    if (url) { try { URL.revokeObjectURL(url); } catch {} }
+    return null;
+  }
 }
 
 /**
@@ -162,11 +213,17 @@ export async function optimizarImagenEvidencia(blob, nombre = '') {
     };
     dibujar(MAX_DIM);
 
+    // El decoder dijo que sí, pero al lienzo no llegó nada: subir el ORIGINAL.
+    // Guardar un rectángulo blanco es perder la evidencia en silencio, y la
+    // pérdida es definitiva porque el blob local se borra tras subir.
+    if (lienzoEnBlanco(canvas)) throw new Error('lienzo-en-blanco');
+
     const jpeg = await encodarHastaObjetivo(async (dim, q) => {
       if (dim) dibujar(dim);
       return new Promise((res) => canvas.toBlob(res, 'image/jpeg', q));
     });
     if (dec.bmp?.close) { try { dec.bmp.close(); } catch {} }
+    dec.liberar?.();
     if (!jpeg) throw new Error('toBlob null');
     // Usar la versión convertida si es HEIC (obligatorio: si no, no se ve) o si
     // realmente achica el archivo; si no, dejar el original.
@@ -175,7 +232,12 @@ export async function optimizarImagenEvidencia(blob, nombre = '') {
       return { blob: jpeg, mime: 'image/jpeg', nombre: nombreJpg, convertida: true };
     }
     return { blob, mime: tipo || 'image/jpeg', nombre, convertida: false };
-  } catch {
+  } catch (e) {
+    if (dec.bmp?.close) { try { dec.bmp.close(); } catch {} }
+    dec.liberar?.();
+    if (e?.message === 'lienzo-en-blanco') {
+      console.warn('[optimizar-imagen] el lienzo salió de un solo color — se sube el archivo ORIGINAL sin optimizar');
+    }
     const mimeReal = heic ? 'image/heic' : (tipo || 'application/octet-stream');
     return { blob, mime: mimeReal, nombre, convertida: false };
   }

@@ -93,7 +93,7 @@ export function invalidarSignedUrl(urlOPath) {
 // promesa. Menos viajes, menos cold starts del endpoint y menos cuota.
 const _enVuelo = new Map();   // path → Promise<string|null>
 
-function _firmarPath(path, expiresIn) {
+function _firmarPath(path, expiresIn, { saltarR2 = false } = {}) {
   const cache = _loadSigned();
   const now = Date.now();
   const hit = cache[path];
@@ -101,11 +101,16 @@ function _firmarPath(path, expiresIn) {
   // Si la entrada es de R2 pero el flag ya no lo permite (rollback a 'off'
   // porque R2 fallaba), la ignoramos y re-firmamos en Supabase: si no, cada
   // dispositivo seguiría sirviendo URLs rotas hasta 7 días y el rollback no
-  // arreglaba nada.
-  if (hit && hit.url && hit.exp - 300000 > now && (hit.src !== 'r2' || r2ReadEnabled())) {
+  // arreglaba nada. `saltarR2` hace lo mismo a pedido, para el reintento de
+  // `descargarEvidencia` cuando la URL de R2 resultó apuntar a la nada.
+  if (hit && hit.url && hit.exp - 300000 > now && (hit.src !== 'r2' || r2ReadEnabled())
+    && !(saltarR2 && hit.src === 'r2')) {
     return Promise.resolve(hit.url);
   }
-  const yaPedida = _enVuelo.get(path);
+  // La clave de "en vuelo" distingue los dos modos: si no, el reintento sin R2
+  // se colgaría de la misma promesa que ya devolvió la URL rota.
+  const clave = saltarR2 ? `sb:${path}` : path;
+  const yaPedida = _enVuelo.get(clave);
   if (yaPedida) return yaPedida;
 
   const p = (async () => {
@@ -114,15 +119,23 @@ function _firmarPath(path, expiresIn) {
     // Service Worker cachean la imagen). El endpoint verifica que el objeto EXISTA
     // en R2 y devuelve 404 si no (evidencia aún no migrada) → acá llega null y
     // caemos al camino Supabase de abajo: la vista nunca se rompe.
-    try {
-      const r2url = await getR2SignedGetUrl(path);
-      if (r2url) {
-        const c = _loadSigned();
-        c[path] = { url: r2url, exp: Date.now() + expiresIn * 1000, src: 'r2' };
-        _saveSigned();
-        return r2url;
-      }
-    } catch {}
+    //
+    // 🔴 Ese chequeo se puede APAGAR con R2_SKIP_HEAD=1 en Vercel (Paso 8 del
+    // runbook de migración). Si se apaga ANTES de terminar la mudanza, el
+    // endpoint firma alegremente objetos que solo existen en Supabase y el
+    // navegador se come un 404 — que es exactamente lo que pasó el 17-set-2026.
+    // Por eso el fallback ya no vive solo acá: ver `descargarEvidencia`.
+    if (!saltarR2) {
+      try {
+        const r2url = await getR2SignedGetUrl(path);
+        if (r2url) {
+          const c = _loadSigned();
+          c[path] = { url: r2url, exp: Date.now() + expiresIn * 1000, src: 'r2' };
+          _saveSigned();
+          return r2url;
+        }
+      } catch {}
+    }
     try {
       const { data } = await supabase.storage.from('evidencias').createSignedUrl(path, expiresIn);
       if (data?.signedUrl) {
@@ -133,9 +146,9 @@ function _firmarPath(path, expiresIn) {
       }
     } catch {}
     return null;
-  })().finally(() => { _enVuelo.delete(path); });
+  })().finally(() => { _enVuelo.delete(clave); });
 
-  _enVuelo.set(path, p);
+  _enVuelo.set(clave, p);
   return p;
 }
 
@@ -171,8 +184,48 @@ export async function getEvidenciaSrc(ev, expiresIn = _SIGNED_TTL) {
     const url = await _firmarPath(path, expiresIn);
     if (url) return { url, isBlob: false };
   }
-  // 3) Último recurso: la url guardada tal cual (sirve solo si el bucket fuera público).
-  return ev.url_archivo ? { url: ev.url_archivo, isBlob: false } : null;
+  // 3) Último recurso: la url guardada tal cual (sirve solo si el bucket fuera
+  // público). Se exige que sea ABSOLUTA: desde el 15-set-2026 las evidencias
+  // nuevas guardan `url_archivo` como ruta RELATIVA ('/evidencias/…'), y
+  // devolver eso hacía que el navegador se la pidiera al propio dominio de la
+  // app → 404 seguro, con un mensaje que hablaba del archivo cuando lo que
+  // había fallado era la firma.
+  return /^https?:\/\//i.test(ev.url_archivo || '') ? { url: ev.url_archivo, isBlob: false } : null;
+}
+
+/**
+ * Descarga el ARCHIVO de una evidencia, degradando sola si hace falta.
+ *
+ * 🔴 POR QUÉ NO ALCANZA CON `getEvidenciaSrc` + fetch (17-set-2026).
+ * La firma y la descarga son dos pasos distintos, y el primero puede salir
+ * "bien" con una URL que el segundo no puede bajar: `/api/r2` con
+ * R2_SKIP_HEAD=1 firma cualquier path, exista o no el objeto. Ese día Captura
+ * Mágica falló con «descarga falló (404)» en TODA foto anterior al 15-set —
+ * las que siguen viviendo solo en Supabase Storage— aunque el archivo estaba
+ * perfectamente guardado y a un fallback de distancia.
+ *
+ * Acá el fallback se decide con la única prueba que no miente: que la descarga
+ * ANDE. Si la URL firmada no sirve, se tira la que estaba cacheada (si no,
+ * quedaría rota hasta 7 días) y se vuelve a firmar saltando R2.
+ */
+export async function descargarEvidencia(ev) {
+  const src = await getEvidenciaSrc(ev);
+  if (!src?.url) throw new Error('sin-archivo');
+  try {
+    const resp = await fetch(src.url);
+    if (resp.ok) return await resp.blob();
+    // Un blob local no tiene contra qué degradar: si falló, falló.
+    const path = src.isBlob ? null : pathDeEvidencia(ev.url_archivo);
+    if (!path) throw new Error(`descarga falló (${resp.status})`);
+    invalidarSignedUrl(path);
+    const urlSb = await _firmarPath(path, _SIGNED_TTL, { saltarR2: true });
+    if (!urlSb || urlSb === src.url) throw new Error(`descarga falló (${resp.status})`);
+    const resp2 = await fetch(urlSb);
+    if (!resp2.ok) throw new Error(`descarga falló (${resp2.status})`);
+    return await resp2.blob();
+  } finally {
+    if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} }
+  }
 }
 
 // Abre el archivo de una evidencia en pestaña nueva SIN esquivar el Service

@@ -1210,6 +1210,21 @@ export default async function handler(req, res) {
     try {
       extraccion = extractJson(data);
     } catch (eTrunc) {
+      // EL DOCUMENTO NO TENÍA TEXTO — no es un problema de la IA (17-set-2026).
+      // `ocrTextoCorto` significa que el OCR corrió y devolvió menos de 20
+      // caracteres: la foto está en blanco, velada o ilegible. Lo que viene
+      // después es un modelo intentando describir una hoja vacía, y su
+      // respuesta sin JSON salía como «la IA devolvió un JSON inválido» —
+      // un mensaje que mandó a Gabriel a revisar el motor de IA cuando lo que
+      // había fallado era la imagen (dos facturas del portal de campo se
+      // habían subido como un JPEG blanco).
+      if (ocrTextoCorto && (eTrunc?.message === 'no-json' || eTrunc?.message === 'bad-json')) {
+        console.warn('[captura-magica] documento sin texto legible: el OCR volvió vacío y la estructuración no devolvió JSON');
+        return res.status(422).json({
+          error: 'No se pudo leer nada en este archivo: el documento no tiene texto legible (puede haber salido en blanco, velado o fuera de foco). Abrilo desde Evidencias para mirarlo; si está en blanco, hay que volver a sacar la foto del comprobante.',
+          code: 'doc_ilegible',
+        });
+      }
       const hayMargen = (deadline - Date.now()) > 12000;
       if (eTrunc?.message !== 'truncado' || !hayMargen || !ocr || esCert || esSctr) throw eTrunc;
       console.warn('[captura-magica] respuesta truncada — reintento SIN ítems para rescatar la cabecera');
