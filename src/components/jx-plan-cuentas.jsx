@@ -11,7 +11,7 @@ import {
   NIVEL_MAXIMO,
   cuenta as buscarCuentaPorCodigo,
   hijosDe,
-  tieneHijos,
+  sePuedeDesglosar,
   rutaDe,
   buscarCuentas,
 } from '../lib/pcge.js';
@@ -74,10 +74,9 @@ const NIVELES = [
 ];
 
 /** Una línea del árbol. El sangrado ES el nivel: se lee de un vistazo. */
-function FilaCuenta({ c, abierta, onToggle, onSelect, seleccionada }) {
+function FilaCuenta({ c, abierta, onToggle, onSelect, seleccionada, desplegable }) {
   const sangria = (c.nivel - NIVEL_CUENTA) * 18;
   const esCuenta = c.nivel === NIVEL_CUENTA;
-  const conHijos = tieneHijos(c.codigo);
   return (
     <div
       onClick={() => onSelect(c.codigo)}
@@ -89,14 +88,30 @@ function FilaCuenta({ c, abierta, onToggle, onSelect, seleccionada }) {
         borderBottom: '1px solid var(--border)',
       }}
     >
-      <button
-        className="btn btn-ghost btn-xs"
-        style={{ width: 20, minWidth: 20, padding: 0, visibility: conHijos ? 'visible' : 'hidden' }}
-        onClick={(e) => { e.stopPropagation(); onToggle(c.codigo); }}
-        title={abierta ? 'Contraer' : 'Desglosar'}
-      >
-        {abierta ? '−' : '+'}
-      </button>
+      {/* La flecha existe SOLO si hay algo que abrir. Una cuenta sin desglose
+          —o cuyo desglose está por debajo del nivel elegido— no la muestra: un
+          triángulo que al tocarlo no hace nada es peor que no tenerlo.
+          El hueco de 14 px se mantiene igual, para que la columna de códigos
+          quede alineada entre las filas que abren y las que no. */}
+      {desplegable ? (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => { e.stopPropagation(); onToggle(c.codigo); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); onToggle(c.codigo); } }}
+          title={abierta ? 'Contraer' : 'Ver el desglose'}
+          style={{
+            width: 14, minWidth: 14, fontSize: 10, lineHeight: '14px',
+            color: 'var(--tm)', textAlign: 'center', userSelect: 'none',
+            transform: abierta ? 'rotate(90deg)' : 'none',
+            transition: 'transform .12s ease',
+          }}
+        >
+          ▶
+        </span>
+      ) : (
+        <span aria-hidden="true" style={{ width: 14, minWidth: 14 }} />
+      )}
       <span className="col-m" style={{ fontWeight: esCuenta ? 700 : 500, minWidth: 54 }}>{c.codigo}</span>
       <span style={{ fontWeight: esCuenta ? 600 : 400, fontSize: esCuenta ? 13.5 : 13 }}>{c.nombre}</span>
     </div>
@@ -355,6 +370,8 @@ function PlanCuentasPage({ showToast }) {
               onToggle={toggle}
               onSelect={seleccionar}
               seleccionada={seleccionada === c.codigo}
+              // Buscando, la lista es plana: no hay nada que desplegar ahí.
+              desplegable={!hayBusqueda && sePuedeDesglosar(c.codigo, nivelMax)}
             />
           ))}
         </div>

@@ -12,8 +12,8 @@ import { describe, it, expect } from 'vitest';
 import {
   PCGE_CUENTAS, PCGE_NIVEL_CUENTA, PCGE_ELEMENTOS_ORDENADOS,
   NIVEL_CUENTA, NIVEL_SUBCUENTA, NIVEL_MAXIMO,
-  cuenta, esCuentaValida, hijosDe, tieneHijos, nombreDeCuenta, rutaDe,
-  cuentaMadreDe, padreDe, elementoDe, buscarCuentas, TIPO_POR_ELEMENTO,
+  cuenta, esCuentaValida, hijosDe, tieneHijos, sePuedeDesglosar, nombreDeCuenta,
+  rutaDe, cuentaMadreDe, padreDe, elementoDe, buscarCuentas, TIPO_POR_ELEMENTO,
 } from '../pcge.js';
 import { PCGE_DESCRIPCIONES } from '../pcge-descripciones.js';
 
@@ -132,6 +132,36 @@ describe('navegación del árbol', () => {
   it('una hoja no tiene hijos', () => {
     expect(tieneHijos('63111')).toBe(false);
     expect(hijosDe('63111')).toEqual([]);
+  });
+
+  describe('sePuedeDesglosar — de esto depende que se dibuje la flechita', () => {
+    it('una hoja nunca se desglosa', () => {
+      expect(sePuedeDesglosar('63111', NIVEL_MAXIMO)).toBe(false);
+    });
+
+    it('con todo el detalle, una cuenta con hijos sí', () => {
+      expect(sePuedeDesglosar('63', NIVEL_MAXIMO)).toBe(true);
+      expect(sePuedeDesglosar('631', NIVEL_MAXIMO)).toBe(true);
+    });
+
+    it('en el último nivel visible NO, aunque tenga hijos', () => {
+      // Éste es el caso que reportó Gabriel: mostrando «hasta subcuenta (3)»,
+      // la 631 tiene hijos (6311) pero ninguno se puede pintar, así que la
+      // flecha abriría la nada.
+      expect(tieneHijos('631')).toBe(true);
+      expect(sePuedeDesglosar('631', NIVEL_SUBCUENTA)).toBe(false);
+      expect(sePuedeDesglosar('63', NIVEL_SUBCUENTA)).toBe(true);
+    });
+
+    it('mostrando solo cuentas, ninguna se desglosa', () => {
+      expect(sePuedeDesglosar('63', NIVEL_CUENTA)).toBe(false);
+      expect(sePuedeDesglosar('10', NIVEL_CUENTA)).toBe(false);
+    });
+
+    it('un código que no existe no se desglosa', () => {
+      expect(sePuedeDesglosar('99', NIVEL_MAXIMO)).toBe(false);
+      expect(sePuedeDesglosar('', NIVEL_MAXIMO)).toBe(false);
+    });
   });
 
   it('padreDe corta el último dígito y se detiene en la cuenta', () => {

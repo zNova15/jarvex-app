@@ -46,6 +46,19 @@ describe('la pantalla se dibuja', () => {
     // la 63: arrancar con 1.792 filas abiertas no lo lee nadie.
     expect(render()).not.toContain('Transporte, correos y gastos de viaje');
   });
+
+  it('la flecha de desglose aparece una vez por cuenta que se pueda abrir', () => {
+    // 83 cuentas, 81 flechas: «04 Deudoras por contra» y «09 Acreedoras por
+    // contra» son las dos únicas cuentas del plan sin subcuentas, y por eso no
+    // la muestran.
+    //
+    // Antes había un botón «+» en TODAS las filas (invisible en las hojas,
+    // pero ocupando lugar) y además salía en cuentas cuyo desglose quedaba por
+    // debajo del nivel de detalle elegido: se tocaba y no pasaba nada. Lo
+    // reportó Gabriel al probar la tanda 1.
+    const flechas = (render().match(/▶/g) || []).length;
+    expect(flechas).toBe(81);
+  });
 });
 
 describe('no se puede editar — es la norma, no una lista propia', () => {

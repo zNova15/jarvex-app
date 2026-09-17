@@ -132,8 +132,21 @@ export const esCuentaValida = (codigo) => POR_CODIGO.has(String(codigo ?? '').tr
 /** Los hijos directos de una cuenta, en el orden del PDF. */
 export const hijosDe = (codigo) => HIJOS.get(String(codigo ?? '').trim()) || [];
 
-/** ¿Tiene desglose por debajo? Sirve para saber si la fila se puede abrir. */
+/** ¿Tiene desglose por debajo? */
 export const tieneHijos = (codigo) => HIJOS.has(String(codigo ?? '').trim());
+
+/**
+ * ¿Se puede ABRIR esta cuenta con el nivel de detalle que está elegido?
+ *
+ * No alcanza con que tenga hijos: si la pantalla muestra «hasta subcuenta (3)»,
+ * la 631 tiene hijos (6311) pero ninguno se puede mostrar, y la flechita de
+ * desplegar no haría nada al tocarla. Los hijos de una cuenta son siempre un
+ * nivel más abajo, así que basta comparar el nivel propio contra el tope.
+ */
+export function sePuedeDesglosar(codigo, nivelMax = NIVEL_MAXIMO) {
+  const c = cuenta(codigo);
+  return !!c && c.nivel < nivelMax && tieneHijos(c.codigo);
+}
 
 /**
  * El nombre de una cuenta. Si el código no está en el plan —una cuenta vieja,
@@ -207,6 +220,6 @@ export default {
   PCGE_CUENTAS, PCGE_NIVEL_CUENTA, PCGE_ELEMENTOS, PCGE_ELEMENTOS_ORDENADOS,
   PCGE_TIPO_LABEL, PCGE_TIPO_BADGE, TIPO_POR_ELEMENTO,
   NIVEL_CUENTA, NIVEL_SUBCUENTA, NIVEL_MAXIMO,
-  cuenta, esCuentaValida, hijosDe, tieneHijos, nombreDeCuenta, rutaDe,
-  cuentaMadreDe, padreDe, elementoDe, buscarCuentas,
+  cuenta, esCuentaValida, hijosDe, tieneHijos, sePuedeDesglosar, nombreDeCuenta,
+  rutaDe, cuentaMadreDe, padreDe, elementoDe, buscarCuentas,
 };
