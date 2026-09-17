@@ -1478,6 +1478,10 @@ function MovimientosContablesPage({ showToast }) {
   // nunca pisa un código que ya cargó alguien. src/lib/sugerir-codigo-spot.js.
   const [detrSugerencia, setDetrSugerencia] = uSC(null);
   const [detrFecha, setDetrFecha] = uSC('');
+  // El NÚMERO de la constancia del Banco de la Nación (mig 221): es una
+  // columna del Registro de Compras y es con lo que SUNAT cruza el depósito.
+  // No es `detrCodigo`, que es el código del bien o servicio del SPOT.
+  const [detrNumero, setDetrNumero] = uSC('');
   const [detrSaving, setDetrSaving] = uSC(false);
 
   // ─── Los 👁 de las facturas: aparecen YA, el archivo se firma al abrirlo ───
@@ -2611,6 +2615,7 @@ function MovimientosContablesPage({ showToast }) {
     setDetrMonto(m.detraccion_monto != null ? String(m.detraccion_monto) : '');
     const codigoActual = m.detraccion_codigo || '';
     setDetrFecha(m.detraccion_constancia_fecha || window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10));
+    setDetrNumero(m.detraccion_constancia_numero || '');
 
     // Sugerencia de código SPOT (tanda 7, entrega 3). Se lee del primer ítem
     // de la factura si hay detalle (más específico que el "Factura E001-… ·
@@ -2682,10 +2687,11 @@ function MovimientosContablesPage({ showToast }) {
         detraccion_codigo: String(detrCodigo || '').trim() || null,
         detraccion_estado: depositada ? 'depositada' : (m.detraccion_estado === 'depositada' ? 'depositada' : 'pendiente'),
         detraccion_constancia_fecha: depositada ? (detrFecha || now.slice(0, 10)) : (m.detraccion_constancia_fecha || null),
+        detraccion_constancia_numero: String(detrNumero || '').trim() || null,
       } : {
         detraccion_aplica: false,
         detraccion_pct: null, detraccion_monto: null, detraccion_codigo: null,
-        detraccion_estado: null, detraccion_constancia_fecha: null,
+        detraccion_estado: null, detraccion_constancia_fecha: null, detraccion_constancia_numero: null,
       };
       await window.__db.accounting_movements.update(m.id, {
         ...patch,
@@ -4268,9 +4274,19 @@ function MovimientosContablesPage({ showToast }) {
               <div style={{ marginTop:12, paddingTop:10, borderTop:'1px solid var(--border)' }}>
                 <label className="flabel">Constancia del depósito (Banco de la Nación) — opcional</label>
                 <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setDetrFile(e.target.files?.[0] || null)}/>
-                <div style={{ marginTop:6 }}>
-                  <label className="flabel">Fecha del depósito</label>
-                  <input className="fi" type="date" value={detrFecha} onChange={e=>setDetrFecha(e.target.value)}/>
+                <div style={{ marginTop:6, display:'flex', gap:8, flexWrap:'wrap' }}>
+                  <div style={{ flex:'1 1 130px' }}>
+                    <label className="flabel">Fecha del depósito</label>
+                    <input className="fi" type="date" value={detrFecha} onChange={e=>setDetrFecha(e.target.value)}/>
+                  </div>
+                  <div style={{ flex:'1 1 150px' }}>
+                    <label className="flabel">N° de constancia</label>
+                    <input className="fi" value={detrNumero} onChange={e=>setDetrNumero(e.target.value)}
+                      placeholder="El que figura en la constancia del BN" maxLength={30}/>
+                  </div>
+                </div>
+                <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>
+                  El número va al Registro de Compras: es con lo que SUNAT cruza el depósito. No es el código del servicio (037).
                 </div>
                 <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>
                   Si subís la constancia, la detracción queda marcada como <b>depositada</b>. Sin archivo, queda <b>pendiente de depósito</b> y la subís después.

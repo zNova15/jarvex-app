@@ -86,37 +86,21 @@ function cuo(idx) {
   return String(idx).padStart(9, '0');
 }
 
-// Código de tipo de comprobante de pago (Tabla 10 SUNAT)
-const COD_COMPROBANTE = {
-  factura: '01',
-  boleta:  '03',
-  nota_credito: '07',
-  nota_debito:  '08',
-  recibo_honorarios: '02',
-  ticket: '12',
-  guia: '09',
-  default: '00',
-};
+// Los códigos de las Tablas 10 y 2, y el partido serie/número, viven en
+// `tablas-sunat.js` desde la tanda 4: el Registro de Compras necesita los
+// MISMOS y estaban privados acá, con solo siete de los veinte. Dos copias
+// eran la garantía de que un día el PLE dijera '00' donde el registro dice
+// '02'. `tipoCompCode` queda como adaptador del orden de argumentos que este
+// archivo ya usaba.
+import { tipoComprobante, tipoDocIdentidad, partirComprobante } from './tablas-sunat.js';
 
-function tipoCompCode(doc, fallback = '00') {
-  const s = String(doc || '').toLowerCase();
-  if (/factura|f00|f0|f-|^f\d/.test(s)) return COD_COMPROBANTE.factura;
-  if (/boleta|b00|^b\d/.test(s))         return COD_COMPROBANTE.boleta;
-  if (/nota.*cred|n\.?c\.?/.test(s))     return COD_COMPROBANTE.nota_credito;
-  if (/nota.*deb|n\.?d\.?/.test(s))      return COD_COMPROBANTE.nota_debito;
-  if (/honor|recibo|rh/.test(s))         return COD_COMPROBANTE.recibo_honorarios;
-  if (/ticket/.test(s))                  return COD_COMPROBANTE.ticket;
-  if (/guia/.test(s))                    return COD_COMPROBANTE.guia;
-  return fallback;
+function tipoCompCode(movOrDoc, fallback = '00') {
+  return tipoComprobante(movOrDoc, fallback);
 }
 
 function splitDoc(doc) {
-  // 'F001-00012345' → { serie:'F001', nro:'00012345' }
-  if (!doc) return { serie: '', nro: '' };
-  const s = String(doc).trim();
-  const m = s.match(/^([A-Za-z0-9]+)[\s\-\/]+(\d+)$/);
-  if (m) return { serie: m[1].toUpperCase(), nro: m[2] };
-  return { serie: '', nro: s.replace(/\D+/g, '') || s };
+  const { serie, numero } = partirComprobante(doc);
+  return { serie, nro: numero };
 }
 
 // Tipo doc identidad proveedor/cliente (Tabla 2 SUNAT)
@@ -152,13 +136,7 @@ function docReferenciaNota(m, movsById) {
 }
 
 function tipoDocIdent(td) {
-  const k = String(td || '').toUpperCase();
-  if (k === 'RUC')                return '6';
-  if (k === 'DNI')                return '1';
-  if (k === 'CE' || k === 'CARNET') return '4';
-  if (k === 'PAS' || k === 'PASAPORTE') return '7';
-  if (!k) return '0';
-  return '0';
+  return tipoDocIdentidad(td);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -379,7 +357,7 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc, opts
     totImp  += total;
 
     const docInfo  = splitDoc(m.document_number || '');
-    const tipoComp = tipoCompCode(m.document_type || '', '01');
+    const tipoComp = tipoCompCode(m, '01');
     const fEmi     = fmtFechaSunat(m.date || m.created_at);
     const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
 
@@ -512,7 +490,7 @@ export function generateRegistroVentasPLE(movs_income, periodo, ruc, opts = {}) 
     totIna  += inafecto;
 
     const docInfo  = splitDoc(m.document_number || '');
-    const tipoComp = tipoCompCode(m.document_type || '', '01');
+    const tipoComp = tipoCompCode(m, '01');
     const fEmi     = fmtFechaSunat(m.date || m.created_at);
     const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
 

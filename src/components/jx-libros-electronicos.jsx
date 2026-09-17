@@ -8,12 +8,14 @@ import {
 } from '../lib/sunat-ple.js';
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
+import { cargarBancarizados } from '../lib/bancarizado-db.js';
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de-comprobante.js';
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { ComparativaSunat, EscanerIncoherencias } from './jx-cotejo-sunat.jsx';
 import { ReemplazoPropuestaSire } from './jx-reemplazo-sire.jsx';
+import { RegistroComprasVentas } from './jx-registro-compras-ventas.jsx';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
@@ -107,9 +109,21 @@ function LibrosElectronicosPage({ showToast }) {
     return (mov) => cuentasDeComprobante(mov, { familiaDe });
   }, [catalogoInsumos, insumoCategorias, terminosCustom, companyId]);
 
+  // La misma evidencia bancaria que usa el Libro Diario: el PLE que se declara
+  // tiene que llevar la MISMA contrapartida que la pantalla, no una deducida
+  // con menos datos (17-set).
+  const [bancarizadoIds, setBancarizadoIds] = uS(() => new Set());
+  uE(() => {
+    let vivo = true;
+    cargarBancarizados(window.__db)
+      .then(s => { if (vivo) setBancarizadoIds(s); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+
   const asientos = uM(
-    () => generarAsientosBatch(movsPeriodo, { repartoDe }),
-    [movsPeriodo, repartoDe]
+    () => generarAsientosBatch(movsPeriodo, { repartoDe, bancarizadoIds }),
+    [movsPeriodo, repartoDe, bancarizadoIds]
   );
 
   // Totales para card resumen
@@ -304,6 +318,10 @@ function LibrosElectronicosPage({ showToast }) {
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {[
           ['ple', '📄 Generar libros (PLE)'],
+          // La hoja de trabajo de la contadora, en el formato de su Excel
+          // modelo (tanda 4). Va primero después del PLE porque es lo que se
+          // mira TODOS los meses; el .txt se genera una vez y se sube.
+          ['registro', '📊 Registro de Compras y Ventas'],
           ['sire', '📦 Reemplazo SIRE (.zip)'],
           ['sunat', '🔍 SUNAT vs JARVEX'],
           ['escaner', '🩺 Escáner de incoherencias'],
@@ -317,6 +335,18 @@ function LibrosElectronicosPage({ showToast }) {
           </button>
         ))}
       </div>
+
+      {tab === 'registro' && (
+        <RegistroComprasVentas
+          company={company}
+          movsPeriodo={movsPeriodo}
+          movsById={movsById}
+          asientos={asientos}
+          anio={anio}
+          mes={mes}
+          showToast={showToast}
+        />
+      )}
 
       {tab === 'sire' && (
         <ReemplazoPropuestaSire
