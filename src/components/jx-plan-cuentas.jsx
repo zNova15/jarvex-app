@@ -2,32 +2,31 @@ import React from "react";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
-  PCGE_DEFAULT,
+  PCGE_CUENTAS,
+  PCGE_ELEMENTOS_ORDENADOS,
   PCGE_TIPO_LABEL,
   PCGE_TIPO_BADGE,
-  PCGE_CUSTOM_KEY,
-  loadCustomCuentas,
-  saveCustomCuentas,
-} from '../lib/pcge-default';
+  NIVEL_CUENTA,
+  NIVEL_SUBCUENTA,
+  NIVEL_MAXIMO,
+  cuenta as buscarCuentaPorCodigo,
+  hijosDe,
+  tieneHijos,
+  rutaDe,
+  buscarCuentas,
+} from '../lib/pcge.js';
+import { PCGE_DESCRIPCIONES } from '../lib/pcge-descripciones.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { calcularBalance, lineasDeBalance } from "../lib/balance-general.js";
 
-const { useState: uSP, useMemo: uMP, useEffect: uEP } = React;
+const { useState: uSP, useMemo: uMP } = React;
 
 // ─── Helpers ─────────────────────────────────────────────────
 const fmtCurP = (n, currency = 'PEN') => {
   const symbol = currency === 'USD' ? 'USD ' : 'S/ ';
   return symbol + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
-const fmtCurPK = (n, currency = 'PEN') => {
-  const v = Number(n || 0);
-  const symbol = currency === 'USD' ? 'USD ' : 'S/ ';
-  if (Math.abs(v) >= 1e6) return symbol + (v / 1e6).toFixed(2) + 'M';
-  if (Math.abs(v) >= 1e3) return symbol + (v / 1e3).toFixed(0) + 'K';
-  return symbol + v.toFixed(0);
-};
-
 const MESES = [
   { v: 1,  label: 'Enero' },     { v: 2,  label: 'Febrero' },
   { v: 3,  label: 'Marzo' },     { v: 4,  label: 'Abril' },
@@ -37,295 +36,361 @@ const MESES = [
   { v: 11, label: 'Noviembre' }, { v: 12, label: 'Diciembre' },
 ];
 
-const TIPOS_CUSTOM = [
-  { v: 'activo',     label: 'Activo' },
-  { v: 'pasivo',     label: 'Pasivo' },
-  { v: 'patrimonio', label: 'Patrimonio' },
-  { v: 'ingreso',    label: 'Ingreso' },
-  { v: 'gasto',      label: 'Gasto' },
+// ╔════════════════════════════════════════════════════════════╗
+// ║  PLAN DE CUENTAS PCGE — SOLO LECTURA                       ║
+// ╚════════════════════════════════════════════════════════════╝
+//
+// Esta pantalla NO edita nada, y es a propósito (decisión de Gabriel,
+// 17-set-2026, tras hablar con las contadoras). Lo que muestra es el Plan
+// Contable General Empresarial del MEF entero —1.792 códigos, con la
+// descripción, la dinámica debe/haber y los comentarios del propio PDF—, que
+// es la norma con la que se arma el Libro Diario.
+//
+// ANTES había 52 cuentas escritas a mano, un botón «Cargar PCGE default», otro
+// «Cuenta custom» y un tacho para vaciar el plan, todo en localStorage. Eso
+// significaba que el plan de cuentas podía ser distinto en cada PC y que
+// ninguno era el del Estado peruano. Se fue entero.
+//
+// El nivel con el que se trabaja es la CUENTA de dos dígitos («63 Gastos de
+// servicios prestados por terceros»), que es como hablan las contadoras, con
+// la subcuenta de tres a un clic y el detalle hasta cinco para quien lo
+// necesite.
+
+// Las cuentas que aparecen cuando el que factura o el que ejecuta es un
+// CONSORCIO. El PCGE no tiene un capítulo de consorcios: tiene estas tres
+// cuentas y el resto sale del régimen tributario (R.S. 022-98/SUNAT, el
+// documento de atribución). Se listan acá para que no haya que buscarlas.
+const CUENTAS_CONSORCIO = [
+  ['3027', 'El aporte del partícipe al consorcio, del lado de quien aporta.'],
+  ['6782', 'La pérdida que le toca al partícipe por su parte en el negocio conjunto.'],
+  ['7782', 'La ganancia que le toca al partícipe por su parte en el negocio conjunto.'],
 ];
 
-// ╔════════════════════════════════════════════════════════════╗
-// ║  PLAN DE CUENTAS PCGE                                      ║
-// ╚════════════════════════════════════════════════════════════╝
+const NIVELES = [
+  { v: NIVEL_CUENTA,    label: 'Cuentas (2 dígitos)' },
+  { v: NIVEL_SUBCUENTA, label: 'Hasta subcuenta (3)' },
+  { v: 4,               label: 'Hasta divisionaria (4)' },
+  { v: NIVEL_MAXIMO,    label: 'Todo el detalle (5)' },
+];
+
+/** Una línea del árbol. El sangrado ES el nivel: se lee de un vistazo. */
+function FilaCuenta({ c, abierta, onToggle, onSelect, seleccionada }) {
+  const sangria = (c.nivel - NIVEL_CUENTA) * 18;
+  const esCuenta = c.nivel === NIVEL_CUENTA;
+  const conHijos = tieneHijos(c.codigo);
+  return (
+    <div
+      onClick={() => onSelect(c.codigo)}
+      style={{
+        display: 'flex', alignItems: 'baseline', gap: 8, cursor: 'pointer',
+        padding: '6px 10px', paddingLeft: 10 + sangria,
+        borderLeft: seleccionada ? '3px solid var(--amber)' : '3px solid transparent',
+        background: seleccionada ? 'rgba(242,183,5,.10)' : undefined,
+        borderBottom: '1px solid var(--border)',
+      }}
+    >
+      <button
+        className="btn btn-ghost btn-xs"
+        style={{ width: 20, minWidth: 20, padding: 0, visibility: conHijos ? 'visible' : 'hidden' }}
+        onClick={(e) => { e.stopPropagation(); onToggle(c.codigo); }}
+        title={abierta ? 'Contraer' : 'Desglosar'}
+      >
+        {abierta ? '−' : '+'}
+      </button>
+      <span className="col-m" style={{ fontWeight: esCuenta ? 700 : 500, minWidth: 54 }}>{c.codigo}</span>
+      <span style={{ fontWeight: esCuenta ? 600 : 400, fontSize: esCuenta ? 13.5 : 13 }}>{c.nombre}</span>
+    </div>
+  );
+}
+
+/** El detalle de una cuenta: lo que el PDF dice de ella, sin resumir. */
+function DetalleCuenta({ codigo }) {
+  const c = buscarCuentaPorCodigo(codigo);
+  if (!c) {
+    return (
+      <div className="card card-p" style={{ color: 'var(--tm)', fontSize: 13 }}>
+        Elegí una cuenta de la lista para ver qué dice el PCGE sobre ella.
+      </div>
+    );
+  }
+  const ruta = rutaDe(codigo);
+  // La descripción la trae la CUENTA de dos dígitos: el PDF describe a ese
+  // nivel. Una subcuenta muestra además su propio párrafo, si lo tiene.
+  const madre = ruta[0]?.codigo;
+  const desc = PCGE_DESCRIPCIONES[madre];
+  const propia = desc?.subcuentas?.[codigo];
+  const subcuentas = hijosDe(codigo);
+
+  return (
+    <div className="card card-p" style={{ display: 'grid', gap: 14 }}>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--tm)', display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          <span>{c.elementoNombre}</span>
+          {ruta.slice(0, -1).map(r => <span key={r.codigo}>· {r.codigo} {r.nombre}</span>)}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+          <span className="col-m" style={{ fontSize: 22, fontWeight: 700 }}>{c.codigo}</span>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>{c.nombre}</span>
+          <span className={`badge ${PCGE_TIPO_BADGE[c.tipo] || 'b-gray'}`}>
+            {PCGE_TIPO_LABEL[c.tipo] || c.tipo}
+          </span>
+        </div>
+      </div>
+
+      {propia && (
+        <div>
+          <div className="flabel">Qué va en esta subcuenta</div>
+          <p style={{ fontSize: 13, lineHeight: 1.55, margin: '4px 0 0' }}>{propia}</p>
+        </div>
+      )}
+
+      {!!desc?.contenido?.length && (
+        <div>
+          <div className="flabel">
+            {codigo === madre ? 'Contenido' : `Contenido de la cuenta ${madre}`}
+          </div>
+          {desc.contenido.map((p, i) => (
+            <p key={i} style={{ fontSize: 13, lineHeight: 1.55, margin: '4px 0 0' }}>{p}</p>
+          ))}
+        </div>
+      )}
+
+      {!!subcuentas.length && (
+        <div>
+          <div className="flabel">Se desglosa en</div>
+          <div style={{ display: 'grid', gap: 6, marginTop: 4 }}>
+            {subcuentas.map(s => (
+              <div key={s.codigo} style={{ fontSize: 13 }}>
+                <span className="col-m" style={{ fontWeight: 600 }}>{s.codigo}</span>{' '}
+                <span>{s.nombre}</span>
+                {desc?.subcuentas?.[s.codigo] && (
+                  <div style={{ color: 'var(--tm)', fontSize: 12.5, lineHeight: 1.5, marginTop: 2 }}>
+                    {desc.subcuentas[s.codigo]}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!!(desc?.dinamica?.debe?.length || desc?.dinamica?.haber?.length) && (
+        <div>
+          <div className="flabel">Dinámica de la cuenta {madre}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 4 }}>
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--green)' }}>Se DEBITA por</div>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 12.5, lineHeight: 1.5 }}>
+                {desc.dinamica.debe.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+            </div>
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--red)' }}>Se ACREDITA por</div>
+              <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 12.5, lineHeight: 1.5 }}>
+                {desc.dinamica.haber.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!!desc?.comentarios?.length && (
+        <div>
+          <div className="flabel">Comentarios del Consejo Normativo</div>
+          {desc.comentarios.map((p, i) => (
+            <p key={i} style={{ fontSize: 12.5, lineHeight: 1.55, margin: '4px 0 0', color: 'var(--tm)' }}>{p}</p>
+          ))}
+        </div>
+      )}
+
+      {!!desc?.niif?.length && (
+        <div>
+          <div className="flabel">NIIF e interpretaciones referidas</div>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 16, fontSize: 12.5, lineHeight: 1.5, color: 'var(--tm)' }}>
+            {desc.niif.map((n, i) => <li key={i}>{n}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanCuentasPage({ showToast }) {
-  // El "catálogo cargado" se controla por flag en localStorage para permitir
-  // mostrar el botón "Cargar PCGE default" si está vacío.
-  const FLAG_KEY = 'jarvex_plan_cuentas_loaded';
-  const [loaded, setLoaded] = uSP(() => {
-    try { return localStorage.getItem(FLAG_KEY) === '1'; } catch { return false; }
-  });
-  const [custom, setCustom] = uSP(() => loadCustomCuentas());
-  const [tipoFiltro, setTipoFiltro] = uSP('todos');
   const [busqueda, setBusqueda] = uSP('');
-  const [modal, setModal] = uSP(null); // null | 'nueva'
-  const [form, setForm] = uSP({ codigo: '', nombre: '', tipo: 'activo', clase: 1, padre: '' });
+  const [elementoFiltro, setElementoFiltro] = uSP('todos');
+  const [nivelMax, setNivelMax] = uSP(NIVEL_SUBCUENTA);
+  const [abiertas, setAbiertas] = uSP(() => new Set());
+  const [seleccionada, setSeleccionada] = uSP(null);
 
-  const cargarDefault = () => {
-    try { localStorage.setItem(FLAG_KEY, '1'); } catch {}
-    setLoaded(true);
-    showToast?.(`Plan PCGE cargado: ${PCGE_DEFAULT.length} cuentas`, 'green');
-  };
+  const hayBusqueda = busqueda.trim().length > 0;
 
-  const limpiarTodo = () => {
-    if (!confirm('¿Vaciar plan de cuentas? Se quitará el catálogo default y las cuentas custom.')) return;
-    try { localStorage.removeItem(FLAG_KEY); } catch {}
-    saveCustomCuentas([]);
-    setCustom([]);
-    setLoaded(false);
-    showToast?.('Plan de cuentas vaciado', 'amber');
-  };
+  // El universo tras el buscador y el filtro de elemento.
+  const encontradas = uMP(
+    () => buscarCuentas(busqueda, { nivelMax })
+      .filter(c => elementoFiltro === 'todos' || c.elemento === elementoFiltro),
+    [busqueda, nivelMax, elementoFiltro],
+  );
 
-  const abrirNueva = () => {
-    setForm({ codigo: '', nombre: '', tipo: 'activo', clase: 1, padre: '' });
-    setModal('nueva');
-  };
-
-  const guardarCustom = () => {
-    const codigo = (form.codigo || '').trim();
-    const nombre = (form.nombre || '').trim();
-    if (!codigo) { showToast?.('Código requerido', 'red'); return; }
-    if (!nombre) { showToast?.('Nombre requerido', 'red'); return; }
-    const todos = [...(loaded ? PCGE_DEFAULT : []), ...custom];
-    if (todos.some(c => c.codigo === codigo)) {
-      showToast?.(`El código ${codigo} ya existe`, 'red'); return;
-    }
-    const nueva = {
-      codigo,
-      nombre,
-      tipo: form.tipo,
-      clase: Number(form.clase) || 1,
-      padre: form.padre?.trim() || null,
-      _custom: true,
-    };
-    const next = [...custom, nueva];
-    setCustom(next);
-    saveCustomCuentas(next);
-    setModal(null);
-    showToast?.(`Cuenta ${codigo} agregada`, 'green');
-  };
-
-  const eliminarCustom = (codigo) => {
-    if (!confirm(`¿Eliminar cuenta custom ${codigo}?`)) return;
-    const next = custom.filter(c => c.codigo !== codigo);
-    setCustom(next);
-    saveCustomCuentas(next);
-    showToast?.(`Cuenta ${codigo} eliminada`, 'amber');
-  };
-
-  // Lista jerárquica: padres primero (alfabéticamente por código), luego sus hijos.
-  const jerarquia = uMP(() => {
-    const todos = [...(loaded ? PCGE_DEFAULT : []), ...custom];
-    const padres = todos.filter(c => !c.padre).sort((a,b) => a.codigo.localeCompare(b.codigo));
-    const hijosPorPadre = new Map();
-    todos.filter(c => c.padre).forEach(c => {
-      const arr = hijosPorPadre.get(c.padre) || [];
-      arr.push(c);
-      hijosPorPadre.set(c.padre, arr);
-    });
+  /**
+   * Las filas que se pintan.
+   *
+   * Sin búsqueda es un ÁRBOL: se ven las 83 cuentas y cada una se desgloza al
+   * abrirla. Con búsqueda es una LISTA PLANA de lo que coincide — desplegar un
+   * árbol filtrado esconde justo la fila que se estaba buscando.
+   */
+  const filas = uMP(() => {
+    if (hayBusqueda) return encontradas;
     const out = [];
-    padres.forEach(p => {
-      out.push({ ...p, _level: 0 });
-      (hijosPorPadre.get(p.codigo) || [])
-        .sort((a,b) => a.codigo.localeCompare(b.codigo))
-        .forEach(h => out.push({ ...h, _level: 1 }));
-    });
+    const agregar = (c) => {
+      out.push(c);
+      if (!abiertas.has(c.codigo)) return;
+      for (const h of hijosDe(c.codigo)) {
+        if (h.nivel <= nivelMax) agregar(h);
+      }
+    };
+    for (const c of encontradas) if (c.nivel === NIVEL_CUENTA) agregar(c);
     return out;
-  }, [loaded, custom]);
+  }, [hayBusqueda, encontradas, abiertas, nivelMax]);
 
-  const filtrado = uMP(() => {
-    let arr = jerarquia;
-    if (tipoFiltro !== 'todos') arr = arr.filter(c => c.tipo === tipoFiltro);
-    if (busqueda.trim()) {
-      const q = busqueda.toLowerCase();
-      arr = arr.filter(c =>
-        c.codigo.toLowerCase().includes(q) ||
-        c.nombre.toLowerCase().includes(q)
-      );
+  const toggle = (codigo) => setAbiertas(prev => {
+    const s = new Set(prev);
+    if (s.has(codigo)) s.delete(codigo); else s.add(codigo);
+    return s;
+  });
+
+  // Al elegir una cuenta de la búsqueda, se abre su rama: así al borrar el
+  // texto la fila sigue a la vista y no hay que volver a buscarla.
+  const seleccionar = (codigo) => {
+    setSeleccionada(codigo);
+    setAbiertas(prev => {
+      const s = new Set(prev);
+      for (const r of rutaDe(codigo)) if (r.codigo !== codigo) s.add(r.codigo);
+      return s;
+    });
+  };
+
+  const exportarPDF = () => {
+    try {
+      const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      doc.setFontSize(13);
+      doc.text('Plan Contable General Empresarial (PCGE)', 14, 14);
+      doc.setFontSize(8);
+      doc.text('Versión modificada — Consejo Normativo de Contabilidad · MEF', 14, 19);
+      autoTable(doc, {
+        startY: 24,
+        head: [['Código', 'Cuenta', 'Elemento']],
+        body: filas.map(c => [c.codigo, c.nombre, c.elementoNombre]),
+        styles: { fontSize: 7.5, cellPadding: 1.2 },
+        headStyles: { fillColor: [242, 183, 5], textColor: 20 },
+        columnStyles: { 0: { cellWidth: 20 }, 2: { cellWidth: 45 } },
+      });
+      doc.save(`PlanDeCuentas_PCGE_${filas.length}-cuentas.pdf`);
+      showToast?.(`${filas.length} cuentas exportadas`, 'green');
+    } catch (e) {
+      showToast?.('No se pudo exportar: ' + (e?.message || e), 'red');
     }
-    return arr;
-  }, [jerarquia, tipoFiltro, busqueda]);
-
-  const totalCuentas = (loaded ? PCGE_DEFAULT.length : 0) + custom.length;
+  };
 
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Plan de Cuentas PCGE</div>
+          <div className="pg-title">Plan de Cuentas (PCGE)</div>
           <div className="pg-sub">
-            {totalCuentas} cuentas · {loaded ? 'PCGE default cargado' : 'sin catálogo default'} · {custom.length} custom
+            Plan Contable General Empresarial · versión modificada, Consejo Normativo de
+            Contabilidad (MEF) — {PCGE_CUENTAS.length.toLocaleString('es-PE')} cuentas
           </div>
         </div>
-        <div style={{ display:'flex', gap:6, alignItems:'center' }}>
-          {!loaded && (
-            <button className="btn btn-amber btn-sm" onClick={cargarDefault}>
-              <JxIcon name="download" size={13}/>Cargar PCGE default
-            </button>
-          )}
-          <button className="btn btn-amber btn-sm" onClick={abrirNueva}>
-            <JxIcon name="plus" size={13}/>Cuenta custom
-          </button>
-          {(loaded || custom.length > 0) && (
-            <button className="btn btn-ghost btn-sm" onClick={limpiarTodo} title="Vaciar plan">
-              <JxIcon name="trash" size={13}/>
-            </button>
-          )}
-        </div>
+        <button className="btn btn-ghost btn-sm" onClick={exportarPDF} title="Exportar lo que se ve">
+          {window.JxIcon ? <window.JxIcon name="download" size={13}/> : null}PDF
+        </button>
       </div>
 
-      {totalCuentas === 0 ? (
-        <div className="card card-p empty-state">
-          <JxIcon name="book" size={40} color="var(--tm)"/>
-          <p>No hay plan de cuentas cargado todavía. Pulsa <strong>Cargar PCGE default</strong> para iniciar con el catálogo estándar peruano (clases 1 a 7) o crea cuentas custom.</p>
+      {/* Por qué no hay botones de editar. Sin este cartel, la pregunta
+          «¿y dónde agrego una cuenta?» vuelve cada vez. */}
+      <div className="card card-p" style={{ padding: 10, marginBottom: 12, fontSize: 12.5, lineHeight: 1.5 }}>
+        <strong>Éste es el plan oficial y no se edita.</strong> Es la norma con la que se arma el
+        Libro Diario: los mismos códigos, los mismos nombres y las mismas reglas en todos los
+        dispositivos. Cada cuenta trae lo que el propio PCGE dice de ella — qué va adentro, por
+        qué se debita, por qué se acredita y los comentarios del Consejo Normativo.
+      </div>
+
+      <div className="frow-sb" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div className="search-bar" style={{ flex: '1 1 240px' }}>
+          {window.JxIcon ? <window.JxIcon name="search" size={14} color="var(--tm)"/> : null}
+          <input
+            placeholder="Buscar por código (63) o por nombre (transporte, alquiler…)"
+            value={busqueda}
+            onChange={e => setBusqueda(e.target.value)}
+          />
         </div>
-      ) : (
-        <>
-          <div className="frow-sb" style={{ gap:8, marginBottom:10, flexWrap:'wrap' }}>
-            <div className="search-bar" style={{ flex:'1 1 220px' }}>
-              <JxIcon name="search" size={14} color="var(--tm)"/>
-              <input
-                placeholder="Buscar código o nombre…"
-                value={busqueda}
-                onChange={e=>setBusqueda(e.target.value)}
-              />
-            </div>
-            <select
-              className="fi"
-              value={tipoFiltro}
-              onChange={e=>setTipoFiltro(e.target.value)}
-              style={{ minWidth:160 }}>
-              <option value="todos">Todos los tipos</option>
-              {TIPOS_CUSTOM.map(t => (
-                <option key={t.v} value={t.v}>{t.label}</option>
-              ))}
-            </select>
-          </div>
+        <select className="fi" style={{ minWidth: 190 }} value={elementoFiltro}
+          onChange={e => setElementoFiltro(e.target.value)}>
+          <option value="todos">Todos los elementos</option>
+          {PCGE_ELEMENTOS_ORDENADOS.map(e => (
+            <option key={e.codigo} value={e.codigo}>{e.codigo} · {e.nombre}</option>
+          ))}
+        </select>
+        <select className="fi" style={{ minWidth: 175 }} value={nivelMax}
+          onChange={e => setNivelMax(Number(e.target.value))}
+          title="Hasta qué nivel del plan se muestra">
+          {NIVELES.map(n => <option key={n.v} value={n.v}>{n.label}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: 'var(--tm)', alignSelf: 'center' }}>
+          {hayBusqueda ? `${filas.length} coincidencia(s)` : `${filas.length} fila(s)`}
+        </span>
+      </div>
 
-          <div className="card" style={{ overflow:'hidden' }}>
-            <div style={{ overflowX:'auto' }}>
-              <table className="tbl">
-                <thead><tr>
-                  <th style={{ width:120 }}>Código</th>
-                  <th>Nombre</th>
-                  <th style={{ width:130 }}>Tipo</th>
-                  <th style={{ width:80, textAlign:'center' }}>Clase</th>
-                  <th style={{ width:100, textAlign:'center' }}>Origen</th>
-                  <th style={{ width:80, textAlign:'center' }}>Acciones</th>
-                </tr></thead>
-                <tbody>
-                  {filtrado.map(c => (
-                    <tr key={c.codigo}>
-                      <td className="col-m" style={{ fontWeight: c._level === 0 ? 700 : 500, paddingLeft: c._level === 1 ? 24 : undefined }}>
-                        {c._level === 1 ? '↳ ' : ''}{c.codigo}
-                      </td>
-                      <td className="col-p" style={{ fontWeight: c._level === 0 ? 600 : 400 }}>
-                        {c.nombre}
-                      </td>
-                      <td>
-                        <span className={`badge ${PCGE_TIPO_BADGE[c.tipo] || 'b-gray'}`}>
-                          {PCGE_TIPO_LABEL[c.tipo] || c.tipo}
-                        </span>
-                      </td>
-                      <td style={{ textAlign:'center' }}>{c.clase}</td>
-                      <td style={{ textAlign:'center' }}>
-                        {c._custom
-                          ? <span className="tag" style={{ background:'rgba(255,179,0,0.15)' }}>Custom</span>
-                          : <span className="tag">PCGE</span>}
-                      </td>
-                      <td style={{ textAlign:'center' }}>
-                        {c._custom && (
-                          <button
-                            className="btn btn-ghost btn-xs"
-                            title="Eliminar cuenta custom"
-                            onClick={()=>eliminarCustom(c.codigo)}>
-                            <JxIcon name="trash" size={11}/>
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {filtrado.length === 0 && (
-                    <tr><td colSpan={6} style={{ textAlign:'center', color:'var(--tm)', padding:18 }}>
-                      Sin resultados con los filtros actuales.
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(330px, 1fr))', gap: 12, alignItems: 'start' }}>
+        <div className="card" style={{ overflow: 'hidden', maxHeight: '70vh', overflowY: 'auto' }}>
+          {filas.length === 0 ? (
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--tm)', fontSize: 13 }}>
+              Ninguna cuenta coincide con «{busqueda}».
             </div>
-          </div>
-        </>
-      )}
+          ) : filas.map(c => (
+            <FilaCuenta
+              key={c.codigo}
+              c={c}
+              abierta={abiertas.has(c.codigo)}
+              onToggle={toggle}
+              onSelect={seleccionar}
+              seleccionada={seleccionada === c.codigo}
+            />
+          ))}
+        </div>
 
-      {/* Modal nueva cuenta custom */}
-      {modal === 'nueva' && (
-        <div className="overlay" onClick={()=>setModal(null)}>
-          <div className="modal" onClick={e=>e.stopPropagation()} style={{ maxWidth:520 }}>
-            <div className="modal-hd">
-              <div className="modal-hd-left">Nueva cuenta custom</div>
-              <button className="btn btn-ghost btn-xs" onClick={()=>setModal(null)}>
-                <JxIcon name="x" size={13}/>
-              </button>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <DetalleCuenta codigo={seleccionada}/>
+
+          {/* El grupo ejecuta obras en consorcio y el PCGE no les dedica un
+              capítulo: son estas tres cuentas. Tenerlas a mano evita buscarlas
+              en 1.792 códigos cada vez. */}
+          <div className="card card-p" style={{ fontSize: 12.5 }}>
+            <div className="flabel">Cuentas que aparecen en un consorcio</div>
+            <div style={{ display: 'grid', gap: 7, marginTop: 5 }}>
+              {CUENTAS_CONSORCIO.map(([cod, para]) => {
+                const cc = buscarCuentaPorCodigo(cod);
+                if (!cc) return null;
+                return (
+                  <div key={cod} style={{ cursor: 'pointer' }} onClick={() => seleccionar(cod)}>
+                    <span className="col-m" style={{ fontWeight: 600 }}>{cod}</span>{' '}
+                    <span>{cc.nombre}</span>
+                    <div style={{ color: 'var(--tm)', fontSize: 12, lineHeight: 1.45 }}>{para}</div>
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ display:'grid', gap:10 }}>
-              <label className="fl">
-                <span>Código *</span>
-                <input
-                  className="fi"
-                  value={form.codigo}
-                  onChange={e=>setForm({ ...form, codigo: e.target.value })}
-                  placeholder="Ej. 1041"/>
-              </label>
-              <label className="fl">
-                <span>Nombre *</span>
-                <input
-                  className="fi"
-                  value={form.nombre}
-                  onChange={e=>setForm({ ...form, nombre: e.target.value })}
-                  placeholder="Ej. Banco Crédito - Cuenta operativa"/>
-              </label>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-                <label className="fl">
-                  <span>Tipo</span>
-                  <select
-                    className="fi"
-                    value={form.tipo}
-                    onChange={e=>setForm({ ...form, tipo: e.target.value })}>
-                    {TIPOS_CUSTOM.map(t => (
-                      <option key={t.v} value={t.v}>{t.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="fl">
-                  <span>Clase</span>
-                  <select
-                    className="fi"
-                    value={form.clase}
-                    onChange={e=>setForm({ ...form, clase: Number(e.target.value) })}>
-                    {[1,2,3,4,5,6,7].map(n => (
-                      <option key={n} value={n}>Clase {n}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <label className="fl">
-                <span>Cuenta padre (opcional)</span>
-                <input
-                  className="fi"
-                  value={form.padre}
-                  onChange={e=>setForm({ ...form, padre: e.target.value })}
-                  placeholder="Ej. 10 (deja vacío si es de primer nivel)"/>
-              </label>
-            </div>
-            <div className="modal-actions">
-              <button className="btn btn-ghost btn-sm" onClick={()=>setModal(null)}>Cancelar</button>
-              <button className="btn btn-amber btn-sm" onClick={guardarCustom}>
-                <JxIcon name="check" size={13}/>Guardar cuenta
-              </button>
-            </div>
+            <p style={{ color: 'var(--tm)', fontSize: 12, lineHeight: 1.5, marginTop: 8, marginBottom: 0 }}>
+              Un consorcio <strong>con contabilidad independiente</strong> —que es el caso de los
+              del grupo: tienen RUC propio y su propio libro— lleva el plan completo como
+              cualquier empresa. Lo que le es propio no son cuentas sino el circuito de
+              atribución: el operador factura y cada mes reparte ingresos y gastos a los
+              partícipes con el <strong>documento de atribución</strong> (R.S. 022-98/SUNAT), que
+              no es una factura y no se declara como tal.
+            </p>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -833,3 +898,8 @@ Object.assign(window, {
   BalanceGeneralPage,
   EstadoResultadosPage,
 });
+
+// Exportada además como módulo para poder renderizarla en un test. La app la
+// sigue tomando de `window` (el chunk se carga por su efecto), así que esto no
+// cambia cómo se monta la pantalla.
+export { PlanCuentasPage };

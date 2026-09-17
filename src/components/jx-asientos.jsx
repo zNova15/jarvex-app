@@ -3,7 +3,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { generarAsientosBatch, explicarDescuadre } from "../lib/asientos";
 import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
-import { PCGE_DEFAULT } from "../lib/pcge-default";
+import { nombreDeCuenta } from "../lib/pcge.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
@@ -72,15 +72,13 @@ const TIPO_FILTRO = [
 const TIPO_BADGE = { income: 'b-green', cost: 'b-red', expense: 'b-amber' };
 const TIPO_LABEL = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
 
-// Lookup de cuentas PCGE para mostrar nombre legible
-const cuentaNombre = (codigo) => {
-  if (!codigo) return '';
-  const exact = PCGE_DEFAULT.find(c => c.codigo === codigo);
-  if (exact) return exact.nombre;
-  // Sube al padre (101 → 10)
-  const padre = PCGE_DEFAULT.find(c => c.codigo === codigo.slice(0, 2));
-  return padre ? padre.nombre : '';
-};
+// Lookup de cuentas PCGE para mostrar nombre legible. Desde el 17-set sale del
+// PLAN OFICIAL entero (1.792 cuentas generadas del PDF del MEF) y no de las 52
+// escritas a mano que había antes: cualquier cuenta que el asiento usara y no
+// estuviera en esa lista corta se mostraba sin nombre. `nombreDeCuenta` sube
+// por todos los niveles hasta dar con un ancestro que exista, así que una
+// cuenta de cinco dígitos siempre dice algo.
+const cuentaNombre = (codigo) => nombreDeCuenta(codigo);
 
 // ╔════════════════════════════════════════════════════════════╗
 // ║  LIBRO DIARIO                                              ║

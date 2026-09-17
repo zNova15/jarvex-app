@@ -529,7 +529,18 @@ const AYUDA = {
   },
   'flujo-caja': { titulo: 'Flujo de Caja / Pagos', que: 'Entradas y salidas de dinero por empresa, con cronograma de pagos.', como: ['Programá los pagos por vencer y marcalos al ejecutarlos.'] },
   'flujo-proyectado': { titulo: 'Flujo de Caja Proyectado', que: 'La proyección de caja de las próximas semanas por empresa.', como: ['Se alimenta del cronograma de pagos y las cobranzas esperadas.'] },
-  'plan-cuentas': { titulo: 'Plan de Cuentas (PCGE)', que: 'El plan contable general empresarial usado para clasificar asientos.', como: ['La IA sugiere la cuenta PCGE al categorizar; corregila si no aplica.'] },
+  'plan-cuentas': {
+    titulo: 'Plan de Cuentas (PCGE)',
+    que: 'El Plan Contable General Empresarial del Perú completo —1.792 cuentas— tal como lo publica el Consejo Normativo de Contabilidad del MEF. Es la norma con la que se arma el Libro Diario.',
+    como: [
+      'NO SE EDITA, Y ES A PROPÓSITO (17-set): antes había 52 cuentas escritas a mano, un botón para "cargar el plan", otro para inventar cuentas y un tacho para vaciarlo, todo guardado en el navegador. Eso quería decir que el plan de cuentas podía ser distinto en cada computadora y que ninguno era el del Estado. Ahora es el PDF oficial entero, igual en todos los dispositivos, y no hay nada que cargar ni que se pueda borrar.',
+      'CON QUÉ NIVEL SE TRABAJA: la CUENTA de dos dígitos es el nivel de todos los días ("63 Gastos de servicios prestados por terceros"), la subcuenta de tres está a un clic ("631 Transporte, correos y gastos de viaje") y se puede bajar hasta cinco dígitos cuando hace falta el detalle fino ("63111 De carga"). El desplegable de la derecha elige hasta dónde se muestra.',
+      'BUSCAR: si escribís un número, busca por código y trae toda la rama ("63" trae la 63 y todo lo que cuelga). Si escribís texto, busca en los nombres sin importar tildes ni mayúsculas ("transporte", "energia electrica"). Al elegir un resultado, su rama queda abierta.',
+      'CADA CUENTA TRAE LO QUE DICE EL PCGE: qué acumula, qué va en cada subcuenta con los ejemplos del propio PDF, por qué se DEBITA y por qué se ACREDITA (en dos columnas separadas, que es como lo manda la norma), los comentarios del Consejo Normativo y las NIIF referidas.',
+      'CONSORCIOS: abajo a la derecha están las tres cuentas que aparecen cuando hay un consorcio de por medio (3027, 6782, 7782). Un consorcio con contabilidad independiente —los del grupo lo son: tienen RUC propio y su propio libro— usa el plan completo como cualquier empresa; lo que le es propio es el documento de atribución con el que el operador reparte ingresos y gastos a los partícipes cada mes (R.S. 022-98/SUNAT), que no es una factura.',
+      'El botón PDF exporta exactamente las cuentas que estás viendo, con los filtros puestos.',
+    ],
+  },
   'libro-diario': {
     titulo: 'Libro Diario / Asientos',
     que: 'Los asientos contables generados automáticamente desde los movimientos (PCGE Perú), con herramienta de cuadre y acceso al comprobante.',
