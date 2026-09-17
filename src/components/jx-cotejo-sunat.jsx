@@ -48,10 +48,11 @@ import { evidenciasDeComprobantes } from '../lib/evidencia-de-comprobante.js';
 import { getEvidenciaSrc, abrirUrlEvidencia, precargarEvidencia } from '../lib/evidencias-url.js';
 import { ventasSinEspejo, datosDelEspejo } from '../lib/interco-espejo.js';
 import { candidatasDeNota } from '../lib/notas-credito.js';
+import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento } from '../lib/interco-edicion.js';
 import { esVentaMov } from '../lib/costo-obra.js';
 import { getCurrentMode } from '../lib/app-mode-core.js';
 import { setEmpresaActivaId } from '../lib/empresa-activa.js';
-import { enPeriodo } from '../lib/fecha.js';
+import { enPeriodo, fmtFechaCorta } from '../lib/fecha.js';
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
 
@@ -972,6 +973,14 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   const rol = auth?.profile?.rol || '';
   const canWrite = rol === 'admin' || (window.__hasPerm?.(rol, 'Movs. Contables', 'w') ?? false);
 
+  // Borrar un comprobante es de admin, igual que en Movimientos Contables: el
+  // escáner no puede ser la puerta de atrás de un permiso que allá no se da.
+  const esAdmin = rol === 'admin';
+  // Y el mismo cerco de las operaciones entre empresas: una pata de un par
+  // registrado se toca desde ahí, para que los dos lados se muevan juntos.
+  const { data: intercoTx } = window.__hooks?.useIntercompanyTransactions?.() || { data: [] };
+  const idsConPar = uM(() => movimientosConParRegistrado(intercoTx), [intercoTx]);
+
   const decHook = window.__hooks?.useCotejoDecisiones?.() || { data: [] };
   const decisiones = uM(
     () => (decHook.data || []).filter(d => d.ambito === 'escaner'),
@@ -1170,6 +1179,116 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
     } finally { enCursoRef.current = false; }
   };
 
+  /**
+   * Dar de baja la factura que una nota de crédito ya anuló.
+   *
+   * Hasta el 17-set este hallazgo era el único de los graves sin arreglo: la
+   * pantalla decía «se arregla en Movimientos Contables» y había que salir,
+   * buscar la factura entre 1.742 y cambiarle el estado. Cuatro veces seguidas
+   * en abril de GASOMI, por S/ 54.874. Gabriel, al probar la ventana: «no me
+   * ofrecen soluciones».
+   *
+   * Lo que se escribe es UN campo: `payment_status = 'cancelled'`. Es
+   * exactamente lo que hace la fila de Movimientos, con el mismo cerco (una
+   * pata de un par interco registrado se sigue tocando desde ahí) y quedando
+   * en auditoría. Sí mueve los reportes de esa empresa —para eso está— así que
+   * la confirmación dice el importe que deja de sumar.
+   */
+  const anularFactura = async (h) => {
+    if (enCursoRef.current) return;
+    if (!canWrite) { showToast?.('No tenés permiso para editar comprobantes.', 'red'); return; }
+    const mov = movsPorId.get(h.movimientoId);
+    if (!mov) { showToast?.('La factura no está en este dispositivo — sincronizá.', 'red'); return; }
+    const gate = puedeEditarMovimiento(mov, idsConPar);
+    if (!gate.puede) { showToast?.(gate.motivo, 'amber'); return; }
+    if (!confirm(
+      `¿Dar de baja la factura ${h.documento || 's/n'}? ${h.detalle} `
+      + `Va a quedar como «anulada» y sus ${fmtS(h.monto)} dejan de sumar en los reportes de esta empresa `
+      + '(que es lo que corresponde: la nota de crédito ya la anuló). El comprobante NO se borra.'
+    )) return;
+    enCursoRef.current = true;
+    try {
+      const fresh = await window.__db.accounting_movements.get(h.movimientoId);
+      if (!fresh) { showToast?.('La factura no está en este dispositivo — sincronizá.', 'red'); return; }
+      await window.__db.accounting_movements.update(h.movimientoId, {
+        payment_status: 'cancelled',
+        updated_at: new Date().toISOString(), updated_by: userId,
+        version: (fresh.version ?? 0) + 1,
+        sync_status: fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'update', table: 'accounting_movements', recordId: h.movimientoId,
+          oldData: { payment_status: fresh.payment_status ?? null },
+          newData: { payment_status: 'cancelled' },
+          reason: `Escáner de incoherencias · ${h.documento || 'la factura'} dada de baja: ya estaba anulada por su nota de crédito`,
+        });
+      } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      showToast?.(`✓ ${h.documento || 'La factura'} quedó anulada y ya no suma.`, 'green');
+    } catch (err) {
+      showToast?.('No se pudo anular: ' + (err?.message || err), 'red');
+    } finally { enCursoRef.current = false; }
+  };
+
+  /**
+   * Borrar la COPIA de un comprobante cargado dos veces.
+   *
+   * El hallazgo ya sabe cuál es cuál: `movimientoId` es la copia (la que se
+   * cargó después) y `gemeloId` el original que se queda. Borrar la primera y
+   * dejar la segunda daría el mismo resultado contable, pero se pierde el
+   * historial de la que sí venía de la captura original.
+   *
+   * Es un BORRADO (soft-delete, como en Movimientos Contables) y por eso pide
+   * admin. Antes de permitirlo se revisa que nada apunte a la copia: si una
+   * nota de crédito la señala, borrarla dejaría la nota huérfana —cambiando un
+   * problema por otro— así que se bloquea y se dice cuál es.
+   */
+  const borrarDuplicado = async (h) => {
+    if (enCursoRef.current) return;
+    if (!esAdmin) { showToast?.('Borrar un comprobante es de admin, igual que en Movimientos Contables.', 'red'); return; }
+    const copia = movsPorId.get(h.movimientoId);
+    if (!copia) { showToast?.('El comprobante no está en este dispositivo — sincronizá.', 'red'); return; }
+    const gate = puedeEliminarMovimiento(copia, idsConPar);
+    if (!gate.puede) { showToast?.(gate.motivo, 'amber'); return; }
+
+    const apuntan = (movs || []).filter(m => m && !m.deleted_at && m.related_movement_id === copia.id);
+    if (apuntan.length) {
+      showToast?.(
+        `No se puede borrar todavía: ${apuntan.map(m => m.document_number || 's/n').join(', ')} `
+        + 'apunta a esta copia. Reenlazalo al comprobante que se queda y después borrala.', 'amber');
+      return;
+    }
+
+    const original = movsPorId.get(h.gemeloId);
+    if (!confirm(
+      `¿Borrar la copia de ${h.documento || 's/n'}? Se borra la que se cargó después`
+      + `${copia.created_at ? ` (${fmtFechaCorta(copia.created_at)})` : ''} por ${fmtS(Math.abs(Number(copia.amount) || 0))}`
+      + `${original ? `, y se queda la original${original.created_at ? ` del ${fmtFechaCorta(original.created_at)}` : ''} por ${fmtS(Math.abs(Number(original.amount) || 0))}` : ''}. `
+      + 'Verificá contra el PDF que sean el mismo comprobante antes de confirmar.'
+    )) return;
+
+    enCursoRef.current = true;
+    try {
+      const fresh = await window.__db.accounting_movements.get(h.movimientoId);
+      if (!fresh) { showToast?.('El comprobante no está en este dispositivo — sincronizá.', 'red'); return; }
+      await window.__db.accounting_movements.update(h.movimientoId, {
+        deleted_at: new Date().toISOString(),
+        sync_status: fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'delete', table: 'accounting_movements', recordId: h.movimientoId, oldData: fresh,
+          reason: `Escáner de incoherencias · copia duplicada de ${h.documento || 'un comprobante'}; se conserva ${original?.document_number || h.gemeloId}`,
+        });
+      } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      showToast?.(`✓ Se borró la copia de ${h.documento || 'ese comprobante'}.`, 'amber');
+    } catch (err) {
+      showToast?.('No se pudo borrar: ' + (err?.message || err), 'red');
+    } finally { enCursoRef.current = false; }
+  };
+
   const exportar = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const cols = ['Familia', 'Gravedad', 'Regla', 'Comprobante', 'Fecha', 'Tercero', 'RUC', 'Monto', 'Qué pasa'];
@@ -1266,10 +1385,26 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
                     </div>
                   )}
                   {h.regla === 'factura_anulada_viva' && (
-                    <div style={{ marginTop: 6, fontSize: 11, color: 'var(--tm)' }}>
-                      Se arregla en Movimientos Contables: en la fila de la factura, el estado de pago
-                      pasa a «✗ Anulado». No se hace desde acá porque dar de baja una factura mueve
-                      todos los reportes de esa empresa.
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="btn btn-sm btn-amber" onClick={() => anularFactura(h)} disabled={!canWrite}>
+                        Dar de baja la factura
+                      </button>
+                      <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                        Es lo mismo que poner «✗ Anulado» en su fila de Movimientos Contables: sus
+                        {' '}{fmtS(h.monto)} dejan de sumar en los reportes de esta empresa. El comprobante no se borra.
+                      </span>
+                    </div>
+                  )}
+                  {h.regla === 'comprobante_duplicado' && (
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="btn btn-sm btn-amber" onClick={() => borrarDuplicado(h)} disabled={!esAdmin}>
+                        Borrar esta copia
+                      </button>
+                      <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+                        {esAdmin
+                          ? 'Se borra la que se cargó DESPUÉS y se queda la original. Verificá contra el PDF que sean el mismo comprobante.'
+                          : 'Borrar un comprobante es de admin, igual que en Movimientos Contables.'}
+                      </span>
                     </div>
                   )}
                   {h.regla === 'nota_huerfana' && (

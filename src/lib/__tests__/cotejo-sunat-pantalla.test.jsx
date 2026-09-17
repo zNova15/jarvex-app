@@ -114,6 +114,9 @@ function montarBrowserFalso() {
   g.__hooks = {
     useCotejoDecisiones: () => ({ data: globalThis.__DECISIONES || [], loading: false }),
     useSunatCortes: () => ({ data: globalThis.__CORTES || [], loading: false }),
+    // El cerco de las operaciones entre empresas: una pata de un par
+    // REGISTRADO no se toca desde el escáner. Vacío = nada bloqueado.
+    useIntercompanyTransactions: () => ({ data: globalThis.__INTERCO_TX || [], loading: false }),
   };
 }
 
@@ -262,5 +265,63 @@ describe('El escáner propone soluciones', () => {
     expect(html).toContain('Nota de crédito sin factura');
     expect(html).not.toContain('Enlazar a esta factura');
     expect(html).toContain('hay que buscarla a mano');
+  });
+});
+
+// ── LOS DOS ARREGLOS QUE FALTABAN (17-set-2026) ────────────────────
+// Gabriel, probando la ventana del escáner desde el Registro: «las
+// incoherencias me salen en una ventana adicional tal y como lo pedí pero no
+// me ofrecen soluciones... si hay facturas duplicadas, permitirme borrar un
+// comprobante». Los cuatro hallazgos que estaba mirando —abril de GASOMI, S/
+// 54.874 en facturas anuladas que seguían contando— eran justo los dos únicos
+// graves que no tenían botón.
+
+const FACTURA_ANULADA_VIVA = {
+  id: 'f-koplast', company_id: JARVEX, clase: 'compra', type: 'cost',
+  document_type: 'factura', document_number: 'F003-3409',
+  third_party_ruc: '20100047218', third_party_name: 'KOPLAST INDUSTRIAL S.A.C',
+  amount: 19518.72, date: '2026-04-13', created_at: '2026-04-13T10:00:00Z',
+  payment_status: 'pending',
+};
+const NOTA_QUE_LA_ANULA = {
+  ...FACTURA_ANULADA_VIVA, id: 'nc-koplast', document_type: 'nota_credito',
+  document_number: 'FC03-187', amount: -19518.72, date: '2026-04-20',
+  created_at: '2026-04-20T10:00:00Z', related_movement_id: 'f-koplast',
+};
+
+const DUPLICADO_ORIGINAL = {
+  id: 'd-1', company_id: JARVEX, clase: 'compra', type: 'cost',
+  document_type: 'factura', document_number: 'FF01-11086',
+  third_party_ruc: '20602691591', third_party_name: 'AUTOMANIA PERU S.A.C.',
+  amount: 330, date: '2026-04-27', created_at: '2026-04-27T10:00:00Z',
+};
+const DUPLICADO_COPIA = { ...DUPLICADO_ORIGINAL, id: 'd-2', created_at: '2026-04-28T09:00:00Z' };
+
+describe('El escáner arregla la factura anulada que sigue contando', () => {
+  it('ofrece darla de baja de un clic, en vez de mandar a otra pantalla', () => {
+    const html = renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]);
+    expect(html).toContain('Factura anulada que sigue contando');
+    expect(html).toContain('Dar de baja la factura');
+    // Y dice qué va a pasar: el importe deja de sumar.
+    expect(html).toContain('dejan de sumar');
+    // Lo que ya no dice: «se arregla en Movimientos Contables».
+    expect(html).not.toContain('Se arregla en Movimientos Contables');
+  });
+});
+
+describe('El escáner permite borrar la copia de un comprobante duplicado', () => {
+  it('ofrece borrar la copia, y aclara que se queda la original', () => {
+    const html = renderEscaner([DUPLICADO_ORIGINAL, DUPLICADO_COPIA]);
+    expect(html).toContain('El mismo comprobante, dos veces');
+    expect(html).toContain('Borrar esta copia');
+    expect(html).toContain('cargó DESPUÉS');
+  });
+
+  it('el hallazgo apunta a la COPIA, no a la original: es la que se borra', () => {
+    // Si apuntara a la primera, el boton borraria el comprobante que si venia
+    // de la captura original.
+    const html = renderEscaner([DUPLICADO_ORIGINAL, DUPLICADO_COPIA]);
+    expect(html).toContain('FF01-11086');
+    expect(html).toContain('está cargado 2 veces');
   });
 });
