@@ -29,6 +29,7 @@
 import { db, SYNC_STATUS } from '../db/jarvex.db';
 import { esCuentaValida, cuenta as cuentaPcge } from './pcge.js';
 import { validarDestino } from './destino-asiento.js';
+import { derivarTypeContable } from './clasificacion-contable.js';
 import {
   CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, avisoPeriodoCerrado, motivoForzado,
 } from './periodo-contable.js';
@@ -60,7 +61,24 @@ export function validarCuentaManual(codigo) {
 }
 
 /**
- * Las tres decisiones que se pueden guardar, con su columna y su validador.
+ * ¿Se puede guardar este costo/gasto a mano? Es el CHECK de la mig 163:
+ * 'cost', 'expense' o nada (nada = lo decide la vinculación).
+ */
+export function validarTipoManual(valor) {
+  const v = String(valor ?? '').trim();
+  if (!v) return { ok: true, codigo: null };
+  if (v === 'cost' || v === 'expense') return { ok: true, codigo: v };
+  return { ok: false, error: 'El tipo a mano es «cost» (costo) o «expense» (gasto).' };
+}
+
+/**
+ * Las decisiones que se pueden guardar, con su columna y su validador.
+ *
+ * `tipo` (tanda 3 del destino) no es una cuenta: es el costo/gasto que lee el
+ * Estado de Resultados. Viaja en la MISMA escritura que el destino que lo
+ * motivó, y no en una aparte, para que no pueda quedar guardado uno sin el
+ * otro: un destino 94 con el comprobante todavía en «costo» es justo la
+ * incoherencia que la ventana de consecuencias viene a cerrar.
  *
  * El destino NO usa `validarCuentaManual` y no es un descuido: sus cuentas del
  * elemento 9 no existen en el catálogo del PCGE —la norma no las define— así
@@ -71,15 +89,20 @@ const DECISIONES = [
   { clave: 'cuenta',        columna: 'cuenta_pcge',                validar: validarCuentaManual },
   { clave: 'contrapartida', columna: 'cuenta_pcge_contrapartida',  validar: validarCuentaManual },
   { clave: 'destino',       columna: 'cuenta_pcge_destino',        validar: validarDestino },
+  { clave: 'tipo',          columna: 'clasificacion_manual',       validar: validarTipoManual },
 ];
+
+/** Las columnas que son CUENTAS: son las que firman la decisión (mig 220). */
+const COLUMNAS_CUENTA = ['cuenta_pcge', 'cuenta_pcge_contrapartida', 'cuenta_pcge_destino'];
 
 /**
  * Fija (o borra) la cuenta de un movimiento.
  *
  * @param {string} movimientoId
- * @param {object} cambios   { cuenta, contrapartida, destino } — `null` en
- *                           cualquiera la devuelve a automático; `undefined`
- *                           la deja como está.
+ * @param {object} cambios   { cuenta, contrapartida, destino, tipo } — `null`
+ *                           en cualquiera la devuelve a automático; `undefined`
+ *                           la deja como está. `tipo` es 'cost' | 'expense' y
+ *                           recalcula el `type` con `derivarTypeContable`.
  * @param {object} ctx       { userId, motivo, forzarPeriodoCerrado, cerradoHasta }
  * @returns {Promise<{ok:boolean, error?:string, periodoCerrado?:boolean}>}
  */
@@ -111,7 +134,17 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
     return { ok: false, periodoCerrado: true, error: avisoPeriodoCerrado(fresh, cerradoHasta) };
   }
 
-  const vuelveAAutomatico = Object.values(campos).every(v => v === null);
+  // El `type` NO se elige: se deriva, con la misma función que usan Captura
+  // Mágica y Movimientos. Así un intercompany sigue siendo costo aunque llegue
+  // un 'expense' (la regla dura del Consolidado vive en esa función).
+  if ('clasificacion_manual' in campos) {
+    campos.type = derivarTypeContable({ ...fresh, clasificacion_manual: campos.clasificacion_manual });
+  }
+
+  const vuelveAAutomatico = COLUMNAS_CUENTA
+    .filter(c => c in campos)
+    .every(c => campos[c] === null)
+    && COLUMNAS_CUENTA.every(c => (c in campos) || !fresh[c]);
   const ahora = new Date().toISOString();
 
   await db.accounting_movements.update(movimientoId, {
@@ -137,6 +170,9 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
         cuenta_pcge: fresh.cuenta_pcge ?? null,
         cuenta_pcge_contrapartida: fresh.cuenta_pcge_contrapartida ?? null,
         cuenta_pcge_destino: fresh.cuenta_pcge_destino ?? null,
+        ...('clasificacion_manual' in campos
+          ? { clasificacion_manual: fresh.clasificacion_manual ?? null, type: fresh.type ?? null }
+          : {}),
       },
       newData: campos,
       // Forzar un mes ya declarado se dice SIEMPRE, aunque venga otro motivo:
@@ -176,4 +212,4 @@ export async function fijarCuentaEnLote(ids = [], cambios = {}, ctx = {}) {
   return out;
 }
 
-export default { validarCuentaManual, fijarCuentaManual, fijarCuentaEnLote };
+export default { validarCuentaManual, validarTipoManual, fijarCuentaManual, fijarCuentaEnLote };

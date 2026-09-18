@@ -68,7 +68,18 @@ export const banda = (score) => (score >= 0.75 ? 'alta' : score >= 0.5 ? 'media'
  *                   no se aplica, y el diccionario propio deja de ganarle al
  *                   oficial sin que nadie se entere (regla 8 del CLAUDE.md).
  *   companyId       para que la decisión de la propia empresa pese más
- * @returns {(descripcion:string) => {familia:string|null, origen:string, score:number}}
+ * @returns {(descripcion:string) => {familia:string|null, origen:string, score:number,
+ *            via:string, catalogoId:string|null, catalogoNombre:string|null,
+ *            catalogoNorm:string|null, catalogoGlobal:boolean}}
+ *
+ * `via` y `catalogo*` dicen DÓNDE vive la clasificación (tanda 3 del destino):
+ *   · 'alias'        la descripción tiene una decisión que la apunta a un
+ *                    insumo del catálogo, y la familia es la de ESE insumo;
+ *   · 'nombre'       la descripción ES un insumo del catálogo (mismo nombre);
+ *   · 'clasificador' nadie decidió nada: lo dedujo el motor del texto.
+ * La ventana de consecuencias lo necesita para corregir la causa en el lugar
+ * donde está: cambiar la familia de un insumo mueve a todas las descripciones
+ * que apuntan a él, y cambiar una descripción suelta no mueve a nadie más.
  */
 export function crearResolvedorDeFamilia({
   catalogo = [], alias = [], terminosCustom = null, companyId = null, demo = false,
@@ -87,10 +98,17 @@ export function crearResolvedorDeFamilia({
   const aliasPorNorm = resolverCategorias(alias, { companyId, demo });
 
   const cache = new Map();
+  const SIN_CATALOGO = { catalogoId: null, catalogoNombre: null, catalogoNorm: null, catalogoGlobal: false };
+  const deCatalogo = (c) => (c ? {
+    catalogoId: c.id || null,
+    catalogoNombre: c.nombre || null,
+    catalogoNorm: c.norm || claveMapeo(c.nombre) || null,
+    catalogoGlobal: !c.company_id,
+  } : SIN_CATALOGO);
 
   return function familiaDe(descripcion) {
     const texto = String(descripcion ?? '').trim();
-    if (!texto) return { familia: null, origen: ORIGEN.ninguno, score: 0 };
+    if (!texto) return { familia: null, origen: ORIGEN.ninguno, score: 0, via: 'ninguna', ...SIN_CATALOGO };
     if (cache.has(texto)) return cache.get(texto);
 
     let out = null;
@@ -102,13 +120,18 @@ export function crearResolvedorDeFamilia({
       const delCatalogo = a.catalogo_insumo_id ? catPorId.get(a.catalogo_insumo_id) : null;
       const familia = delCatalogo?.familia || a.familia || null;
       if (familia && familia !== 'sin_clasificar') {
-        out = { familia, origen: ORIGEN.catalogo, score: 1 };
+        out = {
+          familia, origen: ORIGEN.catalogo, score: 1, via: 'alias',
+          // Si el insumo no trae familia, la que manda es la de la decisión:
+          // no hay fila del catálogo donde corregirla.
+          ...(delCatalogo?.familia ? deCatalogo(delCatalogo) : SIN_CATALOGO),
+        };
       }
     }
     if (!out && n) {
       const c = catPorNorm.get(n);
       if (c?.familia && c.familia !== 'sin_clasificar') {
-        out = { familia: c.familia, origen: ORIGEN.catalogo, score: 1 };
+        out = { familia: c.familia, origen: ORIGEN.catalogo, score: 1, via: 'nombre', ...deCatalogo(c) };
       }
     }
 
@@ -117,8 +140,8 @@ export function crearResolvedorDeFamilia({
       const rec = clasificarConIUPC(texto, { terminosCustom });
       const familia = rec?.codigo && rec.codigo !== 'sin_clasificar' ? rec.codigo : null;
       out = familia
-        ? { familia, origen: ORIGEN.clasificador, score: Number(rec?.score) || 0 }
-        : { familia: null, origen: ORIGEN.ninguno, score: 0 };
+        ? { familia, origen: ORIGEN.clasificador, score: Number(rec?.score) || 0, via: 'clasificador', ...SIN_CATALOGO }
+        : { familia: null, origen: ORIGEN.ninguno, score: 0, via: 'ninguna', ...SIN_CATALOGO };
     }
 
     cache.set(texto, out);
@@ -180,6 +203,10 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
     const fam = resolver(it?.descripcion);
     return { it, imp: importeDeItem(it), ...fam };
   });
+  // El detalle por ítem: qué cuenta le tocó a cada descripción y de dónde salió
+  // su familia. Lo lee la ventana de consecuencias para ofrecer corregir la
+  // CAUSA (la clasificación) y no solo el síntoma (la cuenta del asiento).
+  const detalleItems = [];
 
   // La compra (60x) que más pesa entre los ítems que NO son flete: si el
   // flete viene en la misma factura, es el costo de traer ESO (tanda 2 del
@@ -195,13 +222,28 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
     compraDelComprobante = [...pesoCompra.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   }
 
-  for (const { it, imp, familia, origen, score } of resueltos) {
+  for (const x of resueltos) {
+    const { it, imp, familia, origen, score } = x;
     let r = familia ? cuentaDeFamilia(familia, { esVenta }) : null;
     // El flete de una compra no es un gasto de viaje: va a la 609. Solo en
     // compras — el flete que la empresa FACTURA es un ingreso y va a la 704.
     if (r && !esVenta && esFamiliaFlete(familia)) {
       r = cuentaDeFlete(it?.descripcion, { familiaDe: resolver, compraDelMismoComprobante: compraDelComprobante });
     }
+    detalleItems.push({
+      descripcion: String(it?.descripcion ?? '').trim(),
+      norm: claveMapeo(it?.descripcion),
+      unidad: it?.unidad || null,
+      importe: imp,
+      familia: familia || null,
+      origen, score,
+      via: x.via || null,
+      catalogoId: x.catalogoId || null,
+      catalogoNombre: x.catalogoNombre || null,
+      catalogoNorm: x.catalogoNorm || null,
+      catalogoGlobal: x.catalogoGlobal === true,
+      cuenta: r?.cuenta || null,
+    });
     if (!r) { sinResolver++; continue; }
     totalImporte += imp;
     const prev = porSub.get(r.cuenta) || {
@@ -239,6 +281,7 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
       confianza: 'ninguna',
       revisar: true,
       itemsSinResolver: sinResolver,
+      items: detalleItems,
     };
   }
 
@@ -300,6 +343,7 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
     confianza: peorBanda,
     revisar: lineas.some(l => l.revisar) || sinResolver > 0,
     itemsSinResolver: sinResolver,
+    items: detalleItems,
   };
 }
 

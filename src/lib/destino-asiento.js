@@ -71,6 +71,23 @@ export const ESPEJO_61 = {
   '26': '614',   // Envases y embalajes
 };
 
+/**
+ * ¿Lo que salió por esta cuenta se traslada a un destino?
+ *
+ * Solo lo del ELEMENTO 6. La 79 transfiere «costos y gastos acumulados por su
+ * naturaleza» (PCGE p. 195), y la 61 cancela compras: las dos hablan del 6.
+ * Una compra que la contadora pasó a la 33 (un activo) o a la 18 (un pago por
+ * adelantado) NO es un gasto del período, y colgarle «92 / 791» sería
+ * trasladar a costo de obra algo que todavía no es costo de nada.
+ *
+ * Sin cuenta (`''`) se responde que sí: es el caso de quien pregunta antes de
+ * saber la cuenta, y ahí manda la regla de siempre.
+ */
+export function seTraslada(cuentaOrigen) {
+  const c = String(cuentaOrigen ?? '').trim();
+  return !c || elementoDe(c) === '6';
+}
+
 /** La contrapartida cuando el destino es del elemento 9. */
 export const CARGAS_IMPUTABLES = '791';
 /** La contrapartida cuando lo que se traslada salió de la 68 (provisiones). */
@@ -198,8 +215,9 @@ export function contrapartidaDeDestino(destino, cuentaOrigen = '') {
  */
 export function destinoSugerido(movimiento, { cuentaOrigen = '' } = {}) {
   const m = movimiento || {};
-  // Una venta no se traslada a ningún lado.
+  // Una venta no se traslada a ningún lado, y lo que no es gasto tampoco.
   if ((m.type || 'expense') === 'income') return null;
+  if (!seTraslada(cuentaOrigen)) return null;
 
   // La naturaleza financiera manda sobre el destino del comprobante: un
   // interés bancario de una obra sigue siendo gasto financiero.
@@ -244,6 +262,7 @@ export function destinoSugerido(movimiento, { cuentaOrigen = '' } = {}) {
 export function opcionesDestino(movimiento, { cuentaOrigen = '' } = {}) {
   const m = movimiento || {};
   if ((m.type || 'expense') === 'income') return [];
+  if (!seTraslada(cuentaOrigen)) return [];
 
   const out = ELEMENTO_9
     .slice()
@@ -279,6 +298,10 @@ export function opcionesDestino(movimiento, { cuentaOrigen = '' } = {}) {
 export function resolverDestino(movimiento, { cuentaOrigen = '' } = {}) {
   const m = movimiento || {};
   if ((m.type || 'expense') === 'income') return null;
+  // Un activo o un pago adelantado no lleva destino, ni siquiera «por
+  // definir»: contarlo en esa pila sería pedirle a la contadora una respuesta
+  // que no existe. Un destino guardado de antes queda en la fila, sin efecto.
+  if (!seTraslada(cuentaOrigen)) return null;
 
   const manual = String(m.cuenta_pcge_destino || '').trim();
   if (manual) {
@@ -321,6 +344,6 @@ export function nombreDestino(codigo) {
 
 export default {
   ESPEJO_61, CARGAS_IMPUTABLES, CARGAS_POR_PROVISIONES,
-  existenciaDeCompra, validarDestino, contrapartidaDeDestino,
+  seTraslada, existenciaDeCompra, validarDestino, contrapartidaDeDestino,
   destinoSugerido, opcionesDestino, resolverDestino, nombreDestino,
 };

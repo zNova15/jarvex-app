@@ -9,12 +9,15 @@ import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import {
   nombreDeCuenta, cuenta as cuentaPcge, buscarCuentas, hijosDe, cuentaMadreDe, NIVEL_MAXIMO,
 } from "../lib/pcge.js";
-import { fijarCuentaManual, fijarCuentaEnLote } from "../lib/cuenta-manual-db.js";
+import { fijarCuentaManual } from "../lib/cuenta-manual-db.js";
 import { opcionesContrapartida, avisoEfectivoSobreUmbral, CAJA } from "../lib/contrapartida.js";
 import { opcionesDestino, nombreDestino, contrapartidaDeDestino } from "../lib/destino-asiento.js";
 import { avisoPeriodoCerrado } from "../lib/periodo-contable.js";
 import { cargarBancarizados } from "../lib/bancarizado-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
+import { armarConsecuencias } from "../lib/consecuencias-correccion.js";
+import { corregirClasificaciones } from "../lib/correccion-causa-db.js";
+import { VentanaConsecuencias } from "./jx-ventana-consecuencias.jsx";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
@@ -81,6 +84,7 @@ const TIPO_FILTRO = [
 ];
 
 const TIPO_BADGE = { income: 'b-green', cost: 'b-red', expense: 'b-amber' };
+const ROLES_CATALOGO = ['admin', 'gerente', 'contador'];
 const TIPO_LABEL = { income: 'Ingreso', cost: 'Costo', expense: 'Gasto' };
 
 // Lookup de cuentas PCGE para mostrar nombre legible. Desde el 17-set sale del
@@ -289,7 +293,10 @@ function SelectorCuenta({
  * (`cuenta_pcge` y `cuenta_pcge_contrapartida`). El asiento se sigue derivando
  * —importe, fecha, IGV— y ahora respeta lo que se elija acá.
  */
-function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, showToast }) {
+function ModalCuenta({
+  asiento, movimiento, hermanos = [], familiaDe = null, bancarizadoIds = null, movsVivos = [],
+  puedeReclasificar = false, userId, onClose, showToast,
+}) {
   const cuentasAsiento = asiento?.cuentas || {};
   const deducida = cuentasAsiento.detalle?.[0]?.cuenta || null;
 
@@ -302,6 +309,13 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
   // contadora tiene que leer qué está por hacer antes de poder hacerlo.
   const [forzarCerrado, setForzarCerrado] = uS(false);
   const enCursoRef = uR(false);
+  // ── LA VENTANA DE CONSECUENCIAS (tanda 3 del destino) ─────────────
+  // Dos pasos: el formulario de siempre, y —solo si hay algo que decir— la
+  // ventana con lo que el cambio arrastra. `seleccion` es lo que la contadora
+  // marca en ella: qué clasificaciones corregir, si corregir el tipo, y si
+  // acepta mover meses ya presentados.
+  const [paso, setPaso] = uS('editar');
+  const [seleccion, setSeleccion] = uS(null);
 
   // Las sugeridas: lo que la app dedujo para ESTE comprobante, y las hermanas
   // de esa cuenta. Es lo que se quiere el 90 % de las veces — corregir de 602 a
@@ -384,6 +398,103 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
   // tocar cualquier cosa de un mes presentado tiene la misma consecuencia.
   const avisoCerrado = uM(() => avisoPeriodoCerrado(movimiento || {}), [movimiento]);
 
+  // Lo que la ventana necesita para simular. Se arma con lo que está en el
+  // formulario AHORA: si la contadora vuelve y cambia la cuenta, la ventana se
+  // recalcula con la nueva.
+  const argsConsecuencias = {
+    mov: movimiento || {},
+    cambios: { cuenta, contrapartida: contra, destino },
+    familiaDe,
+    bancarizadoIds,
+    movs: movsVivos,
+    hermanos: aplicarATodos ? hermanos : [],
+    puedeReclasificar,
+  };
+  const consecuencias = uM(
+    () => (paso === 'consecuencias' ? armarConsecuencias({ ...argsConsecuencias, seleccion }) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [paso, seleccion, movimiento, cuenta, contra, destino, familiaDe, bancarizadoIds, movsVivos, hermanos, aplicarATodos, puedeReclasificar],
+  );
+
+  // El texto de auditoría: lo que se hizo, dicho entero. Es lo que alguien va
+  // a buscar dentro de un año para entender por qué la cuenta cambió.
+  const motivoDe = (c) => {
+    const doc = movimiento?.document_number || 'el comprobante';
+    const partes = [];
+    // Si se eligió la caja en una compra sujeta a bancarización, la
+    // auditoría tiene que decir que se hizo a sabiendas: esa decisión le
+    // cuesta a la empresa el crédito fiscal y la deducción del gasto.
+    if (avisoEfectivo) {
+      partes.push(`se declara pago en EFECTIVO pese a la bancarización en ${doc} (pierde crédito fiscal y deducción, art. 8 Ley 28194)`);
+    }
+    if (c?.correcciones?.length) {
+      partes.push('se corrigió la clasificación de '
+        + c.correcciones.map(x => `«${x.descripcion}» (${x.familiaAntes || 'sin familia'} → ${x.familia})`).join(', '));
+    }
+    if (c?.escribir && 'tipo' in c.escribir && c.cambioDeTipo) {
+      partes.push(`pasa de ${c.cambioDeTipo.de === 'cost' ? 'costo' : 'gasto'} a ${c.cambioDeTipo.a === 'cost' ? 'costo' : 'gasto'}`);
+    }
+    if (c?.alcance?.cambian?.length) {
+      partes.push(`mueve ${c.alcance.cambian.length} comprobante(s) más`
+        + (c.alcance.cerrados ? `, ${c.alcance.cerrados} de meses ya presentados, aceptado a sabiendas` : ''));
+    }
+    return partes.length ? `Libro Diario · ${doc}: ${partes.join(' · ')}` : '';
+  };
+
+  // Escribe todo lo decidido: primero la CAUSA (la clasificación), después el
+  // comprobante, después los del mismo proveedor. En ese orden porque si la
+  // clasificación no se graba, el comprobante no puede quedar «saliendo solo»
+  // de una corrección que no existe: ahí se le fija la cuenta a mano.
+  const ejecutar = async (c) => {
+    const avisos = [];
+    let escribir = c.escribir;
+
+    if (c.correcciones.length) {
+      const r = await corregirClasificaciones(c.correcciones, {
+        companyId: movimiento?.company_id || null, userId, documento: movimiento?.document_number || '',
+      });
+      if (r.fallaron.length) {
+        avisos.push(`no se pudo corregir la clasificación de «${r.fallaron[0].descripcion}»: ${r.fallaron[0].error}`);
+        if (!escribir.cuenta && cuenta) escribir = { ...escribir, cuenta };
+      }
+    }
+
+    const motivo = motivoDe(c);
+    const r = await fijarCuentaManual(asiento.movimiento_id, escribir, {
+      userId, motivo, forzarPeriodoCerrado: forzarCerrado,
+    });
+    if (!r.ok) { showToast?.(r.error, 'red'); return false; }
+
+    // Los del mismo proveedor, cada uno con su plan. Sin el escape del
+    // candado: forzar un mes presentado se pide comprobante por comprobante,
+    // y los de meses cerrados ni siquiera llegan acá (`planDeHermanos`).
+    let okHermanos = 0;
+    const fallaronHermanos = [];
+    for (const p of c.hermanos.planes) {
+      // eslint-disable-next-line no-await-in-loop
+      const rh = await fijarCuentaManual(p.id, p.cambios, {
+        userId,
+        motivo: `Libro Diario · misma corrección que ${movimiento?.document_number || 'otro comprobante'} del mismo proveedor`,
+      });
+      if (rh.ok) okHermanos++; else fallaronHermanos.push(rh.error);
+    }
+    if (fallaronHermanos.length) avisos.push(`${fallaronHermanos.length} del mismo proveedor no se corrigieron: ${fallaronHermanos[0]}`);
+
+    const partes = [];
+    if (c.correcciones.length) partes.push(`clasificación corregida (${c.correcciones.length})`);
+    if (escribir.cuenta) partes.push(`cuenta ${escribir.cuenta}`);
+    else if (c.salesola && !avisos.length) partes.push(`la ${cuenta} sale sola`);
+    if (escribir.destino) partes.push(`destino ${escribir.destino}`);
+    if ('tipo' in escribir && c.cambioDeTipo) partes.push(c.cambioDeTipo.a === 'cost' ? 'ahora es costo' : 'ahora es gasto');
+    if (okHermanos) partes.push(`${okHermanos} más del mismo proveedor`);
+    if (c.alcance.cambian.length) partes.push(`${c.alcance.cambian.length} comprobante(s) se movieron solos`);
+
+    if (avisos.length) showToast?.(`Guardado, con avisos: ${avisos.join(' · ')}`, 'amber');
+    else if (r.vuelveAAutomatico && !partes.length) showToast?.('✓ Vuelve a la cuenta que deduce la app.', 'green');
+    else showToast?.(`✓ ${partes.join(' · ') || 'Guardado'}.`, 'green');
+    return true;
+  };
+
   // Guard SÍNCRONO: el doble clic acá escribiría dos versiones del mismo
   // movimiento y dejaría el sync en reintento.
   const guardar = async () => {
@@ -391,39 +502,17 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
     enCursoRef.current = true;
     setGuardando(true);
     try {
-      const cambios = { cuenta, contrapartida: contra, destino };
-      const ids = [asiento.movimiento_id, ...(aplicarATodos ? hermanos.map(h => h.id) : [])];
-      // Si se eligió la caja en una compra sujeta a bancarización, la
-      // auditoría tiene que decir que se hizo a sabiendas: esa decisión le
-      // cuesta a la empresa el crédito fiscal y la deducción del gasto.
-      const motivo = avisoEfectivo
-        ? `Libro Diario · se declara pago en EFECTIVO pese a la bancarización en ${movimiento?.document_number || 'el comprobante'} (pierde crédito fiscal y deducción, art. 8 Ley 28194)`
-        : '';
-
-      const ctx = { userId, motivo, forzarPeriodoCerrado: forzarCerrado };
-
-      if (ids.length > 1) {
-        const r = await fijarCuentaEnLote(ids, cambios, ctx);
-        if (r.fallaron.length) {
-          showToast?.(`Se corrigieron ${r.ok}, fallaron ${r.fallaron.length}: ${r.fallaron[0].error}`, 'amber');
-        } else {
-          showToast?.(`✓ ${r.ok} comprobantes de ${movimiento?.third_party_name || 'ese proveedor'} corregidos.`, 'green');
-        }
-        onClose();
+      // En el primer paso, se mira si hay algo que decir. Si no hay, se guarda
+      // directo: una ventana que sale siempre se cierra sin leer.
+      const c = paso === 'consecuencias'
+        ? consecuencias
+        : armarConsecuencias({ ...argsConsecuencias, seleccion: null });
+      if (paso === 'editar' && c.hayQueDecir) {
+        setSeleccion(c.seleccion);
+        setPaso('consecuencias');
         return;
       }
-
-      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, ctx);
-      if (!r.ok) { showToast?.(r.error, 'red'); return; }
-      showToast?.(
-        r.vuelveAAutomatico
-          ? '✓ Vuelve a la cuenta que deduce la app.'
-          : (destino && destino !== (movimiento?.cuenta_pcge_destino || null)
-            ? `✓ Destino guardado: ${destino} ${nombreDestino(destino)}.`
-            : `✓ Cuenta corregida${cuenta ? ` a ${cuenta} ${cuentaPcge(cuenta)?.nombre || ''}` : ''}.`),
-        'green',
-      );
-      onClose();
+      if (await ejecutar(c)) onClose();
     } catch (e) {
       showToast?.('No se pudo guardar: ' + (e?.message || e), 'red');
     } finally {
@@ -438,9 +527,11 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 620 }}>
+      <div className="modal" style={paso === 'consecuencias' ? { width: 'min(720px, 95vw)' } : { maxWidth: 620 }}>
         <div className="modal-hd">
-          <div className="modal-hd-left">Corregir la cuenta</div>
+          <div className="modal-hd-left">
+            {paso === 'consecuencias' ? 'Antes de guardar: qué arrastra este cambio' : 'Corregir la cuenta'}
+          </div>
           <button className="btn btn-ghost btn-xs" onClick={onClose}>
             {window.JxIcon ? <window.JxIcon name="x" size={13}/> : '✕'}
           </button>
@@ -490,6 +581,17 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
           </div>
         )}
 
+        {paso === 'consecuencias' && (
+          <VentanaConsecuencias
+            c={consecuencias}
+            seleccion={seleccion}
+            setSeleccion={setSeleccion}
+            cuentaElegida={cuenta}
+            moneda={movimiento?.currency || 'PEN'}
+          />
+        )}
+
+        {paso === 'editar' && (
         <div style={{ display: 'grid', gap: 14 }}>
           <div>
             <label className="flabel">
@@ -617,7 +719,8 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
                 de <strong>{movimiento?.third_party_name || 'este proveedor'}</strong> que
                 siguen sin cuenta definida, en el período que estás viendo.
                 <div style={{ color: 'var(--tm)', fontSize: 11.5, marginTop: 2 }}>
-                  No toca los que ya tienen una cuenta puesta a mano.
+                  No toca los que ya tienen una cuenta puesta a mano, ni los de meses ya
+                  presentados: el escape del candado vale para este comprobante, no para el lote.
                 </div>
               </span>
             </label>
@@ -628,7 +731,9 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
             Si el IGV está mal, lo que está mal es el comprobante.
           </div>
         </div>
+        )}
 
+        {paso === 'editar' ? (
         <div className="modal-actions">
           <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
           <button
@@ -646,6 +751,23 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
+        ) : (
+        <div className="modal-actions">
+          <button className="btn btn-ghost btn-sm" onClick={() => setPaso('editar')} disabled={guardando}>
+            ← Volver
+          </button>
+          <button
+            className="btn btn-amber btn-sm"
+            onClick={guardar}
+            disabled={guardando || !consecuencias
+              || (consecuencias.requiereAceptarCerrados && !seleccion?.aceptaCerrados)}
+            title={consecuencias?.requiereAceptarCerrados && !seleccion?.aceptaCerrados
+              ? 'Marcá que entendés que se mueven comprobantes de meses ya presentados, o dejá la clasificación sin corregir'
+              : undefined}>
+            {guardando ? 'Guardando…' : 'Confirmar y guardar'}
+          </button>
+        </div>
+        )}
       </div>
     </div>
   );
@@ -683,6 +805,11 @@ function LibroDiarioPage({ showToast }) {
   const rolActual = auth?.profile?.rol || '';
   const puedeCorregir = rolActual === 'admin'
     || (window.__hasPerm?.(rolActual, 'Libro Diario', 'w') ?? false);
+  // Quién puede corregir la CAUSA (la clasificación del insumo) desde la
+  // ventana de consecuencias. Es el espejo de la RLS de `catalogo_insumos` e
+  // `insumo_categoria` (has_role admin/gerente/contador): la matriz de
+  // permisos del Libro Diario se puede configurar, la RLS no, y una escritura
+  // que el servidor rechaza queda rebotando en el sync para siempre.
 
   // Años disponibles a partir de los movimientos
   const aniosDisp = uM(() => {
@@ -731,15 +858,27 @@ function LibroDiarioPage({ showToast }) {
   const { data: insumoCategorias } = (window.__hooks?.useInsumoCategorias?.() ?? { data: [] });
   const { data: terminosCustom } = (window.__hooks?.useClasificacionTerminos?.() ?? { data: [] });
 
-  const repartoDe = uM(() => {
-    const familiaDe = crearResolvedorDeFamilia({
-      catalogo: catalogoInsumos || [],
-      alias: insumoCategorias || [],
-      terminosCustom: terminosCustom || [],
-      companyId: empresaId !== 'all' ? empresaId : null,
-    });
-    return (mov) => cuentasDeComprobante(mov, { familiaDe });
-  }, [catalogoInsumos, insumoCategorias, terminosCustom, empresaId]);
+  // El resolvedor va aparte del reparto porque la ventana de consecuencias
+  // (tanda 3 del destino) lo necesita crudo: simula la corrección envolviéndolo,
+  // y tiene que ser EL MISMO que dibuja el libro para que lo que la ventana
+  // anuncia sea lo que el libro va a mostrar.
+  const familiaDe = uM(() => crearResolvedorDeFamilia({
+    catalogo: catalogoInsumos || [],
+    alias: insumoCategorias || [],
+    terminosCustom: terminosCustom || [],
+    companyId: empresaId !== 'all' ? empresaId : null,
+  }), [catalogoInsumos, insumoCategorias, terminosCustom, empresaId]);
+  const repartoDe = uM(
+    () => (mov) => cuentasDeComprobante(mov, { familiaDe }),
+    [familiaDe],
+  );
+  // Todos los comprobantes vivos, sin el filtro de período: corregir la
+  // clasificación de un insumo mueve facturas de cualquier mes, y el bloque C
+  // tiene que poder decir cuáles (el 94 % son de meses ya presentados).
+  const movsVivos = uM(
+    () => (movs || []).filter(m => !m.deleted_at && m.payment_status !== 'cancelled'),
+    [movs],
+  );
 
   // ── LA EVIDENCIA BANCARIA QUE EL ASIENTO IGNORABA (17-set) ─────────
   // Las constancias de transferencia y los depósitos multi-factura ya estaban
@@ -811,6 +950,15 @@ function LibroDiarioPage({ showToast }) {
       && !m.cuenta_pcge
       && mismoEstado.has(m.id));
   };
+
+  // Se calcula una vez por asiento abierto: la ventana de consecuencias
+  // re-simula cuando esta lista cambia, y rearmarla en cada render del libro
+  // la haría re-simular sin motivo (~140 ms con la base de producción).
+  const hermanosEditando = uM(
+    () => (editando ? hermanosDe(editando) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [editando, movsById, asientosTodos, movsFiltrados],
+  );
 
   // Totales globales — SOLO S/ (hallazgo inspección 1-sep): los asientos en
   // USD se sumaban como si fueran soles en totales/PDF/Excel. Cada asiento
@@ -1395,7 +1543,11 @@ function LibroDiarioPage({ showToast }) {
         <ModalCuenta
           asiento={editando}
           movimiento={movsById.get(editando.movimiento_id) || null}
-          hermanos={hermanosDe(editando)}
+          hermanos={hermanosEditando}
+          familiaDe={familiaDe}
+          bancarizadoIds={bancarizadoIds}
+          movsVivos={movsVivos}
+          puedeReclasificar={ROLES_CATALOGO.includes(rolActual)}
           userId={userId}
           showToast={showToast}
           onClose={() => setEditando(null)}
