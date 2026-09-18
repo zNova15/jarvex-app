@@ -183,11 +183,16 @@ export function contrapartidaDeDestino(destino, cuentaOrigen = '') {
  * `gastos_generales` y 396 dicen `obra` — 1.104, el 62 %, traen el destino ya
  * decidido sin que nadie toque nada.
  *
- * Los otros dos valores NO se proponen, y es a propósito:
- *   · `contabilidad_neta` (403) son las operaciones internas del grupo, y a
- *     qué función van es una decisión de las contadoras que todavía no tomaron.
- *   · sin destino (282) es «no se sabe», y sugerir «no sé» con un botón verde
- *     al lado es lo mismo que no sugerir nada, pero encima se guarda.
+ * `contabilidad_neta` (403) SÍ recibe propuesta desde el 18-set, por pedido
+ * de Gabriel («puede que sí haga falta»): es un costo real de la empresa que
+ * no está atado a ninguna obra, y eso es exactamente lo que el PCGE describe
+ * con la 91 «Costo por distribuir» — se junta ahí y se reparte después. Va
+ * con confianza BAJA, que la pantalla muestra distinto: es un punto de
+ * partida para que la contadora decida, no una deducción.
+ *
+ * Lo que NO se propone es el movimiento sin destino (282): es «no se sabe», y
+ * sugerir «no sé» con un botón verde al lado es lo mismo que no sugerir nada,
+ * pero encima se guarda.
  *
  * @returns {{cuenta:string, porque:string, confianza:string}|null}
  */
@@ -216,6 +221,13 @@ export function destinoSugerido(movimiento, { cuentaOrigen = '' } = {}) {
     return {
       cuenta: '92', confianza: 'media',
       porque: 'El comprobante está vinculado a una obra: lo que se compra para una obra se consume ahí.',
+    };
+  }
+  if (destino === 'contabilidad_neta') {
+    return {
+      cuenta: '91', confianza: 'baja',
+      porque: 'Es contabilidad neta: un costo de la empresa que no está vinculado a ninguna obra. '
+        + 'La 91 «Costo por distribuir» lo junta hasta decidir a qué se carga. Propuesta floja: confirmala o cambiala.',
     };
   }
   return null;

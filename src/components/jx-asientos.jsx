@@ -163,6 +163,11 @@ function BadgeCuenta({ cuentas }) {
         'No se sabe para qué fue esta plata: el comprobante no está vinculado a una obra '
         + 'ni marcado como gasto general. Sin destino no hay costo por obra ni Estado de '
         + 'Resultados por función.'));
+    } else if (cd.confianza === 'baja') {
+      // La 91 de contabilidad neta: un punto de partida, no una deducción.
+      // El «?» es para que no se confunda con el 92/94 que sí salen del dato.
+      badges.push(B('b-amber', `destino ${cd.cuenta} ?`,
+        `${cd.nombre}. ${cd.porque}`));
     } else {
       badges.push(B('b-amber', `destino ${cd.cuenta}`,
         `${cd.nombre}. ${cd.porque} Se puede cambiar.`));

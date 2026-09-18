@@ -149,6 +149,10 @@ export const CUENTA_POR_FAMILIA = {
   administrativos: M('656', 'Consumos de oficina — la 656 nombra lo que «se consume en labores de oficina».'),
 
   // ── Servicios de terceros → 63 ────────────────────────────────
+  // El flete COMPRADO no se queda siempre acá: si trajo material comprado, es
+  // parte del costo de ese material y va a la 609 (60921, 60931…). Esa
+  // decisión la toma `flete-compra.js` ítem por ítem, porque depende de QUÉ
+  // se transportó y no de la familia. Acá queda la cuenta de partida.
   '32': SERVICIO('631', 'Flete terrestre — la 631 es «Transporte, correos y gastos de viaje».'),
   '33': SERVICIO('631', 'Flete aéreo.'),
   '92': SERVICIO('631', 'Flete fluvial.'),

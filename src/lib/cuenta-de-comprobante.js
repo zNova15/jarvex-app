@@ -35,6 +35,7 @@ import { clasificarConIUPC } from './indices-unificados-iupc.js';
 import { cuentaDeFamilia, CUENTA_PROVISIONAL } from './pcge-puente.js';
 import { cuentaMadreDe } from './pcge.js';
 import { esVentaMov } from './costo-obra.js';
+import { esFamiliaFlete, cuentaDeFlete } from './flete-compra.js';
 
 /** Debajo de esto, una línea propia no aporta nada y se absorbe en la mayor. */
 export const MINIMO_LINEA = 1;
@@ -173,10 +174,34 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
   let sinResolver = 0;
   let totalImporte = 0;
 
-  for (const it of items) {
-    const imp = importeDeItem(it);
-    const { familia, origen, score } = resolver(it?.descripcion);
-    const r = familia ? cuentaDeFamilia(familia, { esVenta }) : null;
+  // Primera pasada: la familia de cada ítem. Hace falta ANTES de asentar
+  // porque un flete depende de lo que se compró en el resto del comprobante.
+  const resueltos = items.map(it => {
+    const fam = resolver(it?.descripcion);
+    return { it, imp: importeDeItem(it), ...fam };
+  });
+
+  // La compra (60x) que más pesa entre los ítems que NO son flete: si el
+  // flete viene en la misma factura, es el costo de traer ESO (tanda 2 del
+  // destino, `flete-compra.js`).
+  let compraDelComprobante = null;
+  if (!esVenta) {
+    const pesoCompra = new Map();
+    for (const x of resueltos) {
+      if (!x.familia || esFamiliaFlete(x.familia)) continue;
+      const c = cuentaDeFamilia(x.familia)?.cuenta;
+      if (c && c.startsWith('60')) pesoCompra.set(c, (pesoCompra.get(c) || 0) + x.imp);
+    }
+    compraDelComprobante = [...pesoCompra.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  }
+
+  for (const { it, imp, familia, origen, score } of resueltos) {
+    let r = familia ? cuentaDeFamilia(familia, { esVenta }) : null;
+    // El flete de una compra no es un gasto de viaje: va a la 609. Solo en
+    // compras — el flete que la empresa FACTURA es un ingreso y va a la 704.
+    if (r && !esVenta && esFamiliaFlete(familia)) {
+      r = cuentaDeFlete(it?.descripcion, { familiaDe: resolver, compraDelMismoComprobante: compraDelComprobante });
+    }
     if (!r) { sinResolver++; continue; }
     totalImporte += imp;
     const prev = porSub.get(r.cuenta) || {

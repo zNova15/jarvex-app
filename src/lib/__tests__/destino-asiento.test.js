@@ -14,7 +14,7 @@ import { ELEMENTO_9, esCuentaElemento9, cuenta9 } from '../pcge-elemento9.js';
 import {
   periodoCerrado, movEnPeriodoCerrado, avisoPeriodoCerrado, CERRADO_HASTA_DEFAULT,
 } from '../periodo-contable.js';
-import { generarAsiento } from '../asientos.js';
+import { generarAsiento, cumpleEstadoCuenta } from '../asientos.js';
 import { esCuentaValida } from '../pcge.js';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -182,10 +182,22 @@ describe('destinoSugerido', () => {
     expect(r.cuenta).toBe('97');
   });
 
-  it('NO sugiere nada para contabilidad neta ni para lo que no tiene destino', () => {
-    // Son 403 + 282 de 1.789 en producción. Sugerir «no sé» con un botón verde
+  it('contabilidad neta propone la 91, con confianza BAJA', () => {
+    // Pedido de Gabriel el 18-set: «puede que sí haga falta». Es costo de la
+    // empresa sin obra: la 91 lo junta hasta repartirlo. Floja a propósito.
+    const r = destinoSugerido({ type: 'cost', destino_contable: 'contabilidad_neta' });
+    expect(r.cuenta).toBe('91');
+    expect(r.confianza).toBe('baja');
+  });
+
+  it('el gasto financiero le gana también a contabilidad neta', () => {
+    const r = destinoSugerido({ type: 'cost', destino_contable: 'contabilidad_neta' }, { cuentaOrigen: '6731' });
+    expect(r.cuenta).toBe('97');
+  });
+
+  it('NO sugiere nada para lo que no tiene destino', () => {
+    // Son 282 de 1.789 en producción. Sugerir «no sé» con un botón verde
     // al lado es lo mismo que no sugerir nada, pero encima se guarda.
-    expect(destinoSugerido({ type: 'cost', destino_contable: 'contabilidad_neta' })).toBeNull();
     expect(destinoSugerido({ type: 'cost', destino_contable: null })).toBeNull();
     expect(destinoSugerido({ type: 'cost' })).toBeNull();
   });
@@ -208,9 +220,17 @@ describe('resolverDestino', () => {
   });
 
   it('sin sugerencia queda por definir, y eso se puede filtrar', () => {
-    const r = resolverDestino({ type: 'cost', destino_contable: 'contabilidad_neta' }, {});
+    const r = resolverDestino({ type: 'cost', destino_contable: null }, {});
     expect(r.porDefinir).toBe(true);
     expect(r.cuenta).toBeNull();
+  });
+
+  it('contabilidad neta NO queda por definir: tiene propuesta floja', () => {
+    const r = resolverDestino({ type: 'cost', destino_contable: 'contabilidad_neta' }, {});
+    expect(r.porDefinir).toBe(false);
+    expect(r.cuenta).toBe('91');
+    expect(r.contrapartida).toBe('791');
+    expect(r.confianza).toBe('baja');
   });
 
   it('una venta no tiene objeto de destino en absoluto', () => {
@@ -361,8 +381,20 @@ describe('el asiento de destino dentro del Libro Diario', () => {
     expect(a.partidas.some(p => p.cuenta === '791')).toBe(true);
   });
 
-  it('un comprobante sin destino conocido NO inventa líneas', () => {
+  it('contabilidad neta arma el asiento con la 91, y el filtro la separa', () => {
     const a = generarAsiento({ ...compra, destino_contable: 'contabilidad_neta' });
+    expect(a.cuentas.destino.cuenta).toBe('91');
+    expect(cumpleEstadoCuenta(a, 'destino_flojo')).toBe(true);
+    expect(cumpleEstadoCuenta(a, 'destino_por_definir')).toBe(false);
+    // Las de obra (92, confianza media) no son «flojas».
+    expect(cumpleEstadoCuenta(generarAsiento(compra), 'destino_flojo')).toBe(false);
+    // Elegida a mano, deja de ser floja aunque sea la misma 91.
+    const manual = generarAsiento({ ...compra, destino_contable: 'contabilidad_neta', cuenta_pcge_destino: '91' });
+    expect(cumpleEstadoCuenta(manual, 'destino_flojo')).toBe(false);
+  });
+
+  it('un comprobante sin destino conocido NO inventa líneas', () => {
+    const a = generarAsiento({ ...compra, destino_contable: null });
     expect(a.cuentas.destino.porDefinir).toBe(true);
     expect(a.partidas.some(p => p.cuenta === '791')).toBe(false);
     const debe = a.partidas.reduce((s, p) => s + p.debe, 0);

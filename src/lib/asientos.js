@@ -571,9 +571,12 @@ export const ESTADOS_CUENTA = [
   { v: 'efectivo_sobre_umbral',     label: '⚠ Efectivo sobre el umbral' },
   // El del DESTINO (18-set). Otra pregunta más: la cuenta del gasto puede
   // estar perfecta, la plata bien puesta, y seguir sin saberse para qué fue.
-  // Son 685 de 1.789 el día que se soltó —los 403 de contabilidad neta y los
-  // 282 sin destino contable—, que es exactamente la pila que hay que trabajar.
+  // Eran 685 de 1.789 el día que se soltó. Desde el mismo 18-set los 403 de
+  // contabilidad neta reciben la 91 como propuesta floja, así que la pila
+  // «por definir» queda en los 282 sin destino contable, y los 403 tienen su
+  // propio filtro: una propuesta floja sin filtro se pierde entre las buenas.
   { v: 'destino_por_definir',       label: '⚠ Destino por definir' },
+  { v: 'destino_flojo',             label: 'Destino propuesto poco seguro' },
 ];
 
 /**
@@ -603,6 +606,7 @@ export function cumpleEstadoCuenta(asiento, estado) {
     // como pendiente, la pila incluiría 169 comprobantes que nadie puede
     // resolver, y una pila con basura adentro es una pila que no se trabaja.
     case 'destino_por_definir':       return c.destino?.porDefinir === true;
+    case 'destino_flojo':             return c.destino?.manual === false && c.destino?.confianza === 'baja';
     default:            return true;
   }
 }
