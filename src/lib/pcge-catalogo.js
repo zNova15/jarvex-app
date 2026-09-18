@@ -1814,4 +1814,9 @@ export const PCGE_ELEMENTOS = {
   '6': "Gastos por naturaleza",
   '7': "Ingresos",
   '8': "Saldos intermediarios de gestión y determinación del resultado del ejercicio",
+  // El nombre SÍ es oficial —así titula el PCGE 2019 su página 206— pero las
+  // cuentas de adentro NO: la norma dice «se deja a criterio de las entidades
+  // el uso de las cuentas de este elemento». Por eso el elemento figura acá y
+  // sus siete cuentas viven en `pcge-elemento9.js`, que es propio del grupo.
+  '9': "Contabilidad analítica de explotación: costos de producción y gastos por función",
 };

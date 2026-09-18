@@ -11,6 +11,8 @@ import {
 } from "../lib/pcge.js";
 import { fijarCuentaManual, fijarCuentaEnLote } from "../lib/cuenta-manual-db.js";
 import { opcionesContrapartida, avisoEfectivoSobreUmbral, CAJA } from "../lib/contrapartida.js";
+import { opcionesDestino, nombreDestino, contrapartidaDeDestino } from "../lib/destino-asiento.js";
+import { avisoPeriodoCerrado } from "../lib/periodo-contable.js";
 import { cargarBancarizados } from "../lib/bancarizado-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
@@ -147,6 +149,26 @@ function BadgeCuenta({ cuentas }) {
     badges.push(B('b-red', '⚠ efectivo sobre el umbral', cp.aviso));
   }
 
+  // ── EL BADGE DEL DESTINO (18-set) ────────────────────────────────
+  // Tercera pregunta del mismo asiento: qué se compró (cuenta), de dónde salió
+  // la plata (contrapartida) y PARA QUÉ fue (destino). `null` en una venta,
+  // que no lleva asiento de destino.
+  const cd = c.destino;
+  if (cd) {
+    if (cd.manual) {
+      badges.push(B('b-green', `✎ destino ${cd.cuenta}`,
+        `${cd.nombre}. Lo eligió una persona; la contrapartida (${cd.contrapartida}) sale sola de esa decisión.`));
+    } else if (cd.porDefinir) {
+      badges.push(B('b-red', '⚠ destino por definir',
+        'No se sabe para qué fue esta plata: el comprobante no está vinculado a una obra '
+        + 'ni marcado como gasto general. Sin destino no hay costo por obra ni Estado de '
+        + 'Resultados por función.'));
+    } else {
+      badges.push(B('b-amber', `destino ${cd.cuenta}`,
+        `${cd.nombre}. ${cd.porque} Se puede cambiar.`));
+    }
+  }
+
   if (c.revisar && !c.provisional) {
     badges.push(B('b-amber', 'revisar',
       (c.detalle || []).map(d => d.porque).filter(Boolean).join('\n')
@@ -165,7 +187,15 @@ function BadgeCuenta({ cuentas }) {
  * SUGERIDAS —lo que la app dedujo, y las hermanas de la que ya está puesta— y
  * el buscador es para cuando ninguna sirve.
  */
-function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocus, bloqueada = null }) {
+// `resolver` y `buscar` existen por el ELEMENTO 9: sus cuentas (90…97) no están
+// en el catálogo del PCGE —la norma no las define— así que `cuentaPcge('92')`
+// da null y `buscarCuentas('92')` no la encuentra. Sin estos dos huecos, el
+// campo de destino mostraría la cuenta elegida en blanco. Los demás selectores
+// siguen usando el catálogo, que es el default.
+function SelectorCuenta({
+  valor, sugeridas = [], onElegir, placeholder, autoFocus, bloqueada = null,
+  resolver = cuentaPcge, buscar = null,
+}) {
   // `bloqueada` = { codigo, motivo }: la cuenta no se puede elegir y se
   // muestra apagada con el motivo, tanto en las sugeridas como en el
   // buscador. No se esconde a propósito: escondida, alguien la busca entre
@@ -176,10 +206,11 @@ function SelectorCuenta({ valor, sugeridas = [], onElegir, placeholder, autoFocu
   const resultados = uM(() => {
     const t = q.trim();
     if (!t) return [];
+    if (buscar) return buscar(t);
     return buscarCuentas(t, { nivelMax: NIVEL_MAXIMO }).slice(0, 40);
-  }, [q]);
+  }, [q, buscar]);
 
-  const elegida = valor ? cuentaPcge(valor) : null;
+  const elegida = valor ? resolver(valor) : null;
 
   return (
     <div>
@@ -259,8 +290,12 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
 
   const [cuenta, setCuenta] = uS(movimiento?.cuenta_pcge || null);
   const [contra, setContra] = uS(movimiento?.cuenta_pcge_contrapartida || null);
+  const [destino, setDestino] = uS(movimiento?.cuenta_pcge_destino || null);
   const [aplicarATodos, setAplicarATodos] = uS(false);
   const [guardando, setGuardando] = uS(false);
+  // El escape del período ya presentado. Nace apagado a propósito: la
+  // contadora tiene que leer qué está por hacer antes de poder hacerlo.
+  const [forzarCerrado, setForzarCerrado] = uS(false);
   const enCursoRef = uR(false);
 
   // Las sugeridas: lo que la app dedujo para ESTE comprobante, y las hermanas
@@ -317,6 +352,33 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
     [movimiento, contra],
   );
 
+  // ── EL DESTINO: PARA QUÉ FUE LA PLATA (tanda 1 del destino) ───────
+  // La cuenta de arriba dice QUÉ se compró; ésta dice PARA QUÉ. Son preguntas
+  // distintas y por eso son dos campos: dos facturas de combustible idénticas
+  // —una del generador de la obra, otra de la camioneta— llevan la MISMA
+  // cuenta 6032 y destinos distintos (92 contra 95).
+  const cuentaNaturaleza = cuenta || cuentasAsiento.detalle?.[0]?.cuenta || '';
+  const destinosSugeridos = uM(
+    () => opcionesDestino(movimiento || {}, { cuentaOrigen: cuentaNaturaleza }),
+    [movimiento, cuentaNaturaleza],
+  );
+  // El elemento 9 no vive en el catálogo del PCGE: el selector necesita saber
+  // resolver y buscar sobre ESTAS once opciones, no sobre las 1.792.
+  const resolverDest = uM(
+    () => (codigo) => (nombreDestino(codigo) ? { codigo, nombre: nombreDestino(codigo) } : null),
+    [],
+  );
+  const buscarDest = uM(() => (texto) => {
+    const t = texto.trim().toLowerCase();
+    return destinosSugeridos.filter(
+      o => o.codigo.startsWith(t) || o.nombre.toLowerCase().includes(t),
+    );
+  }, [destinosSugeridos]);
+  const destinoAsiento = cuentasAsiento.destino || null;
+  // El aviso del mes ya declarado. Es del COMPROBANTE, no de lo que se cambie:
+  // tocar cualquier cosa de un mes presentado tiene la misma consecuencia.
+  const avisoCerrado = uM(() => avisoPeriodoCerrado(movimiento || {}), [movimiento]);
+
   // Guard SÍNCRONO: el doble clic acá escribiría dos versiones del mismo
   // movimiento y dejaría el sync en reintento.
   const guardar = async () => {
@@ -324,7 +386,7 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
     enCursoRef.current = true;
     setGuardando(true);
     try {
-      const cambios = { cuenta, contrapartida: contra };
+      const cambios = { cuenta, contrapartida: contra, destino };
       const ids = [asiento.movimiento_id, ...(aplicarATodos ? hermanos.map(h => h.id) : [])];
       // Si se eligió la caja en una compra sujeta a bancarización, la
       // auditoría tiene que decir que se hizo a sabiendas: esa decisión le
@@ -333,8 +395,10 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
         ? `Libro Diario · se declara pago en EFECTIVO pese a la bancarización en ${movimiento?.document_number || 'el comprobante'} (pierde crédito fiscal y deducción, art. 8 Ley 28194)`
         : '';
 
+      const ctx = { userId, motivo, forzarPeriodoCerrado: forzarCerrado };
+
       if (ids.length > 1) {
-        const r = await fijarCuentaEnLote(ids, cambios, { userId, motivo });
+        const r = await fijarCuentaEnLote(ids, cambios, ctx);
         if (r.fallaron.length) {
           showToast?.(`Se corrigieron ${r.ok}, fallaron ${r.fallaron.length}: ${r.fallaron[0].error}`, 'amber');
         } else {
@@ -344,12 +408,14 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
         return;
       }
 
-      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, { userId, motivo });
+      const r = await fijarCuentaManual(asiento.movimiento_id, cambios, ctx);
       if (!r.ok) { showToast?.(r.error, 'red'); return; }
       showToast?.(
         r.vuelveAAutomatico
           ? '✓ Vuelve a la cuenta que deduce la app.'
-          : `✓ Cuenta corregida${cuenta ? ` a ${cuenta} ${cuentaPcge(cuenta)?.nombre || ''}` : ''}.`,
+          : (destino && destino !== (movimiento?.cuenta_pcge_destino || null)
+            ? `✓ Destino guardado: ${destino} ${nombreDestino(destino)}.`
+            : `✓ Cuenta corregida${cuenta ? ` a ${cuenta} ${cuentaPcge(cuenta)?.nombre || ''}` : ''}.`),
         'green',
       );
       onClose();
@@ -362,7 +428,8 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
   };
 
   const sinCambios = (cuenta || null) === (movimiento?.cuenta_pcge || null)
-    && (contra || null) === (movimiento?.cuenta_pcge_contrapartida || null);
+    && (contra || null) === (movimiento?.cuenta_pcge_contrapartida || null)
+    && (destino || null) === (movimiento?.cuenta_pcge_destino || null);
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -390,6 +457,33 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
             </div>
           )}
         </div>
+
+        {/* EL MES QUE YA SE LE PRESENTÓ A SUNAT.
+            No es una pared —Gabriel: «bloquearlo, pero no por completo, en
+            caso muy raro que se quiera cambiar un dato de un comprobante
+            antiguo se podría»— pero el escape hay que pedirlo leyendo lo que
+            se está por hacer, y queda en auditoría. */}
+        {avisoCerrado && (
+          <div style={{
+            marginBottom: 12, padding: '9px 11px', borderRadius: 6, fontSize: 12, lineHeight: 1.45,
+            background: forzarCerrado ? 'rgba(242,183,5,.12)' : 'rgba(231,76,60,.10)',
+            color: forzarCerrado ? 'var(--amber)' : 'var(--red)',
+          }}>
+            🔒 {avisoCerrado}
+            {!forzarCerrado ? (
+              <div style={{ marginTop: 6 }}>
+                <button className="btn btn-ghost btn-xs" onClick={() => setForzarCerrado(true)}
+                  title="Modificar igual un comprobante de un período ya declarado">
+                  Modificarlo igual →
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginTop: 4 }}>
+                Se va a modificar igual. La auditoría va a decir que se hizo a sabiendas.
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: 'grid', gap: 14 }}>
           <div>
@@ -441,6 +535,64 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
             )}
           </div>
 
+          {/* EL DESTINO — la mitad que faltaba del asiento.
+              Solo en los egresos: una venta no se traslada por la 79, se
+              cierra contra el resultado. Por eso acá no aparece el campo en
+              vez de aparecer vacío y sin poder llenarse. */}
+          {destinoAsiento && (
+            <div>
+              <label className="flabel">Destino (para qué fue esa plata)</label>
+              {!destinoAsiento.manual && destinoAsiento.porque && (
+                <div style={{ fontSize: 11.5, lineHeight: 1.45, marginBottom: 7, color: 'var(--tm)' }}>
+                  {destinoAsiento.porque}
+                </div>
+              )}
+              {!destinoAsiento.manual && destinoAsiento.porDefinir && (
+                <div style={{ fontSize: 11.5, lineHeight: 1.45, marginBottom: 7, color: 'var(--red)' }}>
+                  ⚠ No se puede deducir para qué fue: el comprobante no está vinculado
+                  a una obra ni marcado como gasto general. Sin destino, el asiento
+                  queda a medias.
+                </div>
+              )}
+              <SelectorCuenta
+                valor={destino}
+                sugeridas={destinosSugeridos}
+                onElegir={setDestino}
+                resolver={resolverDest}
+                buscar={buscarDest}
+                placeholder="Buscar el destino (92, administración, ventas…)"
+              />
+              {/* La otra pata, dicha antes de guardar. Es lo que evita que
+                  alguien crea que tiene que escribir dos cuentas. */}
+              {(destino || destinoAsiento.cuenta) && (() => {
+                const c = contrapartidaDeDestino(destino || destinoAsiento.cuenta, cuentaNaturaleza);
+                if (!c.cuenta) return null;
+                return (
+                  <div style={{
+                    marginTop: 7, padding: '8px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.45,
+                    background: 'rgba(46,204,113,.10)',
+                  }}>
+                    El asiento de destino sale solo:{' '}
+                    <strong className="col-m">{destino || destinoAsiento.cuenta}</strong> al debe contra{' '}
+                    <strong className="col-m">{c.cuenta}</strong> al haber.
+                    <div style={{ color: 'var(--tm)', marginTop: 2 }}>{c.porque}</div>
+                  </div>
+                );
+              })()}
+              {/* El aviso del costo atrapado: mandar al inventario algo que ya
+                  se consumió no baja el resultado del período, y la empresa
+                  termina pagando más renta de la que debe. */}
+              {destino && destinosSugeridos.find(o => o.codigo === destino)?.avisa && (
+                <div style={{
+                  marginTop: 7, padding: '8px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.45,
+                  background: 'rgba(242,183,5,.12)', color: 'var(--amber)',
+                }}>
+                  ⚠ {destinosSugeridos.find(o => o.codigo === destino).porque}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* LOS OTROS DEL MISMO PROVEEDOR.
               Es lo que hace usable la pila de «cuentas por definir»: son 345 en
               producción y se repiten por proveedor —treinta facturas del mismo
@@ -476,12 +628,16 @@ function ModalCuenta({ asiento, movimiento, hermanos = [], userId, onClose, show
           <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
           <button
             className="btn btn-sm"
-            onClick={() => { setCuenta(null); setContra(null); }}
-            disabled={!cuenta && !contra}
-            title="Borrar las dos cuentas elegidas a mano y dejar que la app las deduzca">
+            onClick={() => { setCuenta(null); setContra(null); setDestino(null); }}
+            disabled={!cuenta && !contra && !destino}
+            title="Borrar las cuentas elegidas a mano y dejar que la app las deduzca">
             Volver a automático
           </button>
-          <button className="btn btn-amber btn-sm" onClick={guardar} disabled={guardando || sinCambios}>
+          <button
+            className="btn btn-amber btn-sm"
+            onClick={guardar}
+            disabled={guardando || sinCambios || (!!avisoCerrado && !forzarCerrado)}
+            title={avisoCerrado && !forzarCerrado ? avisoCerrado : undefined}>
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </div>

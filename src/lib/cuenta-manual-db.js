@@ -28,6 +28,10 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db, SYNC_STATUS } from '../db/jarvex.db';
 import { esCuentaValida, cuenta as cuentaPcge } from './pcge.js';
+import { validarDestino } from './destino-asiento.js';
+import {
+  CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, avisoPeriodoCerrado, motivoForzado,
+} from './periodo-contable.js';
 
 const avisar = () => {
   try {
@@ -56,22 +60,38 @@ export function validarCuentaManual(codigo) {
 }
 
 /**
+ * Las tres decisiones que se pueden guardar, con su columna y su validador.
+ *
+ * El destino NO usa `validarCuentaManual` y no es un descuido: sus cuentas del
+ * elemento 9 no existen en el catálogo del PCGE —la norma no las define— así
+ * que `esCuentaValida('94')` da false. `validarDestino` conoce los dos
+ * catálogos y además exige que la existencia elegida tenga espejo en la 61.
+ */
+const DECISIONES = [
+  { clave: 'cuenta',        columna: 'cuenta_pcge',                validar: validarCuentaManual },
+  { clave: 'contrapartida', columna: 'cuenta_pcge_contrapartida',  validar: validarCuentaManual },
+  { clave: 'destino',       columna: 'cuenta_pcge_destino',        validar: validarDestino },
+];
+
+/**
  * Fija (o borra) la cuenta de un movimiento.
  *
  * @param {string} movimientoId
- * @param {object} cambios   { cuenta, contrapartida } — `null` en cualquiera
- *                           de los dos la devuelve a automático; `undefined`
+ * @param {object} cambios   { cuenta, contrapartida, destino } — `null` en
+ *                           cualquiera la devuelve a automático; `undefined`
  *                           la deja como está.
- * @param {object} ctx       { userId, motivo }
- * @returns {Promise<{ok:boolean, error?:string}>}
+ * @param {object} ctx       { userId, motivo, forzarPeriodoCerrado, cerradoHasta }
+ * @returns {Promise<{ok:boolean, error?:string, periodoCerrado?:boolean}>}
  */
-export async function fijarCuentaManual(movimientoId, cambios = {}, { userId = null, motivo = '' } = {}) {
+export async function fijarCuentaManual(movimientoId, cambios = {}, {
+  userId = null, motivo = '', forzarPeriodoCerrado = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
+} = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
 
   const campos = {};
-  for (const [clave, columna] of [['cuenta', 'cuenta_pcge'], ['contrapartida', 'cuenta_pcge_contrapartida']]) {
+  for (const { clave, columna, validar } of DECISIONES) {
     if (!(clave in cambios)) continue;
-    const v = validarCuentaManual(cambios[clave]);
+    const v = validar(cambios[clave]);
     if (!v.ok) return { ok: false, error: v.error };
     campos[columna] = v.codigo;
   }
@@ -81,6 +101,15 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, { userId = n
   // en el disco, no de la copia que la pantalla tenga en memoria.
   const fresh = await db.accounting_movements.get(movimientoId);
   if (!fresh) return { ok: false, error: 'El comprobante no está en este dispositivo — sincronizá.' };
+
+  // ── EL FRENO DEL PERÍODO YA PRESENTADO ──────────────────────────
+  // No es una pared: quien sabe lo que hace pasa con `forzarPeriodoCerrado` y
+  // la auditoría lo dice. Lo que no se puede es cambiar en silencio un mes que
+  // ya se declaró y que el libro de la empresa quede distinto del de SUNAT.
+  const enCerrado = movEnPeriodoCerrado(fresh, cerradoHasta);
+  if (enCerrado && !forzarPeriodoCerrado) {
+    return { ok: false, periodoCerrado: true, error: avisoPeriodoCerrado(fresh, cerradoHasta) };
+  }
 
   const vuelveAAutomatico = Object.values(campos).every(v => v === null);
   const ahora = new Date().toISOString();
@@ -107,12 +136,19 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, { userId = n
       oldData: {
         cuenta_pcge: fresh.cuenta_pcge ?? null,
         cuenta_pcge_contrapartida: fresh.cuenta_pcge_contrapartida ?? null,
+        cuenta_pcge_destino: fresh.cuenta_pcge_destino ?? null,
       },
       newData: campos,
-      reason: motivo
-        || (vuelveAAutomatico
-          ? `Libro Diario · ${fresh.document_number || 'el comprobante'} vuelve a la cuenta automática`
-          : `Libro Diario · cuenta corregida a mano en ${fresh.document_number || 'el comprobante'}`),
+      // Forzar un mes ya declarado se dice SIEMPRE, aunque venga otro motivo:
+      // es el dato que alguien va a buscar dentro de un año, y perderlo porque
+      // se pisó con un texto más nuevo sería perder justo ese.
+      reason: [
+        motivo
+          || (vuelveAAutomatico
+            ? `Libro Diario · ${fresh.document_number || 'el comprobante'} vuelve a la cuenta automática`
+            : `Libro Diario · cuenta corregida a mano en ${fresh.document_number || 'el comprobante'}`),
+        enCerrado ? motivoForzado(fresh, cerradoHasta) : '',
+      ].filter(Boolean).join(' · '),
     });
   } catch { /* la auditoría no puede impedir la corrección */ }
 

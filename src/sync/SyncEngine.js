@@ -652,6 +652,8 @@ const CAMPO_HUMANO = {
   rol_obra: 'rol en la obra', seguro_a_cargo: 'seguro a cargo', metodo_pago: 'método de pago',
   obra_id: 'obra', company_id: 'empresa', proveedor_id: 'proveedor', personal_id: 'personal',
   cuenta_pcge: 'cuenta contable', fecha: 'fecha', date: 'fecha',
+  cuenta_pcge_contrapartida: 'contrapartida del asiento',
+  cuenta_pcge_destino: 'cuenta de destino del asiento',
 };
 // Valores aceptados por campos con CHECK conocidos (para sugerir la corrección).
 const VALORES_VALIDOS = {

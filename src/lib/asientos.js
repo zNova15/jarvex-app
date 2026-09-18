@@ -9,6 +9,7 @@
 import { desglosarIgv, describirIgv } from './igv-desglose.js';
 import { fmtFechaLarga } from './fecha.js';
 import { resolverContrapartida, avisoEfectivoSobreUmbral } from './contrapartida.js';
+import { resolverDestino, nombreDestino } from './destino-asiento.js';
 
 function r2(n) {
   const v = Number(n);
@@ -310,6 +311,9 @@ function construirAsiento(movimiento, opts = {}) {
 
   // Las cuentas de gasto/ingreso y cómo se reparte la base entre ellas.
   const naturaleza = lineasDeNaturaleza(m, subtotal, opts);
+  // El importe que viaja al asiento de destino. Queda en 0 para las ventas:
+  // un ingreso no se traslada por la 79, se cierra contra el resultado.
+  let baseDestino = 0;
 
   if (tipo === 'income') {
     // ─── Ingreso (venta) ─────────────────────────────────
@@ -348,6 +352,11 @@ function construirAsiento(movimiento, opts = {}) {
     }
   } else {
     // ─── Costo / Gasto ───────────────────────────────────
+    // Sobre qué importe se arma el asiento de destino: lo que se trasladó por
+    // naturaleza, sin el IGV. El IGV no se traslada a ningún lado — es crédito
+    // fiscal, no gasto. Se calcula DESPUÉS del ajuste de la planilla, porque
+    // ahí el "IGV" inferido se suma al gasto y sí forma parte de lo que viaja.
+    //
     // La planilla se reconoce por la cuenta 62 PELADA (o su 621
     // Remuneraciones), no por «cualquier cosa que caiga en el elemento 62».
     // Desde que la cuenta sale de los ítems, una factura de CAPACITACIÓN va a
@@ -376,6 +385,12 @@ function construirAsiento(movimiento, opts = {}) {
       // Planilla no tiene IGV; el "igv" inferido se suma al gasto
       partidas[0].debe = r2(partidas[0].debe + igv);
     }
+
+    // Las líneas de naturaleza son las primeras del asiento y nada se pushea
+    // antes que ellas en esta rama: por eso el `slice` desde 0 es exacto.
+    baseDestino = r2(
+      partidas.slice(0, naturaleza.lineas.length).reduce((s, p) => s + p.debe, 0),
+    );
 
     if (pagado) {
       partidas.push({
@@ -407,6 +422,38 @@ function construirAsiento(movimiento, opts = {}) {
     const last = partidas[partidas.length - 1];
     if (last.haber > 0) last.haber = r2(last.haber + diff);
     else last.debe = r2(last.debe - diff);
+  }
+
+  // ── EL ASIENTO DE DESTINO ─────────────────────────────────────────
+  // Va DESPUÉS del cuadre por redondeo, no antes: ese ajuste toca la última
+  // partida, y si la última fuera la del destino le movería un céntimo a una
+  // pata sin movérselo a la otra — el asiento de destino dejaría de cuadrar
+  // solo. Acá ya no hay nada que ajustar y estas dos líneas suman lo mismo de
+  // los dos lados, así que el asiento sigue cuadrando.
+  //
+  // Son dos líneas del MISMO asiento y no un asiento aparte, a propósito: el
+  // Libro Diario de JARVEX se deriva 1:1 del movimiento, y partirlo en dos
+  // obligaría a numerar, ordenar y exportar un asiento que no tiene
+  // comprobante propio. Contablemente es lo mismo — lo que importa es que las
+  // cuatro líneas estén y que cuadren.
+  //
+  // La regla 68 → 78 mira la PRIMERA cuenta de naturaleza. Alcanza: la 68 es
+  // depreciación y provisiones, que no salen de los ítems de un comprobante,
+  // así que nunca viene repartida con otras.
+  const destino = resolverDestino(m, { cuentaOrigen: naturaleza.lineas[0]?.cuenta || '' });
+  if (destino?.cuenta && destino.contrapartida && baseDestino > 0) {
+    partidas.push({
+      cuenta: destino.cuenta,
+      descripcion: `Destino — ${desc}`,
+      debe: baseDestino,
+      haber: 0,
+    });
+    partidas.push({
+      cuenta: destino.contrapartida,
+      descripcion: `Cargas imputables — ${desc}`,
+      debe: 0,
+      haber: baseDestino,
+    });
   }
 
   const numero = m.id ? String(m.id).slice(0, 8).toUpperCase() : '—';
@@ -445,6 +492,19 @@ function construirAsiento(movimiento, opts = {}) {
         // lo que hacía), el asiento lleva la consecuencia tributaria escrita.
         aviso: pagado ? avisoEfectivoSobreUmbral(m, cuentaCaja) : null,
       },
+      // A DÓNDE FUE, que es la mitad que faltaba. `null` en una venta: un
+      // ingreso no se traslada por la 79. En un egreso siempre hay objeto,
+      // aunque sea para decir `porDefinir` — es lo que permite aislar la pila
+      // de los que todavía nadie destinó, igual que se hizo con la cuenta.
+      destino: destino ? {
+        cuenta: destino.cuenta,
+        nombre: nombreDestino(destino.cuenta),
+        contrapartida: destino.contrapartida,
+        porque: destino.porque,
+        manual: destino.manual,
+        confianza: destino.confianza,
+        porDefinir: destino.porDefinir,
+      } : null,
       revisar: naturaleza.revisar,
       partida: naturaleza.lineas.length > 1,
       detalle: naturaleza.lineas.map(l => ({
@@ -509,6 +569,11 @@ export const ESTADOS_CUENTA = [
   // arriba: la cuenta del gasto puede estar perfecta y la de la plata no.
   { v: 'contrapartida_por_definir', label: '⚠ Contrapartida por definir' },
   { v: 'efectivo_sobre_umbral',     label: '⚠ Efectivo sobre el umbral' },
+  // El del DESTINO (18-set). Otra pregunta más: la cuenta del gasto puede
+  // estar perfecta, la plata bien puesta, y seguir sin saberse para qué fue.
+  // Son 685 de 1.789 el día que se soltó —los 403 de contabilidad neta y los
+  // 282 sin destino contable—, que es exactamente la pila que hay que trabajar.
+  { v: 'destino_por_definir',       label: '⚠ Destino por definir' },
 ];
 
 /**
@@ -534,6 +599,10 @@ export function cumpleEstadoCuenta(asiento, estado) {
     // cuenta de gasto: la decisión humana cierra la pregunta.
     case 'contrapartida_por_definir': return c.contrapartida?.porDefinir === true && c.contrapartidaManual !== true;
     case 'efectivo_sobre_umbral':     return !!c.contrapartida?.aviso;
+    // Una venta NO está «sin destino»: no le corresponde tener uno. Si contara
+    // como pendiente, la pila incluiría 169 comprobantes que nadie puede
+    // resolver, y una pila con basura adentro es una pila que no se trabaja.
+    case 'destino_por_definir':       return c.destino?.porDefinir === true;
     default:            return true;
   }
 }

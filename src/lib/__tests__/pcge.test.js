@@ -50,9 +50,14 @@ describe('el catálogo está completo', () => {
     expect(malos).toEqual([]);
   });
 
-  it('los nueve elementos del plan están, con las cuentas de orden al final', () => {
+  it('los diez elementos del plan están, con las cuentas de orden al final', () => {
+    // El 9 se sumó el 18-set con el asiento de destino. El NOMBRE del elemento
+    // sí es oficial —así titula el PCGE 2019 su página 206— pero sus cuentas
+    // no: la norma dice «se deja a criterio de las entidades el uso de las
+    // cuentas de este elemento». Por eso el elemento figura acá y sus siete
+    // cuentas viven en `pcge-elemento9.js`, que es propio del grupo.
     expect(PCGE_ELEMENTOS_ORDENADOS.map(e => e.codigo))
-      .toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '0']);
+      .toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']);
   });
 });
 
