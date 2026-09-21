@@ -235,16 +235,20 @@ export function VentanaConsecuencias({ c, seleccion, setSeleccion, cuentaElegida
                 </div>
               </Caja>
             )}
-            {c.requiereAceptarCerrados && (
-              <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer', fontSize: 12, lineHeight: 1.45, color: 'var(--red)' }}>
-                <input type="checkbox" style={{ marginTop: 2 }}
-                  checked={!!sel.aceptaCerrados}
-                  onChange={e => marcar({ aceptaCerrados: e.target.checked })}/>
-                <span>
-                  Entiendo que cambia el asiento de {c.alcance.cerrados} comprobante(s) de meses ya presentados.
-                  Queda en auditoría. Si preferís no moverlos, dejá la clasificación sin corregir.
-                </span>
-              </label>
+            {/* 🔴 Acá había una casilla OBLIGATORIA («entiendo que cambia el
+                asiento de N comprobantes de meses ya presentados») sin la cual
+                no se podía guardar. Se sacó el 22-set-2026 junto con el candado
+                del Libro Diario: el cierre anual reclasifica el ejercicio
+                entero y el 94 % de los comprobantes es de un mes presentado, o
+                sea que la casilla aparecía casi siempre y se marcaba sin leer.
+                El NÚMERO se sigue diciendo —arriba, en la caja del alcance— y
+                cada escritura queda en Auditoría; lo que se fue es la traba. */}
+            {c.cerradosQueSeMueven > 0 && (
+              <Caja nivel="ambar">
+                <strong>{c.cerradosQueSeMueven} de los que se mueven son de meses ya presentados a SUNAT.</strong>
+                {' '}Se corrigen igual —es lo que hace falta para el cierre anual— y queda
+                registrado en Auditoría. Si preferís no moverlos, dejá la clasificación sin corregir.
+              </Caja>
             )}
             {c.alcance.conManual > 0 && (
               <Caja nivel="info">
@@ -256,7 +260,7 @@ export function VentanaConsecuencias({ c, seleccion, setSeleccion, cuentaElegida
                 Del mismo proveedor:
                 {c.hermanos.planes.length > 0 && <> <strong>{c.hermanos.planes.length}</strong> reciben la misma corrección.</>}
                 {c.hermanos.seArreglanSolos.length > 0 && <> {c.hermanos.seArreglanSolos.length} ya salen bien con la clasificación corregida, sin ponerles nada a mano.</>}
-                {c.hermanos.cerrados.length > 0 && <> {c.hermanos.cerrados.length} son de meses ya presentados y <strong>no se tocan</strong>.</>}
+                {c.hermanos.cerrados.length > 0 && <> {c.hermanos.cerrados.length} son de meses ya presentados y <strong>también se corrigen</strong>.</>}
               </Caja>
             )}
           </div>

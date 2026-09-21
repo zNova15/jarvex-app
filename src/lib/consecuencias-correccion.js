@@ -514,13 +514,25 @@ export function alcanceDeCorrecciones({
 /**
  * Los otros comprobantes del mismo proveedor, repartidos según qué les pasa.
  *
- *   · cerrados       — de meses ya presentados: NO se tocan. Antes de esta
- *                      tanda el escape del candado que se pedía para UN
- *                      comprobante se pasaba a todo el lote; ahora no.
  *   · seArreglanSolos — la corrección de la clasificación ya los deja en la
  *                      cuenta elegida: no hace falta ponérsela a mano.
  *   · planes          — los que reciben la corrección a mano, cada uno con su
  *                      propio ajuste de tipo si el destino lo pide.
+ *   · cerrados        — cuántos de los anteriores son de meses ya presentados.
+ *                      🔴 ES UN CONTEO, NO UNA EXCLUSIÓN (cambió el 22-set-2026).
+ *
+ * ── POR QUÉ LOS MESES PRESENTADOS YA NO SE SALTEAN ────────────────
+ * Hasta el 22-set esta función los apartaba y NO los tocaba, para que el
+ * escape del candado que se pedía por UN comprobante no se colara al lote.
+ * Con el candado fuera (pedido de Gabriel para el cierre anual) esa exclusión
+ * se dio vuelta: era la que rompía justo el caso de uso. El 94 % de los
+ * comprobantes es de un mes presentado, así que «aplicar a los del mismo
+ * proveedor» saltaba casi todo y dejaba la corrección a medio hacer — lo peor
+ * de los dos mundos, porque el insumo quedaba corregido para adelante y las
+ * treinta facturas viejas seguían en la cuenta mala.
+ *
+ * Siguen contándose para que la ventana pueda DECIR cuántos son, y cada
+ * escritura deja su rastro en auditoría.
  */
 export function planDeHermanos(hermanos = [], {
   cambios = {}, familiaDeCorregida = null, hayCorrecciones = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
@@ -528,7 +540,7 @@ export function planDeHermanos(hermanos = [], {
   const out = { planes: [], cerrados: [], seArreglanSolos: [] };
   for (const h of hermanos) {
     if (!h) continue;
-    if (movEnPeriodoCerrado(h, cerradoHasta)) { out.cerrados.push(h); continue; }
+    if (movEnPeriodoCerrado(h, cerradoHasta)) out.cerrados.push(h);
     const cuenta = cambios.cuenta || null;
     if (cuenta && hayCorrecciones && typeof familiaDeCorregida === 'function') {
       const r = cuentasDeComprobante(h, { familiaDe: familiaDeCorregida });
@@ -699,7 +711,20 @@ export function armarConsecuencias({
     } : null,
     // C
     alcance, hermanos: hermanosPlan,
-    requiereAceptarCerrados: alcance.cerrados > 0,
+    // 🔴 SIEMPRE false desde el 22-set-2026. Era la casilla «entiendo que
+    // cambia N comprobantes de meses ya presentados», obligatoria para poder
+    // guardar. Se apagó junto con el candado y por el mismo motivo: si mover
+    // un comprobante declarado ya no pide permiso, pedirlo para el lote es
+    // incoherente — y el cierre anual ES el lote. El número se sigue
+    // mostrando; lo que se sacó es la traba, no el aviso.
+    //
+    // Se deja la clave (en vez de borrarla) porque la ventana y sus tests la
+    // leen, y un `undefined` silencioso volvería a habilitar el botón «por
+    // accidente» en vez de «por decisión». Hay un test que la fija en false.
+    requiereAceptarCerrados: false,
+    // Cuántos de los que se van a mover son de un mes ya presentado. Es lo que
+    // la ventana dice en voz alta ahora que no hay casilla.
+    cerradosQueSeMueven: alcance.cerrados + hermanosPlan.cerrados.length,
     // lo que se guarda
     escribir,
     hayQueDecir,

@@ -75,7 +75,9 @@ describe('la ventana se dibuja en cada escenario', () => {
     expect(html).toContain('Ninguna clasificación');
   });
 
-  it('mueve meses presentados: el aviso en rojo y la casilla de aceptarlo', () => {
+  // 🔴 CAMBIÓ EL 22-set-2026: el aviso queda, la casilla obligatoria no. Ver
+  // el comentario en `consecuencias-correccion.js`.
+  it('mueve meses presentados: lo dice, con el detalle, y ya no pide una casilla', () => {
     const viejo = mov([item('AMOLADORA ANGULAR 4 1/2')], { id: 'viejo', date: '2026-03-01', document_number: 'F001-7' });
     const html = dibujar(
       { mov: mov([item('AMOLADORA ANGULAR 4 1/2')]), cambios: { cuenta: '656' }, movs: [viejo] },
@@ -83,16 +85,18 @@ describe('la ventana se dibuja en cada escenario', () => {
     );
     expect(html).toContain('meses ya presentados');
     expect(html).toContain('F001-7');
-    expect(html).toContain('Entiendo que cambia');
+    expect(html).toContain('cierre anual');
+    expect(html).not.toContain('Entiendo que cambia');
   });
 
-  it('los del mismo proveedor: cuántos reciben la corrección y cuántos no se tocan', () => {
+  it('los del mismo proveedor: cuántos reciben la corrección, incluidos los de meses presentados', () => {
     const html = dibujar({
       mov: mov([item('AMOLADORA ANGULAR 4 1/2')]), cambios: { cuenta: '656' },
       hermanos: [mov([], { id: 'h1', date: '2026-08-02' }), mov([], { id: 'h2', date: '2026-02-02' })],
     });
     expect(html).toContain('Del mismo proveedor');
-    expect(html).toContain('no se tocan');
+    expect(html).toContain('también se corrigen');
+    expect(html).not.toContain('no se tocan');
   });
 
   it('un comprobante en dólares muestra dólares, no soles', () => {

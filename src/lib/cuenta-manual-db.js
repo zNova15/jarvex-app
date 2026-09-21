@@ -34,8 +34,7 @@ import {
 } from './existencias-balance.js';
 import { derivarTypeContable } from './clasificacion-contable.js';
 import {
-  CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, avisoPeriodoCerrado, motivoForzado,
-  periodoCerrado,
+  CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, motivoForzado, periodoCerrado,
 } from './periodo-contable.js';
 
 const avisar = () => {
@@ -107,11 +106,11 @@ const COLUMNAS_CUENTA = ['cuenta_pcge', 'cuenta_pcge_contrapartida', 'cuenta_pcg
  *                           en cualquiera la devuelve a automático; `undefined`
  *                           la deja como está. `tipo` es 'cost' | 'expense' y
  *                           recalcula el `type` con `derivarTypeContable`.
- * @param {object} ctx       { userId, motivo, forzarPeriodoCerrado, cerradoHasta }
- * @returns {Promise<{ok:boolean, error?:string, periodoCerrado?:boolean}>}
+ * @param {object} ctx       { userId, motivo, cerradoHasta }
+ * @returns {Promise<{ok:boolean, error?:string}>}
  */
 export async function fijarCuentaManual(movimientoId, cambios = {}, {
-  userId = null, motivo = '', forzarPeriodoCerrado = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
+  userId = null, motivo = '', cerradoHasta = CERRADO_HASTA_DEFAULT,
 } = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
 
@@ -129,14 +128,14 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
   const fresh = await db.accounting_movements.get(movimientoId);
   if (!fresh) return { ok: false, error: 'El comprobante no está en este dispositivo — sincronizá.' };
 
-  // ── EL FRENO DEL PERÍODO YA PRESENTADO ──────────────────────────
-  // No es una pared: quien sabe lo que hace pasa con `forzarPeriodoCerrado` y
-  // la auditoría lo dice. Lo que no se puede es cambiar en silencio un mes que
-  // ya se declaró y que el libro de la empresa quede distinto del de SUNAT.
+  // ── EL PERÍODO YA PRESENTADO: SE REGISTRA, NO SE FRENA ──────────
+  // Hasta el 22-set-2026 esto devolvía un error y pedía `forzarPeriodoCerrado`.
+  // Se sacó a pedido de Gabriel: el cierre anual reclasifica el ejercicio
+  // entero hacia atrás y el 94 % de los comprobantes es de un mes presentado,
+  // así que el freno se disparaba casi siempre y solo enseñaba a marcar la
+  // casilla sin leerla. Lo que sí queda —y es lo que siempre valió— es que la
+  // auditoría diga que se tocó un mes declarado. Ver `periodo-contable.js`.
   const enCerrado = movEnPeriodoCerrado(fresh, cerradoHasta);
-  if (enCerrado && !forzarPeriodoCerrado) {
-    return { ok: false, periodoCerrado: true, error: avisoPeriodoCerrado(fresh, cerradoHasta) };
-  }
 
   // ── EL GUARDIÁN DEL CHECK DE LA MIG 224 (tanda 5) ───────────────
   // 🔴 La salida de inventario solo puede existir colgada de un destino que
@@ -238,13 +237,13 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
  *
  * @param {string} movimientoId
  * @param {object} salida  { cuenta, fecha, importe } — todo null/vacío la borra
- * @param {object} ctx     { userId, motivo, entro, forzarPeriodoCerrado, cerradoHasta }
+ * @param {object} ctx     { userId, motivo, entro, cerradoHasta }
  *                         `entro` es la base del asiento de destino: el tope
  *                         de lo que puede salir. Lo calcula el generador.
  */
 export async function fijarSalidaExistencia(movimientoId, salida = {}, {
   userId = null, motivo = '', entro = null,
-  forzarPeriodoCerrado = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
+  cerradoHasta = CERRADO_HASTA_DEFAULT,
 } = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
 
@@ -268,21 +267,14 @@ export async function fijarSalidaExistencia(movimientoId, salida = {}, {
   const v = validarSalida(salida, { destino, entro });
   if (!v.ok) return { ok: false, error: v.error };
 
-  // El freno del período mira la fecha de la SALIDA (ver arriba). Al borrar,
-  // la que se estaba usando: deshacer una descarga de un mes declarado también
-  // cambia ese mes.
-  const fechaCandado = borrar
+  // El período de la salida se mira por SU fecha, no por la de la factura (ver
+  // arriba). Al borrar, la que se estaba usando: deshacer una descarga de un
+  // mes declarado también cambia ese mes. Desde el 22-set-2026 esto solo
+  // alimenta la auditoría — no frena nada.
+  const fechaPeriodo = borrar
     ? String(fresh.existencia_salida_fecha || '').slice(0, 10)
     : v.salida.fecha;
-  const enCerrado = !!fechaCandado && periodoCerrado(fechaCandado, cerradoHasta);
-  if (enCerrado && !forzarPeriodoCerrado) {
-    return {
-      ok: false,
-      periodoCerrado: true,
-      error: `La salida quedaría con fecha ${fechaCandado}, dentro del período ya presentado a `
-        + `SUNAT (cerrado hasta el ${cerradoHasta}). Eso cambia un Libro Diario ya declarado.`,
-    };
-  }
+  const enCerrado = !!fechaPeriodo && periodoCerrado(fechaPeriodo, cerradoHasta);
 
   const ahora = new Date().toISOString();
   const campos = v.salida.cuenta
@@ -322,7 +314,7 @@ export async function fijarSalidaExistencia(movimientoId, salida = {}, {
             + `${v.salida.fecha} hacia la cuenta ${v.salida.cuenta}`
           : `Libro Diario · se deshace la salida de inventario de ${fresh.document_number || 'el comprobante'}`),
         enCerrado
-          ? `se toca el período cerrado (hasta ${cerradoHasta}) con fecha ${fechaCandado}, a sabiendas`
+          ? `se toca el período ya presentado (hasta ) con fecha `
           : '',
       ].filter(Boolean).join(' · '),
     });

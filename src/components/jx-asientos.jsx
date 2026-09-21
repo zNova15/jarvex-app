@@ -349,9 +349,6 @@ function ModalCuenta({
   );
   const [aplicarATodos, setAplicarATodos] = uS(false);
   const [guardando, setGuardando] = uS(false);
-  // El escape del período ya presentado. Nace apagado a propósito: la
-  // contadora tiene que leer qué está por hacer antes de poder hacerlo.
-  const [forzarCerrado, setForzarCerrado] = uS(false);
   const enCursoRef = uR(false);
   // ── LA VENTANA DE CONSECUENCIAS (tanda 3 del destino) ─────────────
   // Dos pasos: el formulario de siempre, y —solo si hay algo que decir— la
@@ -477,7 +474,8 @@ function ModalCuenta({
     );
     return v.ok ? '' : v.error;
   }, [salidaTocada, destinoElegido, salidaCuenta, salidaFecha, salidaImporte, entroAlBalance]);
-  // El candado de la SALIDA mira su propia fecha (ver `fijarSalidaExistencia`).
+  // El período de la SALIDA se mira por su propia fecha, no por la de la
+  // factura (ver `fijarSalidaExistencia`). Solo para avisar.
   const salidaEnCerrado = !!salidaFecha && periodoCerrado(salidaFecha);
   // ¿Cambió la salida? Se compara contra lo guardado, campo por campo: los
   // tres son de la misma decisión y mover solo el importe de una descarga
@@ -532,7 +530,7 @@ function ModalCuenta({
     }
     if (c?.alcance?.cambian?.length) {
       partes.push(`mueve ${c.alcance.cambian.length} comprobante(s) más`
-        + (c.alcance.cerrados ? `, ${c.alcance.cerrados} de meses ya presentados, aceptado a sabiendas` : ''));
+        + (c.alcance.cerrados ? `, ${c.alcance.cerrados} de meses ya presentados` : ''));
     }
     return partes.length ? `Libro Diario · ${doc}: ${partes.join(' · ')}` : '';
   };
@@ -562,14 +560,13 @@ function ModalCuenta({
     const soloSalida = Object.keys(escribir || {}).length === 0 && salidaCambio;
     const r = soloSalida
       ? { ok: true }
-      : await fijarCuentaManual(asiento.movimiento_id, escribir, {
-        userId, motivo, forzarPeriodoCerrado: forzarCerrado,
-      });
+      : await fijarCuentaManual(asiento.movimiento_id, escribir, { userId, motivo });
     if (!r.ok) { showToast?.(r.error, 'red'); return false; }
 
-    // Los del mismo proveedor, cada uno con su plan. Sin el escape del
-    // candado: forzar un mes presentado se pide comprobante por comprobante,
-    // y los de meses cerrados ni siquiera llegan acá (`planDeHermanos`).
+    // Los del mismo proveedor, cada uno con su plan. Desde el 22-set-2026 los
+    // de meses ya presentados TAMBIÉN vienen en esta lista: `planDeHermanos`
+    // dejó de apartarlos, que era lo que rompía el cierre anual (corregía el
+    // insumo para adelante y dejaba las facturas viejas en la cuenta mala).
     let okHermanos = 0;
     const fallaronHermanos = [];
     for (const p of c.hermanos.planes) {
@@ -601,7 +598,6 @@ function ModalCuenta({
         {
           userId,
           entro: entroAlBalance,
-          forzarPeriodoCerrado: forzarCerrado,
           motivo: motivo || '',
         },
       );
@@ -680,29 +676,24 @@ function ModalCuenta({
         </div>
 
         {/* EL MES QUE YA SE LE PRESENTÓ A SUNAT.
-            No es una pared —Gabriel: «bloquearlo, pero no por completo, en
-            caso muy raro que se quiera cambiar un dato de un comprobante
-            antiguo se podría»— pero el escape hay que pedirlo leyendo lo que
-            se está por hacer, y queda en auditoría. */}
+            🔴 AVISA, NO FRENA (22-set-2026). Hasta esta fecha el botón de
+            guardar quedaba apagado hasta tocar «Modificarlo igual →». Se sacó
+            a pedido de Gabriel: las asistentes usan el Libro Diario para el
+            cierre anual, que reclasifica el ejercicio entero hacia atrás, y el
+            94 % de los comprobantes es de un mes presentado — el freno se
+            disparaba casi siempre y solo enseñaba a apretar el botón sin leer.
+            El aviso queda, y la auditoría sigue registrando que se tocó un mes
+            declarado. Ver `periodo-contable.js`. */}
         {avisoCerrado && (
           <div style={{
             marginBottom: 12, padding: '9px 11px', borderRadius: 6, fontSize: 12, lineHeight: 1.45,
-            background: forzarCerrado ? 'rgba(242,183,5,.12)' : 'rgba(231,76,60,.10)',
-            color: forzarCerrado ? 'var(--amber)' : 'var(--red)',
+            background: 'rgba(242,183,5,.12)', color: 'var(--amber)',
           }}>
             🔒 {avisoCerrado}
-            {!forzarCerrado ? (
-              <div style={{ marginTop: 6 }}>
-                <button className="btn btn-ghost btn-xs" onClick={() => setForzarCerrado(true)}
-                  title="Modificar igual un comprobante de un período ya declarado">
-                  Modificarlo igual →
-                </button>
-              </div>
-            ) : (
-              <div style={{ marginTop: 4 }}>
-                Se va a modificar igual. La auditoría va a decir que se hizo a sabiendas.
-              </div>
-            )}
+            <div style={{ marginTop: 4 }}>
+              Se puede guardar igual — es lo que hace falta para el cierre anual. Queda
+              registrado en Auditoría que se modificó un período ya presentado.
+            </div>
           </div>
         )}
 
@@ -902,13 +893,14 @@ function ModalCuenta({
                     </div>
                   )}
 
-                  {/* El candado de la salida es OTRO: mira la fecha en que salió,
-                      no la de la factura. Una compra de mayo consumida en
-                      setiembre genera un asiento de setiembre, que está abierto. */}
+                  {/* El período de la salida es OTRO: se mira por la fecha en que
+                      salió, no por la de la factura. Una compra de mayo consumida
+                      en setiembre genera un asiento de setiembre, que está
+                      abierto. Avisa, no frena. */}
                   {salidaEnCerrado && (
                     <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber)', lineHeight: 1.45 }}>
-                      🔒 Con esa fecha, la salida cae en un mes ya presentado a SUNAT. Marcá arriba
-                      «Modificarlo igual» para guardarla; queda registrado en Auditoría.
+                      🔒 Con esa fecha, la salida cae en un mes ya presentado a SUNAT. Se guarda
+                      igual y queda registrado en Auditoría.
                     </div>
                   )}
                 </div>
@@ -935,8 +927,8 @@ function ModalCuenta({
                 de <strong>{movimiento?.third_party_name || 'este proveedor'}</strong> que
                 siguen sin cuenta definida, en el período que estás viendo.
                 <div style={{ color: 'var(--tm)', fontSize: 11.5, marginTop: 2 }}>
-                  No toca los que ya tienen una cuenta puesta a mano, ni los de meses ya
-                  presentados: el escape del candado vale para este comprobante, no para el lote.
+                  No toca los que ya tienen una cuenta puesta a mano. Los de meses ya
+                  presentados SÍ se corrigen, y queda registrado en Auditoría.
                 </div>
               </span>
             </label>
@@ -966,14 +958,14 @@ function ModalCuenta({
             title="Borrar las cuentas elegidas a mano y dejar que la app las deduzca">
             Volver a automático
           </button>
+          {/* Lo único que apaga Guardar es que falte un dato o que la salida de
+              inventario esté mal armada. El mes ya presentado AVISA pero no
+              frena desde el 22-set-2026 (ver `periodo-contable.js`). */}
           <button
             className="btn btn-amber btn-sm"
             onClick={guardar}
-            disabled={guardando || sinCambios || !!errorSalida
-              || (!!avisoCerrado && !forzarCerrado)
-              || (salidaEnCerrado && salidaCambio && !forzarCerrado)}
-            title={errorSalida
-              || (avisoCerrado && !forzarCerrado ? avisoCerrado : undefined)}>
+            disabled={guardando || sinCambios || !!errorSalida}
+            title={errorSalida || undefined}>
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
@@ -982,13 +974,17 @@ function ModalCuenta({
           <button className="btn btn-ghost btn-sm" onClick={() => setPaso('editar')} disabled={guardando}>
             ← Volver
           </button>
+          {/* `requiereAceptarCerrados` quedó fijo en false el 22-set-2026 (ver
+              `consecuencias-correccion.js`): los meses ya presentados se
+              avisan, no se frenan. Se sigue leyendo en vez de borrarlo para
+              que si algún día vuelve a activarse, vuelva también la traba. */}
           <button
             className="btn btn-amber btn-sm"
             onClick={guardar}
             disabled={guardando || !consecuencias
               || (consecuencias.requiereAceptarCerrados && !seleccion?.aceptaCerrados)}
             title={consecuencias?.requiereAceptarCerrados && !seleccion?.aceptaCerrados
-              ? 'Marcá que entendés que se mueven comprobantes de meses ya presentados, o dejá la clasificación sin corregir'
+              ? 'Marcá que entendés que se mueven comprobantes de meses ya presentados'
               : undefined}>
             {guardando ? 'Guardando…' : 'Confirmar y guardar'}
           </button>

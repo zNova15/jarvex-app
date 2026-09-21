@@ -182,30 +182,20 @@ describe('fijarSalidaExistencia', () => {
     expect(updates).toHaveLength(1);
   });
 
-  it('pero una salida CON fecha de un mes declarado sí se frena', async () => {
+  // 🔴 CAMBIÓ EL 22-set-2026: el mes ya presentado se REGISTRA, no se frena
+  // (pedido de Gabriel, para el cierre anual). Ver `periodo-contable.js`.
+  it('una salida CON fecha de un mes declarado se guarda, y la auditoría lo dice', async () => {
     filas.set('m1', mov(enExistencia));
     const { fijarSalidaExistencia } = await cargar();
     const r = await fijarSalidaExistencia(
       'm1', { cuenta: '92', fecha: '2026-06-20', importe: 100 }, { userId: 'u1', entro: 1000 },
     );
-    expect(r.ok).toBe(false);
-    expect(r.periodoCerrado).toBe(true);
-    expect(updates).toHaveLength(0);
-  });
-
-  it('y se puede forzar, quedando dicho en Auditoría', async () => {
-    filas.set('m1', mov(enExistencia));
-    const { fijarSalidaExistencia } = await cargar();
-    const r = await fijarSalidaExistencia(
-      'm1',
-      { cuenta: '92', fecha: '2026-06-20', importe: 100 },
-      { userId: 'u1', entro: 1000, forzarPeriodoCerrado: true },
-    );
     expect(r.ok).toBe(true);
-    expect(auditorias[0].reason).toMatch(/a sabiendas/);
+    expect(updates).toHaveLength(1);
+    expect(auditorias[0].reason).toMatch(/período ya presentado/);
   });
 
-  it('deshacer una descarga de un mes declarado también está frenado', async () => {
+  it('deshacer una descarga de un mes declarado tampoco se frena, y también queda dicho', async () => {
     filas.set('m1', mov({
       ...enExistencia,
       existencia_salida_cuenta: '92',
@@ -214,7 +204,38 @@ describe('fijarSalidaExistencia', () => {
     }));
     const { fijarSalidaExistencia } = await cargar();
     const r = await fijarSalidaExistencia('m1', {}, { userId: 'u1' });
-    expect(r.ok).toBe(false);
-    expect(r.periodoCerrado).toBe(true);
+    expect(r.ok).toBe(true);
+    expect(r.borrada).toBe(true);
+    expect(auditorias[0].reason).toMatch(/período ya presentado/);
+  });
+});
+
+// ── 3. EL CANDADO QUE YA NO FRENA ─────────────────────────────────
+// Gabriel, 22-set-2026: «quiero que desbloquees el libro diario para
+// modificaciones de cualquier fecha, así ya esté presentada. Me dijeron las
+// asistentes de contabilidad que eso se utiliza para el anual de contabilidad».
+// Estos tests son los que vigilan que no vuelva a aparecer una traba.
+describe('los meses ya presentados se registran, no se frenan', () => {
+  it('corregir la cuenta de un comprobante de un mes declarado se guarda', async () => {
+    filas.set('m1', mov({ date: '2026-03-15' }));
+    const { fijarCuentaManual } = await cargar();
+    const r = await fijarCuentaManual('m1', { cuenta: '656' }, { userId: 'u1' });
+    expect(r.ok).toBe(true);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].cuenta_pcge).toBe('656');
+  });
+
+  it('y la auditoría deja escrito que se tocó un período presentado', async () => {
+    filas.set('m1', mov({ date: '2026-03-15' }));
+    const { fijarCuentaManual } = await cargar();
+    await fijarCuentaManual('m1', { cuenta: '656' }, { userId: 'u1' });
+    expect(auditorias[0].reason).toMatch(/período ya presentado/);
+  });
+
+  it('un mes abierto no lleva esa coletilla', async () => {
+    filas.set('m1', mov({ date: '2026-09-15' }));
+    const { fijarCuentaManual } = await cargar();
+    await fijarCuentaManual('m1', { cuenta: '656' }, { userId: 'u1' });
+    expect(auditorias[0].reason).not.toMatch(/período ya presentado/);
   });
 });

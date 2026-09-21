@@ -2,22 +2,39 @@
 // JARVEX — LOS MESES QUE YA SE LE PRESENTARON A SUNAT (18-set-2026).
 //
 // ── POR QUÉ ───────────────────────────────────────────────────────
-// Desde esta tanda la contadora puede escribir el destino de un asiento. Eso
-// cambia el Libro Diario, y el Libro Diario se le presenta a SUNAT por el PLE.
-// Corregir en silencio un mes ya presentado deja el libro de la empresa
-// diciendo una cosa y el que tiene SUNAT diciendo otra — y el que queda mal
-// parado es el que declaró.
+// La contadora puede escribir la cuenta y el destino de un asiento. Eso cambia
+// el Libro Diario, y el Libro Diario se le presenta a SUNAT por el PLE.
+// Corregir un mes ya presentado deja el libro de la empresa diciendo una cosa
+// y el que tiene SUNAT diciendo otra — y el que queda mal parado es el que
+// declaró. Por eso hace falta SABER cuándo está pasando.
 //
-// Gabriel, 18-set-2026, cuando se le preguntó si había que bloquearlo:
+// ── 🔴 YA NO BLOQUEA NADA (22-set-2026) ───────────────────────────
+// Nació el 18-set como un freno con escape, porque Gabriel dijo entonces:
 // «Bloquearlo, pero no por completo, en caso muy raro que se quiera cambiar un
-// dato de un comprobante antiguo se podría, pero no creo que pase. Hasta el
-// momento se tiene presentados varios comprobantes por lo menos hasta el mes
-// de julio del 2026.»
+// dato de un comprobante antiguo se podría, PERO NO CREO QUE PASE».
 //
-// Así que no es una pared: es un freno con salida, y la salida deja rastro. Es
-// el mismo patrón que la caja sobre el umbral de bancarización (tanda 3.1): la
-// app no le prohíbe a nadie hacer lo que tiene que hacer, le prohíbe hacerlo
-// sin que quede escrito por qué.
+// Pasa, y no es raro. Gabriel, 22-set-2026: «quiero que desbloquees el libro
+// diario para modificaciones de cualquier fecha, así ya esté presentada. Me
+// dijeron las asistentes de contabilidad que eso se utiliza para el anual de
+// contabilidad».
+//
+// El supuesto que estaba mal era «corregir algo viejo es la excepción». El
+// cierre anual es exactamente lo contrario: se revisa el ejercicio ENTERO y se
+// reclasifica hacia atrás, y el 94 % de los comprobantes (1.697 de 1.806,
+// medido el 18-set) es de un mes ya presentado. Un freno que se dispara en el
+// 94 % de los casos no protege de nada: enseña a marcar la casilla sin leerla,
+// que es peor que no tenerla.
+//
+// Así que el candado se saca y queda el REGISTRO, que es la parte que siempre
+// tuvo el valor: `avisoPeriodoCerrado` sigue diciéndolo en pantalla antes de
+// guardar, y `motivoForzado` sigue escribiéndolo en la auditoría. La app
+// nunca le prohibió a nadie hacer su trabajo; lo que no deja es hacerlo sin
+// que quede escrito, y eso no cambió.
+//
+// 🔴 NO BORRAR ESTE ARCHIVO. La fecha sigue haciendo falta para tres cosas
+// vivas: el aviso de pantalla, el motivo de auditoría y el «cruzó un cierre»
+// del costo atrapado en existencias (`existencias-balance.js`), que es lo que
+// distingue un inventario normal de una renta pagada de más.
 //
 // ── CÓMO SE MUEVE LA FECHA ────────────────────────────────────────
 // Cada mes que se declara, el cierre avanza. Por eso el valor NO está clavado
@@ -63,8 +80,11 @@ export const movEnPeriodoCerrado = (movimiento, hasta = CERRADO_HASTA_DEFAULT) =
   periodoCerrado(fechaDe(movimiento), hasta);
 
 /**
- * El texto que ve la contadora antes de forzar el cambio. Devuelve null si el
- * período está abierto y no hay nada que advertir.
+ * El texto que ve la contadora antes de guardar. Devuelve null si el período
+ * está abierto y no hay nada que advertir.
+ *
+ * Desde el 22-set-2026 esto AVISA, no frena (ver el encabezado). El botón de
+ * guardar queda habilitado igual.
  */
 export function avisoPeriodoCerrado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
   if (!movEnPeriodoCerrado(movimiento, hasta)) return null;
@@ -74,10 +94,17 @@ export function avisoPeriodoCerrado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
     + 'del que se declaró.';
 }
 
-/** El motivo que se guarda en auditoría cuando alguien fuerza el cambio. */
+/**
+ * El motivo que se guarda en auditoría cuando el cambio toca un mes declarado.
+ *
+ * Desde que el candado no frena (22-set-2026), ESTA es la única huella que
+ * queda de que se modificó un período presentado. Se escribe siempre, sin que
+ * nadie tenga que pedirlo, y se concatena aunque venga otro motivo: es el dato
+ * que alguien va a buscar dentro de un año.
+ */
 export function motivoForzado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
   return `Libro Diario · se modifica ${movimiento?.document_number || 'un comprobante'} `
-    + `del ${fechaDe(movimiento)}, dentro del período cerrado (hasta ${hasta}), a sabiendas`;
+    + `del ${fechaDe(movimiento)}, dentro del período ya presentado (hasta ${hasta})`;
 }
 
 export default {

@@ -319,12 +319,18 @@ describe('C · a qué más se aplica', () => {
     expect(a.porMoneda).toEqual({ PEN: 618, USD: 40 });
   });
 
-  it('los hermanos de meses presentados NO reciben la corrección, aunque se fuerce el candado del propio', () => {
+  // 🔴 CAMBIÓ EL 22-set-2026. Antes los hermanos de meses ya presentados se
+  // apartaban y NO se tocaban. Esa exclusión era justo lo que rompía el cierre
+  // anual: corregía el insumo para adelante y dejaba las treinta facturas
+  // viejas del mismo proveedor en la cuenta mala. Ahora se corrigen todos, y
+  // `cerrados` pasó a ser un CONTEO para que la ventana pueda decirlo.
+  it('los hermanos de meses presentados TAMBIÉN reciben la corrección, y se cuentan', () => {
     const p = planDeHermanos([
       mov([], { id: 'h1', date: '2026-08-05' }),
       mov([], { id: 'h2', date: '2026-06-05' }),
     ], { cambios: { cuenta: '656' } });
-    expect(p.planes.map(x => x.id)).toEqual(['h1']);
+    expect(p.planes.map(x => x.id)).toEqual(['h1', 'h2']);
+    // Siguen identificados, para poder avisar cuántos son.
     expect(p.cerrados.map(x => x.id)).toEqual(['h2']);
   });
 
@@ -405,7 +411,13 @@ describe('la ventana entera', () => {
     expect(r.avisos.some(a => /más renta/.test(a.texto))).toBe(true);
   });
 
-  it('si la corrección mueve comprobantes de meses presentados, hay que aceptarlo a sabiendas', () => {
+  // 🔴 CAMBIÓ EL 22-set-2026. Antes esto exigía una casilla «entiendo que
+  // cambia N comprobantes de meses presentados» para poder guardar. Se apagó
+  // junto con el candado del Libro Diario: el cierre anual reclasifica el
+  // ejercicio entero y el 94 % de los comprobantes es de un mes presentado, o
+  // sea que la casilla salía casi siempre y se marcaba sin leerla. El número
+  // se sigue contando y diciendo; lo que se fue es la traba.
+  it('si la corrección mueve comprobantes de meses presentados, se cuenta pero NO traba', () => {
     const m = mov([item('AMOLADORA ANGULAR 4 1/2')], { id: 'yo' });
     const otro = mov([item('AMOLADORA ANGULAR 4 1/2')], { id: 'viejo', date: '2026-03-01' });
     const norm = claveMapeo('AMOLADORA ANGULAR 4 1/2');
@@ -414,7 +426,10 @@ describe('la ventana entera', () => {
       seleccion: { correcciones: { [norm]: '37' } },
     });
     expect(r.alcance.cerrados).toBe(1);
-    expect(r.requiereAceptarCerrados).toBe(true);
+    expect(r.cerradosQueSeMueven).toBe(1);
+    // La traba está apagada, y este test es el que vigila que siga apagada:
+    // si alguien la vuelve a prender sin querer, el cierre anual se rompe otra vez.
+    expect(r.requiereAceptarCerrados).toBe(false);
   });
 
   it('un rol que no escribe el catálogo ve la causa pero no puede corregirla (espejo de la RLS)', () => {
