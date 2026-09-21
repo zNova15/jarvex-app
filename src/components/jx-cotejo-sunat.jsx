@@ -45,7 +45,7 @@ import {
 } from '../lib/escaner-incoherencias.js';
 import { guardarCorte, borrarCorte, decidirCotejo, decidirCotejoLote } from '../lib/cotejo-sunat-db.js';
 import { evidenciasDeComprobantes } from '../lib/evidencia-de-comprobante.js';
-import { getEvidenciaSrc, abrirUrlEvidencia, precargarEvidencia } from '../lib/evidencias-url.js';
+import { OjoComprobante, useVisorComprobante } from './jx-visor-comprobante.jsx';
 import { ventasSinEspejo, datosDelEspejo } from '../lib/interco-espejo.js';
 import { candidatasDeNota } from '../lib/notas-credito.js';
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento } from '../lib/interco-edicion.js';
@@ -120,44 +120,14 @@ function descargarTexto(nombre, texto) {
 // ── El 👁: el mismo botón en las dos pestañas ─────────────────────
 // Solo aparece cuando el comprobante TIENE archivo cargado (el mapa no trae a
 // los que no lo tienen): un ojo que después dice «no hay nada» enseña a no
-// hacerle caso al ojo. Se precalienta la firma al pasar el mouse — cuando llega
-// el clic, el archivo ya abre de una.
-// Se EXPORTA (22-set-2026) para el Registro de Compras y Ventas: Gabriel pidió
-// el mismo ojo en esas dos hojas. Definirlo una segunda vez allá es como se
-// llega a dos ojos que se comportan distinto —uno precarga, el otro no; uno
-// aparece sin archivo, el otro no— sobre la misma evidencia. Viajan en el mismo
-// chunk: el Registro ya importa `EscanerIncoherencias` de este archivo.
-export function OjoComprobante({ entry, onAbrir, titulo = 'Ver la factura cargada' }) {
-  if (!entry) return null;
-  return (
-    <button
-      className="btn btn-sm"
-      title={`${titulo} (${entry.nombre})`}
-      onMouseEnter={() => precargarEvidencia(entry.ev)}
-      onClick={() => onAbrir(entry)}
-      style={{ padding: '2px 8px' }}
-    >
-      {typeof window !== 'undefined' && window.JxIcon
-        ? React.createElement(window.JxIcon, { name: 'eye', size: 12 })
-        : '👁'}
-    </button>
-  );
-}
-
-/**
- * Abre el archivo de un comprobante. Firma la URL recién acá —un viaje, el del
- * archivo que de verdad se va a mirar— y la abre en una pestaña aparte, que es
- * lo que sirve para comparar contra la tabla que quedó atrás.
- */
-export async function abrirEvidencia(entry, showToast) {
-  try {
-    const src = await getEvidenciaSrc(entry?.ev);
-    if (!src?.url) { showToast?.('No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.', 'red'); return; }
-    await abrirUrlEvidencia(src.url);
-  } catch (e) {
-    showToast?.('No se pudo abrir el comprobante: ' + (e?.message || e), 'red');
-  }
-}
+// hacerle caso al ojo.
+//
+// `OjoComprobante` y el visor viven en `jx-visor-comprobante.jsx` (22-set,
+// pedido de Gabriel: «quiero los ojos como de Movimientos Contables, que te
+// abren el comprobante en una ventana en la misma aplicación» — acá abría en
+// una pestaña del navegador, y no era el único lugar). Es el MISMO archivo
+// que usan ahora el Registro de Compras y Ventas y Anticipos: un ojo que
+// abriera distinto en cada pantalla sería peor que no compartirlo.
 
 /** Hook chico: el archivo de cada comprobante de una lista de ids. */
 export function useEvidencias(ids) {
@@ -280,12 +250,11 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   // El archivo de cada comprobante que SÍ está en JARVEX (los `solo_sunat` no
   // tienen movimiento, así que tampoco tienen papel que mirar acá).
   const evidencias = useEvidencias(uM(() => todas.map(f => f.movimientoId), [todas]));
-  const abriendoRef = uR(false);
-  const abrir = async (entry) => {
-    if (abriendoRef.current) return;
-    abriendoRef.current = true;
-    try { await abrirEvidencia(entry, showToast); } finally { abriendoRef.current = false; }
-  };
+  // Abre el comprobante EN LA APP (22-set): el visor es un modal, así que no
+  // hace falta el guard de doble-click de antes (armar el mismo `entry` dos
+  // veces seguidas es inofensivo — el useEffect del visor recién firma al
+  // montar).
+  const { abrirComprobante: abrir, visorModal } = useVisorComprobante();
 
   const visibles = uM(() => {
     if (filtro === 'todas') return basePorLibro;
@@ -943,6 +912,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
           </div>
         </>
       )}
+      {visorModal}
     </div>
   );
 }
@@ -964,7 +934,7 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   const [soloPeriodo, setSoloPeriodo] = uS(!!periodo);
   const [familia, setFamilia] = uS('todas');
   const enCursoRef = uR(false);
-  const abriendoRef = uR(false);
+  const { abrirComprobante: abrir, visorModal } = useVisorComprobante();
 
   // «No tiene botón para analizar nuevamente» (Gabriel, 9-set-2026). El escáner
   // ya se recalculaba solo con cada cambio de datos, pero eso es invisible: no
@@ -1109,12 +1079,6 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
       setAnalizando(false);
       enCursoRef.current = false;
     }
-  };
-
-  const abrir = async (entry) => {
-    if (abriendoRef.current) return;
-    abriendoRef.current = true;
-    try { await abrirEvidencia(entry, showToast); } finally { abriendoRef.current = false; }
   };
 
   const decidir = async (h, decision) => {
@@ -1608,6 +1572,7 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
           </div>
         </div>
       )}
+      {visorModal}
     </div>
   );
 }

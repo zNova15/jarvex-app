@@ -42,6 +42,7 @@ mediciones, no el número absoluto.
 | Fecha/hora | Llamadas | Filas | Δ llamadas | Δ horas | Llamadas/h | Egress del panel |
 |---|---|---|---|---|---|---|
 | 10-set 01:06 | 6.362.909 | 6.187.532 | — (base) | — | — | (anotar) |
+| 21-set 15:32 | 6.541.355 | 6.360.780 | +178.446 | ~278,4 h (11,6 días) | ~641/h | (anotar del panel) |
 
 ## Consulta para la siguiente medición
 

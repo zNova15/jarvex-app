@@ -47,7 +47,8 @@ import {
 import { downloadPLE } from "../lib/sunat-ple.js";
 import { escanear, aplicarDecisionesEscaner, hallazgosPendientes } from "../lib/escaner-incoherencias.js";
 import { enPeriodo } from "../lib/fecha.js";
-import { EscanerIncoherencias, OjoComprobante, abrirEvidencia, useEvidencias } from "./jx-cotejo-sunat.jsx";
+import { EscanerIncoherencias, useEvidencias } from "./jx-cotejo-sunat.jsx";
+import { OjoComprobante, useVisorComprobante } from "./jx-visor-comprobante.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
@@ -181,10 +182,13 @@ export function RegistroComprasVentas({
   // «En los libros electrónicos, en la pestaña de compras y ventas, me gustaría
   // que también agregues el ojo para visualizar los comprobantes.» Es el MISMO
   // botón del cotejo y del escáner, importado de allá y no redefinido acá: solo
-  // aparece donde hay archivo cargado, precalienta la firma al pasar el mouse y
-  // firma la URL recién al hacer clic. Se piden los ids de la hoja que se está
-  // mirando —los mismos de la selección del SIRE—, no los del período entero.
+  // aparece donde hay archivo cargado, precalienta la firma al pasar el mouse.
+  // Abre EN LA APP (corrección del mismo 22-set: el primer intento abría una
+  // pestaña del navegador, y Gabriel pidió el modal de Movimientos Contables).
+  // Se piden los ids de la hoja que se está mirando —los mismos de la
+  // selección del SIRE—, no los del período entero.
   const evidencias = useEvidencias(idsDeLaHoja);
+  const { abrirComprobante, visorModal } = useVisorComprobante();
 
   uE(() => {
     if (!modoSeleccion) return;
@@ -668,7 +672,7 @@ export function RegistroComprasVentas({
                     <span style={{ marginRight: 4, display: 'inline-block' }}>
                       <OjoComprobante
                         entry={evidencias.get(f.movimiento_id)}
-                        onAbrir={(e) => abrirEvidencia(e, showToast)}
+                        onAbrir={abrirComprobante}
                         titulo="Ver el comprobante cargado"
                       />
                     </span>
@@ -740,6 +744,7 @@ export function RegistroComprasVentas({
           </div>
         </div>
       )}
+      {visorModal}
     </div>
   );
 }

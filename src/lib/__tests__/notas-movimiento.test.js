@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  parsearNotas, tieneEstructura, notaHumana, fusionarNota, resumenEstructurado,
+  parsearNotas, tieneEstructura, notaHumana, fusionarNota, resumenEstructurado, fusionarDetalle,
 } from '../notas-movimiento.js';
 
 // La forma REAL de producción: los 1.402 movimientos vivos tienen JSON acá.
@@ -123,5 +123,51 @@ describe('resumenEstructurado — le dice al usuario qué se está conservando',
   it('sin payload no dice nada', () => {
     expect(resumenEstructurado(JSON.stringify({ nota: 'hola' }))).toBe('');
     expect(resumenEstructurado(null)).toBe('');
+  });
+});
+
+describe('fusionarDetalle — el editor de detalle (22-set): cambiar IGV/ítems A PROPÓSITO', () => {
+  it('sin opts, se comporta EXACTO como fusionarNota (no cambia nada del payload)', () => {
+    const conNota = fusionarDetalle(facturaCapturaMagica, 'una nota');
+    expect(JSON.parse(conNota)).toEqual({ ...JSON.parse(facturaCapturaMagica), nota: 'una nota' });
+  });
+
+  it('cambia SOLO subtotal e igv cuando se piden, conserva items_factura y el resto', () => {
+    const out = JSON.parse(fusionarDetalle(facturaCapturaMagica, '', { subtotal: 8000, igv: 1440 }));
+    expect(out.subtotal).toBe(8000);
+    expect(out.igv).toBe(1440);
+    expect(out.items_factura).toEqual(JSON.parse(facturaCapturaMagica).items_factura);
+    expect(out.captura_magica).toBe(true);
+  });
+
+  it('subtotal/igv null BORRA el desglose manual (vuelve a calcularse solo)', () => {
+    const out = JSON.parse(fusionarDetalle(facturaCapturaMagica, '', { subtotal: null, igv: null }));
+    expect(out.subtotal).toBeUndefined();
+    expect(out.igv).toBeUndefined();
+    expect(out.items_factura).toBeDefined();   // los ítems NO se tocan
+  });
+
+  it('reemplaza items_factura cuando se pasa un array nuevo', () => {
+    const nuevosItems = [{ descripcion: 'ANTICIPO DE CLIENTE', cantidad: 1, precio_unitario: 10000 }];
+    const out = JSON.parse(fusionarDetalle(facturaCapturaMagica, '', { items: nuevosItems }));
+    expect(out.items_factura).toEqual(nuevosItems);
+    expect(out.subtotal).toBe(7627.12);   // el IGV no se tocó
+  });
+
+  it('items undefined no toca items_factura; items [] lo borra', () => {
+    const sinTocar = JSON.parse(fusionarDetalle(facturaCapturaMagica, ''));
+    expect(sinTocar.items_factura).toHaveLength(2);
+    const vaciado = JSON.parse(fusionarDetalle(facturaCapturaMagica, '', { items: [] }));
+    expect(vaciado.items_factura).toBeUndefined();
+  });
+
+  it('la nota humana se sigue fusionando igual que siempre', () => {
+    const out = JSON.parse(fusionarDetalle(facturaCapturaMagica, 'revisado con la contadora', { igv: 1440 }));
+    expect(out.nota).toBe('revisado con la contadora');
+  });
+
+  it('comprobante viejo sin estructura: agregar detalle lo crea', () => {
+    const out = JSON.parse(fusionarDetalle(null, '', { subtotal: 100, igv: 18 }));
+    expect(out).toEqual({ subtotal: 100, igv: 18 });
   });
 });

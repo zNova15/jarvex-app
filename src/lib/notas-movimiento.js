@@ -89,6 +89,43 @@ export function fusionarNota(notasRaw, textoNuevo) {
 }
 
 /**
+ * `fusionarNota`, extendida para el editor de detalle (22-set-2026).
+ *
+ * Gabriel, dos veces (6-sep y ahora): «no me deja cambiar nada de vales de
+ * IGV, montos, anticipos». El 6-sep se resolvió la mitad — dejar de BORRAR el
+ * detalle sin querer, con `fusionarNota` de arriba. Esta función resuelve la
+ * otra mitad: permite CAMBIAR `items_factura`, `subtotal` e `igv` a propósito,
+ * conservando todo lo demás del payload (espejo interco, orden vinculada,
+ * confianza de la IA…) exactamente igual que `fusionarNota`.
+ *
+ * @param opts.items     el array COMPLETO de items_factura a guardar (armado
+ *                        con `items-factura-edicion.js`, que preserva
+ *                        material_id/recibido/mov_vinculado_id de cada línea
+ *                        existente), o `undefined` para no tocarlo.
+ * @param opts.subtotal  la base imponible a guardar. `undefined` = no tocar;
+ *                        `null` = borrar el desglose manual (vuelve a
+ *                        calcularse solo, ver igv-desglose.js).
+ * @param opts.igv       igual criterio que `subtotal`.
+ */
+export function fusionarDetalle(notasRaw, textoNuevo, { items, subtotal, igv } = {}) {
+  const j = { ...parsearNotas(notasRaw) };
+  const txt = typeof textoNuevo === 'string' ? textoNuevo.trim() : '';
+  if (txt) j.nota = txt; else delete j.nota;
+  if (items !== undefined) {
+    if (Array.isArray(items) && items.length) j.items_factura = items;
+    else delete j.items_factura;
+  }
+  if (subtotal !== undefined) {
+    if (subtotal === null || !(Number(subtotal) >= 0)) delete j.subtotal; else j.subtotal = Number(subtotal);
+  }
+  if (igv !== undefined) {
+    if (igv === null || !(Number(igv) >= 0)) delete j.igv; else j.igv = Number(igv);
+  }
+  if (Object.keys(j).length === 0) return null;
+  return JSON.stringify(j);
+}
+
+/**
  * Qué trae el payload, en una línea legible, para mostrarla DEBAJO del campo.
  *
  * Sin esto el usuario no tiene forma de saber que el comprobante carga datos

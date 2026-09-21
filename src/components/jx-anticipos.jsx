@@ -35,7 +35,7 @@ import React from "react";
 import { panelAnticipos, aplicacionNueva } from "../lib/anticipos.js";
 import { aplicarAnticipo, aplicarEnLote, quitarAplicacion } from "../lib/anticipos-db.js";
 import { evidenciasDeComprobantes } from "../lib/evidencia-de-comprobante.js";
-import { getEvidenciaSrc, abrirUrlEvidencia, precargarEvidencia } from "../lib/evidencias-url.js";
+import { OjoComprobante, useVisorComprobante } from "./jx-visor-comprobante.jsx";
 
 const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
 
@@ -57,41 +57,16 @@ const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
 //      cambio»… que vivía SOLO en Movimientos Contables. Desde acá quedaba sin
 //      ninguno de los dos: ni corregir ni pedir.
 //
-// Por qué el 👁 abre el archivo y no navega a Movimientos (que es la regla del
-// 4-sep, «una sola forma de mirar un comprobante»): ésta es una pantalla de
-// REVISIÓN —se compara la lista de propuestas contra los papeles, uno tras
-// otro— y salir de ella pierde el anticipo abierto y los montos a medio
-// escribir. Es el mismo trato que el cotejo, el escáner y el Registro de
-// Compras y Ventas: el ojo abre el PDF en una pestaña aparte y la lista queda
-// donde estaba. El ↗ sigue estando para ir a la fila completa.
-//
-// Solo se importan las libs puras del visor: traerse el botón de
-// `jx-cotejo-sunat.jsx` metería esa pantalla entera en el chunk de la ficha de
-// empresa, que es de donde cuelga este panel.
-
-/** Botón chico: abre el comprobante de un movimiento. Nada si no hay archivo. */
-function OjoFactura({ entry, showToast }) {
-  if (!entry) return null;
-  const abrir = async () => {
-    try {
-      const src = await getEvidenciaSrc(entry.ev);
-      if (!src?.url) { showToast?.('No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.', 'red'); return; }
-      await abrirUrlEvidencia(src.url);
-    } catch (e) {
-      showToast?.('No se pudo abrir el comprobante: ' + (e?.message || e), 'red');
-    }
-  };
-  return (
-    <button className="btn btn-xs" style={{ padding: '1px 6px' }}
-      title={`Ver el comprobante cargado (${entry.nombre})`}
-      onMouseEnter={() => precargarEvidencia(entry.ev)}
-      onClick={abrir}>
-      {typeof window !== 'undefined' && window.JxIcon
-        ? React.createElement(window.JxIcon, { name: 'eye', size: 11 })
-        : '👁'}
-    </button>
-  );
-}
+// El 👁 abre el archivo EN UN MODAL —no navega a Movimientos ni abre una
+// pestaña del navegador (corrección del mismo 22-set: el primer intento sí
+// abría una pestaña, y Gabriel pidió el modal de Movimientos Contables)—
+// porque ésta es una pantalla de REVISIÓN: se compara la lista de propuestas
+// contra los papeles, uno tras otro, y salir de ella pierde el anticipo
+// abierto y los montos a medio escribir. `OjoComprobante` y el visor viven en
+// `jx-visor-comprobante.jsx`, compartido con el Registro de Compras y Ventas
+// y el Cotejo — es liviano (solo React + evidencias-url.js): no arrastra
+// jx-cotejo-sunat.jsx entero al chunk de la ficha de empresa. El ↗ sigue
+// estando para ir a la fila completa en Movimientos.
 
 const fmtMonto = (n, moneda = 'PEN') =>
   `${moneda === 'USD' ? 'USD ' : moneda === 'PEN' ? 'S/ ' : `${moneda} `}${Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -104,6 +79,8 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
   // El movimiento para el que se está pidiendo una corrección (null = ninguno).
   const [pedirCambio, setPedirCambio] = uS(null);
   const showToast = showToastProp || (typeof window !== 'undefined' ? window.__showToast : null) || (() => {});
+  // El visor EN LA APP del comprobante que el 👁 de cualquier fila abrió.
+  const { abrirComprobante, visorModal } = useVisorComprobante();
   // Anti doble-click (regla crítica 2 del CLAUDE.md): ref SÍNCRONO. Un doble
   // tap en «Aplicar» no puede consumir el anticipo dos veces.
   const enCursoRef = uR(false);
@@ -275,7 +252,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
                   </span>
                   <AccionesDeFila
                     movId={a.id} doc={a.documento}
-                    entry={evidencias.get(a.id)} showToast={showToast}
+                    entry={evidencias.get(a.id)} onAbrir={abrirComprobante}
                     onIrAFactura={onIrAFactura} onPedirCambio={abrirPedido}
                   />
                 </div>
@@ -321,7 +298,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
                 onAplicarLasDeDetalle={aplicarLasDeDetalle}
                 onQuitar={quitar}
                 evidencias={evidencias}
-                showToast={showToast}
+                onAbrir={abrirComprobante}
                 onIrAFactura={onIrAFactura}
                 onPedirCambio={abrirPedido}
               />
@@ -350,6 +327,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
         showToast,
         onClose: () => setPedirCambio(null),
       })}
+      {visorModal}
     </div>
   );
 }
@@ -364,13 +342,13 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
  * dejar el pedido por escrito en vez de corregir de memoria, y quien SÍ puede
  * editar tiene el ↗ al lado para hacerlo directo.
  */
-function AccionesDeFila({ movId, doc, entry, showToast, onIrAFactura, onPedirCambio }) {
+function AccionesDeFila({ movId, doc, entry, onAbrir, onIrAFactura, onPedirCambio }) {
   // Sin id no hay a qué apuntar: pasa con una aplicación cuyo comprobante no
   // está cargado en esta PC («(comprobante no cargado)» en la fila).
   if (!movId) return null;
   return (
     <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-      <OjoFactura entry={entry} showToast={showToast} />
+      <OjoComprobante entry={entry} onAbrir={onAbrir} titulo="Ver el comprobante cargado" />
       {onIrAFactura && (
         <button className="btn btn-xs" style={{ padding: '1px 6px' }}
           title="Abrir este comprobante en Movimientos Contables (con su bancarización, su guía y su recepción)"
@@ -392,13 +370,13 @@ function AccionesDeFila({ movId, doc, entry, showToast, onIrAFactura, onPedirCam
  * gate en verde.
  */
 function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onAplicarLasDeDetalle, onQuitar,
-                           evidencias = null, showToast = null, onIrAFactura = null, onPedirCambio = null }) {
+                           evidencias = null, onAbrir = null, onIrAFactura = null, onPedirCambio = null }) {
   // Los tres botones de cada factura del detalle. `evidencias` puede no venir
   // (un test que monta este componente suelto): entonces no hay ojo y ya.
   const acciones = (movId, doc) => (
     <AccionesDeFila
       movId={movId} doc={doc}
-      entry={evidencias?.get?.(movId)} showToast={showToast}
+      entry={evidencias?.get?.(movId)} onAbrir={onAbrir}
       onIrAFactura={onIrAFactura} onPedirCambio={onPedirCambio}
     />
   );

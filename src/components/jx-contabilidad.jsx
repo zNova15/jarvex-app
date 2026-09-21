@@ -8,7 +8,11 @@ import { TablePagination } from "./jx-pagination.jsx";
 import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
 import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
-import { notaHumana, fusionarNota, resumenEstructurado } from "../lib/notas-movimiento.js";
+import { notaHumana, fusionarNota, fusionarDetalle, resumenEstructurado, parsearNotas } from "../lib/notas-movimiento.js";
+import {
+  itemsFacturaDe, valorLinea, tieneRecepcionLigada,
+  editarLinea, agregarLinea, vaciarLinea, totalDeLineas,
+} from "../lib/items-factura-edicion.js";
 import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
 import { CATALOGO_SPOT, etiquetaCodigoSpot, tasaOficialSpot } from "../lib/codigos-spot.js";
 import { cmpComprobante } from "../lib/comparar-comprobante.js";
@@ -1164,6 +1168,16 @@ function MovimientosContablesPage({ showToast }) {
   const [modal, setModal] = uSC(null);
   const [editingId, setEditingId] = uSC(null);
   const [form, setForm] = uSC({});
+  // ── EL DETALLE (ítems, IGV) — 22-set-2026 ───────────────────────────
+  // Gabriel, dos veces (6-sep y ahora): no podía corregir el IGV ni los ítems
+  // de un comprobante ya guardado — «no me deja cambiar nada de vales de IGV,
+  // montos, anticipos». Trabaja SOBRE una copia (`itemsForm`), nunca sobre el
+  // movimiento vivo: si se cierra el modal sin guardar, no pasó nada. La regla
+  // de qué se puede tocar y qué no vive en `items-factura-edicion.js`.
+  const [detalleAbierto, setDetalleAbierto] = uSC(false);
+  const [itemsForm, setItemsForm] = uSC([]);
+  const [subtotalForm, setSubtotalForm] = uSC('');
+  const [igvForm, setIgvForm] = uSC('');
   const [solicitarTarget, setSolicitarTarget] = uSC(null); // mov para "Solicitar cambio" (ayudante)
   // Subir bancarización SIN entrar a editar (lo puede hacer el ayudante de
   // contabilidad: editar es solo de admin/contador jefe, pero adjuntar la
@@ -2133,6 +2147,12 @@ function MovimientosContablesPage({ showToast }) {
       _notasOriginal: null,
       _bancFile: null,
     });
+    // Un movimiento nuevo no tiene detalle todavía (se carga con Captura
+    // Mágica, o se agrega acá una vez creado): la sección arranca vacía.
+    setItemsForm([]);
+    setSubtotalForm('');
+    setIgvForm('');
+    setDetalleAbierto(false);
     setAiClasif(null);
     setEditingId(null);
     setModal('nuevo');
@@ -2170,11 +2190,19 @@ function MovimientosContablesPage({ showToast }) {
       payment_status: m.payment_status || 'pending',
       document_type: m.document_type || 'factura',
       document_number: m.document_number || '',
-      // SOLO la nota humana: el resto del payload (items_factura, IGV, espejo
-      // interco…) se conserva al guardar vía fusionarNota. Ver notas-movimiento.js.
+      // SOLO la nota humana en el textarea. El detalle (ítems, IGV) se edita
+      // aparte, con `fusionarDetalle` — ver más abajo y items-factura-edicion.js.
       notas: notaHumana(m.notas),
       _notasOriginal: m.notas || null,
     });
+    // El detalle arranca en lo que YA está guardado. Si nadie lo toca, se
+    // guarda idéntico (no-op) — así no hace falta saber si se abrió la
+    // sección para decidir qué mandar al guardar.
+    const notasObj = parsearNotas(m.notas);
+    setItemsForm(itemsFacturaDe(m.notas));
+    setSubtotalForm(notasObj.subtotal != null ? String(notasObj.subtotal) : '');
+    setIgvForm(notasObj.igv != null ? String(notasObj.igv) : '');
+    setDetalleAbierto(false);
     setAiClasif(null);
     setEditingId(m.id);
     setModal('editar');
@@ -2201,6 +2229,11 @@ function MovimientosContablesPage({ showToast }) {
     }
     const monto = parseFloat(form.amount);
     if (!Number.isFinite(monto) || monto < 0) { showToast('Monto inválido', 'red'); return; }
+    // El desglose de IGV es OPCIONAL (vacío = automático), pero si se escribió
+    // algo, tiene que ser un número válido — no dejar pasar "12a" en silencio
+    // a una columna que declara crédito fiscal.
+    if (subtotalForm !== '' && !(Number(subtotalForm) >= 0)) { showToast('Base imponible inválida', 'red'); return; }
+    if (igvForm !== '' && !(Number(igvForm) >= 0)) { showToast('IGV inválido', 'red'); return; }
     const now = new Date().toISOString();
     let savedId = editingId;
     try {
@@ -2241,9 +2274,16 @@ function MovimientosContablesPage({ showToast }) {
           payment_status: form.payment_status,
           document_type: form.document_type || null,
           document_number: form.document_number || null,
-          // fusionarNota conserva items_factura / IGV / espejo interco: el textarea
-          // solo manda el texto de la persona, nunca el payload.
-          notas: fusionarNota(form._notasOriginal, form.notas),
+          // `fusionarDetalle` conserva TODO lo demás del payload (espejo
+          // interco, orden vinculada, confianza de la IA…): el textarea manda
+          // solo el texto de la persona, `itemsForm` los ítems (idénticos a
+          // los guardados si nadie tocó el detalle) y `subtotalForm`/`igvForm`
+          // el desglose de IGV, vacío = "sin cambio, sigue automático".
+          notas: fusionarDetalle(form._notasOriginal, form.notas, {
+            items: itemsForm,
+            subtotal: subtotalForm === '' ? null : Number(subtotalForm),
+            igv: igvForm === '' ? null : Number(igvForm),
+          }),
           updated_at: now, updated_by: userId,
           version: (orig?.version ?? 0) + 1,
           sync_status: orig?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
@@ -5059,6 +5099,124 @@ function MovimientosContablesPage({ showToast }) {
                 return r ? <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:4 }}>{r}</div> : null;
               })()}
             </div>
+            {/* ── EL DETALLE: ítems, IGV — 22-set-2026 ────────────────────
+                Gabriel, dos veces (6-sep y ahora): no podía corregir el IGV ni
+                los ítems de un comprobante ya guardado. Antes esta sección
+                decía «se conserva, no hace falta tocarlo»; ahora se puede
+                tocar A PROPÓSITO, con la regla de items-factura-edicion.js:
+                una línea existente se EDITA en su lugar (nunca se mueve ni se
+                borra del medio — el almacén la referencia por índice), una
+                nueva se AGREGA al final, y "quitar" la deja en cero en vez de
+                sacarla del array. Solo para un movimiento YA GUARDADO: uno
+                nuevo no tiene detalle todavía. */}
+            {editingId && (
+              <div style={{ gridColumn:'1/-1' }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDetalleAbierto(v => !v)}>
+                  {detalleAbierto ? '▲' : '▼'} Detalle de la factura (ítems, IGV)
+                  {itemsForm.length > 0 ? ` — ${itemsForm.length} ítem(s)` : ''}
+                </button>
+                {!detalleAbierto && (
+                  <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:2 }}>
+                    Acá se corrige el IGV y los ítems — y si un anticipo no quedó guardado, se agrega la línea que falta.
+                  </div>
+                )}
+                {detalleAbierto && (
+                  <div style={{ marginTop:8, padding:'10px 12px', borderRadius:6, background:'var(--bg-c2)', border:'1px solid var(--border)' }}>
+                    {/* ── Desglose de IGV ── */}
+                    <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end', marginBottom:12 }}>
+                      <div>
+                        <label className="flabel">Base imponible</label>
+                        <input className="fi" type="number" step="0.01" min="0" style={{ width:130 }}
+                          placeholder="auto (18%)" value={subtotalForm}
+                          onChange={e=>setSubtotalForm(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="flabel">IGV</label>
+                        <input className="fi" type="number" step="0.01" min="0" style={{ width:110 }}
+                          placeholder="auto (18%)" value={igvForm}
+                          onChange={e=>setIgvForm(e.target.value)} />
+                      </div>
+                      {(subtotalForm !== '' || igvForm !== '') && (
+                        <button type="button" className="btn btn-ghost btn-xs"
+                          title="Borra el desglose escrito a mano: vuelve a calcularse solo (18% del total, o lo que el comprobante traiga)"
+                          onClick={() => { setSubtotalForm(''); setIgvForm(''); }}>
+                          Volver a automático
+                        </button>
+                      )}
+                      {subtotalForm !== '' && igvForm !== '' && (() => {
+                        const suma = Math.round((Number(subtotalForm) + Number(igvForm)) * 100) / 100;
+                        const montoActual = parseFloat(form.amount);
+                        const difiere = Number.isFinite(suma) && Number.isFinite(montoActual) && Math.abs(suma - montoActual) > 0.05;
+                        return difiere ? (
+                          <span style={{ fontSize:10.5, color:'var(--amber)' }}>
+                            ⚠ Base + IGV = {suma.toFixed(2)}, y el Monto de arriba es {Number.isFinite(montoActual) ? montoActual.toFixed(2) : '—'}. No bloquea — revisalo contra el papel.
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
+
+                    {/* ── Ítems ── */}
+                    {itemsForm.length > 0 && (
+                      <div style={{ display:'grid', gap:6, marginBottom:8 }}>
+                        {itemsForm.map((it, idx) => {
+                          const ligada = tieneRecepcionLigada(it);
+                          const vacia = !(Number(it.cantidad) > 0) && !(Number(it.precio_unitario) > 0);
+                          return (
+                            <div key={idx} style={{ display:'flex', gap:6, flexWrap:'wrap', alignItems:'center', opacity: vacia ? 0.5 : 1 }}>
+                              <input className="fi" style={{ flex:'1 1 220px', minWidth:160, fontSize:11.5 }}
+                                value={it.descripcion || ''} placeholder="Descripción"
+                                onChange={e=>setItemsForm(arr=>editarLinea(arr, idx, { descripcion: e.target.value }))} />
+                              <input className="fi" type="number" step="0.01" style={{ width:80, fontSize:11.5 }}
+                                value={it.cantidad ?? ''} placeholder="Cant."
+                                onChange={e=>setItemsForm(arr=>editarLinea(arr, idx, { cantidad: e.target.value }))} />
+                              <input className="fi" style={{ width:60, fontSize:11.5 }}
+                                value={it.unidad || ''} placeholder="und"
+                                onChange={e=>setItemsForm(arr=>editarLinea(arr, idx, { unidad: e.target.value }))} />
+                              <input className="fi" type="number" step="0.01" style={{ width:100, fontSize:11.5 }}
+                                value={it.precio_unitario ?? ''} placeholder="P. unit. (sin IGV)"
+                                onChange={e=>setItemsForm(arr=>editarLinea(arr, idx, { precio_unitario: e.target.value }))} />
+                              <span style={{ width:90, textAlign:'right', fontSize:11.5, fontWeight:600 }}>{fmtCur(valorLinea(it), form.currency)}</span>
+                              {it.material_id && (
+                                <span className="badge b-blue" style={{ fontSize:9 }} title="Vinculada al catálogo de insumos — cambiar la descripción no mueve ese vínculo">catálogo</span>
+                              )}
+                              <button type="button" className="btn btn-ghost btn-xs" title={
+                                vacia ? 'Ya está en cero'
+                                : ligada
+                                  ? '⚠ El almacén ya registró recepción contra esta línea. Vaciarla NO borra esa recepción, solo la deja en 0 — revisalo antes.'
+                                  : 'Poner esta línea en 0 (no se borra del array: el almacén la referencia por posición)'
+                              } disabled={vacia}
+                                onClick={() => {
+                                  if (ligada && !confirm('Esta línea ya tiene una recepción de almacén registrada contra ella.\n\n¿Ponerla en 0 igual? La recepción ya hecha NO se deshace: solo esta línea deja de sumar en la factura.')) return;
+                                  setItemsForm(arr=>vaciarLinea(arr, idx));
+                                }}>
+                                <JxIcon name="x" size={11}/>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
+                      <button type="button" className="btn btn-ghost btn-xs"
+                        onClick={() => setItemsForm(arr => agregarLinea(arr, { descripcion: '', cantidad: 1, precio_unitario: 0 }))}>
+                        <JxIcon name="plus" size={11}/> Agregar ítem
+                      </button>
+                      {itemsForm.length > 0 && (
+                        <span style={{ fontSize:10.5, color:'var(--tm)' }}>
+                          Suma de las líneas: {fmtCur(totalDeLineas(itemsForm), form.currency)}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize:10, color:'var(--tm)', marginTop:8, lineHeight:1.4 }}>
+                      El precio unitario va SIN IGV (como lo guarda Captura Mágica). Una línea nueva no
+                      queda vinculada al catálogo de insumos ni a una recepción de almacén — si lo que
+                      falta es un anticipo (Gabriel, 22-set: «no se guardó bien»), agregalo acá con su
+                      descripción («ANTICIPO DE CLIENTE» o similar) y el importe.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {(() => {
               const monto = parseFloat(form.amount);
               const requiere = form.currency === 'PEN' && Number.isFinite(monto) && monto > 2000;
