@@ -5146,7 +5146,11 @@ function MovimientosContablesPage({ showToast }) {
                       {subtotalForm !== '' && igvForm !== '' && (() => {
                         const suma = Math.round((Number(subtotalForm) + Number(igvForm)) * 100) / 100;
                         const montoActual = parseFloat(form.amount);
-                        const difiere = Number.isFinite(suma) && Number.isFinite(montoActual) && Math.abs(suma - montoActual) > 0.05;
+                        // abs(montoActual): una nota de crédito guarda el monto NEGATIVO,
+                        // pero Base + IGV siempre se escriben en positivo (lo que dice
+                        // el papel). Comparar sin abs marcaría "difiere" en las 32 notas
+                        // de crédito de la base aunque el desglose esté perfecto.
+                        const difiere = Number.isFinite(suma) && Number.isFinite(montoActual) && Math.abs(suma - Math.abs(montoActual)) > 0.05;
                         return difiere ? (
                           <span style={{ fontSize:10.5, color:'var(--amber)' }}>
                             ⚠ Base + IGV = {suma.toFixed(2)}, y el Monto de arriba es {Number.isFinite(montoActual) ? montoActual.toFixed(2) : '—'}. No bloquea — revisalo contra el papel.
