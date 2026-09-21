@@ -9,10 +9,13 @@ import { describirIgv, igvDestacable } from "../lib/igv-desglose.js";
 import {
   nombreDeCuenta, cuenta as cuentaPcge, buscarCuentas, hijosDe, cuentaMadreDe, NIVEL_MAXIMO,
 } from "../lib/pcge.js";
-import { fijarCuentaManual } from "../lib/cuenta-manual-db.js";
+import { fijarCuentaManual, fijarSalidaExistencia } from "../lib/cuenta-manual-db.js";
 import { opcionesContrapartida, avisoEfectivoSobreUmbral, CAJA } from "../lib/contrapartida.js";
 import { opcionesDestino, nombreDestino, contrapartidaDeDestino } from "../lib/destino-asiento.js";
-import { avisoPeriodoCerrado } from "../lib/periodo-contable.js";
+import { avisoPeriodoCerrado, periodoCerrado } from "../lib/periodo-contable.js";
+import {
+  esDestinoExistencia, opcionesSalida, patasDeSalida, validarSalida, resumenExistencias,
+} from "../lib/existencias-balance.js";
 import { cargarBancarizados } from "../lib/bancarizado-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
 import { activoPorLinea, activoDeLineaDe } from "../lib/naturaleza-insumo.js";
@@ -105,12 +108,22 @@ const cuentaNombre = (codigo) => nombreDeCuenta(codigo);
  * badge. Lo que sí se avisa es lo que la máquina dedujo del texto y, sobre
  * todo, lo que NO pudo deducir.
  */
-function BadgeCuenta({ cuentas }) {
+function BadgeCuenta({ cuentas, existencia = null, esSalida = false }) {
   const c = cuentas || {};
   const badges = [];
   const B = (clase, texto, titulo) => (
     <span key={texto} className={`badge ${clase}`} style={{ fontSize: 10 }} title={titulo}>{texto}</span>
   );
+
+  // ── LA FILA DE SALIDA DEL INVENTARIO (tanda 5) ───────────────────
+  // No es el asiento del comprobante: es su descarga, con otra fecha. Lleva un
+  // solo badge y ninguno de los de abajo, que hablan de cómo se dedujo la
+  // cuenta de la compra — acá ya no se dedujo nada, lo escribió una persona.
+  if (esSalida) {
+    return B('b-blue', '📦 salida de inventario',
+      c.destino?.porque
+      || 'Saca del Balance lo que había entrado al inventario y lo manda a su cuenta por función.');
+  }
 
   if (c.provisional) {
     badges.push(B('b-red', '⚠ cuenta por definir',
@@ -178,6 +191,24 @@ function BadgeCuenta({ cuentas }) {
       badges.push(B('b-amber', `destino ${cd.cuenta}`,
         `${cd.nombre}. ${cd.porque} Se puede cambiar.`));
     }
+  }
+
+  // ── LO QUE QUEDÓ PARADO EN EL BALANCE (tanda 5, 21-set) ──────────
+  // Va después del destino porque es su consecuencia: el destino dice «quedó
+  // en el inventario» y esto dice «y sigue ahí». Sin este badge la fila se ve
+  // igual que una que ya bajó al resultado, que es como el costo atrapado se
+  // vuelve invisible.
+  if (existencia && existencia.queda > 0.01) {
+    badges.push(B('b-amber', `📦 sigue en inventario ${fmtS(existencia.queda)}`,
+      existencia.parcial
+        ? `De ${fmtS(existencia.entro)} salieron ${fmtS(existencia.salio)} y quedan ${fmtS(existencia.queda)} `
+          + `en la cuenta ${existencia.cuenta}. Mientras estén ahí no son costo de ningún período.`
+        : `${fmtS(existencia.queda)} están en la cuenta ${existencia.cuenta} y no bajaron el resultado `
+          + 'de ningún período todavía. Descargalos el día que salgan del almacén.'));
+  } else if (existencia && existencia.descargada) {
+    badges.push(B('b-green', '📦 descargado del inventario',
+      `Entró al Balance por la ${existencia.cuenta} y ya salió entero. La salida es el asiento `
+      + 'que sigue, con la fecha en que se usó.'));
   }
 
   if (c.revisar && !c.provisional) {
@@ -305,6 +336,17 @@ function ModalCuenta({
   const [cuenta, setCuenta] = uS(movimiento?.cuenta_pcge || null);
   const [contra, setContra] = uS(movimiento?.cuenta_pcge_contrapartida || null);
   const [destino, setDestino] = uS(movimiento?.cuenta_pcge_destino || null);
+  // ── LA SALIDA DEL INVENTARIO (tanda 5 del destino) ────────────────
+  // Tres campos y una sola decisión: a dónde fue. La fecha es la del ALMACÉN
+  // —no la de la factura— y el importe puede ser menor que lo que entró,
+  // porque descargar media compra de cemento es el caso normal.
+  const [salidaCuenta, setSalidaCuenta] = uS(movimiento?.existencia_salida_cuenta || null);
+  const [salidaFecha, setSalidaFecha] = uS(
+    String(movimiento?.existencia_salida_fecha || '').slice(0, 10),
+  );
+  const [salidaImporte, setSalidaImporte] = uS(
+    movimiento?.existencia_salida_importe != null ? String(movimiento.existencia_salida_importe) : '',
+  );
   const [aplicarATodos, setAplicarATodos] = uS(false);
   const [guardando, setGuardando] = uS(false);
   // El escape del período ya presentado. Nace apagado a propósito: la
@@ -396,6 +438,58 @@ function ModalCuenta({
     );
   }, [destinosSugeridos]);
   const destinoAsiento = cuentasAsiento.destino || null;
+
+  // ── LA SALIDA DEL INVENTARIO (tanda 5 del destino) ────────────────
+  // Se mira el destino que está en el FORMULARIO, no el guardado: si la
+  // contadora acaba de elegir la 24, el bloque de salida tiene que aparecer
+  // ya, sin obligarla a guardar y volver a entrar.
+  const destinoElegido = destino || destinoAsiento?.cuenta || '';
+  // El tope de lo que puede salir: lo que entró al Balance por este
+  // comprobante. Lo calcula el generador del asiento (base sin IGV, repartida).
+  const entroAlBalance = asiento?.baseDestino || 0;
+  const opcionesDeSalida = uM(() => opcionesSalida(destinoElegido), [destinoElegido]);
+  const buscarSalida = uM(() => (texto) => {
+    const t = texto.trim().toLowerCase();
+    return opcionesDeSalida.filter(
+      o => o.codigo.startsWith(t) || o.nombre.toLowerCase().includes(t),
+    );
+  }, [opcionesDeSalida]);
+  // La previa de las otras tres patas. Solo cuando hay algo que mostrar: una
+  // caja verde vacía enseña a ignorar la caja verde.
+  const previaSalida = uM(
+    () => patasDeSalida({
+      destino: destinoElegido,
+      cuentaSalida: salidaCuenta,
+      importe: Number(salidaImporte),
+      cuentaOrigen: cuentaNaturaleza,
+    }),
+    [destinoElegido, salidaCuenta, salidaImporte, cuentaNaturaleza],
+  );
+  // El error se muestra mientras se escribe, no recién al guardar: los tres
+  // campos son de la misma decisión y a medio llenar no se puede guardar
+  // (lo exige el CHECK de la mig 224).
+  const salidaTocada = !!(salidaCuenta || salidaFecha || salidaImporte);
+  const errorSalida = uM(() => {
+    if (!salidaTocada || !esDestinoExistencia(destinoElegido)) return '';
+    const v = validarSalida(
+      { cuenta: salidaCuenta, fecha: salidaFecha, importe: salidaImporte },
+      { destino: destinoElegido, entro: entroAlBalance },
+    );
+    return v.ok ? '' : v.error;
+  }, [salidaTocada, destinoElegido, salidaCuenta, salidaFecha, salidaImporte, entroAlBalance]);
+  // El candado de la SALIDA mira su propia fecha (ver `fijarSalidaExistencia`).
+  const salidaEnCerrado = !!salidaFecha && periodoCerrado(salidaFecha);
+  // ¿Cambió la salida? Se compara contra lo guardado, campo por campo: los
+  // tres son de la misma decisión y mover solo el importe de una descarga
+  // parcial también es un cambio. Se declara ACÁ y no junto a `sinCambios`
+  // porque `ejecutar` lo usa, y una constante usada antes de su línea es una
+  // trampa esperando a que alguien mueva una función.
+  const salidaCambio =
+    (salidaCuenta || null) !== (movimiento?.existencia_salida_cuenta || null)
+    || String(salidaFecha || '') !== String(movimiento?.existencia_salida_fecha || '').slice(0, 10)
+    || String(salidaImporte ?? '') !== (movimiento?.existencia_salida_importe != null
+      ? String(movimiento.existencia_salida_importe) : '');
+
   // El aviso del mes ya declarado. Es del COMPROBANTE, no de lo que se cambie:
   // tocar cualquier cosa de un mes presentado tiene la misma consecuencia.
   const avisoCerrado = uM(() => avisoPeriodoCerrado(movimiento || {}), [movimiento]);
@@ -462,9 +556,15 @@ function ModalCuenta({
     }
 
     const motivo = motivoDe(c);
-    const r = await fijarCuentaManual(asiento.movimiento_id, escribir, {
-      userId, motivo, forzarPeriodoCerrado: forzarCerrado,
-    });
+    // Cambiar SOLO la salida de inventario es una edición legítima y no toca
+    // ninguna cuenta del comprobante: sin este salto, `fijarCuentaManual`
+    // contestaría «no hay nada que cambiar» y abortaría antes de escribirla.
+    const soloSalida = Object.keys(escribir || {}).length === 0 && salidaCambio;
+    const r = soloSalida
+      ? { ok: true }
+      : await fijarCuentaManual(asiento.movimiento_id, escribir, {
+        userId, motivo, forzarPeriodoCerrado: forzarCerrado,
+      });
     if (!r.ok) { showToast?.(r.error, 'red'); return false; }
 
     // Los del mismo proveedor, cada uno con su plan. Sin el escape del
@@ -487,6 +587,28 @@ function ModalCuenta({
     if (escribir.cuenta) partes.push(`cuenta ${escribir.cuenta}`);
     else if (c.salesola && !avisos.length) partes.push(`la ${cuenta} sale sola`);
     if (escribir.destino) partes.push(`destino ${escribir.destino}`);
+
+    // ── LA SALIDA DEL INVENTARIO (tanda 5) ────────────────────────
+    // Va DESPUÉS de `fijarCuentaManual` y no puede ir antes: el CHECK de la
+    // mig 224 exige que el destino YA sea una existencia cuando la salida se
+    // escribe. En el orden inverso la primera escritura rebotaría con 23514.
+    // El estado intermedio —destino puesto, salida todavía no— es válido, así
+    // que un corte entre las dos no rompe nada.
+    if (salidaCambio) {
+      const rs = await fijarSalidaExistencia(
+        asiento.movimiento_id,
+        { cuenta: salidaCuenta, fecha: salidaFecha, importe: salidaImporte },
+        {
+          userId,
+          entro: entroAlBalance,
+          forzarPeriodoCerrado: forzarCerrado,
+          motivo: motivo || '',
+        },
+      );
+      if (!rs.ok) avisos.push(`la salida de inventario no se guardó: ${rs.error}`);
+      else if (rs.borrada) partes.push('se deshizo la salida de inventario');
+      else partes.push(`sale del inventario el ${salidaFecha} a la ${salidaCuenta}`);
+    }
     if ('tipo' in escribir && c.cambioDeTipo) partes.push(c.cambioDeTipo.a === 'cost' ? 'ahora es costo' : 'ahora es gasto');
     if (okHermanos) partes.push(`${okHermanos} más del mismo proveedor`);
     if (c.alcance.cambian.length) partes.push(`${c.alcance.cambian.length} comprobante(s) se movieron solos`);
@@ -525,7 +647,8 @@ function ModalCuenta({
 
   const sinCambios = (cuenta || null) === (movimiento?.cuenta_pcge || null)
     && (contra || null) === (movimiento?.cuenta_pcge_contrapartida || null)
-    && (destino || null) === (movimiento?.cuenta_pcge_destino || null);
+    && (destino || null) === (movimiento?.cuenta_pcge_destino || null)
+    && !salidaCambio;
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -699,6 +822,97 @@ function ModalCuenta({
                   ⚠ {destinosSugeridos.find(o => o.codigo === destino).porque}
                 </div>
               )}
+
+              {/* ── CUÁNDO SALIÓ DEL ALMACÉN (tanda 5, 21-set) ──────────
+                  La otra mitad del destino de existencia. Hasta ahora se podía
+                  mandar una compra a la 20/24/25/26 y no había forma de
+                  sacarla: el costo quedaba en el Balance para siempre y la
+                  empresa pagaba renta sobre una utilidad que no tuvo.
+                  Solo aparece cuando el destino ES una existencia. */}
+              {esDestinoExistencia(destinoElegido) && (
+                <div style={{
+                  marginTop: 10, padding: '10px 11px', borderRadius: 6,
+                  border: '1px solid var(--bg-s)', background: 'rgba(52,152,219,.06)',
+                }}>
+                  <label className="flabel" style={{ marginBottom: 4 }}>
+                    📦 ¿Ya salió del almacén?
+                  </label>
+                  <div style={{ fontSize: 11.5, lineHeight: 1.45, marginBottom: 8, color: 'var(--tm)' }}>
+                    Mientras esté en la {destinoElegido} no es costo de ningún período: está en el
+                    Balance. Cuando se use o se venda, decilo acá y el asiento de salida se arma
+                    solo — <strong>con la fecha en que salió</strong>, que es la que decide de qué
+                    mes es el costo, no la de la factura.
+                    {entroAlBalance > 0 && (
+                      <> Entraron <strong>{fmtS(entroAlBalance)}</strong>.</>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                    <div style={{ flex: '1 1 140px' }}>
+                      <label className="flabel" style={{ fontSize: 10.5 }}>Día en que salió</label>
+                      <input
+                        type="date" className="fi" value={salidaFecha}
+                        onChange={e => setSalidaFecha(e.target.value)}
+                      />
+                    </div>
+                    <div style={{ flex: '1 1 120px' }}>
+                      <label className="flabel" style={{ fontSize: 10.5 }}>Importe que salió</label>
+                      <input
+                        type="number" step="0.01" min="0" className="fi"
+                        placeholder={entroAlBalance > 0 ? String(entroAlBalance) : '0.00'}
+                        value={salidaImporte}
+                        onChange={e => setSalidaImporte(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 8 }}>
+                    <label className="flabel" style={{ fontSize: 10.5 }}>A dónde fue</label>
+                    <SelectorCuenta
+                      valor={salidaCuenta}
+                      sugeridas={opcionesDeSalida}
+                      onElegir={setSalidaCuenta}
+                      resolver={resolverDest}
+                      buscar={buscarSalida}
+                      placeholder="Se consumió (92, 94…) o se vendió (691)"
+                    />
+                  </div>
+
+                  {/* Las otras tres patas, dichas antes de guardar: la promesa
+                      de la tanda 1 vale también acá — se elige UNA cuenta. */}
+                  {previaSalida && (
+                    <div style={{
+                      marginTop: 8, padding: '8px 10px', borderRadius: 6, fontSize: 11.5, lineHeight: 1.45,
+                      background: 'rgba(46,204,113,.10)',
+                    }}>
+                      El asiento de salida sale solo:{' '}
+                      {previaSalida.patas.map((p, i) => (
+                        <span key={i}>
+                          {i > 0 && ' · '}
+                          <strong className="col-m">{p.cuenta}</strong> {p.debe > 0 ? 'debe' : 'haber'}
+                        </span>
+                      ))}
+                      <div style={{ color: 'var(--tm)', marginTop: 2 }}>{previaSalida.porque}</div>
+                    </div>
+                  )}
+
+                  {errorSalida && (
+                    <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--red)', lineHeight: 1.45 }}>
+                      ⚠ {errorSalida}
+                    </div>
+                  )}
+
+                  {/* El candado de la salida es OTRO: mira la fecha en que salió,
+                      no la de la factura. Una compra de mayo consumida en
+                      setiembre genera un asiento de setiembre, que está abierto. */}
+                  {salidaEnCerrado && (
+                    <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber)', lineHeight: 1.45 }}>
+                      🔒 Con esa fecha, la salida cae en un mes ya presentado a SUNAT. Marcá arriba
+                      «Modificarlo igual» para guardarla; queda registrado en Auditoría.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -740,16 +954,26 @@ function ModalCuenta({
           <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
           <button
             className="btn btn-sm"
-            onClick={() => { setCuenta(null); setContra(null); setDestino(null); }}
-            disabled={!cuenta && !contra && !destino}
+            onClick={() => {
+              setCuenta(null); setContra(null); setDestino(null);
+              // Sin destino de existencia la salida no puede existir (CHECK de
+              // la mig 224): se limpia acá para que la pantalla muestre lo
+              // mismo que `fijarCuentaManual` va a escribir, y no una descarga
+              // que ya no está.
+              setSalidaCuenta(null); setSalidaFecha(''); setSalidaImporte('');
+            }}
+            disabled={!cuenta && !contra && !destino && !salidaCuenta}
             title="Borrar las cuentas elegidas a mano y dejar que la app las deduzca">
             Volver a automático
           </button>
           <button
             className="btn btn-amber btn-sm"
             onClick={guardar}
-            disabled={guardando || sinCambios || (!!avisoCerrado && !forzarCerrado)}
-            title={avisoCerrado && !forzarCerrado ? avisoCerrado : undefined}>
+            disabled={guardando || sinCambios || !!errorSalida
+              || (!!avisoCerrado && !forzarCerrado)
+              || (salidaEnCerrado && salidaCambio && !forzarCerrado)}
+            title={errorSalida
+              || (avisoCerrado && !forzarCerrado ? avisoCerrado : undefined)}>
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
@@ -834,9 +1058,17 @@ function LibroDiarioPage({ showToast }) {
       // Por string: con new Date('2026-01-01') el asiento caía en 2025.
       const ymd = ymdDe(m.date || m.created_at);
       if (!ymd) return false;
-      if (ymd.slice(0, 4) !== String(anio)) return false;
-      if (mes !== 'all' && ymd.slice(5, 7) !== mes) return false;
-      return true;
+      // ── DOS FECHAS, NO UNA (tanda 5 del destino) ──────────────────
+      // Un comprobante entra al período si su fecha cae adentro O si la
+      // SALIDA de inventario cae adentro: una factura de mayo consumida en
+      // agosto produce un asiento de agosto y tiene que verse en agosto.
+      // El asiento de mayo no se cuela en agosto porque `generarAsientosBatch`
+      // filtra después por la fecha de CADA asiento (opción `ventana`).
+      const dentro = (f) => !!f
+        && f.slice(0, 4) === String(anio)
+        && (mes === 'all' || f.slice(5, 7) === mes);
+      const ymdSalida = String(m.existencia_salida_fecha || '').slice(0, 10);
+      return dentro(ymd) || dentro(ymdSalida);
     });
   }, [movs, empresaId, anio, mes, tipoFiltro]);
 
@@ -924,10 +1156,28 @@ function LibroDiarioPage({ showToast }) {
 
   // Asientos generados al vuelo
   const asientosTodos = uM(
-    () => generarAsientosBatch(movsFiltrados, { repartoDe, bancarizadoIds }),
-    [movsFiltrados, repartoDe, bancarizadoIds],
+    // `ventana`: desde la tanda 5 un movimiento puede producir DOS asientos
+    // con fechas distintas. El filtro de período tiene que aplicarse al
+    // asiento, no al movimiento — si no, la compra de mayo se vería en agosto
+    // solo porque su salida fue en agosto.
+    () => generarAsientosBatch(movsFiltrados, { repartoDe, bancarizadoIds, ventana: { anio, mes } }),
+    [movsFiltrados, repartoDe, bancarizadoIds, anio, mes],
   );
   const descuadrados = uM(() => asientosTodos.filter(a => !a.cuadra), [asientosTodos]);
+
+  // ── EL PANEL DE EXISTENCIAS (tanda 5 del destino) ─────────────────
+  // `entro` sale del asiento y no se recalcula: es la base del asiento de
+  // destino, ya repartida entre las cuentas y sin IGV. Se excluyen las filas
+  // de salida, que no tienen saldo propio — el saldo es del comprobante.
+  const existencias = uM(
+    () => resumenExistencias(
+      asientosTodos
+        .filter(a => !a.esSalidaExistencia && a.existencia)
+        .map(a => ({ movimiento: movs.find(m => m.id === a.movimiento_id) || {}, entro: a.baseDestino })),
+      { hoy: window.__fecha?.hoyLocal?.() || '' },
+    ),
+    [asientosTodos, movs],
+  );
 
   // ── FILTRO POR ESTADO DE LA CUENTA (pedido de Gabriel, 17-set) ─────
   // Sin esto, los asientos con la cuenta sin definir quedan mezclados entre
@@ -1386,6 +1636,39 @@ function LibroDiarioPage({ showToast }) {
               : 'todas deducidas o puestas a mano'}
           </div>
         </div>
+
+        {/* ── LO QUE ESTÁ PARADO EN EL BALANCE (tanda 5, 21-set) ────────
+            Solo aparece cuando hay algo adentro. Una tarjeta que dice «S/ 0»
+            todos los días es una tarjeta que se deja de mirar, y el día que
+            tenga un número nadie lo va a ver. El costo atrapado en el
+            inventario no se nota por ningún otro lado: el asiento se ve
+            normal, cuadra y tiene su destino puesto. */}
+        {existencias.totalQueda > 0.01 && (
+          <div className="card card-p"
+            style={{ borderLeft: '3px solid var(--amber)', cursor: 'pointer' }}
+            title={'Compras mandadas al inventario que todavía no salieron del almacén. '
+              + 'Mientras estén ahí no son costo de ningún período.\n\n'
+              + existencias.porCuenta
+                .map(g => `${g.cuenta} ${g.nombre}: ${fmtS(g.queda)} en ${g.sinDescargar} comprobante(s)`)
+                .join('\n')}
+            onClick={() => setEstadoCuenta(v => (v === 'existencia_en_balance' ? 'todas' : 'existencia_en_balance'))}>
+            <div style={{ fontSize: 11, color: 'var(--tm)', textTransform: 'uppercase' }}>En el inventario</div>
+            <div style={{ fontSize: 20, fontWeight: 800, marginTop: 4, color: 'var(--amber)' }}>
+              {fmtS(existencias.totalQueda)}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3 }}>
+              {existencias.atrapadas.length} comprobante(s) sin descargar
+              {' · '}
+              {estadoCuenta === 'existencia_en_balance' ? 'viéndolos' : 'click para verlos'}
+            </div>
+            {existencias.cruzaronCierre > 0 && (
+              <div style={{ fontSize: 10.5, color: 'var(--red)', marginTop: 3 }}
+                title="Compras de meses ya presentados que siguen en el inventario. Si en realidad se consumieron, ese costo nunca bajó ningún resultado.">
+                🔒 {existencias.cruzaronCierre} de meses ya presentados
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabla de asientos */}
@@ -1477,8 +1760,19 @@ function LibroDiarioPage({ showToast }) {
                                     porque ya lo decidió una persona. Un asiento provisional
                                     con cara de definitivo es exactamente lo que hizo que
                                     nadie revisara las 1.742 filas que decían 60. */}
-                                {a.cuentas && <BadgeCuenta cuentas={a.cuentas}/>}
-                                {puedeCorregir && a.movimiento_id && (
+                                {a.cuentas && (
+                                  <BadgeCuenta
+                                    cuentas={a.cuentas}
+                                    existencia={a.existencia}
+                                    esSalida={a.esSalidaExistencia}
+                                  />
+                                )}
+                                {/* La fila de salida NO se corrige acá: lo que hay que
+                                    cambiar es la descarga, y eso se edita desde el asiento
+                                    de la compra, que es donde está el destino del que
+                                    cuelga. Dos puertas a la misma decisión terminan en dos
+                                    decisiones distintas. */}
+                                {puedeCorregir && a.movimiento_id && !a.esSalidaExistencia && (
                                   <button className="btn btn-ghost btn-xs" style={{ padding: '0 5px' }}
                                     title="Corregir la cuenta de este asiento"
                                     onClick={() => setEditando(a)}>

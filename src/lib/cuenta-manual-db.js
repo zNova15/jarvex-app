@@ -29,9 +29,13 @@
 import { db, SYNC_STATUS } from '../db/jarvex.db';
 import { esCuentaValida, cuenta as cuentaPcge } from './pcge.js';
 import { validarDestino } from './destino-asiento.js';
+import {
+  validarSalida, salidaQuedaHuerfana, SALIDA_VACIA, esDestinoExistencia,
+} from './existencias-balance.js';
 import { derivarTypeContable } from './clasificacion-contable.js';
 import {
   CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, avisoPeriodoCerrado, motivoForzado,
+  periodoCerrado,
 } from './periodo-contable.js';
 
 const avisar = () => {
@@ -134,6 +138,19 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
     return { ok: false, periodoCerrado: true, error: avisoPeriodoCerrado(fresh, cerradoHasta) };
   }
 
+  // ── EL GUARDIÁN DEL CHECK DE LA MIG 224 (tanda 5) ───────────────
+  // 🔴 La salida de inventario solo puede existir colgada de un destino que
+  // SEA una existencia; el CHECK de la base lo exige. Si alguien cambia el
+  // destino de 24 a 94 y la salida se queda, la fila viola el CHECK, el push
+  // rebota con 23514 y el sync entra en reintento eterno — la regla 9 del
+  // CLAUDE.md, ya pagada una vez con `insumo_categoria`.
+  //
+  // Se borra en la MISMA escritura, no en otra: entre dos updates la fila
+  // queda inválida, y el sync no espera a que terminemos.
+  if ('cuenta_pcge_destino' in campos && salidaQuedaHuerfana(campos.cuenta_pcge_destino, fresh)) {
+    Object.assign(campos, SALIDA_VACIA);
+  }
+
   // El `type` NO se elige: se deriva, con la misma función que usan Captura
   // Mágica y Movimientos. Así un intercompany sigue siendo costo aunque llegue
   // un 'expense' (la regla dura del Consolidado vive en esa función).
@@ -170,6 +187,16 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
         cuenta_pcge: fresh.cuenta_pcge ?? null,
         cuenta_pcge_contrapartida: fresh.cuenta_pcge_contrapartida ?? null,
         cuenta_pcge_destino: fresh.cuenta_pcge_destino ?? null,
+        // La salida borrada por arrastre se dice: dentro de un año, «¿dónde
+        // fue a parar la descarga de esa compra?» es una pregunta legítima y
+        // la respuesta es «se la llevó el cambio de destino».
+        ...('existencia_salida_cuenta' in campos
+          ? {
+            existencia_salida_cuenta: fresh.existencia_salida_cuenta ?? null,
+            existencia_salida_fecha: fresh.existencia_salida_fecha ?? null,
+            existencia_salida_importe: fresh.existencia_salida_importe ?? null,
+          }
+          : {}),
         ...('clasificacion_manual' in campos
           ? { clasificacion_manual: fresh.clasificacion_manual ?? null, type: fresh.type ?? null }
           : {}),
@@ -193,6 +220,119 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
 }
 
 /**
+ * Descargar del inventario lo que ya salió del almacén (tanda 5 del destino).
+ *
+ * Es la OTRA mitad del destino de existencia. Hasta la mig 224 se podía mandar
+ * una compra a la 20/24/25/26 y no había forma de sacarla: el costo quedaba en
+ * el Balance para siempre y la empresa pagaba renta sobre una utilidad que no
+ * tuvo. Acá se escribe cuándo salió, a dónde fue y cuánto — las otras tres
+ * patas del asiento las deriva `existencias-balance.js`.
+ *
+ * ── EL CANDADO MIRA LA FECHA DE LA SALIDA, NO LA DE LA FACTURA ──
+ * 🔴 Y es el punto entero de la tanda. El costo pertenece al mes en que la
+ * cosa se USÓ. Una factura de mayo (período ya presentado) que se consume en
+ * setiembre genera un asiento de SETIEMBRE, que está abierto: frenarlo porque
+ * la factura es vieja sería prohibir justo la operación que corrige el
+ * problema. Al revés también vale: descargar con fecha de junio SÍ toca un mes
+ * declarado y ahí el freno tiene que aplicar.
+ *
+ * @param {string} movimientoId
+ * @param {object} salida  { cuenta, fecha, importe } — todo null/vacío la borra
+ * @param {object} ctx     { userId, motivo, entro, forzarPeriodoCerrado, cerradoHasta }
+ *                         `entro` es la base del asiento de destino: el tope
+ *                         de lo que puede salir. Lo calcula el generador.
+ */
+export async function fijarSalidaExistencia(movimientoId, salida = {}, {
+  userId = null, motivo = '', entro = null,
+  forzarPeriodoCerrado = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
+} = {}) {
+  if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
+
+  const fresh = await db.accounting_movements.get(movimientoId);
+  if (!fresh) return { ok: false, error: 'El comprobante no está en este dispositivo — sincronizá.' };
+
+  const destino = String(fresh.cuenta_pcge_destino || '').trim();
+  const borrar = !salida?.cuenta && !salida?.fecha
+    && (salida?.importe === null || salida?.importe === undefined || salida?.importe === '');
+
+  // Borrar no exige que el destino siga siendo una existencia: si el destino
+  // cambió, borrar la salida es exactamente lo que hay que poder hacer.
+  if (!borrar && !esDestinoExistencia(destino)) {
+    return {
+      ok: false,
+      error: 'Este comprobante no está en una existencia: elegí primero el destino de inventario '
+        + '(20, 24, 25 o 26) y después decí cuándo salió.',
+    };
+  }
+
+  const v = validarSalida(salida, { destino, entro });
+  if (!v.ok) return { ok: false, error: v.error };
+
+  // El freno del período mira la fecha de la SALIDA (ver arriba). Al borrar,
+  // la que se estaba usando: deshacer una descarga de un mes declarado también
+  // cambia ese mes.
+  const fechaCandado = borrar
+    ? String(fresh.existencia_salida_fecha || '').slice(0, 10)
+    : v.salida.fecha;
+  const enCerrado = !!fechaCandado && periodoCerrado(fechaCandado, cerradoHasta);
+  if (enCerrado && !forzarPeriodoCerrado) {
+    return {
+      ok: false,
+      periodoCerrado: true,
+      error: `La salida quedaría con fecha ${fechaCandado}, dentro del período ya presentado a `
+        + `SUNAT (cerrado hasta el ${cerradoHasta}). Eso cambia un Libro Diario ya declarado.`,
+    };
+  }
+
+  const ahora = new Date().toISOString();
+  const campos = v.salida.cuenta
+    ? {
+      existencia_salida_cuenta: v.salida.cuenta,
+      existencia_salida_fecha: v.salida.fecha,
+      existencia_salida_importe: v.salida.importe,
+      existencia_salida_por: userId || null,
+      existencia_salida_at: ahora,
+    }
+    : { ...SALIDA_VACIA };
+
+  await db.accounting_movements.update(movimientoId, {
+    ...campos,
+    updated_at: ahora,
+    updated_by: userId,
+    version: (fresh.version ?? 0) + 1,
+    sync_status: fresh.sync_status === SYNC_STATUS.PENDING_CREATE
+      ? SYNC_STATUS.PENDING_CREATE
+      : SYNC_STATUS.PENDING_UPDATE,
+  });
+
+  try {
+    await window.__logAudit?.({
+      action: 'update',
+      table: 'accounting_movements',
+      recordId: movimientoId,
+      oldData: {
+        existencia_salida_cuenta: fresh.existencia_salida_cuenta ?? null,
+        existencia_salida_fecha: fresh.existencia_salida_fecha ?? null,
+        existencia_salida_importe: fresh.existencia_salida_importe ?? null,
+      },
+      newData: campos,
+      reason: [
+        motivo || (v.salida.cuenta
+          ? `Libro Diario · ${fresh.document_number || 'el comprobante'} sale del inventario el `
+            + `${v.salida.fecha} hacia la cuenta ${v.salida.cuenta}`
+          : `Libro Diario · se deshace la salida de inventario de ${fresh.document_number || 'el comprobante'}`),
+        enCerrado
+          ? `se toca el período cerrado (hasta ${cerradoHasta}) con fecha ${fechaCandado}, a sabiendas`
+          : '',
+      ].filter(Boolean).join(' · '),
+    });
+  } catch { /* la auditoría no puede impedir la corrección */ }
+
+  avisar();
+  return { ok: true, borrada: !v.salida.cuenta };
+}
+
+/**
  * La misma corrección sobre VARIOS movimientos.
  *
  * Es lo que hace usable la pila de «cuentas por definir»: son 345 en
@@ -212,4 +352,7 @@ export async function fijarCuentaEnLote(ids = [], cambios = {}, ctx = {}) {
   return out;
 }
 
-export default { validarCuentaManual, validarTipoManual, fijarCuentaManual, fijarCuentaEnLote };
+export default {
+  validarCuentaManual, validarTipoManual, fijarCuentaManual, fijarCuentaEnLote,
+  fijarSalidaExistencia,
+};

@@ -976,6 +976,28 @@ const PERM_MATRIX = {
   // sin write acá, la bancarización subida quedaría PENDING para siempre).
   ayudante_contador: PERM_MATRIX_MODULES.map(m => {
     if (['Empresas','Movs. Contables','Cuentas Bancarias','Captura Mágica','Evidencias'].includes(m)) return 'w';
+    // Las cuatro áreas de apoyo (21-set-2026). La matriz tiene que decir lo
+    // mismo que `__AYUDANTE_CONTADOR_ITEMS`: la allowlist es la que manda para
+    // el menú, pero esta grilla es la que el admin MIRA en Roles y Permisos —
+    // si acá dice 'x' y la ayudante igual entra, la pantalla de permisos
+    // miente y nadie vuelve a confiar en ella.
+    //
+    // El Libro Diario es 'w' porque ya corregía cuentas desde antes de esta
+    // tanda. El Plan de Cuentas y los Libros Electrónicos son 'r': el primero
+    // no tiene nada que escribir (es el árbol del PCGE, del bundle) y el
+    // segundo es lo que se DECLARA — generarlo es parte del cierre, y el
+    // cierre es de la contadora jefe.
+    //
+    // 🔴 La Base de Insumos ('analisis-insumos') NO está acá y no es un olvido:
+    // mapea al módulo 'Dashboard Ejecutivo', que comparte con el Dashboard
+    // Ejecutivo de verdad — el de los números del grupo, que a la ayudante no
+    // se le abre. Poner 'w' ahí le daría los dos. La grilla es por MÓDULO y no
+    // puede decir «uno sí, el otro no», así que ese permiso vive donde sí se
+    // puede decir: la allowlist de arriba, el gate por rol dentro de
+    // `jx-analisis-insumos.jsx` y la RLS de la mig 225. Si algún día se parte
+    // el módulo en dos, esta fila se corrige.
+    if (m === 'Libro Diario') return 'w';
+    if (['Plan de Cuentas','Libros Electrónicos'].includes(m)) return 'r';
     if (m === 'Personal' || m === 'Proveedores' || m === 'Bienes y Servicios') return 'r';  // solo lectura
     return 'x';
   }),
@@ -1323,7 +1345,33 @@ const __AYUDANTE_CONTADOR_ITEMS = [
 , 'guias-remision'
 // Libro Diario con la herramienta de descuadre (31-ago): las ayudantes también
 // revisan el cuadre — es una vista derivada de solo lectura, sin riesgo.
-, 'libro-diario'];
+, 'libro-diario'
+// ── APOYO A LA CONTADORA JEFE (21-set-2026, pedido de Gabriel) ──────
+// «Dales acceso a más áreas para que nos puedan apoyar». Las cuatro que pidió,
+// y por qué cada una es sostenible con lo que la ayudante YA puede hacer:
+//
+//  · 'plan-cuentas' — el árbol del PCGE. Es una pantalla de CONSULTA sobre
+//    datos del bundle: no hay tabla, no hay RLS, no se escribe nada. Sin ella
+//    la ayudante corrige cuentas en el Libro Diario (que ya podía) sin poder
+//    ir a leer qué dice la norma de la cuenta que está eligiendo.
+//  · 'libros-electronicos' — el PLE/PDT. Se deriva de `accounting_movements`,
+//    donde la ayudante ya tiene 'w'. O sea que ya podía cambiar lo que el
+//    archivo dice; lo que no podía era VER el archivo antes de que se declare.
+//  · 'analisis-insumos' — la Base de Insumos. Ver abajo el gate por rol, que
+//    también se abrió, y la mig 225, que alinea la RLS de escritura. Es donde
+//    se clasifica lo que después decide la cuenta de cada factura: es
+//    exactamente «apoyar en contabilidad».
+//  · 'guias-remision' ya estaba desde antes (línea de arriba).
+//
+// Lo que NO se le abre y es deliberado: Balance General, Estado de Resultados,
+// Consolidado y Comparativo de Períodos. No es desconfianza — es que son los
+// ESTADOS que la contadora jefe firma. Una ayudante que los mira sin el
+// contexto del cierre saca conclusiones de números que todavía se están
+// armando, y la pregunta «¿por qué el Balance dice esto?» termina en la mesa
+// de la jefa igual, pero a destiempo.
+, 'plan-cuentas'
+, 'libros-electronicos'
+, 'analisis-insumos'];
 // Residente de Obra: menú NETAMENTE TÉCNICO (pedido 20-jul-2026). Sin almacén,
 // sin bloques de especialistas (los ve resumidos en su Panel), sin pantallas
 // con dinero global (Dashboard general, Control de Consumo, Planificado vs
@@ -1417,6 +1465,9 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   if (itemId === 'licitaciones') return ['admin', 'gerente', 'licitaciones'].includes(rol);
   // Análisis de Insumos: base de insumos, costos por proveedor, correlaciones y catálogo.
   // Visible para admin, gerente y contabilidad (jefa de contabilidad).
+  // La AYUDANTE también la ve desde el 21-set-2026, pero no por acá: entra por
+  // `__AYUDANTE_CONTADOR_ITEMS`, que se evalúa antes y gana. Este gate sigue
+  // siendo el que decide para todos los demás roles.
   if (itemId === 'analisis-insumos') return ['admin', 'gerente', 'contador'].includes(rol);
   // REPORTES: la página muestra familias (Movimientos/Avance/Contable) gateadas
   // cada una por su módulo. Sin acceso a NINGUNA familia, la página queda vacía

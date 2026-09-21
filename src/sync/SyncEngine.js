@@ -654,6 +654,12 @@ const CAMPO_HUMANO = {
   cuenta_pcge: 'cuenta contable', fecha: 'fecha', date: 'fecha',
   cuenta_pcge_contrapartida: 'contrapartida del asiento',
   cuenta_pcge_destino: 'cuenta de destino del asiento',
+  // Tanda 5 del destino: el CHECK de la mig 224 se llama
+  // `..._existencia_salida_cuenta_check` justo para que `campoDeConstraint()`
+  // aterrice en esta clave y el error diga algo que se entienda.
+  existencia_salida_cuenta: 'salida del inventario',
+  existencia_salida_fecha: 'fecha de salida del inventario',
+  existencia_salida_importe: 'importe que salió del inventario',
 };
 // Valores aceptados por campos con CHECK conocidos (para sugerir la corrección).
 const VALORES_VALIDOS = {

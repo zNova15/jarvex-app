@@ -30,7 +30,8 @@
 //    volver a preguntar — pedido explícito de Gabriel. Captura Mágica no se
 //    toca: esto es una capa de análisis posterior.
 //
-// Visibilidad: gate duro admin/gerente/contador (la vista muestra COSTOS por
+// Visibilidad: gate duro por ROLES_BASE_INSUMOS (ver la constante abajo de los
+// imports; la vista muestra COSTOS por
 // proveedor; la regla de la casa es que almacén/campo no ven costos, pero
 // contabilidad sí — es quien clasifica y necesita ver a qué precio compró
 // cada uno). Mig 211 (14-sep-2026) alineó la RLS de escritura de las tablas
@@ -77,6 +78,18 @@ import { MapeoInsumosTab } from "./jx-mapeo-insumos.jsx";
 import { CatalogoCanonicoTab } from "./jx-catalogo-canonico.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR, useCallback: uC } = React;
+
+// ── QUIÉN ENTRA ACÁ ───────────────────────────────────────────────
+// Un solo lugar, para que el gate de la pantalla y cualquier otra pregunta por
+// el rol den la misma respuesta. La AYUDANTE DE CONTABILIDAD se sumó el
+// 21-set-2026 por pedido de Gabriel («dales acceso a más áreas para que nos
+// puedan apoyar»): es la pantalla donde se clasifica lo que después decide la
+// cuenta de cada factura, o sea exactamente el trabajo que se le pide apoyar.
+// No hay exposición nueva de costos — ya ve todos los comprobantes con sus
+// importes en Movimientos Contables. La mig 225 le abrió la escritura del lado
+// del server, igual que la 211 hizo con la contadora, para que no le rebote el
+// push apenas clasifique algo.
+export const ROLES_BASE_INSUMOS = ['admin', 'gerente', 'contador', 'ayudante_contador'];
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
 
 // El corte insumo / servicio / ni-uno-ni-otro vive en `insumo-o-servicio.js`
@@ -739,7 +752,12 @@ function AnalisisInsumosPage({ showToast }) {
     return ins ? seriePrecios(ins) : [];
   }, [sel, porInsumo]);
 
-  if (rol !== 'admin' && rol !== 'gerente' && rol !== 'contador') {
+  // 🔴 ESTE GATE Y LA RLS SON ESPEJO. La mig 211 alineó la escritura del server
+  // con esta lista cuando se sumó la contadora; la mig 225 (21-set-2026) hizo
+  // lo mismo al sumar a la ayudante. Si alguien agrega un rol acá sin tocar la
+  // RLS, esa persona clasifica, la fila se guarda local y el push le rebota
+  // con «sin permiso» — la pantalla dice que funcionó y el dato nunca llega.
+  if (!ROLES_BASE_INSUMOS.includes(rol)) {
     return <div className="card card-p" style={{ color: 'var(--tm)' }}>Panel exclusivo de administración, gerencia y contabilidad.</div>;
   }
 

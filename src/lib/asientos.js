@@ -10,6 +10,9 @@ import { desglosarIgv, describirIgv } from './igv-desglose.js';
 import { fmtFechaLarga } from './fecha.js';
 import { resolverContrapartida, avisoEfectivoSobreUmbral } from './contrapartida.js';
 import { resolverDestino, nombreDestino } from './destino-asiento.js';
+import {
+  esDestinoExistencia, patasDeSalida, saldoDeExistencia, nombreSalida,
+} from './existencias-balance.js';
 
 function r2(n) {
   const v = Number(n);
@@ -459,6 +462,20 @@ function construirAsiento(movimiento, opts = {}) {
   const numero = m.id ? String(m.id).slice(0, 8).toUpperCase() : '—';
   const fecha = m.date || m.created_at || '';
 
+  // ── LA SALIDA DEL INVENTARIO (tanda 5 del destino) ────────────────
+  // Solo existe cuando el destino es una existencia. Es un asiento APARTE y no
+  // dos líneas más de éste, porque lleva OTRA fecha: una compra de mayo que se
+  // consume en agosto genera un costo de agosto. Ver el encabezado de
+  // `existencias-balance.js`.
+  const saldoExistencia = saldoDeExistencia(m, { entro: baseDestino });
+  const salidaExistencia = saldoExistencia && m.existencia_salida_cuenta
+    ? asientoDeSalida(m, {
+      destino: destino?.cuenta || m.cuenta_pcge_destino,
+      cuentaOrigen: naturaleza.lineas[0]?.cuenta || '',
+      numero, glosa: docRef ? `${desc} (${docRef})` : desc, desc,
+    })
+    : null;
+
   return {
     numero,
     fecha,
@@ -466,6 +483,18 @@ function construirAsiento(movimiento, opts = {}) {
     type: tipo,
     movimiento_id: m.id,
     desglose,
+    // Lo que entró al Balance por este comprobante y lo que queda ahí. Va en
+    // la raíz y no dentro de `cuentas` porque el panel de existencias lo lee
+    // sin mirar el estado de las cuentas, y porque `entro` es el número que
+    // `existencias-balance.js` no puede calcular por su cuenta.
+    existencia: saldoExistencia,
+    salidaExistencia,
+    // Lo que viaja al asiento de destino: la base sin IGV, ya repartida. Es el
+    // TOPE de lo que puede salir del inventario, y la pantalla lo necesita
+    // antes de guardar —cuando `existencia` todavía es null porque el destino
+    // recién se está eligiendo—. Se expone en vez de recalcularlo allá: dos
+    // cuentas del mismo número terminan en dos números distintos.
+    baseDestino: r2(baseDestino),
     // De dónde salió la cuenta y cuánto se le puede creer. El Libro Diario lo
     // muestra como badge: una cuenta provisional con cara de definitiva es
     // justo lo que hizo que nadie mirara las 1.742 filas que decían 60.
@@ -522,8 +551,94 @@ function construirAsiento(movimiento, opts = {}) {
 }
 
 /**
+ * El asiento que SACA del Balance lo que había entrado al inventario.
+ *
+ * Es un asiento propio, con la fecha en que la cosa salió del almacén —que es
+ * la que decide de qué período es el costo— y con el número del comprobante
+ * más un sufijo, para que se pueda rastrear a qué compra corresponde sin
+ * inventarle una numeración nueva a un asiento que no tiene comprobante
+ * propio.
+ *
+ * Las patas las arma `existencias-balance.js` y cuadran por construcción: son
+ * pares debe/haber del mismo importe. Igual se calcula el cuadre como en
+ * cualquier otro asiento, porque el Libro Diario lo muestra para todos y un
+ * asiento que dijera «cuadra» sin haberlo verificado sería el único del libro
+ * en el que hay que creer a ciegas.
+ */
+function asientoDeSalida(m, { destino, cuentaOrigen, numero, glosa, desc }) {
+  const salida = patasDeSalida({
+    destino,
+    cuentaSalida: m.existencia_salida_cuenta,
+    importe: m.existencia_salida_importe,
+    cuentaOrigen,
+  });
+  if (!salida) return null;
+
+  const partidas = salida.patas.map(p => ({
+    cuenta: p.cuenta,
+    descripcion: `Salida de inventario — ${desc}`,
+    debe: r2(p.debe),
+    haber: r2(p.haber),
+  }));
+  const sumDebe = r2(partidas.reduce((s, p) => s + p.debe, 0));
+  const sumHaber = r2(partidas.reduce((s, p) => s + p.haber, 0));
+  const delta = r2(sumDebe - sumHaber);
+
+  return {
+    numero: `${numero}-S`,
+    fecha: String(m.existencia_salida_fecha || '').slice(0, 10),
+    glosa: `Salida de inventario — ${glosa}`,
+    // El tipo del comprobante, para que los filtros y los totales del Libro
+    // Diario lo traten igual que a su compra. Una venta no llega acá.
+    type: m.type === 'income' ? 'income' : (m.type || 'expense'),
+    movimiento_id: m.id,
+    // La marca por la que la pantalla sabe que esta fila NO es el asiento del
+    // comprobante sino su descarga: no se le ofrece corregir la cuenta acá.
+    esSalidaExistencia: true,
+    desglose: null,
+    existencia: null,
+    salidaExistencia: null,
+    cuentas: {
+      origen: 'existencia',
+      confianza: 'manual',
+      provisional: false,
+      manual: true,
+      contrapartidaManual: false,
+      contrapartida: {
+        cuenta: null, origen: 'existencia', confianza: 'manual',
+        porque: salida.porque, porDefinir: false, prohibeEfectivo: false, aviso: null,
+      },
+      destino: {
+        cuenta: m.existencia_salida_cuenta,
+        nombre: nombreSalida(m.existencia_salida_cuenta),
+        contrapartida: null,
+        porque: salida.porque,
+        manual: true,
+        confianza: 'manual',
+        porDefinir: false,
+      },
+      revisar: null,
+      partida: false,
+      detalle: [],
+    },
+    partidas,
+    sumDebe,
+    sumHaber,
+    delta,
+    cuadra: Math.abs(delta) < 0.01,
+    extorno: false,
+    venta: salida.venta,
+    porque: salida.porque,
+  };
+}
+
+/**
  * Procesa un array de movimientos y devuelve sus asientos.
  * Filtra registros eliminados (deleted_at) y anulados (cancelled).
+ *
+ * Desde la tanda 5 del destino un movimiento puede producir DOS asientos: el
+ * de la compra y, si lo comprado ya salió del inventario, el de la salida —con
+ * su propia fecha—. Por eso es `flatMap` y no `map`.
  *
  * @param {object} [opts]
  *   repartoDe(mov) → el reparto de cuentas del comprobante, o null.
@@ -537,9 +652,25 @@ function construirAsiento(movimiento, opts = {}) {
  */
 export function generarAsientosBatch(movimientos, opts = {}) {
   const arr = Array.isArray(movimientos) ? movimientos : [];
+  // La ventana del período que se está mirando, si la pantalla la pasa. Filtra
+  // por la fecha del ASIENTO y no por la del movimiento, que desde la tanda 5
+  // dejaron de ser lo mismo: la salida de inventario de una factura de mayo
+  // puede ser de agosto y pertenece a agosto. Sin `ventana`, sale todo.
+  const dentro = (a) => {
+    const v = opts.ventana;
+    if (!v) return true;
+    const ymd = String(a.fecha || '').slice(0, 10);
+    if (v.anio && ymd.slice(0, 4) !== String(v.anio)) return false;
+    if (v.mes && v.mes !== 'all' && ymd.slice(5, 7) !== String(v.mes)) return false;
+    return true;
+  };
   return arr
     .filter(m => m && !m.deleted_at && m.payment_status !== 'cancelled')
-    .map(m => generarAsiento(m, opts))
+    .flatMap((m) => {
+      const a = generarAsiento(m, opts);
+      return a.salidaExistencia ? [a, a.salidaExistencia] : [a];
+    })
+    .filter(dentro)
     .sort((a, b) => {
       const da = new Date(a.fecha).getTime() || 0;
       const db = new Date(b.fecha).getTime() || 0;
@@ -577,6 +708,11 @@ export const ESTADOS_CUENTA = [
   // propio filtro: una propuesta floja sin filtro se pierde entre las buenas.
   { v: 'destino_por_definir',       label: '⚠ Destino por definir' },
   { v: 'destino_flojo',             label: 'Destino propuesto poco seguro' },
+  // El de la EXISTENCIA (tanda 5, 21-set). La pregunta que antes no se podía
+  // hacer: qué está parado en el Balance sin haber salido nunca del almacén.
+  // Es la pila que hay que mirar antes de cerrar el mes — cada fila de ahí es
+  // un costo que todavía no bajó ningún resultado.
+  { v: 'existencia_en_balance',     label: '📦 Sigue en el inventario' },
 ];
 
 /**
@@ -588,6 +724,12 @@ export const ESTADOS_CUENTA = [
  * test que lo vigila: una cuenta elegida a mano nunca está «por definir».
  */
 export function cumpleEstadoCuenta(asiento, estado) {
+  // La existencia se pregunta sobre el asiento entero, no sobre sus cuentas, y
+  // va antes del early return: un asiento sin reparto igual puede tener un
+  // destino de inventario puesto a mano.
+  if (estado === 'existencia_en_balance') {
+    return !asiento?.esSalidaExistencia && (asiento?.existencia?.queda || 0) > 0.01;
+  }
   const c = asiento?.cuentas;
   // Un asiento generado sin el reparto no se da por bueno solo por ser viejo:
   // que no sepamos de dónde salió su cuenta es justo estar «por definir».
