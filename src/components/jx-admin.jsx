@@ -997,7 +997,10 @@ const PERM_MATRIX = {
     // `jx-analisis-insumos.jsx` y la RLS de la mig 225. Si algún día se parte
     // el módulo en dos, esta fila se corrige.
     if (m === 'Libro Diario') return 'w';
-    if (['Plan de Cuentas','Libros Electrónicos'].includes(m)) return 'r';
+    // 'Comprobantes Electrónicos' (22-set): 'r'. Consultar el estado de un
+    // comprobante en SUNAT es revisión; emitirlo a nombre de la empresa no.
+    // La pantalla ahora lee ESTE permiso para habilitar la emisión.
+    if (['Plan de Cuentas','Libros Electrónicos','Comprobantes Electrónicos'].includes(m)) return 'r';
     if (m === 'Personal' || m === 'Proveedores' || m === 'Bienes y Servicios') return 'r';  // solo lectura
     return 'x';
   }),
@@ -1371,7 +1374,34 @@ const __AYUDANTE_CONTADOR_ITEMS = [
 // de la jefa igual, pero a destiempo.
 , 'plan-cuentas'
 , 'libros-electronicos'
-, 'analisis-insumos'];
+, 'analisis-insumos'
+// ── SEGUNDA TANDA DE APOYO (22-set-2026, pedido de Gabriel) ─────────
+// «Las asistentes de contabilidad no tienen acceso a otras secciones». Eligió
+// dos más, y las dos son de REVISAR lo que ya pasó por sus manos:
+//
+//  · 'comprobantes' — Comprobantes Electrónicos SUNAT: el estado real de cada
+//    comprobante (aceptado / anulado) antes de contabilizarlo. Es la consulta
+//    que da sentido a la carga que la ayudante ya hace en Movimientos. La
+//    matriz le da 'r' y no 'w': EMITIR un comprobante a nombre de la empresa
+//    no es revisar, y ahora la pantalla lo respeta (ver `canEmitir` en
+//    jx-comprobantes.jsx — antes no había gate y emitía cualquiera que
+//    entrara).
+//  · 'compras-categoria' — Compras por Categoría: vista DERIVADA de
+//    `accounting_movements`, donde la ayudante ya tiene 'w'. Designar qué
+//    empresa emite la factura final sigue siendo de la contadora jefe y del
+//    admin (`canDesignar` en jx-compras-categoria.jsx, que ya existía).
+//
+// 🔴 'compras-categoria' NO va en la matriz y no es un olvido: mapea al módulo
+// 'Intercompany', que comparte con 'intercompany' (Operaciones entre Empresas).
+// Ponerle 'r' abriría las dos. Es el mismo caso —y la misma salida— que
+// 'analisis-insumos' con 'Dashboard Ejecutivo': el permiso vive en esta
+// allowlist, que es la que manda para el menú. Si algún día se parte el
+// módulo en dos, la fila de la matriz se corrige.
+//
+// El COTEJO contra SUNAT no hace falta agregarlo: no es un ítem de menú, es la
+// pestaña «🔍 SUNAT vs JARVEX» dentro de 'libros-electronicos', que ya tienen.
+, 'comprobantes'
+, 'compras-categoria'];
 // Residente de Obra: menú NETAMENTE TÉCNICO (pedido 20-jul-2026). Sin almacén,
 // sin bloques de especialistas (los ve resumidos en su Panel), sin pantallas
 // con dinero global (Dashboard general, Control de Consumo, Planificado vs

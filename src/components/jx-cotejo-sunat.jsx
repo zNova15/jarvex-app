@@ -122,7 +122,12 @@ function descargarTexto(nombre, texto) {
 // los que no lo tienen): un ojo que después dice «no hay nada» enseña a no
 // hacerle caso al ojo. Se precalienta la firma al pasar el mouse — cuando llega
 // el clic, el archivo ya abre de una.
-function OjoComprobante({ entry, onAbrir, titulo = 'Ver la factura cargada' }) {
+// Se EXPORTA (22-set-2026) para el Registro de Compras y Ventas: Gabriel pidió
+// el mismo ojo en esas dos hojas. Definirlo una segunda vez allá es como se
+// llega a dos ojos que se comportan distinto —uno precarga, el otro no; uno
+// aparece sin archivo, el otro no— sobre la misma evidencia. Viajan en el mismo
+// chunk: el Registro ya importa `EscanerIncoherencias` de este archivo.
+export function OjoComprobante({ entry, onAbrir, titulo = 'Ver la factura cargada' }) {
   if (!entry) return null;
   return (
     <button
@@ -144,7 +149,7 @@ function OjoComprobante({ entry, onAbrir, titulo = 'Ver la factura cargada' }) {
  * archivo que de verdad se va a mirar— y la abre en una pestaña aparte, que es
  * lo que sirve para comparar contra la tabla que quedó atrás.
  */
-async function abrirEvidencia(entry, showToast) {
+export async function abrirEvidencia(entry, showToast) {
   try {
     const src = await getEvidenciaSrc(entry?.ev);
     if (!src?.url) { showToast?.('No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.', 'red'); return; }
@@ -155,7 +160,7 @@ async function abrirEvidencia(entry, showToast) {
 }
 
 /** Hook chico: el archivo de cada comprobante de una lista de ids. */
-function useEvidencias(ids) {
+export function useEvidencias(ids) {
   const [mapa, setMapa] = uS(() => new Map());
   // La lista de ids se recalcula en cada render; la CLAVE (ordenada y pegada)
   // no. Sin esto el efecto se volvería a disparar en cada recálculo del cruce.

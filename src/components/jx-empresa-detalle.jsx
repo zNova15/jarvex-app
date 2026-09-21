@@ -1038,6 +1038,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
         demo={esPrueba}
         userId={window.__useAuth?.()?.profile?.id || null}
         onCambio={() => anticiposHook.refresh?.()}
+        onIrAFactura={(movId, doc) => irAFactura(company?.id || null, movId, doc)}
       />
 
       {/* ── Inventario comprado ──────────────────────────────────── */}

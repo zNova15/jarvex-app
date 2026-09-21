@@ -617,7 +617,18 @@ async function conRespaldoAnotado(llamarClaude, errorOR) {
 }
 
 // Traduce un error del pipeline a la respuesta HTTP amigable (igual que antes).
-function respondError(e, res, isProd) {
+/**
+ * @param extra  campos que se agregan a CUALQUIERA de las respuestas de error.
+ *               Lo usa el flujo principal para devolver el `ocr_texto` ya
+ *               leído cuando lo que falló fue la estructuración: así el
+ *               «Reintentar» del navegador no vuelve a pagar el OCR
+ *               (22-set-2026). Se implementa envolviendo `res` en vez de tocar
+ *               los quince `return res.status(...)` de abajo.
+ */
+function respondError(e, resReal, isProd, extra = null) {
+  const res = extra
+    ? { status: (c) => ({ json: (o) => resReal.status(c).json({ ...o, ...extra }) }) }
+    : resReal;
   if (e && e.name === 'AbortError') {
     return res.status(504).json({
       error: 'La lectura automática tardó demasiado. Suele pasar con comprobantes de MUCHAS líneas de detalle: prueba de nuevo con "Reintentar" o cárgalo a mano desde Movimientos Contables → Nuevo Movimiento.',
@@ -926,7 +937,27 @@ export default async function handler(req, res) {
   let ocr = null;
   let ocrError = null;
   let ocrTextoCorto = false;
-  if (mistralKey) {
+  // ── EL OCR YA PAGADO NO SE VUELVE A PAGAR (22-set-2026) ───────────
+  //
+  // Gabriel: «¿Qué pasa cuando reintentas un comprobante en captura mágica? Se
+  // vuelve a consumir mistral y las IAs gratuitas? […] sería un desperdicio
+  // reintentar varias veces con mistral cuando mistral hace bien con OCR».
+  //
+  // Tenía razón: hasta hoy «Reintentar» re-subía el archivo y rehacía las DOS
+  // etapas. Y la que suele fallar es la SEGUNDA —la estructuración: timeout,
+  // 429, JSON cortado en una factura de 66 líneas—, con el texto del OCR ya
+  // leído y perfecto. Ahora ese texto vuelve al navegador también cuando la
+  // lectura falla, y el reintento lo manda de vuelta acá: se salta Mistral y
+  // solo se rehace lo que se rompió. El archivo viaja igual, por si el texto
+  // no sirviera.
+  //
+  // NO aplica a certificados (van por visión) ni a paquetes SCTR (necesitan
+  // `pages[]`, que el texto plano no tiene). Ahí el OCR se rehace, como antes.
+  const textoOcrReuso = (!esItems && !esCert && !esSctr && typeof body.texto_ocr === 'string')
+    ? body.texto_ocr.trim() : '';
+  if (textoOcrReuso.length >= 20 && textoOcrReuso.length <= 400_000) {
+    ocr = { texto: textoOcrReuso, paginas: null, model: '(reutilizado del intento anterior)', usage: null };
+  } else if (mistralKey) {
     try {
       const r = await mistralOcr(cleanBase64, mimeEfectivo, mistralKey, deadline, esCert ? MISTRAL_OCR_MODEL_CERT : elegidoOcr.modelo);
       // Para SCTR el texto no alcanza: lo que se pide es en QUÉ PÁGINA está
@@ -1266,8 +1297,12 @@ export default async function handler(req, res) {
         model: data.model,
         in: data.usage?.input_tokens ?? null,
         out: data.usage?.output_tokens ?? null,
-        ocr: ocr ? (ocr.usage?.pages_processed ?? 1) : 0,
+        // Un OCR REUTILIZADO cuenta 0 páginas: es exactamente el ahorro que se
+        // busca medir. Sin esto, un reintento con texto reusado se anotaría
+        // como una página pagada que nadie pagó.
+        ocr: textoOcrReuso ? 0 : (ocr ? (ocr.usage?.pages_processed ?? 1) : 0),
         ocr_model: ocr ? ocr.model : null,
+        ...(textoOcrReuso ? { ocr_reusado: true } : {}),
         // Con qué proveedor de cómputo se resolvió, y por qué se cayó al
         // respaldo si pasó. Es lo que permite contestar "¿por qué esta factura
         // tardó/costó distinto?" sin adivinar.
@@ -1280,7 +1315,8 @@ export default async function handler(req, res) {
     // volver a pagar el OCR ni perder la cabecera que la persona ya revisó.
     // Solo en ese caso — en la lectura normal sería tráfico al pepe.
     const sinItems = !esCert && !esSctr && !(Array.isArray(extracted?.items) && extracted.items.length > 0);
-    const textoParaRelectura = (ocr && sinItems && ocr.texto.length <= 300_000) ? ocr.texto : null;
+    // (Y no se reenvía el que vino del navegador: ya lo tiene.)
+    const textoParaRelectura = (ocr && sinItems && !textoOcrReuso && ocr.texto.length <= 300_000) ? ocr.texto : null;
     return res.status(200).json({
       extracted,
       ...(rescatado ? { items_no_leidos: true } : {}),
@@ -1298,6 +1334,13 @@ export default async function handler(req, res) {
       }),
     });
   } catch (e) {
-    return respondError(e, res, isProd);
+    // EL OCR YA SE PAGÓ: que vuelva con el error. Lo que falló acá es la
+    // estructuración (timeout, 429, JSON cortado), no la lectura del papel —
+    // y sin esto el texto se tiraba y el «Reintentar» compraba otra vez lo
+    // mismo. No se devuelve el que YA vino del navegador (sería un viaje de
+    // ida y vuelta al pepe: el navegador ya lo tiene) ni uno desmesurado.
+    const devolverTexto = ocr && !textoOcrReuso && !esCert && !esSctr
+      && typeof ocr.texto === 'string' && ocr.texto.length >= 20 && ocr.texto.length <= 300_000;
+    return respondError(e, res, isProd, devolverTexto ? { ocr_texto: ocr.texto } : null);
   }
 }

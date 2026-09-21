@@ -47,7 +47,7 @@ import {
 import { downloadPLE } from "../lib/sunat-ple.js";
 import { escanear, aplicarDecisionesEscaner, hallazgosPendientes } from "../lib/escaner-incoherencias.js";
 import { enPeriodo } from "../lib/fecha.js";
-import { EscanerIncoherencias } from "./jx-cotejo-sunat.jsx";
+import { EscanerIncoherencias, OjoComprobante, abrirEvidencia, useEvidencias } from "./jx-cotejo-sunat.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
@@ -176,6 +176,16 @@ export function RegistroComprasVentas({
   // Al entrar al modo arranca TODO marcado: el caso normal del reemplazo es la
   // propuesta completa del mes, y desmarcar tres es más rápido que marcar 120.
   const idsDeLaHoja = uM(() => actual.filas.map(f => f.movimiento_id), [actual.filas]);
+
+  // ── EL 👁 DE CADA FILA (22-set-2026, pedido de Gabriel) ───────────
+  // «En los libros electrónicos, en la pestaña de compras y ventas, me gustaría
+  // que también agregues el ojo para visualizar los comprobantes.» Es el MISMO
+  // botón del cotejo y del escáner, importado de allá y no redefinido acá: solo
+  // aparece donde hay archivo cargado, precalienta la firma al pasar el mouse y
+  // firma la URL recién al hacer clic. Se piden los ids de la hoja que se está
+  // mirando —los mismos de la selección del SIRE—, no los del período entero.
+  const evidencias = useEvidencias(idsDeLaHoja);
+
   uE(() => {
     if (!modoSeleccion) return;
     setSeleccion(new Set(idsDeLaHoja));
@@ -652,6 +662,17 @@ export function RegistroComprasVentas({
                   );
                 })}
                 <td>
+                  {/* El 👁 va PRIMERO en la columna de marcas: es lo que se
+                      busca cuando una fila tiene un aviso al lado. */}
+                  {evidencias.get(f.movimiento_id) && (
+                    <span style={{ marginRight: 4, display: 'inline-block' }}>
+                      <OjoComprobante
+                        entry={evidencias.get(f.movimiento_id)}
+                        onAbrir={(e) => abrirEvidencia(e, showToast)}
+                        titulo="Ver el comprobante cargado"
+                      />
+                    </span>
+                  )}
                   {modoSeleccion && analisisSire.hasPresentadosRef && (
                     presentadosIds.has(f.movimiento_id)
                       ? <span className="badge b-green" style={{ fontSize: 9, marginRight: 3 }}

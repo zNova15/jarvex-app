@@ -34,17 +34,76 @@
 import React from "react";
 import { panelAnticipos, aplicacionNueva } from "../lib/anticipos.js";
 import { aplicarAnticipo, aplicarEnLote, quitarAplicacion } from "../lib/anticipos-db.js";
+import { evidenciasDeComprobantes } from "../lib/evidencia-de-comprobante.js";
+import { getEvidenciaSrc, abrirUrlEvidencia, precargarEvidencia } from "../lib/evidencias-url.js";
 
-const { useState: uS, useMemo: uM, useRef: uR } = React;
+const { useState: uS, useMemo: uM, useRef: uR, useEffect: uE } = React;
+
+// ── EL 👁 Y EL PEDIDO DE CORRECCIÓN (22-set-2026) ──────────────────
+//
+// EL PEDIDO (Gabriel, textual): «Con respecto a los anticipos, en la sección de
+// inventario también me gustaría tener el ojo para visualizar, y en el caso de
+// las asistentes que ellas puedan requerir un cambio. […] vi una factura que
+// estaba en 0 […] y cuando verifiqué dicha factura tenía más de 10 mil dólares
+// en anticipo, pero no se guardó bien […] quise realizar el cambio o
+// solicitarlo y no deja.»
+//
+// Las dos mitades del agujero, y por qué eran una sola pantalla sin salida:
+//   1. El importe de una factura en cero está en el PDF y nada más. Este panel
+//      pide escribirlo y no daba forma de MIRARLO: había que salir a
+//      Movimientos, buscar el comprobante y volver.
+//   2. La ayudante de contabilidad NO edita movimientos existentes a propósito
+//      (`canEditExisting` en jx-contabilidad.jsx). Su camino es «Solicitar
+//      cambio»… que vivía SOLO en Movimientos Contables. Desde acá quedaba sin
+//      ninguno de los dos: ni corregir ni pedir.
+//
+// Por qué el 👁 abre el archivo y no navega a Movimientos (que es la regla del
+// 4-sep, «una sola forma de mirar un comprobante»): ésta es una pantalla de
+// REVISIÓN —se compara la lista de propuestas contra los papeles, uno tras
+// otro— y salir de ella pierde el anticipo abierto y los montos a medio
+// escribir. Es el mismo trato que el cotejo, el escáner y el Registro de
+// Compras y Ventas: el ojo abre el PDF en una pestaña aparte y la lista queda
+// donde estaba. El ↗ sigue estando para ir a la fila completa.
+//
+// Solo se importan las libs puras del visor: traerse el botón de
+// `jx-cotejo-sunat.jsx` metería esa pantalla entera en el chunk de la ficha de
+// empresa, que es de donde cuelga este panel.
+
+/** Botón chico: abre el comprobante de un movimiento. Nada si no hay archivo. */
+function OjoFactura({ entry, showToast }) {
+  if (!entry) return null;
+  const abrir = async () => {
+    try {
+      const src = await getEvidenciaSrc(entry.ev);
+      if (!src?.url) { showToast?.('No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.', 'red'); return; }
+      await abrirUrlEvidencia(src.url);
+    } catch (e) {
+      showToast?.('No se pudo abrir el comprobante: ' + (e?.message || e), 'red');
+    }
+  };
+  return (
+    <button className="btn btn-xs" style={{ padding: '1px 6px' }}
+      title={`Ver el comprobante cargado (${entry.nombre})`}
+      onMouseEnter={() => precargarEvidencia(entry.ev)}
+      onClick={abrir}>
+      {typeof window !== 'undefined' && window.JxIcon
+        ? React.createElement(window.JxIcon, { name: 'eye', size: 11 })
+        : '👁'}
+    </button>
+  );
+}
 
 const fmtMonto = (n, moneda = 'PEN') =>
   `${moneda === 'USD' ? 'USD ' : moneda === 'PEN' ? 'S/ ' : `${moneda} `}${Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtFecha = (f) => (f ? String(f).split('-').reverse().join('/') : '—');
 
-function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, userId = null, onCambio }) {
+function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, userId = null, onCambio, onIrAFactura = null, showToast: showToastProp = null }) {
   const [abierto, setAbierto] = uS(null);      // id del anticipo expandido
   const [montos, setMontos] = uS({});          // facturaId → monto escrito a mano
   const [msg, setMsg] = uS('');
+  // El movimiento para el que se está pidiendo una corrección (null = ninguno).
+  const [pedirCambio, setPedirCambio] = uS(null);
+  const showToast = showToastProp || (typeof window !== 'undefined' ? window.__showToast : null) || (() => {});
   // Anti doble-click (regla crítica 2 del CLAUDE.md): ref SÍNCRONO. Un doble
   // tap en «Aplicar» no puede consumir el anticipo dos veces.
   const enCursoRef = uR(false);
@@ -55,6 +114,53 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
     () => panelAnticipos(movs || [], aplicaciones || [], { companyId, demo }),
     [movs, aplicaciones, companyId, demo],
   );
+
+  // ── El archivo de cada comprobante del panel ──────────────────────
+  // El anticipo mismo, lo ya aplicado y lo propuesto: todo lo que tiene una
+  // fila con un número al lado. Se piden SOLO metadatos (la lib no firma nada);
+  // la URL se firma al hacer clic en el ojo.
+  const idsConPapel = uM(() => {
+    const ids = new Set();
+    for (const a of panel.filas || []) {
+      if (a.id) ids.add(a.id);
+      // OJO: en una aplicación ya guardada la factura es `factura_movimiento_id`
+      // (es la columna de la tabla); en una propuesta es `facturaId`. No son el
+      // mismo vocabulario y confundirlos deja la fila sin ojo, en silencio.
+      for (const ap of a.aplicaciones || []) if (ap.factura_movimiento_id) ids.add(ap.factura_movimiento_id);
+      for (const p of a.propuestas || []) if (p.facturaId) ids.add(p.facturaId);
+    }
+    return [...ids].sort();
+  }, [panel]);
+  const claveIds = idsConPapel.join(',');
+  const [evidencias, setEvidencias] = uS(() => new Map());
+  uE(() => {
+    let cancel = false;
+    (async () => {
+      const m = await evidenciasDeComprobantes(claveIds ? claveIds.split(',') : []);
+      if (!cancel) setEvidencias(m);
+    })();
+    return () => { cancel = true; };
+  }, [claveIds]);
+
+  const movDe = (id) => (movs || []).find(m => m.id === id) || null;
+
+  /**
+   * Abre el modal de «Solicitar cambio» sobre el comprobante de una fila.
+   *
+   * Es el MISMO modal de Movimientos Contables (`window.RequestChangeModal`,
+   * expuesto por jx-solicitudes al arrancar — no se importa dinámicamente:
+   * regla 1 del CLAUDE.md). La solicitud queda en Solicitudes con su motivo y
+   * la aprueba la Contadora Jefe o el admin, igual que cualquier otra.
+   */
+  const abrirPedido = (movId) => {
+    const mov = movDe(movId);
+    if (!mov) { showToast('Ese comprobante no está cargado en esta PC — sincronizá y probá de nuevo.', 'amber'); return; }
+    if (!window.RequestChangeModal) {
+      showToast('El módulo de solicitudes no cargó — recargá la página (Ctrl+Shift+R)', 'red');
+      return;
+    }
+    setPedirCambio(mov);
+  };
 
   const conGuard = (fn) => async (...args) => {
     if (enCursoRef.current) return;
@@ -162,9 +268,16 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
           <div key={a.id} style={{ borderTop: '1px solid var(--border)', padding: '8px 0' }}>
             <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 240 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}>
-                  {a.proveedorNombre}
-                  <span style={{ color: 'var(--tm)', fontWeight: 400 }}> · {a.documento} · {fmtFecha(a.fecha)}</span>
+                <div style={{ fontSize: 12.5, fontWeight: 600, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>
+                    {a.proveedorNombre}
+                    <span style={{ color: 'var(--tm)', fontWeight: 400 }}> · {a.documento} · {fmtFecha(a.fecha)}</span>
+                  </span>
+                  <AccionesDeFila
+                    movId={a.id} doc={a.documento}
+                    entry={evidencias.get(a.id)} showToast={showToast}
+                    onIrAFactura={onIrAFactura} onPedirCambio={abrirPedido}
+                  />
                 </div>
                 {a.descripcion && (
                   <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>{a.descripcion}</div>
@@ -207,12 +320,68 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
                 onAplicarLasAnuladas={aplicarLasAnuladas}
                 onAplicarLasDeDetalle={aplicarLasDeDetalle}
                 onQuitar={quitar}
+                evidencias={evidencias}
+                showToast={showToast}
+                onIrAFactura={onIrAFactura}
+                onPedirCambio={abrirPedido}
               />
             )}
           </div>
         ))}
       </div>
+
+      {/* ── EL PEDIDO DE CORRECCIÓN ────────────────────────────────
+          El mismo modal de Movimientos Contables, con los campos acotados a lo
+          que se corrige DESDE ACÁ: el importe (la factura en cero), su moneda,
+          la fecha y el número. No se ofrecen los campos de vinculación ni los
+          de bancarización — ésos se piden desde Movimientos, que es donde se
+          ven; un desplegable con veinte campos en una pantalla de anticipos
+          invita a elegir el que no era. */}
+      {pedirCambio && window.RequestChangeModal && React.createElement(window.RequestChangeModal, {
+        table: 'accounting_movements',
+        record: pedirCambio,
+        recordLabel: `${pedirCambio.document_number || 'comprobante'} · ${fmtMonto(pedirCambio.amount, pedirCambio.currency)} · ${pedirCambio.third_party_name || ''}`,
+        fields: [
+          { key: 'amount', label: 'Importe del comprobante', type: 'number' },
+          { key: 'currency', label: 'Moneda' },
+          { key: 'date', label: 'Fecha', type: 'date' },
+          { key: 'document_number', label: 'N° de documento' },
+        ],
+        showToast,
+        onClose: () => setPedirCambio(null),
+      })}
     </div>
+  );
+}
+
+/**
+ * Los botones que acompañan a un comprobante: ver el papel, ir a su fila,
+ * pedir que lo corrijan. Uno solo por fila, siempre en el mismo orden.
+ *
+ * El ojo aparece SOLO si hay archivo cargado (si no, el mapa no trae la
+ * entrada): un ojo que después dice «no hay nada» enseña a no hacerle caso.
+ * El ✎ está para todos y no solo para la ayudante: cualquiera puede querer
+ * dejar el pedido por escrito en vez de corregir de memoria, y quien SÍ puede
+ * editar tiene el ↗ al lado para hacerlo directo.
+ */
+function AccionesDeFila({ movId, doc, entry, showToast, onIrAFactura, onPedirCambio }) {
+  // Sin id no hay a qué apuntar: pasa con una aplicación cuyo comprobante no
+  // está cargado en esta PC («(comprobante no cargado)» en la fila).
+  if (!movId) return null;
+  return (
+    <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+      <OjoFactura entry={entry} showToast={showToast} />
+      {onIrAFactura && (
+        <button className="btn btn-xs" style={{ padding: '1px 6px' }}
+          title="Abrir este comprobante en Movimientos Contables (con su bancarización, su guía y su recepción)"
+          onClick={() => onIrAFactura(movId, doc)}>↗</button>
+      )}
+      {onPedirCambio && (
+        <button className="btn btn-xs" style={{ padding: '1px 6px' }}
+          title="Pedir que corrijan este comprobante (por ejemplo, el importe que quedó en cero). Lo aprueba la Contadora Jefe o el admin."
+          onClick={() => onPedirCambio(movId)}>✎</button>
+      )}
+    </span>
   );
 }
 
@@ -222,7 +391,17 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
  * donde un `ap.motivo` sobre un null explotaría en la obra y pasaría el green
  * gate en verde.
  */
-function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onAplicarLasDeDetalle, onQuitar }) {
+function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas, onAplicarLasDeDetalle, onQuitar,
+                           evidencias = null, showToast = null, onIrAFactura = null, onPedirCambio = null }) {
+  // Los tres botones de cada factura del detalle. `evidencias` puede no venir
+  // (un test que monta este componente suelto): entonces no hay ojo y ya.
+  const acciones = (movId, doc) => (
+    <AccionesDeFila
+      movId={movId} doc={doc}
+      entry={evidencias?.get?.(movId)} showToast={showToast}
+      onIrAFactura={onIrAFactura} onPedirCambio={onPedirCambio}
+    />
+  );
   // 🔴 LAS DOS SEÑALES NO SE MEZCLAN EN EL MISMO BOTÓN (15-set-2026). Hasta
   // hoy el filtro era «todo lo que no pide monto», y con las facturas en cero
   // trayendo su importe leído del detalle habrían entrado ahí: el botón diría
@@ -255,6 +434,7 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
           {a.aplicaciones.map(ap => (
             <div key={ap.id} style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0' }}>
               <span style={{ minWidth: 120 }}>{ap.facturaDocumento}</span>
+              {acciones(ap.factura_movimiento_id, ap.facturaDocumento)}
               <span style={{ color: 'var(--tm)' }}>{fmtFecha(ap.facturaFecha)}</span>
               <strong>{fmtMonto(ap.monto, ap.moneda)}</strong>
               {ap.motivo && <span style={{ color: 'var(--tm)', fontSize: 10.5 }}>{ap.motivo}</span>}
@@ -282,6 +462,9 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
           {a.propuestas.map(p => (
             <div key={p.facturaId} style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '3px 0' }}>
               <span style={{ minWidth: 120 }}>{p.documento}</span>
+              {/* Acá es donde más falta hacía: el importe que se pide escribir
+                  está en el PDF que abre este ojo. */}
+              {acciones(p.facturaId, p.documento)}
               <span style={{ color: 'var(--tm)' }}>{fmtFecha(p.fecha)}</span>
               {/* TRES CASOS, TRES TRATOS:
                   · nota de crédito → monto fijo: el comprobante se anuló por ese
@@ -330,7 +513,8 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
           <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 3 }}>
             Aplicar otra factura a este anticipo
           </div>
-          <AplicarManual a={a} manuales={manuales} montos={montos} setMontos={setMontos} onAplicar={onAplicar} />
+          <AplicarManual a={a} manuales={manuales} montos={montos} setMontos={setMontos} onAplicar={onAplicar}
+            acciones={acciones} />
         </div>
       )}
     </div>
@@ -349,7 +533,7 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
  * solo, como el resto del panel) y el picker vuelve a "— Elegí una factura —"
  * sin que haga falta resetear nada a mano.
  */
-function AplicarManual({ a, manuales, montos, setMontos, onAplicar }) {
+function AplicarManual({ a, manuales, montos, setMontos, onAplicar, acciones = null }) {
   const [elegidoIdCrudo, setElegidoId] = uS('');
   const elegido = manuales.find(c => c.id === elegidoIdCrudo) || null;
   return (
@@ -371,6 +555,9 @@ function AplicarManual({ a, manuales, montos, setMontos, onAplicar }) {
       </select>
       {elegido && (
         <>
+          {/* Mirar la factura elegida ANTES de aplicarla: el monto viene
+              prellenado con su total y bajarlo exige ver la entrega. */}
+          {acciones?.(elegido.id, elegido.documento)}
           <input className="fi" type="number" step="0.01"
             style={{ width: 130, fontSize: 11.5, height: 26 }}
             placeholder={`monto en ${a.moneda}`}

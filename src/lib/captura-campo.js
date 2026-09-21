@@ -96,6 +96,30 @@ export function esIlegible(ev) {
   return ev?.campo_revision === ESTADO_ILEGIBLE;
 }
 
+/**
+ * Las fotos que el botón «🤖 Leer las N pendientes» manda a la IA (22-set-2026).
+ *
+ * EL PEDIDO (Gabriel): «cuando le doy a leer con IA a los comprobantes que
+ * subieron desde captura rápida no me deja, solo me deja uno por uno y eso es
+ * tardado».
+ *
+ * Tres exclusiones, y ninguna es cosmética — cada una cuesta plata o miente:
+ *   · SIN `url_archivo` todavía está subiendo desde el teléfono: no hay qué
+ *     leer y el intento termina en «probá en un rato».
+ *   · YA LEÍDA no se relee: cada lectura paga OCR, y releer una es una
+ *     decisión de a una (para eso está «🤖 Leer otra vez» en su fila).
+ *   · ILEGIBLE ya se contestó: se le pidió la foto de nuevo a quien la sacó.
+ *     Volver a mandarla a la IA no la vuelve legible.
+ *
+ * Es la MISMA lista que cuenta el botón y que recorre el lote: si fueran dos
+ * cálculos, el número del botón y lo que se procesa se separarían en cuanto
+ * alguien tocara uno de los dos.
+ */
+export function pendientesPorLeer(filas) {
+  return filtrarBandeja(filas, ESTADO_PENDIENTE)
+    .filter(ev => !!ev?.url_archivo && !yaLeidaConIA(ev) && !esIlegible(ev));
+}
+
 // ¿El error del UPDATE es "falta aplicar la migración 164"? Postgres devuelve
 // 23514 (check_violation) si el estado nuevo todavía no está permitido.
 export function esFaltaMigracion164(error) {

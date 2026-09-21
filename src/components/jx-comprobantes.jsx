@@ -115,6 +115,15 @@ function ComprobantesElectronicosPage({ showToast }) {
   const auth = window.__useAuth?.();
   const isAdmin = auth?.profile?.rol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
+  // ── MIRAR NO ES EMITIR (22-set-2026) ───────────────────────────────
+  // Hasta hoy esta pantalla no tenía NINGÚN gate de escritura: cualquiera que
+  // llegara podía generar el XML UBL de la empresa, mandarlo al OSE y marcarlo
+  // emitido. Mientras solo entraban admin/contador/gerente no se notaba; con
+  // la ayudante de contabilidad adentro (pedido de Gabriel: «validá el estado
+  // del comprobante antes de contabilizarlo») sí importa, porque su permiso es
+  // 'r' a propósito. Emitir un comprobante a nombre de la empresa es un acto
+  // de la contadora jefe, no una revisión.
+  const canEmitir = isAdmin || (window.__hasPerm?.(auth?.profile?.rol, 'Comprobantes Electrónicos', 'w') ?? false);
 
   const { data: companies } = window.__hooks?.useCompanies?.() || { data: [] };
   const { data: movs } = window.__hooks?.useAccountingMovements?.() || { data: [] };
@@ -712,9 +721,15 @@ function ComprobantesElectronicosPage({ showToast }) {
           <div className="pg-title">Comprobantes Electrónicos</div>
           <div className="pg-sub">SUNAT UBL 2.1 · Facturas, Boletas, Notas · {comprobantes.length} comprobantes</div>
         </div>
-        <button className="btn btn-amber btn-sm" onClick={openNuevo}>
-          <Icon name="plus" size={13}/>Nuevo Comprobante
-        </button>
+        {canEmitir ? (
+          <button className="btn btn-amber btn-sm" onClick={openNuevo}>
+            <Icon name="plus" size={13}/>Nuevo Comprobante
+          </button>
+        ) : (
+          <span style={{ fontSize:11, color:'var(--tm)' }} title="Tu rol consulta el estado de los comprobantes; emitirlos es de la Contadora Jefe o el admin.">
+            👁 Consulta
+          </span>
+        )}
       </div>
 
       {/* KPIs */}
@@ -810,13 +825,15 @@ function ComprobantesElectronicosPage({ showToast }) {
                         </span>
                       </td>
                       <td style={{ textAlign:'center', whiteSpace:'nowrap' }}>
+                        {canEmitir && (<>
                         <button className="btn btn-ghost btn-xs" title="Generar XML UBL" onClick={()=>generarXMLDeFila(m)}>
                           <Icon name="download" size={11}/>XML
                         </button>
                         <button className="btn btn-ghost btn-xs" title="Enviar a OSE" onClick={()=>enviarOSE(m)} style={{ marginLeft:4 }}>
                           <Icon name="upload" size={11}/>OSE
                         </button>
-                        {m._comp.estado === 'pendiente_emision' && (
+                        </>)}
+                        {canEmitir && m._comp.estado === 'pendiente_emision' && (
                           <button className="btn btn-green btn-xs" title="Marcar emitido (CDR del OSE recibido)" onClick={()=>cambiarEstado(m, 'emitido')} style={{ marginLeft:4 }}>
                             <Icon name="check" size={11}/>
                           </button>

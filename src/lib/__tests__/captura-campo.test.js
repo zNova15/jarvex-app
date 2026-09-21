@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   identidadDePerfil, armarObservacionCampo, parseObservacionCampo, filtrarBandeja, yaLeidaConIA,
-  esFaltaMigracion164, esPdf, ESTADO_LEIDA, ESTADO_PENDIENTE, esIlegible,
+  esFaltaMigracion164, esPdf, ESTADO_LEIDA, ESTADO_PENDIENTE, esIlegible, pendientesPorLeer,
 } from '../captura-campo.js';
 
 describe('identidadDePerfil — bug del nombre (1-sep)', () => {
@@ -116,5 +116,47 @@ describe('esPdf', () => {
     expect(esPdf({ type: 'application/pdf', name: 'f.pdf' })).toBe(true);
     expect(esPdf({ type: '', name: 'factura.PDF' })).toBe(true);
     expect(esPdf({ type: 'image/jpeg', name: 'foto.jpg' })).toBe(false);
+  });
+});
+
+describe('pendientesPorLeer — la cola del botón «Leer las N pendientes» (22-set)', () => {
+  const ev = (id, extra = {}) => ({
+    id, tipo_evidencia: 'factura_campo', url_archivo: 'https://r2/' + id, ...extra,
+  });
+
+  it('toma las pendientes con archivo, leído o no el campo_revision', () => {
+    const filas = [ev('a'), ev('b', { campo_revision: ESTADO_PENDIENTE })];
+    expect(pendientesPorLeer(filas).map(x => x.id)).toEqual(['a', 'b']);
+  });
+
+  it('deja afuera la que todavía se está subiendo del teléfono (sin url_archivo)', () => {
+    const filas = [ev('a'), { id: 'b', tipo_evidencia: 'factura_campo', url_archivo: null }];
+    expect(pendientesPorLeer(filas).map(x => x.id)).toEqual(['a']);
+  });
+
+  it('NO relee las que ya pasaron por la IA: cada lectura paga OCR', () => {
+    const filas = [ev('a'), ev('b', { campo_revision: ESTADO_LEIDA })];
+    expect(pendientesPorLeer(filas).map(x => x.id)).toEqual(['a']);
+  });
+
+  it('NO reintenta las ilegibles: ya se les pidió la foto de nuevo', () => {
+    const filas = [ev('a'), ev('b', { campo_revision: 'ilegible' })];
+    expect(pendientesPorLeer(filas).map(x => x.id)).toEqual(['a']);
+  });
+
+  it('ignora lo cerrado y lo que no es una foto de campo', () => {
+    const filas = [
+      ev('a'),
+      ev('b', { campo_revision: 'registrada' }),
+      ev('c', { campo_revision: 'descartada' }),
+      ev('d', { deleted_at: '2026-09-01' }),
+      { id: 'e', tipo_evidencia: 'bancarizacion', url_archivo: 'x' },
+    ];
+    expect(pendientesPorLeer(filas).map(x => x.id)).toEqual(['a']);
+  });
+
+  it('sin filas no rompe', () => {
+    expect(pendientesPorLeer(null)).toEqual([]);
+    expect(pendientesPorLeer([])).toEqual([]);
   });
 });

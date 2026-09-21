@@ -24,7 +24,7 @@ import { sugerirFacturasParaGuia, clasificarOrigenGuia, guiasEsperandoFactura,
 import {
   parseObservacionCampo, filtrarBandeja, esFaltaMigracion164,
   ESTADO_PENDIENTE, ESTADO_LEIDA, ESTADO_REGISTRADA, ESTADO_DESCARTADA, ESTADO_ILEGIBLE,
-  yaLeidaConIA, esIlegible,
+  yaLeidaConIA, esIlegible, pendientesPorLeer,
 } from "../lib/captura-campo.js";
 import {
   clasificarPartes, permiteCrearProveedor, permiteCrearEmpresaGrupo,
@@ -338,6 +338,9 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
   const pendientes = filtrarBandeja(filas, ESTADO_PENDIENTE);
   const leidas = filtrarBandeja(filas, ESTADO_LEIDA);
   const visibles = pestana === ESTADO_LEIDA ? leidas : pendientes;
+  // Las que el botón de lote toma. La regla vive en la lib (con tests): el
+  // número del botón y la cola del lote son el MISMO conjunto.
+  const porLeer = pendientesPorLeer(filas);
 
   // Escribe el estado en el server + Dexie. `silencioso` = no avisar al usuario
   // (lo usa "Leer con IA": lo importante ahí es la lectura, no la etiqueta).
@@ -361,9 +364,13 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
     }
   };
 
-  const leerConIA = async (ev) => {
-    if (procesandoRef.current) return;
-    procesandoRef.current = true;
+  // ── UNA FOTO: bajarla, mandarla a la IA, dejarla marcada ───────────
+  // Se separó del botón (22-set-2026) para que el lote de abajo use EXACTAMENTE
+  // el mismo camino. Devuelve qué pasó, para que quien llama decida qué decir:
+  //   'leida' · 'ilegible' · 'sin-archivo' · 'formato' · 'fallo'
+  // `silencioso` apaga los toasts de a una (el lote avisa una sola vez al
+  // final; doce toasts seguidos no los lee nadie).
+  const leerUna = async (ev, { silencioso = false } = {}) => {
     try {
       // `descargarEvidencia` firma, baja y —si la URL firmada no sirve— vuelve
       // a firmar saltando R2. Antes esto era un fetch pelado y una foto que
@@ -373,8 +380,8 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
         blob = await descargarEvidencia(ev);
       } catch (eDesc) {
         if (eDesc?.message === 'sin-archivo') {
-          showToast?.('Este archivo aún no terminó de subir desde el teléfono — probá en un rato.', 'amber');
-          return;
+          if (!silencioso) showToast?.('Este archivo aún no terminó de subir desde el teléfono — probá en un rato.', 'amber');
+          return 'sin-archivo';
         }
         throw eDesc;
       }
@@ -384,8 +391,8 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       // verdad no se puede procesar, o lo que pesa demasiado.
       const mimeOk = ALLOWED_MIME.includes(mimeEfectivoDeArchivo(file));
       if (!mimeOk || file.size > 3 * 1024 * 1024) {
-        showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
-        return;
+        if (!silencioso) showToast?.(`Este archivo es ${!mimeOk ? 'un formato que la IA no lee' : 'muy pesado'} — abrilo desde Evidencias, descargalo y volvé a subirlo comprimido, o cargá la factura a mano.`, 'amber');
+        return 'formato';
       }
       const resultados = await onInyectar([file]);
       // LA FOTO NO TIENE NADA QUE LEER (17-set-2026). No es un error de la IA
@@ -395,8 +402,8 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       // — y ojalá todavía con el comprobante en la mano.
       if (Array.isArray(resultados) && resultados.includes('ilegible')) {
         await setEstado(ev, ESTADO_ILEGIBLE, { silencioso: true });
-        showToast?.('Esta foto no tiene nada legible. Quedó marcada ⚠ ILEGIBLE y el portal de campo ya le avisa a quien la subió que la saque de nuevo.', 'red');
-        return;
+        if (!silencioso) showToast?.('Esta foto no tiene nada legible. Quedó marcada ⚠ ILEGIBLE y el portal de campo ya le avisa a quien la subió que la saque de nuevo.', 'red');
+        return 'ilegible';
       }
       // Solo pasa a "Trabajadas" si la lectura TERMINÓ ('revisar' o
       // 'duplicado'). Antes se marcaba 'leida' incondicionalmente: con la IA
@@ -407,19 +414,82 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
       const leidaOk = Array.isArray(resultados) && resultados.length > 0
         && resultados.every(x => x === 'revisar' || x === 'duplicado');
       if (!leidaOk) {
-        showToast?.('La lectura con IA no terminó bien — la foto SIGUE en "⏳ Pendientes". Mirá el error en la bandeja de abajo y reintentá.', 'amber');
-        return;
+        if (!silencioso) showToast?.('La lectura con IA no terminó bien — la foto SIGUE en "⏳ Pendientes". Mirá el error en la bandeja de abajo y reintentá.', 'amber');
+        return 'fallo';
       }
       // Se MARCA como leída, pero NO sale de Pendientes (5-sep): leerla no es
       // decidir sobre ella. Sale cuando la contadora la cierra como Registrada
       // o Descartada. Ver la cabecera de src/lib/captura-campo.js.
       await setEstado(ev, ESTADO_LEIDA, { silencioso: true });
-      showToast?.('✓ Leída con IA — quedó marcada 🤖 y SIGUE en Pendientes. Revisala en la bandeja de abajo y cerrala como "✓ Registrada" o "✗ Descartar".', 'green');
+      if (!silencioso) showToast?.('✓ Leída con IA — quedó marcada 🤖 y SIGUE en Pendientes. Revisala en la bandeja de abajo y cerrala como "✓ Registrada" o "✗ Descartar".', 'green');
+      return 'leida';
     } catch (e) {
-      showToast?.('Error al leer el archivo de campo: ' + (e.message || e), 'red');
+      if (!silencioso) showToast?.('Error al leer el archivo de campo: ' + (e.message || e), 'red');
+      return 'fallo';
+    }
+  };
+
+  /** El botón de una sola foto. El guard síncrono vive acá (regla crítica 2). */
+  const leerConIA = async (ev) => {
+    if (procesandoRef.current) return;
+    procesandoRef.current = true;
+    try { await leerUna(ev); }
+    finally { procesandoRef.current = false; }
+  };
+
+  // ── LEERLAS TODAS (22-set-2026, pedido de Gabriel) ─────────────────
+  //
+  // «Cuando le doy a leer con IA a los comprobantes que subieron desde captura
+  // rápida no me deja, solo me deja uno por uno y eso es tardado.»
+  //
+  // Se leen EN SERIE, no en paralelo, y no es una limitación: la ráfaga
+  // paralela agota el rate limit de la API y las últimas vuelven con 429 (es
+  // la misma razón por la que el reproceso de la bandeja de abajo va en serie,
+  // y por la que la pasada de tipos de cambio espacia sus pedidos). En serie
+  // tarda lo mismo que hacerlo a mano pero sin estar delante de la pantalla.
+  //
+  // Lo que NO cambia: cada foto se marca con SU resultado —leída, ilegible o
+  // sigue pendiente— exactamente como si se hubiera apretado su botón. El lote
+  // automatiza los clics, no afloja el criterio.
+  const [lote, setLote] = uSCM(null);   // { hecho, de, cancelar } mientras corre
+  const cancelarLoteRef = uRCM(false);
+
+  const leerTodasPendientes = async () => {
+    if (procesandoRef.current) return;
+    // Las que tiene sentido mandar: pendientes, con archivo ya subido y que no
+    // pasaron por la IA todavía. Volver a leer una ya leída es una decisión de
+    // a una (y cuesta OCR), así que el lote no la toma.
+    const cola = porLeer;
+    if (!cola.length) {
+      showToast?.('No hay fotos pendientes por leer: las que quedan ya pasaron por la IA o todavía están subiendo.', 'amber');
+      return;
+    }
+    procesandoRef.current = true;
+    cancelarLoteRef.current = false;
+    const cuenta = { leida: 0, ilegible: 0, fallo: 0, 'sin-archivo': 0, formato: 0 };
+    try {
+      for (let i = 0; i < cola.length; i++) {
+        if (cancelarLoteRef.current) break;
+        setLote({ hecho: i, de: cola.length, nombre: cola[i].nombre_archivo || '' });
+        const r = await leerUna(cola[i], { silencioso: true });
+        cuenta[r || 'fallo'] = (cuenta[r || 'fallo'] || 0) + 1;
+      }
     } finally {
+      setLote(null);
       procesandoRef.current = false;
     }
+    const partes = [];
+    if (cuenta.leida) partes.push(`✓ ${cuenta.leida} leída(s)`);
+    if (cuenta.ilegible) partes.push(`⚠ ${cuenta.ilegible} ilegible(s) — ya se les pidió la foto de nuevo`);
+    if (cuenta.fallo) partes.push(`${cuenta.fallo} que no terminaron (siguen en Pendientes)`);
+    if (cuenta['sin-archivo']) partes.push(`${cuenta['sin-archivo']} todavía subiendo del teléfono`);
+    if (cuenta.formato) partes.push(`${cuenta.formato} en un formato que la IA no lee`);
+    const color = cuenta.leida && !cuenta.fallo && !cuenta.ilegible ? 'green' : cuenta.leida ? 'amber' : 'red';
+    showToast?.(
+      (cancelarLoteRef.current ? 'Lote cortado. ' : '')
+      + partes.join(' · ')
+      + '. Revisalas en la bandeja de abajo y cerrá cada una como «✓ Registrada» o «✗ Descartar».',
+      color);
   };
 
   const marcar = async (ev, estado) => {
@@ -471,9 +541,29 @@ function RecibidasDeCampo({ onInyectar, showToast }) {
           {/* Dos pestañas: lo que falta trabajar y lo que ya se mandó a la IA
               pero todavía no se cerró. Así la bandeja principal queda limpia
               sin perder de vista nada (pedido de Gabriel 1-sep). */}
-          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             {tabBtn(ESTADO_PENDIENTE, '⏳ Pendientes', pendientes.length)}
             {tabBtn(ESTADO_LEIDA, '🤖 Ya leídas', leidas.length)}
+            {/* LEERLAS TODAS. Solo en la pestaña de pendientes y solo si hay
+                más de una sin leer: con una sola, el botón de su fila alcanza
+                y dos botones que hacen lo mismo confunden. */}
+            {pestana === ESTADO_PENDIENTE && porLeer.length > 1 && !lote && (
+              <button className="btn btn-amber btn-xs" style={{ marginLeft: 'auto' }}
+                onClick={(e) => { e.stopPropagation(); leerTodasPendientes(); }}
+                title="Manda a la IA, una tras otra, todas las fotos pendientes que todavía no se leyeron. Cada una queda marcada con su propio resultado.">
+                🤖 Leer las {porLeer.length} pendientes
+              </button>
+            )}
+            {lote && (
+              <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', fontSize: 11.5, color: 'var(--amber)' }}>
+                Leyendo {lote.hecho + 1} de {lote.de}…
+                <button className="btn btn-ghost btn-xs"
+                  onClick={(e) => { e.stopPropagation(); cancelarLoteRef.current = true; }}
+                  title="Corta después de la foto que está leyendo. Lo ya leído queda leído.">
+                  Cortar
+                </button>
+              </span>
+            )}
           </div>
 
           {!visibles.length && (
@@ -865,7 +955,10 @@ function CapturaMagicaPage({ showToast }) {
                   errorCode: 'reintentos_agotados' } : x));
                 continue;
               }
-              await procesarItemRef.current(it.id, it.file);
+              // Con el texto del OCR si la fila lo trae de un intento anterior:
+              // el reproceso al remontar la pantalla no tiene por qué volver a
+              // pagar la lectura del papel.
+              await procesarItemRef.current(it.id, it.file, { textoOcr: it.ocr_texto || null });
             }
           }
         }
@@ -967,7 +1060,17 @@ function CapturaMagicaPage({ showToast }) {
   const enVuelo = uRCM(new Set());
   // Reproceso de pendientes restaurados: solo en el primer cargar() del mount.
   const reprocesoHecho = uRCM(false);
-  const procesarItem = async (id, file) => {
+  // ── REINTENTAR SIN VOLVER A PAGAR EL OCR (22-set-2026) ────────────
+  // `textoOcr` es el texto que el server devolvió en el intento anterior. Si
+  // va en el pedido, Mistral no se toca y solo se rehace la estructuración,
+  // que es la etapa que falla (timeout, 429, JSON cortado). El archivo viaja
+  // igual: si el texto no sirviera, el server tiene con qué.
+  //
+  // UN SOLO REINTENTO CON EL MISMO TEXTO: si el que lo usó también falla, el
+  // texto se descarta (ver el catch) y el siguiente intento vuelve a leer el
+  // papel de cero. Si no, una lectura OCR mala quedaría pegada a esa fila para
+  // siempre y los reintentos serían todos iguales y todos inútiles.
+  const procesarItem = async (id, file, { textoOcr = null } = {}) => {
     if (enVuelo.current.has(id)) return;
     enVuelo.current.add(id);
     setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'procesando' } : x));
@@ -994,7 +1097,10 @@ function CapturaMagicaPage({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         // mimeEfectivoDeArchivo(), no file.type crudo: un HEIC con file.type
         // vacío (quirk de Safari/iOS) llegaría al server sin decir qué es.
-        body: JSON.stringify({ file: base64, mimeType: mimeEfectivoDeArchivo(file), ...modelosIA }),
+        body: JSON.stringify({
+          file: base64, mimeType: mimeEfectivoDeArchivo(file), ...modelosIA,
+          ...(textoOcr ? { texto_ocr: textoOcr } : {}),
+        }),
       });
       // apiParse NUNCA explota con respuestas no-JSON: traduce el 402
       // "Payment required" de la plataforma (deployment deshabilitado por
@@ -1003,6 +1109,9 @@ function CapturaMagicaPage({ showToast }) {
       if (!resp.ok) {
         const err = new Error(data.error || data.detail || `HTTP ${resp.status}`);
         err.code = data.code || null; // 'ia_sin_credito' / 'servicio_deshabilitado' → la UI ofrece avisar al admin
+        // El texto del OCR que el server alcanzó a leer antes de fallar: con
+        // él, "Reintentar" no vuelve a pagarlo.
+        err.ocrTexto = typeof data.ocr_texto === 'string' ? data.ocr_texto : null;
         throw err;
       }
       const ext = data.extracted || {};
@@ -1082,6 +1191,10 @@ function CapturaMagicaPage({ showToast }) {
       setItems(prev => prev.map(x => x.id === id ? {
         ...x, status: 'error', error: msg, errorCode: esAbort ? 'timeout_cliente' : (e.code || null),
         intentos: (x.intentos || 0) + 1,
+        // Si ESTE intento ya usaba el texto guardado y falló igual, el texto se
+        // tira: el próximo vuelve a leer el papel. Si no, se guarda el que el
+        // server acaba de leer, para que el próximo no lo pague.
+        ocr_texto: textoOcr ? null : (e?.ocrTexto || x.ocr_texto || null),
       } : x));
       // 'ilegible' se distingue de un error cualquiera: no es que la lectura
       // fallara, es que el archivo no tiene nada que leer. Quien llama usa eso
@@ -3177,8 +3290,12 @@ function CapturaMagicaPage({ showToast }) {
                         )}
                         {it.status === 'error' && (
                           <>
-                            <button className="btn btn-ghost btn-xs" onClick={()=>procesarItem(it.id, it.file)}>
-                              <JxIcon name="refresh" size={11}/> Reintentar
+                            <button className="btn btn-ghost btn-xs"
+                              title={it.ocr_texto
+                                ? 'Reintenta SOLO lo que falló: el texto del comprobante ya se leyó en el intento anterior y no se vuelve a pagar el OCR.'
+                                : 'Vuelve a leer el comprobante de cero.'}
+                              onClick={()=>procesarItem(it.id, it.file, { textoOcr: it.ocr_texto || null })}>
+                              <JxIcon name="refresh" size={11}/> Reintentar{it.ocr_texto ? ' (sin re-leer)' : ''}
                             </button>
                             {(it.errorCode === 'ia_sin_credito' || it.errorCode === 'servicio_deshabilitado') && (
                               <button className="btn btn-amber btn-xs" style={{ marginLeft:4 }} onClick={reportarIaSinCredito} disabled={avisoIaOk} title="Avisar al administrador que la IA está sin crédito">
