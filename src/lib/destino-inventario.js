@@ -82,28 +82,47 @@ export const AMBITO_DESTINO = 'destino_inv';
 /** Los destinos que una persona puede elegir (sin_propuesta no es elegible). */
 export const DESTINOS = [CAJON.GASTO, CAJON.ACTIVO, CAJON.REVENTA, CAJON.TRANSFORMA];
 
-/** Cómo se llama cada uno en pantalla, y qué significa para el inventario. */
+/**
+ * Cómo se llama cada uno en pantalla, y qué significa para el inventario.
+ *
+ * `contable` es lo que esta decisión le hace al LIBRO DIARIO desde la tanda 4
+ * del destino (21-set). Antes esto solo pintaba el saldo de esta pantalla;
+ * ahora elige entre las tres primeras subcuentas de la 60, que es como el PCGE
+ * distingue lo que se revende de lo que se transforma de lo que se consume. Se
+ * dice acá, donde se decide: una decisión que mueve la contabilidad y no avisa
+ * es la que nadie revisa. Ver `naturaleza-insumo.js`.
+ */
 export const DESTINO_INFO = {
   [CAJON.GASTO]: {
     label: 'Se consume',
     ayuda: 'Se incorpora a la obra o se gasta: cemento, combustible, papelería. Es lo normal y no hace falta marcarlo.',
+    contable: 'En el libro diario queda con la cuenta que le da su clasificación (602 materias primas, 603 auxiliares, 656 suministros).',
     badge: 'b-gray', icono: '🧱',
   },
   [CAJON.ACTIVO]: {
     label: 'Uso de la empresa',
     ayuda: 'La empresa lo usa y dura más de un ejercicio. NO está para vender: no debería contarse como mercadería disponible.',
+    contable: 'En el libro diario NO lo manda solo a la cuenta 33: un bien se activa cuando se carga en el registro de activos fijos (7.1), no por marcarlo acá. Hasta entonces sale marcado para revisar.',
     badge: 'b-blue', icono: '🏗',
   },
   [CAJON.REVENTA]: {
     label: 'Para revender',
     ayuda: 'Se compró para volver a venderlo. Acá el saldo comprado − vendido sí es lo que queda por colocar.',
+    contable: 'En el libro diario sus compras pasan a la 601 Mercaderías: «bienes adquiridos para ser vendidos sin someterlos a transformación».',
     badge: 'b-green', icono: '🏷',
   },
   [CAJON.TRANSFORMA]: {
     label: 'Se transforma',
     ayuda: 'Entra de una forma y sale de otra (planchas metálicas a láminas). Su saldo no cierra solo hasta que exista el movimiento de transformación.',
+    contable: 'En el libro diario sus compras pasan a la 602 Materias primas: «bienes que luego de un proceso de transformación se convierten en productos terminados».',
     badge: 'b-amber', icono: '🔁',
   },
+};
+
+/** La ayuda completa de un cajón: qué significa y qué le hace a la contabilidad. */
+export const ayudaDestino = (d) => {
+  const i = DESTINO_INFO[d];
+  return i ? [i.ayuda, i.contable].filter(Boolean).join(' ') : '';
 };
 
 export const labelDestino = (d) => DESTINO_INFO[d]?.label || d || '';

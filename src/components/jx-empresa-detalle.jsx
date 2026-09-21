@@ -53,7 +53,7 @@ import {
 import { noInventariables } from "../lib/insumo-o-servicio.js";
 import {
   activosPorLinea, esActivoDe, destinoParaInventario, llaveDestino, contarDestinos,
-  DESTINOS, DESTINO_INFO, labelDestino, AMBITO_DESTINO,
+  DESTINOS, DESTINO_INFO, labelDestino, ayudaDestino, AMBITO_DESTINO,
 } from "../lib/destino-inventario.js";
 import {
   efectoEnInventario, construirTransformacion, validarTransformacion,
@@ -1559,12 +1559,12 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                               value={ins.destino || ''}
                               title={ins.destinoAutomatico
                                 ? 'Sale solo de estar en el registro de activos fijos (7.1): la empresa lo usa y lo deprecia, no es mercadería esperando comprador. Alquilarlo tampoco lo convierte en mercadería. Si igual lo vas a vender, cambialo acá.'
-                                : 'Qué va a pasar con este insumo. Cambia si su saldo significa «lo que queda por vender» o es otra cosa.'}
+                                : 'Qué va a pasar con este insumo. Cambia si su saldo significa «lo que queda por vender» o es otra cosa — y desde la tanda 4 también la cuenta con la que sus compras entran al libro diario.'}
                               onChange={e => guardarDestino(ins, e.target.value || null)}
                             >
                               <option value="">— destino —</option>
                               {DESTINOS.map(d => (
-                                <option key={d} value={d}>{DESTINO_INFO[d].icono} {labelDestino(d)}</option>
+                                <option key={d} value={d} title={ayudaDestino(d)}>{DESTINO_INFO[d].icono} {labelDestino(d)}</option>
                               ))}
                             </select>
                           </div>
@@ -1628,8 +1628,8 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
                             {ins.destino && DESTINO_INFO[ins.destino] && (
                               <span className={`badge ${DESTINO_INFO[ins.destino].badge}`} style={{ fontSize: 9 }}
                                 title={ins.destinoAutomatico
-                                  ? `${DESTINO_INFO[ins.destino].ayuda} — sale solo de estar en el registro 7.1; nadie tuvo que elegirlo.`
-                                  : DESTINO_INFO[ins.destino].ayuda}>
+                                  ? `${ayudaDestino(ins.destino)} — sale solo de estar en el registro 7.1; nadie tuvo que elegirlo.`
+                                  : ayudaDestino(ins.destino)}>
                                 {DESTINO_INFO[ins.destino].icono} {labelDestino(ins.destino)}
                                 {ins.destinoAutomatico && <span style={{ opacity: 0.7 }}> · por el 7.1</span>}
                               </span>

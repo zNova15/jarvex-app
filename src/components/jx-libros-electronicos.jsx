@@ -10,6 +10,8 @@ import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
 import { cargarBancarizados } from '../lib/bancarizado-db.js';
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de-comprobante.js';
+import { activoPorLinea, activoDeLineaDe } from '../lib/naturaleza-insumo.js';
+import { destinoPorNombre } from '../lib/destino-inventario.js';
 import { enPeriodo } from '../lib/fecha.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -105,15 +107,23 @@ function LibrosElectronicosPage({ showToast }) {
   const { data: insumoCategorias } = window.__hooks?.useInsumoCategorias?.() || { data: [] };
   const { data: terminosCustom } = window.__hooks?.useClasificacionTerminos?.() || { data: [] };
 
+  // Y la naturaleza del insumo (tanda 4), por el MISMO motivo de arriba: si el
+  // Libro Diario asienta la tubería de reventa en la 601 y el PLE la declara en
+  // la 602, la que llega a SUNAT es la equivocada.
+  const { data: decisionesCotejo } = window.__hooks?.useCotejoDecisiones?.() || { data: [] };
+  const { data: activosFijos } = window.__hooks?.useActivosFijos?.(companyId || null) || { data: [] };
+
   const repartoDe = uM(() => {
     const familiaDe = crearResolvedorDeFamilia({
       catalogo: catalogoInsumos || [],
       alias: insumoCategorias || [],
       terminosCustom: terminosCustom || [],
       companyId: companyId || null,
+      naturalezaPorNombre: destinoPorNombre(decisionesCotejo || []),
     });
-    return (mov) => cuentasDeComprobante(mov, { familiaDe });
-  }, [catalogoInsumos, insumoCategorias, terminosCustom, companyId]);
+    const activoDeLinea = activoDeLineaDe(activoPorLinea(activosFijos || []));
+    return (mov) => cuentasDeComprobante(mov, { familiaDe, activoDeLinea });
+  }, [catalogoInsumos, insumoCategorias, terminosCustom, companyId, decisionesCotejo, activosFijos]);
 
   // La misma evidencia bancaria que usa el Libro Diario: el PLE que se declara
   // tiene que llevar la MISMA contrapartida que la pantalla, no una deducida

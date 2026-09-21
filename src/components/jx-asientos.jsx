@@ -15,6 +15,8 @@ import { opcionesDestino, nombreDestino, contrapartidaDeDestino } from "../lib/d
 import { avisoPeriodoCerrado } from "../lib/periodo-contable.js";
 import { cargarBancarizados } from "../lib/bancarizado-db.js";
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from "../lib/cuenta-de-comprobante.js";
+import { activoPorLinea, activoDeLineaDe } from "../lib/naturaleza-insumo.js";
+import { destinoPorNombre } from "../lib/destino-inventario.js";
 import { armarConsecuencias } from "../lib/consecuencias-correccion.js";
 import { corregirClasificaciones } from "../lib/correccion-causa-db.js";
 import { VentanaConsecuencias } from "./jx-ventana-consecuencias.jsx";
@@ -862,15 +864,35 @@ function LibroDiarioPage({ showToast }) {
   // (tanda 3 del destino) lo necesita crudo: simula la corrección envolviéndolo,
   // y tiene que ser EL MISMO que dibuja el libro para que lo que la ventana
   // anuncia sea lo que el libro va a mostrar.
+  // ── TANDA 4: qué hace la empresa con cada insumo ──────────────────
+  // La POLÍTICA («¿se consume, se revende, se transforma, la usa la empresa?»)
+  // ya la contesta la pantalla de inventario, una vez por insumo. La DECISIÓN
+  // vive en `cotejo_decisiones` y el HECHO en `activos_fijos`. Acá no se
+  // pregunta nada nuevo: se leen los dos y se le pasan al reparto, que es lo
+  // que hace que la misma tubería sea 602 en una obra y 601 en la ferretería.
+  const { data: decisionesCotejo } = (window.__hooks?.useCotejoDecisiones?.() ?? { data: [] });
+  const { data: activosFijos } = (window.__hooks?.useActivosFijos?.(
+    empresaId !== 'all' ? empresaId : null,
+  ) ?? { data: [] });
+  const naturalezaPorNombre = uM(
+    () => destinoPorNombre(decisionesCotejo || []),
+    [decisionesCotejo],
+  );
+  const activoDeLinea = uM(
+    () => activoDeLineaDe(activoPorLinea(activosFijos || [])),
+    [activosFijos],
+  );
+
   const familiaDe = uM(() => crearResolvedorDeFamilia({
     catalogo: catalogoInsumos || [],
     alias: insumoCategorias || [],
     terminosCustom: terminosCustom || [],
     companyId: empresaId !== 'all' ? empresaId : null,
-  }), [catalogoInsumos, insumoCategorias, terminosCustom, empresaId]);
+    naturalezaPorNombre,
+  }), [catalogoInsumos, insumoCategorias, terminosCustom, empresaId, naturalezaPorNombre]);
   const repartoDe = uM(
-    () => (mov) => cuentasDeComprobante(mov, { familiaDe }),
-    [familiaDe],
+    () => (mov) => cuentasDeComprobante(mov, { familiaDe, activoDeLinea }),
+    [familiaDe, activoDeLinea],
   );
   // Todos los comprobantes vivos, sin el filtro de período: corregir la
   // clasificación de un insumo mueve facturas de cualquier mes, y el bloque C

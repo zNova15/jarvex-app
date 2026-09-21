@@ -165,6 +165,14 @@ export function VentanaConsecuencias({ c, seleccion, setSeleccion, cuentaElegida
                       </div>
                     </div>
                   ) : null}
+                  {/* Tanda 4: la cuenta no la puso la clasificación sino lo que
+                      la empresa hace con el insumo. Ofrecer reclasificarlo acá
+                      sería ofrecer una corrección que no corrige nada. */}
+                  {it.porNaturaleza && (
+                    <div style={{ marginTop: 6, color: 'var(--tm)', fontSize: 11.5 }}>
+                      {it.porNaturaleza}
+                    </div>
+                  )}
                 </div>
               );
             })}

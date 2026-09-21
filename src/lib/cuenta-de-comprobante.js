@@ -36,6 +36,7 @@ import { cuentaDeFamilia, CUENTA_PROVISIONAL } from './pcge-puente.js';
 import { cuentaMadreDe } from './pcge.js';
 import { esVentaMov } from './costo-obra.js';
 import { esFamiliaFlete, cuentaDeFlete } from './flete-compra.js';
+import { llaveNaturaleza, itemSeRevende, cuentaPorNaturaleza } from './naturaleza-insumo.js';
 
 /** Debajo de esto, una línea propia no aporta nada y se absorbe en la mayor. */
 export const MINIMO_LINEA = 1;
@@ -68,6 +69,11 @@ export const banda = (score) => (score >= 0.75 ? 'alta' : score >= 0.5 ? 'media'
  *                   no se aplica, y el diccionario propio deja de ganarle al
  *                   oficial sin que nadie se entere (regla 8 del CLAUDE.md).
  *   companyId       para que la decisión de la propia empresa pese más
+ *   naturalezaPorNombre  Map(nombreNorm → 'gasto'|'activo_uso'|'reventa'|
+ *                   'transforma'), el que arma `destinoPorNombre()` con las
+ *                   filas de `cotejo_decisiones`. Es la política del insumo y
+ *                   puede cambiar la cuenta (tanda 4): ver `naturaleza-insumo.js`.
+ *                   Sin él, todo sigue funcionando como antes.
  * @returns {(descripcion:string) => {familia:string|null, origen:string, score:number,
  *            via:string, catalogoId:string|null, catalogoNombre:string|null,
  *            catalogoNorm:string|null, catalogoGlobal:boolean}}
@@ -83,6 +89,7 @@ export const banda = (score) => (score >= 0.75 ? 'alta' : score >= 0.5 ? 'media'
  */
 export function crearResolvedorDeFamilia({
   catalogo = [], alias = [], terminosCustom = null, companyId = null, demo = false,
+  naturalezaPorNombre = null,
 } = {}) {
   const catPorId = new Map();
   const catPorNorm = new Map();
@@ -97,6 +104,24 @@ export function crearResolvedorDeFamilia({
   // la global, y la manual más que la automática). No se reimplementa acá.
   const aliasPorNorm = resolverCategorias(alias, { companyId, demo });
 
+  // ── LA POLÍTICA DEL INSUMO (tanda 4 del destino) ──
+  // «Qué va a pasar con este insumo»: la decisión que la pantalla de
+  // inventario guarda UNA vez por insumo (`destino-inventario.js`). Viene como
+  // Map, con la llave de ALLÁ —`normInsumo`, no `claveMapeo`—, que es por lo
+  // que se normaliza acá con `llaveNaturaleza` y no con la `n` de más abajo:
+  // son dos normalizaciones distintas y buscar con la equivocada no falla,
+  // simplemente no encuentra nunca nada.
+  const politicaDe = (texto, delCatalogo) => {
+    if (!(naturalezaPorNombre instanceof Map) || !naturalezaPorNombre.size) return null;
+    const k = llaveNaturaleza(texto);
+    if (k && naturalezaPorNombre.has(k)) return naturalezaPorNombre.get(k);
+    // Si la descripción apunta a un insumo del catálogo, la política de ESE
+    // insumo también vale: es la misma cosa llamada de otra forma, que es todo
+    // el punto de tener catálogo.
+    const kc = delCatalogo?.nombre ? llaveNaturaleza(delCatalogo.nombre) : '';
+    return (kc && naturalezaPorNombre.get(kc)) || null;
+  };
+
   const cache = new Map();
   const SIN_CATALOGO = { catalogoId: null, catalogoNombre: null, catalogoNorm: null, catalogoGlobal: false };
   const deCatalogo = (c) => (c ? {
@@ -108,7 +133,7 @@ export function crearResolvedorDeFamilia({
 
   return function familiaDe(descripcion) {
     const texto = String(descripcion ?? '').trim();
-    if (!texto) return { familia: null, origen: ORIGEN.ninguno, score: 0, via: 'ninguna', ...SIN_CATALOGO };
+    if (!texto) return { familia: null, origen: ORIGEN.ninguno, score: 0, via: 'ninguna', politica: null, ...SIN_CATALOGO };
     if (cache.has(texto)) return cache.get(texto);
 
     let out = null;
@@ -144,6 +169,13 @@ export function crearResolvedorDeFamilia({
         : { familia: null, origen: ORIGEN.ninguno, score: 0, via: 'ninguna', ...SIN_CATALOGO };
     }
 
+    // La política del insumo no depende de la familia —son dos preguntas
+    // distintas: qué es la cosa y qué hace la empresa con ella— así que se
+    // resuelve aparte y viaja en la misma respuesta, para no volver a buscarla
+    // por cada ítem de cada comprobante.
+    const delCat = out.catalogoId ? catPorId.get(out.catalogoId) : (n ? catPorNorm.get(n) : null);
+    out = { ...out, politica: politicaDe(texto, delCat) };
+
     cache.set(texto, out);
     return out;
   };
@@ -177,7 +209,11 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
  * calcularla dos veces en dos archivos es pedir que se desincronicen.
  *
  * @param {object} mov        el accounting_movement
- * @param {object} opts       { familiaDe } — el resolvedor de arriba
+ * @param {object} opts
+ *   familiaDe      el resolvedor de arriba
+ *   activoDeLinea  (movId, idx) => fila de `activos_fijos` | null. El HECHO de
+ *                  la tanda 4: si esa línea ya está en el registro 7.1, la
+ *                  cuenta la da el registro y no el clasificador. Opcional.
  * @returns {{
  *   lineas: Array<{cuenta, cuentaMadre, porcion, familias, origen, confianza, revisar, porque}>,
  *   provisional: boolean,   // no se pudo determinar: la cuenta es un lugar donde ponerlo
@@ -187,10 +223,43 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
  *   itemsSinResolver: number,
  * }}
  */
-export function cuentasDeComprobante(mov, { familiaDe } = {}) {
+export function cuentasDeComprobante(mov, { familiaDe, activoDeLinea = null } = {}) {
   const esVenta = esVentaMov(mov);
   const items = itemsDe(mov);
   const resolver = typeof familiaDe === 'function' ? familiaDe : () => ({ familia: null, origen: ORIGEN.ninguno, score: 0 });
+
+  // ── TANDA 4: la cuenta corregida por lo que la empresa hace con el insumo ──
+  // `cuentaDeFamilia` dice QUÉ ES la cosa; esto dice qué se hace con ella, que
+  // es lo que el PCGE usa para elegir entre 601, 602 y 603. Ver
+  // `naturaleza-insumo.js`: nada de esto se adivina, sale de una decisión ya
+  // tomada o de un hecho ya registrado.
+  //
+  // `conPolitica` se apaga para los FLETES: un flete no es el bien, así que
+  // marcar el material «para revender» no manda el transporte a la 601. Lo que
+  // sí lo mueve es a qué compra acompaña, y de eso ya se ocupa `flete-compra.js`
+  // con la cuenta —ya corregida— del resto del comprobante.
+  const conNaturaleza = (r, x, { conPolitica = true } = {}) => {
+    const base = r?.cuenta || '';
+    // Sin cuenta y sin activo no hay nada que corregir. Pero sin cuenta y CON
+    // activo sí: el registro 7.1 sabe la cuenta aunque el clasificador no haya
+    // sabido qué era la cosa, y desperdiciar ese dato sería mandar a «sin
+    // resolver» una línea cuya cuenta está escrita en la base.
+    if (!base && !x.activo) return r;
+    const nat = cuentaPorNaturaleza(base, conPolitica ? x.politica : null, {
+      activo: x.activo || null,
+      seRevende: conPolitica && x.seRevende === true,
+    });
+    if (!nat || !nat.cuenta) return r ? { ...r, naturaleza: null } : r;
+    return {
+      cuenta: nat.cuenta,
+      // Si la cuenta cambió, el motivo nuevo es LA explicación. Si no cambió
+      // pero hay algo que avisar, se suma al porqué de la familia en vez de
+      // pisarlo: los dos son verdad.
+      porque: nat.cambiada ? nat.porque : [r?.porque, nat.porque].filter(Boolean).join(' '),
+      revisar: r?.revisar === true || nat.revisar === true,
+      naturaleza: nat.motivo,
+    };
+  };
 
   // Agrupado por SUBCUENTA (3 dígitos), que es el detalle del puente.
   const porSub = new Map();
@@ -199,9 +268,16 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
 
   // Primera pasada: la familia de cada ítem. Hace falta ANTES de asentar
   // porque un flete depende de lo que se compró en el resto del comprobante.
-  const resueltos = items.map(it => {
+  const resueltos = items.map((it, idx) => {
     const fam = resolver(it?.descripcion);
-    return { it, imp: importeDeItem(it), ...fam };
+    return {
+      it, idx, imp: importeDeItem(it), ...fam,
+      // Los dos HECHOS de la tanda 4, los dos ya en la base: la línea cargada
+      // en el registro 7.1 y el ítem separado para venta. Le ganan a la
+      // política porque hablan de ESTA compra, no del insumo en general.
+      activo: typeof activoDeLinea === 'function' ? (activoDeLinea(mov?.id, idx) || null) : null,
+      seRevende: itemSeRevende(it),
+    };
   });
   // El detalle por ítem: qué cuenta le tocó a cada descripción y de dónde salió
   // su familia. Lo lee la ventana de consecuencias para ofrecer corregir la
@@ -216,7 +292,11 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
     const pesoCompra = new Map();
     for (const x of resueltos) {
       if (!x.familia || esFamiliaFlete(x.familia)) continue;
-      const c = cuentaDeFamilia(x.familia)?.cuenta;
+      // Con la naturaleza ya aplicada: si el material que se compró es
+      // mercadería (601), su flete es 60911 y no 60921. Mirar acá la cuenta
+      // cruda dejaría al flete apuntando a una existencia distinta de la del
+      // material que trajo, que es justo lo que la tanda 2 vino a arreglar.
+      const c = conNaturaleza(cuentaDeFamilia(x.familia), x)?.cuenta;
       if (c && c.startsWith('60')) pesoCompra.set(c, (pesoCompra.get(c) || 0) + x.imp);
     }
     compraDelComprobante = [...pesoCompra.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
@@ -227,9 +307,14 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
     let r = familia ? cuentaDeFamilia(familia, { esVenta }) : null;
     // El flete de una compra no es un gasto de viaje: va a la 609. Solo en
     // compras — el flete que la empresa FACTURA es un ingreso y va a la 704.
-    if (r && !esVenta && esFamiliaFlete(familia)) {
+    const esFlete = !esVenta && !!familia && esFamiliaFlete(familia);
+    if (r && esFlete) {
       r = cuentaDeFlete(it?.descripcion, { familiaDe: resolver, compraDelMismoComprobante: compraDelComprobante });
     }
+    // Y encima, qué hace la empresa con eso (tanda 4). El hecho de un activo
+    // cargado se mira igual en un flete: la NIC 16 incluye el traslado en el
+    // costo del bien, así que si esa línea se activó, se activó.
+    r = conNaturaleza(r, x, { conPolitica: !esFlete });
     detalleItems.push({
       descripcion: String(it?.descripcion ?? '').trim(),
       norm: claveMapeo(it?.descripcion),
@@ -243,6 +328,13 @@ export function cuentasDeComprobante(mov, { familiaDe } = {}) {
       catalogoNorm: x.catalogoNorm || null,
       catalogoGlobal: x.catalogoGlobal === true,
       cuenta: r?.cuenta || null,
+      // Tanda 4: qué hace la empresa con este insumo y qué efecto tuvo en la
+      // cuenta. Lo lee la ventana de consecuencias para ofrecer corregir la
+      // POLÍTICA —que mueve todas las facturas de ese insumo— y no solo la
+      // cuenta de este asiento.
+      politica: x.politica || null,
+      naturaleza: r?.naturaleza || null,
+      activoId: x.activo?.id || null,
     });
     if (!r) { sinResolver++; continue; }
     totalImporte += imp;

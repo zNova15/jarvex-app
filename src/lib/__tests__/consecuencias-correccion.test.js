@@ -492,3 +492,73 @@ describe('la escritura del tipo, junto con el destino', () => {
     expect(almacen.get('a')).toMatchObject({ clasificacion_manual: null, type: 'cost' });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 4 — cuando la cuenta no la puso la clasificación.
+//
+// Sin esto la ventana ofrecería corregir una familia que no decide nada: la
+// contadora la corregiría, la cuenta no se movería, y la ventana habría
+// mentido en el único lugar donde promete no hacerlo.
+// ═══════════════════════════════════════════════════════════════════
+describe('tanda 4: la causa está en otra pantalla', () => {
+  const repartoConNaturaleza = (naturaleza, cuenta) => ({
+    lineas: [{ cuenta, cuentaMadre: cuenta.slice(0, 2), porcion: 1, familias: ['66'] }],
+    items: [{
+      descripcion: 'TUBERIA PVC SAP 1/2"', norm: claveMapeo('TUBERIA PVC SAP 1/2"'),
+      importe: 300, familia: '66', origen: 'clasificador', score: 0.9,
+      via: 'clasificador', cuenta, naturaleza,
+    }],
+  });
+
+  it('marcada «para revender», no se ofrece reclasificar: se dice dónde se cambia', () => {
+    const { causas } = causasDeCuenta(mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]), {
+      reparto: repartoConNaturaleza('politica_reventa', '601'),
+      cuentaNueva: '602',
+    });
+    expect(causas).toHaveLength(1);
+    expect(causas[0].corregible).toBe(false);
+    expect(causas[0].sugerida).toBeNull();
+    expect(causas[0].porNaturaleza).toMatch(/Inventario/);
+  });
+
+  it('cargada en el 7.1, manda al registro y no al catálogo', () => {
+    const { causas } = causasDeCuenta(mov([item('AMOLADORA DEWALT', 1, 900)]), {
+      reparto: repartoConNaturaleza('activo_cargado', '337'),
+      cuentaNueva: '656',
+    });
+    expect(causas[0].corregible).toBe(false);
+    expect(causas[0].porNaturaleza).toMatch(/7\.1/);
+  });
+
+  it('a la 601 no llega ninguna familia, y ya no se dice que no hay nada que hacer', () => {
+    // Antes de la tanda 4 esto contestaba «ninguna clasificación de insumo
+    // lleva a la 601», que es cierto y a la vez inútil: la causa existe.
+    const { causas, sinCausa } = causasDeCuenta(mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]), {
+      reparto: repartoConNaturaleza('politica_transforma', '602'),
+      cuentaNueva: '601',
+    });
+    expect(causas).toHaveLength(1);
+    expect(sinCausa).toBeNull();
+    expect(causas[0].porNaturaleza).toBeTruthy();
+  });
+
+  it('un aviso que NO cambió la cuenta no bloquea la corrección por familia', () => {
+    // «Marcado uso de la empresa pero sin cargar en el 7.1» avisa y nada más:
+    // la cuenta sigue siendo la de la familia, así que la familia sí es la causa.
+    const { causas } = causasDeCuenta(mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]), {
+      reparto: repartoConNaturaleza('activo_sin_registrar', '602'),
+      cuentaNueva: '656',
+    });
+    expect(causas[0].porNaturaleza).toBeNull();
+    expect(causas[0].corregible).toBe(true);
+  });
+
+  it('sin naturaleza, todo sigue exactamente igual que en la tanda 3', () => {
+    const { causas } = causasDeCuenta(mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]), {
+      reparto: repartoConNaturaleza(null, '602'),
+      cuentaNueva: '656',
+    });
+    expect(causas[0].porNaturaleza).toBeNull();
+    expect(causas[0].corregible).toBe(true);
+  });
+});

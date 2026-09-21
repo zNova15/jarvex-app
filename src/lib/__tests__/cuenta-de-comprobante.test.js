@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   crearResolvedorDeFamilia, cuentasDeComprobante, itemsDe, banda, ORIGEN, MINIMO_LINEA,
 } from '../cuenta-de-comprobante.js';
+import { llaveNaturaleza } from '../naturaleza-insumo.js';
 
 const mov = (items, extra = {}) => ({
   id: 'm1', clase: 'compra', type: 'cost', amount: 1000,
@@ -242,5 +243,139 @@ describe('ventas', () => {
     const venta = cuentasDeComprobante(mov(items, { clase: 'venta', type: 'income' }), { familiaDe: soloClasificador() });
     expect(compra.lineas[0].cuentaMadre).toBe('60');
     expect(venta.lineas[0].cuentaMadre).toBe('70');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 4 — la naturaleza del insumo, cableada al reparto.
+//
+// `naturaleza-insumo.test.js` prueba la regla sola. Acá se prueba que llegue:
+// que el Map de decisiones se lea con la llave correcta (son DOS
+// normalizaciones distintas en el repo y buscar con la equivocada no falla,
+// simplemente no encuentra nunca nada), y que el flete siga al material.
+// ═══════════════════════════════════════════════════════════════════
+describe('tanda 4: qué hace la empresa con el insumo', () => {
+  const conPolitica = (pares) => crearResolvedorDeFamilia({
+    naturalezaPorNombre: new Map(pares.map(([n, d]) => [llaveNaturaleza(n), d])),
+  });
+
+  it('sin política, todo queda como antes', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]),
+      { familiaDe: soloClasificador() },
+    );
+    expect(r.lineas[0].cuenta).toBe('602');
+  });
+
+  it('marcado «para revender», la misma tubería es mercadería (601)', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]),
+      { familiaDe: conPolitica([['TUBERIA PVC SAP 1/2"', 'reventa']]) },
+    );
+    expect(r.lineas[0].cuenta).toBe('601');
+    expect(r.lineas[0].porque).toMatch(/revender/i);
+  });
+
+  it('la llave se normaliza: se escribió distinto y se reconoce igual', () => {
+    const r = cuentasDeComprobante(
+      mov([item('Tubería  PVC   SAP 1/2"', 10, 30)]),
+      { familiaDe: conPolitica([['TUBERIA PVC SAP 1/2"', 'reventa']]) },
+    );
+    expect(r.lineas[0].cuenta).toBe('601');
+  });
+
+  it('marcado «se transforma», una herramienta pasa de 656 a 602', () => {
+    const r = cuentasDeComprobante(
+      mov([item('PLANCHA DE ACERO LAC 1/8"', 4, 250)]),
+      { familiaDe: conPolitica([['PLANCHA DE ACERO LAC 1/8"', 'transforma']]) },
+    );
+    expect(r.lineas[0].cuenta).toBe('602');
+  });
+
+  it('marcado «uso de la empresa», la cuenta NO se mueve a la 33 pero se marca', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TALADRO PERCUTOR BOSCH', 1, 450)]),
+      { familiaDe: conPolitica([['TALADRO PERCUTOR BOSCH', 'activo_uso']]) },
+    );
+    expect(r.lineas[0].cuenta.startsWith('3')).toBe(false);
+    expect(r.revisar).toBe(true);
+    expect(r.lineas[0].porque).toMatch(/7\.1/);
+  });
+
+  it('con la línea cargada en el 7.1, sí va a la cuenta del registro', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TALADRO PERCUTOR BOSCH', 1, 450)]),
+      {
+        familiaDe: conPolitica([['TALADRO PERCUTOR BOSCH', 'activo_uso']]),
+        activoDeLinea: (movId, idx) => (movId === 'm1' && idx === 0
+          ? { id: 'af1', cuenta_contable: '337' } : null),
+      },
+    );
+    expect(r.lineas[0].cuenta).toBe('337');
+    // Y el aviso de «marcado uso de la empresa pero no está en el 7.1» se
+    // apaga, que es lo que la tanda 4 controla acá. (El `revisar` del
+    // comprobante puede seguir prendido por la familia del puente —la 48/49/95
+    // se marcan a propósito— y eso es de otra tanda.)
+    expect(r.lineas[0].porque).toMatch(/registro de activos fijos/i);
+    expect(r.lineas[0].porque).not.toMatch(/no está cargada/i);
+    expect(r.items[0].naturaleza).toBe('activo_cargado');
+  });
+
+  it('el activo se aplica a SU línea, no a las demás del comprobante', () => {
+    const r = cuentasDeComprobante(
+      mov([item('CEMENTO PORTLAND TIPO I', 100, 30), item('AMOLADORA DEWALT', 1, 900)]),
+      {
+        familiaDe: soloClasificador(),
+        activoDeLinea: (movId, idx) => (idx === 1 ? { id: 'af1', cuenta_contable: '337' } : null),
+      },
+    );
+    const cuentas = r.lineas.map(l => l.cuenta).sort();
+    expect(cuentas).toContain('337');
+    expect(cuentas).toContain('602');
+  });
+
+  it('un ítem separado para venta es mercadería sin que nadie decida nada', () => {
+    const it0 = { ...item('TUBERIA PVC SAP 1/2"', 10, 30), venta_status: 'para_venta' };
+    const r = cuentasDeComprobante(mov([it0]), { familiaDe: soloClasificador() });
+    expect(r.lineas[0].cuenta).toBe('601');
+  });
+
+  it('EL FLETE SIGUE AL MATERIAL: si la compra es mercadería, va a la 60911', () => {
+    // La tanda 2 manda el flete a la 609 de la existencia que trajo. Si la
+    // naturaleza movió el material a la 601, el flete tiene que acompañarlo:
+    // apuntar a la 24 cuando el material entró a la 20 deja las dos patas del
+    // asiento de destino en existencias distintas.
+    const r = cuentasDeComprobante(
+      mov([item('TUBERIA PVC SAP 1/2"', 100, 30), item('FLETE TERRESTRE', 1, 400)]),
+      { familiaDe: conPolitica([['TUBERIA PVC SAP 1/2"', 'reventa']]) },
+    );
+    const cuentas = r.lineas.map(l => l.cuenta);
+    expect(cuentas).toContain('601');
+    expect(cuentas).toContain('60911');
+  });
+
+  it('la política del material NO manda el flete a la 601', () => {
+    const r = cuentasDeComprobante(
+      mov([item('FLETE TERRESTRE', 1, 400)]),
+      { familiaDe: conPolitica([['FLETE TERRESTRE', 'reventa']]) },
+    );
+    expect(r.lineas[0].cuenta).not.toBe('601');
+  });
+
+  it('en una VENTA la política no toca la cuenta de ingreso', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TUBERIA PVC SAP 1/2"', 10, 30)], { clase: 'venta', type: 'income' }),
+      { familiaDe: conPolitica([['TUBERIA PVC SAP 1/2"', 'reventa']]) },
+    );
+    expect(r.lineas[0].cuentaMadre).toBe('70');
+  });
+
+  it('el detalle por ítem dice la política y el motivo, para la ventana de consecuencias', () => {
+    const r = cuentasDeComprobante(
+      mov([item('TUBERIA PVC SAP 1/2"', 10, 30)]),
+      { familiaDe: conPolitica([['TUBERIA PVC SAP 1/2"', 'reventa']]) },
+    );
+    expect(r.items[0].politica).toBe('reventa');
+    expect(r.items[0].naturaleza).toBe('politica_reventa');
   });
 });

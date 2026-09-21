@@ -145,6 +145,32 @@ export function alcanceDeCorreccion(item) {
  * @param {object} opts { reparto: el de `cuentasDeComprobante`, cuentaNueva }
  * @returns {{causas: Array, sinCausa: string|null, partido: boolean}}
  */
+/**
+ * Cuando la cuenta no la puso la clasificación sino la NATURALEZA del insumo
+ * (tanda 4), dónde se corrige de verdad.
+ *
+ * Sin esto la ventana mentiría: ofrecería «corregí la familia» para una cuenta
+ * que la familia no decidió, la contadora la corregiría, y la cuenta no se
+ * movería — porque la política y los hechos le ganan al clasificador. Peor
+ * todavía en la 601, a la que NINGUNA familia lleva: la ventana diría que no
+ * hay causa que corregir cuando la causa está a un clic, en otra pantalla.
+ *
+ * Solo están los motivos que CAMBIAN la cuenta. «Marcado uso de la empresa pero
+ * sin cargar en el 7.1» no cambia nada, así que no bloquea nada.
+ */
+export const CORRIGE_NATURALEZA = {
+  politica_reventa: 'Este insumo está marcado «Para revender» en el inventario de la empresa, y por eso '
+    + 'se asienta como mercadería. Mientras siga así, reclasificarlo no va a mover la cuenta: la '
+    + 'decisión se cambia en el panel de la empresa → Inventario.',
+  politica_transforma: 'Este insumo está marcado «Se transforma» en el inventario de la empresa, y por eso '
+    + 'se asienta como materia prima. Mientras siga así, reclasificarlo no va a mover la cuenta: la '
+    + 'decisión se cambia en el panel de la empresa → Inventario.',
+  activo_cargado: 'Esta línea está cargada en el registro de activos fijos (7.1) y la cuenta sale de ahí. '
+    + 'No se corrige reclasificando el insumo: se corrige en el propio registro.',
+  venta_registrada: 'Este ítem está separado para venta o ya se vendió, así que se asienta como mercadería. '
+    + 'No se corrige reclasificando el insumo: se le quita la separación de venta en el comprobante.',
+};
+
 export function causasDeCuenta(mov, { reparto = null, cuentaNueva = null } = {}) {
   const c = txt(cuentaNueva);
   const partido = (reparto?.lineas?.length || 0) > 1;
@@ -174,21 +200,29 @@ export function causasDeCuenta(mov, { reparto = null, cuentaNueva = null } = {})
   for (const it of porNorm.values()) {
     if (it.cuenta && cuentasCompatibles(it.cuenta, c)) continue;
     const familiasPosibles = posibles.filter(p => p.codigo !== it.familia);
+    // Si la cuenta la puso la naturaleza del insumo, la familia no es la causa
+    // y corregirla no serviría de nada: se dice dónde está la causa de verdad.
+    const porNaturaleza = CORRIGE_NATURALEZA[it.naturaleza] || null;
     causas.push({
       ...it,
       familiaNombre: it.familia ? etiquetaCategoria(it.familia) : null,
       alcance: alcanceDeCorreccion(it),
       familiasPosibles,
-      corregible: familiasPosibles.length > 0,
+      porNaturaleza,
+      corregible: !porNaturaleza && familiasPosibles.length > 0,
       // Solo se pre-elige cuando hay UNA familia posible: con varias, elegir
       // por ella sería inventar la respuesta que la regla 8 prohíbe inventar.
-      sugerida: familiasPosibles.length === 1 ? familiasPosibles[0].codigo : null,
+      sugerida: (!porNaturaleza && familiasPosibles.length === 1) ? familiasPosibles[0].codigo : null,
     });
   }
   causas.sort((a, b) => b.importe - a.importe);
 
   let sinCausa = null;
-  if (causas.length && !posibles.length) {
+  // «Ninguna clasificación lleva a esta cuenta» es cierto para la 601 —ninguna
+  // familia va ahí— pero decirlo solo, cuando cada causa ya explica que la
+  // llevó la naturaleza del insumo, haría creer que no hay nada que hacer.
+  const todasPorNaturaleza = causas.length > 0 && causas.every(x => x.porNaturaleza);
+  if (causas.length && !posibles.length && !todasPorNaturaleza) {
     sinCausa = `Ninguna clasificación de insumo lleva a la ${c}: la corrección vale solo para `
       + 'este comprobante (y los que se marquen abajo). La próxima factura con los mismos '
       + 'ítems va a volver a salir en la cuenta de antes.';
