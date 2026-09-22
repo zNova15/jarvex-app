@@ -598,6 +598,13 @@ export function simularOrdenes({
       grupos.set(k, g);
     }
     g.lineas.push({
+      // Aditivo para la tanda 3: la clave con la que la pantalla guarda la
+      // decisión y la corrección de ESTA línea. Tiene que salir de acá y no
+      // recalcularse allá — el código de insumo falta en buena parte del
+      // expediente y el reemplazo (nombre+unidad) depende de `normUnidad`,
+      // que es de este módulo. Dos derivaciones paralelas se desincronizan y
+      // el día que lo hagan, una decisión aceptada se pierde sin aviso.
+      clave: c.clave,
       insumo_codigo: c.insumo_codigo, nombre: c.nombre, unidad: c.unidad,
       cantidad: r4(c.cantidad), monto: r2(c.monto),
       precio_unitario: c.cantidad > 0 ? r4(c.monto / c.cantidad) : null,

@@ -429,6 +429,7 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
     requisiciones:'Requisiciones', 'ordenes-compra':'Órdenes de Compra',
     ordenes:'Órdenes de Compra y Servicio',
     abastecimiento:'Abastecimiento de la obra',
+    'simulador-ordenes':'Simulador de Órdenes por Presupuesto',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'activos-fijos':'Activos Fijos de la empresa',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
@@ -714,6 +715,8 @@ const PAGE_REGISTRY = {
   'ordenes':                { chunk: 'jx-ordenes', component: 'OrdenesPage' },
   // === jx-abastecimiento (qué necesita la obra vs qué tiene el grupo, tanda 7) ===
   'abastecimiento':         { chunk: 'jx-abastecimiento', component: 'AbastecimientoPage' },
+  // === jx-simulador-ordenes (cuándo pedir cada cosa, tanda 3 del simulador) ===
+  'simulador-ordenes':      { chunk: 'jx-simulador-ordenes', component: 'SimuladorOrdenesPage' },
   'compras-pendientes':     { chunk: 'jx-compras-pendientes', component: 'ComprasPendientesPage' },
   // === jx-valorizaciones ===
   'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },

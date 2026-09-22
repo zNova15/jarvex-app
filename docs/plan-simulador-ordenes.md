@@ -208,7 +208,7 @@ plan por frente/ingeniero en esta primera versión.
 |---|---|---|---|---|---|
 | 1 | Motor puro de reparto: insumos de materiales/herramientas/servicios por mes o semana según §3.1-§3.4, clasificación `equipo`→herramienta/servicio (§4), partidas-sobre (§4.1). Sin UI. Con tests. | `src/lib/simulador-ordenes.js` (nuevo) + ajustes en `insumo-clasificador.js` | Opus 5 | Alto | Nueva |
 | 2 | Motor de mano de obra: conversión HH↔dotación en los dos sentidos (§5), cruce contra `personal` real. Genera SOLO referencia — sin escritura de altas/pedidos. | `src/lib/simulador-dotacion.js` (nuevo) | Opus 5 | Alto | Nueva |
-| 3 | Pantalla del simulador: escenarios nombrados, filtro de categorías (§3.4), aceptar/rechazar por orden o tramo, edición de descripción/precio/proveedor, indicador de cobertura del presupuesto comprable (§2). | `jx-simulador-ordenes.jsx` (nuevo) + registro en sidebar/PAGE_REGISTRY/`desglose-obra.js` (grupo Logística) | Opus 5 | Alto | Nueva |
+| 3 ✅ | Pantalla del simulador: escenarios nombrados, filtro de categorías (§3.4), aceptar/rechazar por orden o tramo, edición de descripción/precio/proveedor, indicador de cobertura del presupuesto comprable (§2). | `jx-simulador-ordenes.jsx` + `simulador-escenarios.js` (nuevos) + registro en sidebar/PAGE_REGISTRY/`desglose-obra.js` (grupo Logística) | Opus 5 | Alto | Nueva |
 | 4 | Puente a documento real (§7): líneas aceptadas → `requisiciones`/`requisicion_items` → `ordenes_compra`, restringido a la entidad ejecutora. Matching proveedor↔rubro (§6) con historial de precios. | `src/lib/ordenes.js` (extender) + migración chica si hace falta marcar origen en requisiciones | Opus 5 | Alto | Nueva |
 | 5 (opcional) | Columna de modalidad OxI/tradicional en `obras` + aviso de calce de caja. Solo si Gabriel la pide explícitamente. | Migración SQL + `jx-obra.jsx`/desglose | Sonnet 5 | Medio | Nueva |
 
@@ -244,7 +244,19 @@ va anotando acá abajo a medida que se completan.*
       resumen }`, más `planDeContratacion()`, `cargoCanonico()`,
       `clasificarPadron()`, `capacidadDePeriodo()` y `rangoDePeriodo()`.
       Sin UI, sin Dexie, sin escritura — §5 al pie de la letra.
-- [ ] Tanda 3 — pantalla
+- [x] **Tanda 3 — la pantalla** (22-set-2026).
+      `src/components/jx-simulador-ordenes.jsx` (nueva) +
+      `src/lib/simulador-escenarios.js` (nueva, 52 tests) +
+      `src/lib/__tests__/simulador-ordenes-pantalla.test.jsx` (12 tests) +
+      `clave` aditiva en las líneas de `propuestas` de `simulador-ordenes.js`.
+      Registrada como `simulador-ordenes` en `main.jsx` (PAGE_CHUNKS),
+      `jx-app.jsx` (título + PAGE_REGISTRY), `jx-sidebar.jsx` (LOGÍSTICA,
+      plano obra), `jx-admin.jsx` (`__moduleIdMap` + `__canSeeSidebarItem`,
+      heredando los roles de `abastecimiento`), `desglose-obra.js` (grupo
+      Logística) y `ayuda-contenido.js`.
+      Cuatro pestañas: órdenes propuestas · sobres · mano de obra
+      (referencia) · sin planificar. **No escribe nada**: las decisiones
+      viven en el localStorage del navegador.
 - [ ] Tanda 4 — puente a orden real
 - [ ] Tanda 5 — OxI / calce de caja (opcional)
 
@@ -316,3 +328,55 @@ va anotando acá abajo a medida que se completan.*
   desconocido sale por `sinCargo` con sus HH y su plata, no repartida entre
   los cargos conocidos: eso distorsionaría justo la brecha del peón, que es
   la que decide la contratación.
+
+### Lo que la tanda 3 corrigió del diseño (medido el 22-set-2026)
+
+- **La mano de obra necesita su PROPIA corrida, no una sola.** El §3.4 pone
+  la mano de obra como una opción más del filtro de categorías, y el §5 dice
+  que sale aparte — las dos cosas no se pueden a la vez con una llamada: con
+  el filtro puesto en materiales/herramientas/servicios, el `manoObra` que
+  devuelve `simularOrdenes()` viene **vacío**, porque el filtro corta la línea
+  antes de clasificarla. La pantalla hace **dos corridas** con los mismos
+  ejes: una para las órdenes y otra con `categorias:['mano_obra']` que
+  alimenta a `simulador-dotacion.js`. Y la segunda solo se calcula al abrir
+  esa pestaña.
+- **El proveedor es de la ORDEN, no de la línea.** El §6 habla de cruzar el
+  insumo contra el rubro, y eso invita a poner un selector por línea. Es
+  inviable y además está mal: una orden se le emite a un proveedor. Se elige
+  arriba, una vez, y se puede pisar una línea suelta al corregirla.
+- **577 candidatos, y `proveedores` NO tiene columna `rubro`.** Medido: 549
+  proveedores en el catálogo + 28 empresas del grupo. Las 28 traen rubro; los
+  549 no —la columna no existe en esa tabla—. Ordenar el desplegable por
+  rubro habría funcionado para 28 de 577 y se habría leído como una
+  recomendación. **Pendiente real para la tanda 4:** el matching del §6 o
+  necesita esa columna en `proveedores`, o tiene que salir del historial de
+  precios (`precio-historial.js`), que es el único dato que hoy existe para
+  los 549.
+  Aparte, un `<select>` de 577 opciones por fila son ~96.000 nodos de DOM con
+  una orden grande abierta: va un `<datalist>` único para toda la pantalla,
+  que además se filtra escribiendo (que es como se busca entre 549).
+- **El plan de Miraflores son ~30 tarjetas, no cientos.** 4.435 líneas
+  comprables con fecha, repartidas en **9 meses**. La peor tarjeta
+  —materiales de diciembre— son 763 líneas de presupuesto que se juntan en
+  **167 insumos distintos**; el resto está entre 17 y 120. Por eso las
+  órdenes se dibujan colapsadas y cada una muestra 40 líneas con «ver más»:
+  abrir una y pintar 167 filas está bien, pintar las 900 de una vez no.
+- **Una decisión tiene que sobrevivir a volver a correr el motor.** Es el
+  punto entero del §3 —comparar «con Gantt» contra «regularizando desde hoy»—
+  y se rompe solo si las decisiones se guardan contra el objeto que devolvió
+  la corrida. Se guardan contra claves estables: `período|subcategoría` para
+  la orden y el código de insumo (o nombre+unidad) para la línea. Por eso la
+  tanda 1 ahora devuelve `clave` en cada línea: derivarla dos veces, en el
+  motor y en la pantalla, se desincroniza el día que alguien toque
+  `normUnidad` y una decisión aceptada se pierde sin aviso.
+- **Los escenarios viven en el localStorage, y eso tiene un costo que hay que
+  decir.** Un escenario es un borrador de una persona, no un hecho de la obra:
+  no justifica una tabla sincronizada (y la lección del corte por egress del
+  9-set está fresca). Pero entonces **no viaja entre computadoras** ni lo ve
+  nadie más, y Gabriel trabaja en dos máquinas. Lo que convierte un plan en
+  algo compartido es la tanda 4, cuando lo aceptado se escriba como
+  requisición. Mientras tanto la pantalla lo dice y ofrece bajarse el plan
+  aceptado en CSV.
+- **`lineasAceptadas()` no entrega una línea sin precio.** Sale aparte, por
+  `sinPrecio`, y la pantalla la reclama. Una requisición con un monto
+  inventado no la vuelve a mirar nadie; una línea que falta, sí.

@@ -139,6 +139,7 @@ const CHUNKS = [
   '../../components/jx-reportes-movimientos.jsx',
   '../../components/jx-reportes.jsx',
   '../../components/jx-seguridad.jsx',
+  '../../components/jx-simulador-ordenes.jsx',
   '../../components/jx-social.jsx',
   '../../components/jx-solicitud-residente.jsx',
   '../../components/jx-solicitudes.jsx',

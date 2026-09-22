@@ -1198,6 +1198,7 @@ window.__moduleIdMap = {
   'ordenes-compra': 'Órdenes de Compra',
   'ordenes': 'Órdenes de Compra',              // mismo módulo/permiso, otra puerta (tanda 5)
   'abastecimiento': 'Órdenes de Compra',       // decide QUÉ pedir; la orden es su consecuencia (tanda 7)
+  'simulador-ordenes': 'Órdenes de Compra',    // decide CUÁNDO pedir; mismo módulo/permiso
   'compras-pendientes': 'Recepciones',
   // Subcontratos
   'subcontratistas': 'Subcontratistas',
@@ -1522,6 +1523,13 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // EN PAUSA el 6-sep-2026 para hablarlos primero con la jefa de contabilidad.
   // Sumarlo es una línea acá más una en __RESIDENTE_ITEMS, cuando él lo decida.
   if (itemId === 'abastecimiento') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
+    || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
+  // SIMULADOR DE ÓRDENES (tanda 3): hereda EXACTAMENTE los roles de
+  // 'abastecimiento' y no suma ninguno. El plan (§8) dice quiénes lo usan:
+  // «Gabriel y la contadora en jefe, nadie más por ahora». No escribe nada —
+  // las decisiones viven en el navegador— pero muestra el presupuesto entero
+  // de la obra con sus precios, que es información de plata.
+  if (itemId === 'simulador-ordenes') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
     || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
   // Activos fijos: el registro que se le presenta a SUNAT. Lo llevan las
   // contadoras y la tesorería; no es una pantalla de maquinaria.

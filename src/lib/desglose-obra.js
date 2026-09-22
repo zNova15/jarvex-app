@@ -45,7 +45,13 @@ export const GRUPOS_TRABAJO = [
     icon: 'truck',
     color: 'var(--blue)',
     desc: 'Solicitudes de insumos, requisiciones y órdenes de compra',
-    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra'],
+    // 'simulador-ordenes' entró acá (tanda 3 del simulador, 22-set-2026).
+    // El desglose del plan lo puso en Logística a propósito: el simulador
+    // decide CUÁNDO emitir cada orden del trabajo, que es la misma
+    // conversación que la requisición y la OC del día a día. No es
+    // contabilidad —no respalda nada todavía— ni gestión de obra: no toca
+    // el presupuesto, lo lee.
+    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra', 'simulador-ordenes'],
   },
   {
     id: 'gestion',

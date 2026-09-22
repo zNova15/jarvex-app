@@ -132,6 +132,10 @@ const NAV = [
   // Contabilidad, junto a «Abastecimiento de la obra». Se llaman parecido y
   // son cosas distintas; el rótulo lo dice para que no se confundan.
   { id: 'ordenes-compra', label: 'Órdenes de Compra (interna de almacén)', icon: 'package' },
+  // El simulador contesta la pregunta que ninguna de las de arriba contesta:
+  // CUÁNDO conviene pedir cada cosa. Es del plano OBRA y solo de ahí — se
+  // simula contra el presupuesto de UN trabajo, no del grupo.
+  { id: 'simulador-ordenes', label: 'Simulador de Órdenes (cuándo pedir)', icon: 'gantt', plano: 'obra' },
 
   { section: 'DIRECCIÓN', area: 'direccion' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },
