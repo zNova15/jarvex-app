@@ -489,14 +489,24 @@ export function simularOrdenes({
           nombre: ip.nombre_insumo || '', unidad: ip.unidad || '',
           categoria: cls.categoria, subcategoria: cls.subcategoria,
           cantidad: 0, monto: 0, montoConocido: true,
-          partidas: new Set(), tramoLargo: false, arrastrado: false,
+          partidas: new Set(), porPartida: new Map(),
+          tramoLargo: false, arrastrado: false,
         };
         destino.set(k, c);
       }
       c.cantidad += cantidad * fraccion;
       c.monto += montoCrudo * fraccion;
       if (!montoConocido) c.montoConocido = false;
-      if (ip.partida_id) c.partidas.add(ip.partida_id);
+      if (ip.partida_id) {
+        c.partidas.add(ip.partida_id);
+        // Aditivo para la tanda 2: el desglose por partida es lo que deja
+        // contestar «con la gente que tengo, qué partidas alcanzo este mes».
+        // Agregado, `partidas` solo dice cuáles, no cuánto de cada una.
+        const pp = c.porPartida.get(ip.partida_id) || { cantidad: 0, monto: 0 };
+        pp.cantidad += cantidad * fraccion;
+        pp.monto += montoCrudo * fraccion;
+        c.porPartida.set(ip.partida_id, pp);
+      }
       if (tramoLargo) c.tramoLargo = true;
     }
   }
@@ -557,6 +567,11 @@ export function simularOrdenes({
         ya.arrastrado = true;
         ya.tramoLargo = ya.tramoLargo || c.tramoLargo;
         for (const p of c.partidas) ya.partidas.add(p);
+        for (const [pid, pp] of c.porPartida) {
+          const acum = ya.porPartida.get(pid) || { cantidad: 0, monto: 0 };
+          acum.cantidad += pp.cantidad; acum.monto += pp.monto;
+          ya.porPartida.set(pid, acum);
+        }
         if (!c.montoConocido) ya.montoConocido = false;
       } else {
         mapa.set(destino, { ...c, periodo: periodoActual, arrastrado: true });
@@ -642,6 +657,12 @@ export function simularOrdenes({
       insumo_codigo: c.insumo_codigo, nombre: c.nombre, unidad: c.unidad,
       cantidad: r4(c.cantidad), monto: r2(c.monto),
       partidas: [...c.partidas], tramoLargo: c.tramoLargo, arrastrado: c.arrastrado,
+      // HH y plata de ESTA línea en CADA partida del período. Lo consume
+      // `simulador-dotacion.js` (tanda 2) para el ranking de partidas
+      // alcanzables; sin esto solo se sabe cuáles, no cuánto pesa cada una.
+      porPartida: [...c.porPartida]
+        .map(([partida_id, pp]) => ({ partida_id, cantidad: r4(pp.cantidad), monto: r2(pp.monto) }))
+        .sort((a, b) => b.cantidad - a.cantidad),
       esReferencia: true,
     }))
     .sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0) || (b.monto - a.monto));

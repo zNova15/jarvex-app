@@ -235,7 +235,15 @@ va anotando acá abajo a medida que se completan.*
       Exporta `simularOrdenes({...})` → `{ propuestas, sobres, manoObra,
       pendientes, resumen }` y los helpers de período (`periodoDe`,
       `periodosEntre`, `semanaISO`, `etiquetaPeriodo`). Sin UI, sin Dexie.
-- [ ] Tanda 2 — motor de dotación
+- [x] **Tanda 2 — motor de dotación** (22-set-2026).
+      `src/lib/simulador-dotacion.js` (nuevo, 44 tests en
+      `__tests__/simulador-dotacion.test.js`) + `porPartida` aditivo en las
+      líneas de `manoObra` de `simulador-ordenes.js`.
+      Exporta `simularDotacion({ manoObra, personal, partidas, jornada,
+      feriados, dotacionManual })` → `{ periodos, cargos, sinCargo, padron,
+      resumen }`, más `planDeContratacion()`, `cargoCanonico()`,
+      `clasificarPadron()`, `capacidadDePeriodo()` y `rangoDePeriodo()`.
+      Sin UI, sin Dexie, sin escritura — §5 al pie de la letra.
 - [ ] Tanda 3 — pantalla
 - [ ] Tanda 4 — puente a orden real
 - [ ] Tanda 5 — OxI / calce de caja (opcional)
@@ -269,3 +277,42 @@ va anotando acá abajo a medida que se completan.*
   el §4. Además `compresor` nunca matcheaba «COMPRESORA» (la `\b` la rompía
   la `a` final). Esto también mejora Captura Mágica: un alquiler ya no se
   ofrece para crear como activo de inventario.
+
+### Lo que la tanda 2 corrigió del diseño (medido el 22-set-2026)
+
+- **La brecha de dotación no es un ajuste fino: es de un orden de magnitud.**
+  El padrón de Miraflores tiene **15 peones, 2 operarios y 1 oficial**. El
+  Gantt pide 171,7 peones en octubre y **201,1 en noviembre**. La pantalla
+  (tanda 3) no puede presentar esto como un semáforo verde/amarillo: el
+  número cabecera es «faltan 186 peones en noviembre».
+- **No existe un «208 h/mes».** La capacidad se cuenta por días laborables
+  reales (8 h, lun-sáb, menos feriados). Noviembre pide MÁS gente que
+  octubre con menos HH, porque tiene dos días útiles menos (25 vs 27). Un
+  divisor fijo se habría comido esa diferencia entera.
+- **29 de las 86 personas son de subcontrato y su cargo no dice el oficio**
+  («Subcontrato MOSHCO», «Subcontrato JR»). Sumarlas a los peones daría 44
+  peones que no existen. Salen por `padron.sinEncajar` con su motivo, junto
+  con los cargos que no ejecutan HH (ingeniero, almacenero) y los inactivos.
+- **`asistencia` tiene 0 filas.** No hay horas realmente trabajadas contra
+  las cuales medir: la oferta sale del PADRÓN (cuánta gente hay), y
+  `resumen.fuenteOferta = 'padron'` lo declara para que la pantalla no lo
+  presente como ejecución real.
+- **El 64% del padrón no tiene `fecha_ingreso`** (55 de 86). Filtrar por esa
+  fecha dejaría la oferta casi en cero, así que quien no la tiene cuenta
+  igual — está activa hoy — y `padron.sinFechaIngreso` lo informa.
+- **Dos cargos del presupuesto no tienen a nadie en el padrón** (TOPOGRAFO,
+  OPERADOR DE EQUIPO LIVIANO). Y «OPERADOR DE EQUIPO LIVIANO» no puede caer
+  en `operario`: le sumaría 6.138 HH al cargo equivocado. El mismo
+  `cargoCanonico()` normaliza los dos lados (nombre del insumo y cargo de la
+  persona), así que no hay tabla de mapeo que se desincronice.
+- **El sentido inverso necesita el detalle por partida.** «Qué partidas
+  alcanza ese mes» no se puede contestar con el agregado por insumo: por eso
+  la tanda 1 ahora devuelve `porPartida` en cada línea de `manoObra`. Si no
+  viene, `alcanceDisponible` sale en `false` y no se arma ningún ranking
+  inventado. Una partida solo está completa si **todos** sus cargos
+  alcanzaron: una cuadrilla sin operario no levanta un muro aunque sobren
+  peones.
+- **Lo que no se reconoce nunca se reparte.** Una línea de `hh` de cargo
+  desconocido sale por `sinCargo` con sus HH y su plata, no repartida entre
+  los cargos conocidos: eso distorsionaría justo la brecha del peón, que es
+  la que decide la contratación.
