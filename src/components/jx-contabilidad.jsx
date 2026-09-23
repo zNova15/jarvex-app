@@ -5,7 +5,7 @@ import { getEvidenciaSrc, precargarEvidencia } from "../lib/evidencias-url.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { TablePagination } from "./jx-pagination.jsx";
-import { detectarDuplicados, claseDe } from "../lib/dedupe-movs-contables.js";
+import { detectarDuplicados, elegirConservado, claseDe } from "../lib/dedupe-movs-contables.js";
 import { derivarTypeContable, motivoClasificacion, overrideEfectivo, TYPE_LABEL, TYPE_LABEL_LARGO } from "../lib/clasificacion-contable.js";
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento, avisoDeEspejo } from "../lib/interco-edicion.js";
 import { notaHumana, fusionarNota, fusionarDetalle, resumenEstructurado, parsearNotas } from "../lib/notas-movimiento.js";
@@ -2424,10 +2424,25 @@ function MovimientosContablesPage({ showToast }) {
   // Mágica (el guard anti-dup solo cubría compras). El botón de eliminar está
   // deshabilitado para INTERCO, así que sin esta herramienta el duplicado no
   // se podía limpiar desde la UI.
-  const puedeDedup = isAdmin || myRol === 'contador';
+  // 🔴 23-set-2026: se le abre también a `ayudante_contador`. Las duplicadas
+  // de PACÍFICO las encontró una asistente revisando el Registro de Compras y
+  // Ventas, y después tenía que pedirle a otra persona que las borrara. El que
+  // las ve es el que tiene que poder resolverlas; ya escribe en Movimientos
+  // Contables ('w' en la matriz), así que no es un permiso nuevo.
+  const puedeDedup = isAdmin || myRol === 'contador' || myRol === 'ayudante_contador';
   const [dupGrupos, setDupGrupos] = uSC(null);   // null = modal cerrado
   const [fusionando, setFusionando] = uSC(false);
-  const abrirDuplicados = () => setDupGrupos(detectarDuplicados(movs || []));
+  // Grupos en los que alguien eligió A MANO cuál se conserva. Los de RUC
+  // distinto no se pueden fusionar hasta estar acá: el defecto («el más
+  // antiguo ya sincronizado») es justo el equivocado en los 4 pares de
+  // PACÍFICO, donde el viejo es el que trae el RUC de MAPFRE.
+  const [dupElegidos, setDupElegidos] = uSC(() => new Set());
+  const abrirDuplicados = () => { setDupElegidos(new Set()); setDupGrupos(detectarDuplicados(movs || [])); };
+  const dupDecidido = (g) => !g.rucsDistintos || dupElegidos.has(g.clave);
+  const elegirDup = (g, id) => {
+    setDupGrupos(gs => (gs || []).map(x => x.clave === g.clave ? elegirConservado(x, id) : x));
+    setDupElegidos(s => new Set(s).add(g.clave));
+  };
 
   // Fusiona un grupo: reasigna los hijos del duplicado (evidencias, partes de
   // bancarización, guías) al movimiento conservado y soft-borra el resto.
@@ -2501,7 +2516,10 @@ function MovimientosContablesPage({ showToast }) {
     try {
       if (await fusionarGrupo(g)) {
         showToast('Duplicado fusionado', 'green');
-        setDupGrupos(gs => (gs || []).filter(x => x !== g));
+        // Por CLAVE, no por identidad: elegir el conservado reemplaza el objeto
+        // del grupo (elegirConservado no muta), así que `x !== g` ya no lo
+        // encontraría y la fila fusionada quedaría en pantalla.
+        setDupGrupos(gs => (gs || []).filter(x => x.clave !== g.clave));
       }
     } finally { setFusionando(false); }
   };
@@ -2509,9 +2527,13 @@ function MovimientosContablesPage({ showToast }) {
     setFusionando(true);
     try {
       let ok = 0;
-      for (const g of (dupGrupos || [])) { if (!(await fusionarGrupo(g))) break; ok++; }
+      // Solo los DECIDIDOS: un grupo con RUC en duda no se fusiona en lote —
+      // el lote elegiría por su cuenta justo lo que nadie puede saber desde acá.
+      const decididos = (dupGrupos || []).filter(dupDecidido);
+      const hechos = new Set();
+      for (const g of decididos) { if (!(await fusionarGrupo(g))) break; hechos.add(g.clave); ok++; }
       if (ok) showToast(`${ok} grupo(s) de duplicados fusionados`, 'green');
-      setDupGrupos(null);
+      setDupGrupos(gs => (gs || []).filter(x => !hechos.has(x.clave)));
     } finally { setFusionando(false); }
   };
 
@@ -3855,29 +3877,72 @@ function MovimientosContablesPage({ showToast }) {
             <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
               <div style={{ fontSize:12, color:'var(--tm)' }}>
                 El mismo comprobante quedó registrado más de una vez (p.ej. confirmado dos veces
-                en Captura Mágica). Al fusionar se conserva UNO (el más antiguo ya sincronizado),
-                sus evidencias/bancarizaciones/guías pasan al conservado y el resto se elimina.
+                en Captura Mágica, o cargado de nuevo con el RUC corregido). Al fusionar se conserva
+                el que marques: sus evidencias, bancarizaciones y guías pasan al conservado y el
+                resto se da de baja. Abrí el 👁 para decidir mirando el comprobante.
               </div>
-              {dupGrupos.map((g, i) => (
-                <div key={i} style={{ border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
-                  <div style={{ flex:1, minWidth:220 }}>
-                    <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
-                      {(g.conservar.document_type || 'doc')} {g.conservar.document_number} · {g.conservar.third_party_name || '—'}
-                    </div>
-                    <div style={{ fontSize:11, color:'var(--tm)' }}>
-                      {g.conservar.date || 's/fecha'} · {fmtCur(g.conservar.amount, g.conservar.currency)} · {1 + g.duplicados.length} registros
-                      {g.montosDistintos && <span style={{ color:'var(--amber)' }}> · ⚠ montos distintos — revisá antes de fusionar</span>}
-                    </div>
+              {dupGrupos.map((g) => (
+                <div key={g.clave} style={{ border:'1px solid var(--border)', borderRadius:8, padding:'8px 10px', display:'flex', flexDirection:'column', gap:6 }}>
+                  <div style={{ fontSize:12.5, fontWeight:700, color:'var(--tp)' }}>
+                    {(g.conservar.document_type || 'doc')} {g.conservar.document_number}
+                    {' · '}{g.conservar.date || 's/fecha'} · {g.miembros.length} registros
                   </div>
-                  <button className="btn btn-amber btn-xs" disabled={fusionando} onClick={()=>fusionarUno(g)}>
-                    Fusionar ({g.duplicados.length})
-                  </button>
+                  {/* RUC distinto: la advertencia y el motivo por el que hay que
+                      elegir a mano. No se puede saber desde acá cuál es el bueno. */}
+                  {g.rucsDistintos && (
+                    <div style={{ fontSize:11, color:'var(--amber)' }}>
+                      ⚠ Las copias tienen <strong>RUC distintos</strong> ({g.rucs.join(' / ')}). Es el mismo número de
+                      comprobante, la misma fecha y el mismo importe, así que es el mismo papel — pero uno de los
+                      dos RUC está mal cargado. Mirá el comprobante y marcá cuál queda.
+                    </div>
+                  )}
+                  {g.montosDistintos && (
+                    <div style={{ fontSize:11, color:'var(--amber)' }}>⚠ Los totales no coinciden — revisá antes de fusionar.</div>
+                  )}
+                  {g.miembros.map(m => {
+                    const esConservado = m.id === g.conservar.id;
+                    return (
+                      <label key={m.id} style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap', cursor:'pointer',
+                        fontSize:11.5, padding:'4px 6px', borderRadius:6,
+                        background: esConservado ? 'rgba(16,185,129,.10)' : 'transparent' }}>
+                        <input type="radio" name={`dup-${g.clave}`} checked={esConservado}
+                          onChange={()=>elegirDup(g, m.id)} disabled={fusionando}/>
+                        <span style={{ fontWeight: esConservado ? 700 : 400, color:'var(--tp)' }}>
+                          {esConservado ? 'Se conserva' : 'Se da de baja'}
+                        </span>
+                        <span style={{ color:'var(--tm)' }}>
+                          RUC {m.third_party_ruc || '—'} · {m.third_party_name || '—'} · {fmtCur(m.amount, m.currency)}
+                          {' · cargado '}{String(m.created_at || '').slice(0, 10) || 's/fecha'}
+                        </span>
+                        {evidenciasPorMov.get(m.id) && (
+                          <button type="button" className="btn btn-ghost btn-xs" style={{ padding:'0 6px' }}
+                            title="Ver el comprobante de esta copia"
+                            onClick={(e)=>{ e.preventDefault(); setEvidenciaModal(evidenciasPorMov.get(m.id)); }}>
+                            👁
+                          </button>
+                        )}
+                      </label>
+                    );
+                  })}
+                  <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                    <button className="btn btn-amber btn-xs" disabled={fusionando || !dupDecidido(g)}
+                      title={dupDecidido(g) ? '' : 'Marcá primero cuál de las copias se conserva'}
+                      onClick={()=>fusionarUno(g)}>
+                      Fusionar ({g.duplicados.length})
+                    </button>
+                  </div>
                 </div>
               ))}
-              <div style={{ display:'flex', justifyContent:'flex-end', gap:8 }}>
+              <div style={{ display:'flex', justifyContent:'flex-end', gap:8, alignItems:'center' }}>
+                {dupGrupos.some(g => !dupDecidido(g)) && (
+                  <span style={{ fontSize:11, color:'var(--tm)', marginRight:'auto' }}>
+                    {dupGrupos.filter(g => !dupDecidido(g)).length} con RUC en duda: hay que elegir uno por uno.
+                  </span>
+                )}
                 <button className="btn btn-ghost btn-sm" onClick={()=>setDupGrupos(null)}>Cerrar</button>
-                <button className="btn btn-amber btn-sm" disabled={fusionando} onClick={fusionarTodos}>
-                  {fusionando ? 'Fusionando…' : `Fusionar todos (${dupGrupos.length})`}
+                <button className="btn btn-amber btn-sm"
+                  disabled={fusionando || !dupGrupos.some(dupDecidido)} onClick={fusionarTodos}>
+                  {fusionando ? 'Fusionando…' : `Fusionar los decididos (${dupGrupos.filter(dupDecidido).length})`}
                 </button>
               </div>
             </div>

@@ -308,3 +308,81 @@ describe('las columnas del papel', () => {
     expect(m[0].length).toBe(COLUMNAS_COMPRAS.length);
   });
 });
+
+// ── EL TIPO DE CAMBIO QUE SÍ CONVIERTE LAS COLUMNAS (23-set-2026) ──
+// Gabriel: «está perfecto poder agregar el tipo de cambio, sin embargo eso no
+// cambia las columnas de base imponible, IGV, no gravadas, importe total».
+// El registro se declara en soles al TC de la fecha de emisión, así que la
+// tasa tiene que llegar hasta los importes, no quedarse en su columna.
+describe('los importes en soles', () => {
+  const enDolares = () => factura({
+    currency: 'USD', amount: 80000, date: '2026-06-10',
+    notas: JSON.stringify({ subtotal: 67796.61, igv: 12203.39 }),
+  });
+
+  it('una fila en soles se declara tal cual y no dice que se convirtió', () => {
+    const f = filaCompra(factura(), { correlativo: 1 });
+    expect(f.soles.convertido).toBe(false);
+    expect(f.soles.baseImponible).toBe(f.baseImponible);
+    expect(f.soles.importeTotal).toBe(f.importeTotal);
+  });
+
+  it('una fila en dólares trae los MISMOS importes al tipo de cambio de su fecha', () => {
+    // KOPLAST INDUSTRIAL, el caso real: US$ 80.000 al 3,495 son S/ 279.600.
+    const f = filaCompra(enDolares(), { correlativo: 1, tasaDe: () => 3.495 });
+    expect(f.tipoCambio).toBe(3.495);
+    expect(f.importeTotal).toBe(80000);            // el papel no se toca
+    expect(f.soles.convertido).toBe(true);
+    expect(f.soles.tasa).toBe(3.495);
+    expect(f.soles.importeTotal).toBe(279600);
+    expect(f.soles.baseImponible).toBe(236949.15);
+    expect(f.soles.igv).toBe(42650.85);
+  });
+
+  it('sin tasa NO se inventa la conversión: `soles` queda en null', () => {
+    const f = filaCompra(enDolares(), { correlativo: 1, tasaDe: () => 0 });
+    expect(f.tipoCambio).toBe('');
+    expect(f.soles).toBe(null);
+    expect(f.avisos.join(' ')).toMatch(/tipo de cambio/i);
+  });
+
+  it('las ventas en dólares también se convierten', () => {
+    const f = filaVenta(venta({ currency: 'USD', amount: 1180, notas: JSON.stringify({ subtotal: 1000, igv: 180 }) }),
+      { correlativo: 1, tasaDe: () => 3.5 });
+    expect(f.soles.importeTotal).toBe(4130);
+    expect(f.soles.igv).toBe(630);
+  });
+});
+
+describe('el resumen del mes en soles', () => {
+  it('suma los de soles y los de dólares convertidos, en UN solo total declarable', () => {
+    const { compras } = armarRegistro({
+      movimientos: [
+        factura({ id: 'a' }),                                                   // S/ 1.180
+        factura({ id: 'b', currency: 'USD', amount: 1000, date: '2026-06-11',
+          notas: JSON.stringify({ subtotal: 847.46, igv: 152.54 }) }),          // US$ 1.000 × 3,5
+      ],
+      tasaDe: () => 3.5,
+    });
+    expect(compras.totales.soles.filas).toBe(2);
+    expect(compras.totales.soles.convertidos).toBe(1);
+    expect(compras.totales.soles.sinTasa).toBe(0);
+    expect(compras.totales.soles.importeTotal).toBe(4680);   // 1.180 + 3.500
+    // Y la tarjeta por moneda sigue diciendo lo que dice el papel.
+    const usd = compras.totales.monedas.find(m => m.moneda === 'USD');
+    expect(usd.importeTotal).toBe(1000);
+  });
+
+  it('cuenta aparte las que quedaron sin tasa: un total incompleto tiene que decirlo', () => {
+    const { compras } = armarRegistro({
+      movimientos: [
+        factura({ id: 'a' }),
+        factura({ id: 'b', currency: 'USD', amount: 1000, date: '2026-06-11' }),
+      ],
+      tasaDe: () => 0,
+    });
+    expect(compras.totales.soles.sinTasa).toBe(1);
+    expect(compras.totales.soles.filas).toBe(1);
+    expect(compras.totales.soles.importeTotal).toBe(1180);   // la de dólares NO entra
+  });
+});

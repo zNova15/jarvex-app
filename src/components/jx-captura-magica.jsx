@@ -4,6 +4,7 @@ import {
 } from "../lib/insumo-clasificador.js";
 import { epppTipo } from "../lib/epp-utils.js";
 import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } from "../lib/doc-id.js";
+import { claveSinRuc } from "../lib/dedupe-movs-contables.js";
 import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { supabase } from "../lib/supabase";
@@ -2202,6 +2203,57 @@ function CapturaMagicaPage({ showToast }) {
           setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: dupMov.id } : x));
           showToast(`Ya existe el comprobante ${r.serie_correlativo} ${esVenta ? 'emitido por esa empresa' : 'de ese proveedor'} (${dupMov.date || 's/fecha'} · S/ ${Number(dupMov.amount || 0).toLocaleString('es-PE')}). No se creó un duplicado — descartá este archivo.`, 'red');
           return;
+        }
+      }
+
+      // ── SEGUNDO GUARD: EL MISMO PAPEL CON OTRO RUC (23-set-2026) ──
+      // El guard de arriba compara RUC + serie-correlativo. Si el RUC salió
+      // distinto —OCR que leyó mal, o el proveedor que se eligió a mano no es
+      // el del comprobante— la llave cambia y la re-subida pasa como si fuera
+      // un comprobante nuevo. Así entraron los 4 pares de PACÍFICO SEGUROS en
+      // GASOMI: la copia vieja lleva el RUC de MAPFRE.
+      //
+      // La regla de «es el mismo papel aunque el RUC no coincida» vive en UN
+      // solo lugar (`claveSinRuc`, con sus tests) y es la misma que usa el
+      // panel de duplicados de Movimientos Contables: misma empresa, mismo
+      // lado, mismo tipo, mismo número, MISMA FECHA, MISMO IMPORTE, misma
+      // moneda. Acá NO se rebota solo —el RUC distinto puede ser real, dos
+      // entidades de un grupo asegurador comparten numeración— pero se
+      // pregunta en vez de crear en silencio.
+      if (!dupMov) {
+        const empresaGuard = esVenta ? r.emisor_company_id : r.company_id;
+        const esNotaCred = r.tipo_documento === 'nota_credito';
+        const montoGuard = esNotaCred ? -Math.abs(Number(r.total) || 0) : (Number(r.total) || 0);
+        const kSinRuc = claveSinRuc({
+          clase: esVenta ? 'venta' : 'compra',
+          company_id: empresaGuard,
+          document_type: r.tipo_documento || 'factura',
+          document_number: r.serie_correlativo,
+          date: r.fecha_emision,
+          amount: montoGuard,
+          currency: r.moneda || 'PEN',
+        });
+        const gemelo = kSinRuc
+          ? (await window.__db.accounting_movements
+              .filter(m => !m.deleted_at && claveSinRuc(m) === kSinRuc).toArray())[0]
+          : null;
+        if (gemelo) {
+          const seguir = typeof window !== 'undefined' && window.confirm
+            ? window.confirm(
+                `⚠ Puede ser el MISMO comprobante ya cargado\n\n`
+                + `${r.serie_correlativo} · ${r.fecha_emision} · ${r.moneda || 'PEN'} ${Math.abs(montoGuard).toLocaleString('es-PE', { minimumFractionDigits: 2 })}\n\n`
+                + `Ya hay un registro con ese número, esa fecha y ese importe, pero con OTRO RUC:\n`
+                + `  · el cargado: RUC ${gemelo.third_party_ruc || '—'} (${gemelo.third_party_name || 's/nombre'})\n`
+                + `  · este:       RUC ${normalizarRuc(esVenta ? r.cliente_ruc : r.proveedor_ruc) || '—'}\n\n`
+                + `Casi siempre es el mismo papel con un RUC mal leído. Revisá el comprobante antes de seguir.\n\n`
+                + `• Aceptar = registrarlo igual (quedarían los dos)\n`
+                + `• Cancelar = no registrar nada`)
+            : true;
+          if (!seguir) {
+            setItems(prev => prev.map(x => x.id === id ? { ...x, status: 'duplicado', duplicate_of: gemelo.id } : x));
+            showToast(`No se registró: ${r.serie_correlativo} ya está cargado con otro RUC. Corregí el RUC del registro existente en Movimientos Contables.`, 'amber');
+            return;
+          }
         }
       }
     }

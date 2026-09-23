@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { claveComprobante, detectarDuplicados, claseDe } from '../dedupe-movs-contables.js';
+import { claveComprobante, claveSinRuc, detectarDuplicados, elegirConservado, claseDe } from '../dedupe-movs-contables.js';
 
 const ventaBase = {
   id: 'v1', clase: 'venta', type: 'income', company_id: 'emp-A',
@@ -83,5 +83,102 @@ describe('detectarDuplicados', () => {
     const [g] = detectarDuplicados([ventaBase, d2, d3]);
     expect(g.conservar.id).toBe('v1');
     expect(g.duplicados.map(m => m.id).sort()).toEqual(['v2', 'v3']);
+  });
+});
+
+// ── LA SEGUNDA LLAVE: EL MISMO PAPEL CON OTRO RUC ──────────────────
+// El caso PACÍFICO SEGUROS medido en GASOMI (23-set-2026): la misma factura
+// cargada dos veces, una con el RUC de Pacífico y otra con el de MAPFRE.
+const pacifico = {
+  id: 'p1', clase: 'compra', type: 'expense', company_id: 'gasomi',
+  document_number: 'F087-1234177', document_type: 'factura',
+  third_party_ruc: '20332970411', third_party_name: 'PACÍFICO COMPAÑÍA DE SEGUROS Y REASEGUROS',
+  amount: 254.28, currency: 'PEN', date: '2026-02-26',
+  created_at: '2026-09-13T21:55:00Z', sync_status: 'synced',
+};
+const pacificoRucMalo = {
+  ...pacifico, id: 'p2', third_party_ruc: '20418896915',
+  created_at: '2026-08-13T17:28:00Z',
+};
+
+describe('claveSinRuc', () => {
+  it('ignora el RUC pero exige empresa, lado, comprobante, fecha, importe y moneda', () => {
+    expect(claveSinRuc(pacifico)).toBe(claveSinRuc(pacificoRucMalo));
+    expect(claveSinRuc(pacifico))
+      .toBe('sinruc|compra|gasomi|comprobante|F087-1234177|2026-02-26|254.28|PEN');
+  });
+
+  it('el signo del importe no la parte (una nota cargada en positivo y en negativo)', () => {
+    expect(claveSinRuc({ ...pacifico, amount: -254.28 })).toBe(claveSinRuc(pacifico));
+  });
+
+  it('sin fecha o sin importe devuelve null: sin esos dos no sostiene nada', () => {
+    expect(claveSinRuc({ ...pacifico, date: null })).toBe(null);
+    expect(claveSinRuc({ ...pacifico, amount: 0 })).toBe(null);
+    expect(claveSinRuc({ ...pacifico, company_id: null })).toBe(null);
+  });
+
+  it('una nota de crédito nunca comparte llave con la factura que modifica', () => {
+    const nota = { ...pacifico, id: 'p3', document_type: 'nota_credito' };
+    expect(claveSinRuc(nota)).not.toBe(claveSinRuc(pacifico));
+  });
+});
+
+describe('detectarDuplicados · mismo comprobante con RUC distinto', () => {
+  it('agrupa el par de PACÍFICO que la llave con RUC no veía', () => {
+    const grupos = detectarDuplicados([pacifico, pacificoRucMalo]);
+    expect(grupos).toHaveLength(1);
+    expect(grupos[0].rucsDistintos).toBe(true);
+    expect(grupos[0].rucs.sort()).toEqual(['20332970411', '20418896915']);
+    expect(grupos[0].miembros.map(m => m.id).sort()).toEqual(['p1', 'p2']);
+  });
+
+  it('NO agrupa las E001-1 de proveedores distintos (los 29 falsos positivos)', () => {
+    const a = { ...pacifico, id: 'a', document_number: 'E001-1', third_party_ruc: '20111111111',
+      date: '2026-03-24', amount: 19230 };
+    const b = { ...pacifico, id: 'b', document_number: 'E001-1', third_party_ruc: '20222222222',
+      date: '2026-03-27', amount: 8030 };
+    expect(detectarDuplicados([a, b])).toHaveLength(0);
+  });
+
+  it('mismo comprobante y mismo RUC pero distinta fecha e importe tampoco se agrupa por la 2ª llave', () => {
+    const a = { ...pacifico, id: 'a', third_party_ruc: '', third_party_name: '', document_number: 'E001-1', date: '2026-03-24', amount: 100 };
+    const b = { ...pacifico, id: 'b', third_party_ruc: '', third_party_name: '', document_number: 'E001-1', date: '2026-05-01', amount: 900 };
+    expect(detectarDuplicados([a, b])).toHaveLength(0);
+  });
+
+  it('el mismo comprobante en empresas distintas del grupo no es duplicado', () => {
+    expect(detectarDuplicados([pacifico, { ...pacificoRucMalo, company_id: 'el-inca' }])).toHaveLength(0);
+  });
+
+  it('rucsDistintos es false cuando las dos copias traen el mismo RUC (AUTOMANIA)', () => {
+    const otra = { ...pacifico, id: 'p9', document_number: 'FF01-11086', third_party_ruc: '20570848985' };
+    const [g] = detectarDuplicados([otra, { ...otra, id: 'p10' }]);
+    expect(g.rucsDistintos).toBe(false);
+  });
+
+  it('tres copias: dos con un RUC y una con otro caen TODAS en el mismo grupo', () => {
+    const tercera = { ...pacifico, id: 'p3', created_at: '2026-09-20T00:00:00Z' };
+    const g = detectarDuplicados([pacifico, pacificoRucMalo, tercera]);
+    expect(g).toHaveLength(1);
+    expect(g[0].miembros).toHaveLength(3);
+    expect(g[0].duplicados).toHaveLength(2);
+  });
+});
+
+describe('elegirConservado', () => {
+  it('cambia el sobreviviente sin mutar el grupo original', () => {
+    const [g] = detectarDuplicados([pacifico, pacificoRucMalo]);
+    const elegido = elegirConservado(g, 'p1');
+    expect(elegido.conservar.id).toBe('p1');
+    expect(elegido.duplicados.map(m => m.id)).toEqual(['p2']);
+    expect(elegido.miembros).toHaveLength(2);
+    expect(g.conservar.id).toBe(g.conservar.id);   // el original sigue entero
+    expect(g.miembros).toHaveLength(2);
+  });
+
+  it('un id que no es del grupo lo deja como estaba', () => {
+    const [g] = detectarDuplicados([pacifico, pacificoRucMalo]);
+    expect(elegirConservado(g, 'no-existe')).toBe(g);
   });
 });

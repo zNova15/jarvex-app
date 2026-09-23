@@ -172,6 +172,34 @@ function tipoCambioDe(m, tasaDe) {
 }
 
 /**
+ * Los MISMOS importes de la fila, convertidos a SOLES con el tipo de cambio de
+ * la fila.
+ *
+ * ── POR QUÉ ESTO NO CONTRADICE «NUNCA SUMAR MONEDAS DISTINTAS» ────
+ * La regla de la casa es no sumar soles con dólares CRUDOS para «poder
+ * totalizar» — eso da un número que no es plata de nada (las 13 facturas de
+ * KOPLAST). Acá no se suman crudos: se convierten con la tasa del día de la
+ * operación, que es exactamente lo que manda el Registro de Compras (art. 10
+ * del Reglamento del IGV: los importes se anotan en soles al tipo de cambio
+ * publicado para la fecha de emisión). El total en soles es el DECLARABLE; el
+ * de la moneda de origen queda como referencia de lo que dice el papel.
+ *
+ * Devuelve `null` cuando la fila está en otra moneda y NO hay tasa. Un cero
+ * ahí sería una conversión inventada, y además haría que el total del mes
+ * cerrara de menos sin decir por qué: la fila ya avisa que falta la tasa y el
+ * resumen cuenta cuántas quedaron afuera.
+ */
+export function importesEnSoles(valores, moneda, tipoCambio) {
+  const mon = String(moneda || 'PEN').toUpperCase();
+  if (mon === 'PEN') return { ...valores, convertido: false, tasa: null };
+  const tc = Number(tipoCambio) || 0;
+  if (!(tc > 0)) return null;
+  const out = {};
+  for (const k of Object.keys(valores)) out[k] = r2(Number(valores[k] || 0) * tc);
+  return { ...out, convertido: true, tasa: tc };
+}
+
+/**
  * Una fila del REGISTRO DE COMPRAS, en el orden de columnas del Excel modelo
  * (hoja RCEjemplo): correlativo · fecha · tipo · serie/aduana · número ·
  * tipo y número de doc. de identidad · razón social · detalle · CTA · base
@@ -230,19 +258,28 @@ export function filaCompra(m, { correlativo, movsById, cuentaDe, tasaDe } = {}) 
     if (!nro) c.avisos.push('Tiene detracción y falta el número de la constancia de depósito, que es una columna del registro.');
   }
 
+  const importes = {
+    baseImponible: r2(base),
+    igv: r2(igv),
+    noGravadas: r2(noGrav),
+    importeTotal: r2(dg.total),
+    retencion4ta: retencion,
+  };
+
   return {
     correlativo,
     ...c,
     detalle: String(m.description || '').trim(),
     cta: typeof cuentaDe === 'function' ? (cuentaDe(m) || '') : '',
-    baseImponible: r2(base),
-    igv: r2(igv),
-    noGravadas: r2(noGrav),
-    importeTotal: r2(dg.total),
+    ...importes,
     noDomiciliado: '',   // se llena solo con comprobantes de sujeto no domiciliado
     detraccionNumero: String(m.detraccion_constancia_numero || '').trim(),
     detraccionFecha: m.detraccion_constancia_fecha ? fechaRegistro(m.detraccion_constancia_fecha) : '',
     tipoCambio: tc.valor,
+    // Los mismos importes en soles (la columna de tipo de cambio dejó de ser
+    // decorativa: acá es la que convierte). `null` = está en otra moneda y no
+    // hay tasa para su fecha.
+    soles: importesEnSoles(importes, c.moneda, tc.valor),
     honorarios,
     retencion4ta: retencion,
     marcadores,
@@ -266,16 +303,21 @@ export function filaVenta(m, { correlativo, movsById, cuentaDe, tasaDe } = {}) {
   // en producción; se reconoce por el destino contable si algún día lo hay.
   const esExportacion = String(m.destino_contable || '').toLowerCase().includes('exporta');
 
+  const importes = {
+    exportacion: esExportacion ? r2(dg.total) : 0,
+    baseImponible: esExportacion ? 0 : r2(baseGravada),
+    igv: esExportacion ? 0 : r2(dg.igv),
+    importeTotal: r2(dg.total),
+  };
+
   return {
     correlativo,
     ...c,
     detalle: String(m.description || '').trim(),
     cta: typeof cuentaDe === 'function' ? (cuentaDe(m) || '') : '',
-    exportacion: esExportacion ? r2(dg.total) : 0,
-    baseImponible: esExportacion ? 0 : r2(baseGravada),
-    igv: esExportacion ? 0 : r2(dg.igv),
-    importeTotal: r2(dg.total),
+    ...importes,
     tipoCambio: tc.valor,
+    soles: importesEnSoles(importes, c.moneda, tc.valor),
     marcadores: esReciboHonorarios(m)
       ? [{ clave: 'recibo_honorarios', etiqueta: '02 Recibo por honorarios', detalle: 'Una empresa no emite recibos por honorarios: revisá la clase del comprobante.' }]
       : [],
@@ -343,8 +385,26 @@ export function totalesVentas(filas = []) {
   }, { exportacion: 0, baseImponible: 0, igv: 0, importeTotal: 0 });
 }
 
+/**
+ * Los totales del período.
+ *
+ * Trae DOS cosas y no son intercambiables:
+ *
+ *  · `monedas` — una tarjeta por moneda, en la moneda del papel. Es lo que
+ *    dice el comprobante y sirve para cotejarlo contra el PDF.
+ *  · `soles`  — TODO el mes en soles: los comprobantes en soles tal cual y
+ *    los que están en otra moneda convertidos al tipo de cambio de SU fecha.
+ *    Éste es el que se declara (ver `importesEnSoles`), y por eso la pantalla
+ *    lo muestra como el principal.
+ *
+ * `soles.sinTasa` cuenta los comprobantes que quedaron AFUERA por no tener
+ * tipo de cambio. Sin ese número el total en soles cerraría de menos y nadie
+ * sabría por qué: con él, la pantalla puede decir «faltan 2 tasas» en vez de
+ * mostrar un total silenciosamente incompleto.
+ */
 function totalesPorMoneda(filas, acumular, inicial) {
   const porMoneda = new Map();
+  const soles = { moneda: 'PEN', filas: 0, convertidos: 0, sinTasa: 0, ...inicial };
   let conAvisos = 0;
   for (const f of filas) {
     const k = f.moneda || 'PEN';
@@ -353,10 +413,21 @@ function totalesPorMoneda(filas, acumular, inicial) {
     t.filas += 1;
     acumular(t, f);
     if (f.avisos?.length) conAvisos += 1;
+    // El mismo acumulador sobre la fila YA convertida: una sola definición de
+    // qué se suma, así el total en soles no puede sumar cosas distintas que
+    // el de la moneda de origen.
+    if (f.soles) {
+      soles.filas += 1;
+      if (f.soles.convertido) soles.convertidos += 1;
+      acumular(soles, f.soles);
+    } else {
+      soles.sinTasa += 1;
+    }
   }
   return {
     filas: filas.length,
     conAvisos,
+    soles,
     monedas: [...porMoneda.values()].sort((a, b) => (a.moneda === 'PEN' ? -1 : b.moneda === 'PEN' ? 1 : a.moneda.localeCompare(b.moneda))),
   };
 }
@@ -436,7 +507,7 @@ export function matriz(filas = [], columnas = COLUMNAS_COMPRAS) {
 }
 
 export default {
-  armarRegistro, filaCompra, filaVenta, referenciaOriginal,
+  armarRegistro, filaCompra, filaVenta, referenciaOriginal, importesEnSoles,
   totalesCompras, totalesVentas, fechaRegistro,
   COLUMNAS_COMPRAS, COLUMNAS_VENTAS, celda, matriz,
   RETENCION_4TA_PCT, RETENCION_4TA_MINIMO,

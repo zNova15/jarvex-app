@@ -173,7 +173,16 @@ describe('el escáner de incoherencias, como ventana y por período', () => {
 
   it('cuando no hay nada que mirar lo dice, en vez de invitar a entrar', () => {
     const html = render([COMPRA, VENTA]);
-    expect(html).toContain('Sin incoherencias');
+    expect(html).toContain('sin incoherencias');
+  });
+
+  // Gabriel, 23-set-2026: la pantalla decía «Solo las 1 con algo que mirar» y
+  // «Sin incoherencias» al mismo tiempo. Los dos números eran correctos y
+  // contaban cosas distintas; el botón del escáner tiene que decir de cuál de
+  // las dos habla para que su cero no se lea como «el mes está limpio».
+  it('el botón del escáner se nombra a sí mismo: su cero no habla de los avisos de la hoja', () => {
+    const html = render([COMPRA, VENTA]);
+    expect(html).toContain('🩺 Escáner:');
   });
 
   it('arranca cerrado: es una interrupción del trabajo del mes, no un lugar donde se vive', () => {

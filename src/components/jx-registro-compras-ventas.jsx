@@ -401,24 +401,45 @@ export function RegistroComprasVentas({
             ))}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* ── DOS CONTADORES QUE NO CUENTAN LO MISMO ──────────────
+                🔴 Gabriel (23-set-2026): «dice "Solo las 1 con algo que mirar"
+                … pero también dice "Sin incoherencias", eso resolvelo».
+                Tenía razón en que la pantalla se contradecía, pero los dos
+                números eran correctos: contaban cosas distintas con el mismo
+                nombre. Son:
+                  · AVISO DE LA FILA — algo le falta a ESTE comprobante para
+                    poder declararse (el tipo de cambio de su fecha, la
+                    referencia de la nota, la constancia de detracción, el tipo
+                    de la Tabla 10). Sale de `armarRegistro`.
+                  · INCOHERENCIA DEL ESCÁNER — dos comprobantes que se
+                    desmienten entre sí (una venta interna sin su compra
+                    espejo, una nota que anula una factura que sigue viva).
+                    Sale de `escanear`.
+                Un mes puede tener un aviso y cero incoherencias sin que nada
+                esté mal: ahora cada botón dice cuál de las dos cosas cuenta. */}
             {actual.totales.conAvisos > 0 && (
-              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, cursor: 'pointer', color: 'var(--amber)' }}>
+              <label
+                style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, cursor: 'pointer', color: 'var(--amber)' }}
+                title={'Avisos de esta hoja: a esos comprobantes les falta algo para declararse (el tipo de cambio de su fecha, '
+                  + 'la referencia de la nota, la constancia de detracción…). Es distinto del escáner, que compara los comprobantes entre sí.'}>
                 <input type="checkbox" checked={soloAvisos} onChange={e => setSoloAvisos(e.target.checked)} />
-                Solo las {actual.totales.conAvisos} con algo que mirar
+                Solo {actual.totales.conAvisos === 1 ? 'la que tiene' : `las ${actual.totales.conAvisos} que tienen`} un aviso en la hoja
               </label>
             )}
             {/* EL ESCÁNER, con su número por delante: si dice 0 no hay por qué
-                abrirlo, y eso es la mitad del valor de tenerlo acá. */}
+                abrirlo, y eso es la mitad del valor de tenerlo acá. Dice
+                «Escáner» con todas las letras para que su cero no se lea como
+                «no hay nada que mirar en el mes». */}
             <button
               className={incoherenciasDelPeriodo.length ? 'btn btn-sm' : 'btn btn-ghost btn-sm'}
               style={incoherenciasDelPeriodo.length ? { color: 'var(--amber)' } : undefined}
               onClick={() => setEscanerAbierto(true)}
               title={incoherenciasDelPeriodo.length
-                ? 'Ver qué está mal en los comprobantes de este mes, con los arreglos que se pueden aplicar de un clic'
-                : 'Revisar los comprobantes de este mes contra sí mismos'}>
-              🩺 {incoherenciasDelPeriodo.length
+                ? 'Escáner de incoherencias: comprobantes de este mes que se contradicen entre sí, con los arreglos que se aplican de un clic. No cuenta los avisos de la hoja.'
+                : 'Escáner de incoherencias: ningún comprobante de este mes se contradice con otro. Los avisos de la hoja se cuentan aparte, en el casillero de la izquierda.'}>
+              🩺 Escáner: {incoherenciasDelPeriodo.length
                 ? `${incoherenciasDelPeriodo.length} incoherencia${incoherenciasDelPeriodo.length === 1 ? '' : 's'}`
-                : 'Sin incoherencias'}
+                : 'sin incoherencias'}
             </button>
             <button className="btn btn-sm" onClick={exportarExcel}>⤓ Excel (las dos hojas)</button>
             <button className="btn btn-sm" onClick={exportarPdf}>⤓ PDF de esta hoja</button>
@@ -558,42 +579,94 @@ export function RegistroComprasVentas({
         </div>
       )}
 
-      {/* Totales, una tarjeta por moneda. Nunca sumadas entre sí: soles con
-          dólares en la misma bolsa da un número que no es plata de nada. */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
-        {actual.totales.monedas.length === 0 && (
-          <div className="card card-p" style={{ padding: 12, fontSize: 12.5, color: 'var(--tm)' }}>
-            No hay {esCompras ? 'compras' : 'ventas'} registradas en {periodoTxt.toLowerCase()}.
-          </div>
-        )}
-        {actual.totales.monedas.map(t => (
-          <div key={t.moneda} className="card card-p" style={{ padding: 12, minWidth: 210, flex: '1 1 210px' }}>
-            <div style={{ fontSize: 11, color: 'var(--tm)' }}>
-              {t.moneda === 'PEN' ? 'Soles' : t.moneda} · {t.filas} comprobantes
-            </div>
-            {esCompras ? (
-              <>
-                <div style={{ fontSize: 12 }}>Base imponible: <b>{fmtMon(t.baseImponible, t.moneda)}</b></div>
-                <div style={{ fontSize: 12 }}>IGV (crédito fiscal): <b>{fmtMon(t.igv, t.moneda)}</b></div>
-                <div style={{ fontSize: 12 }}>No gravadas: <b>{fmtMon(t.noGravadas, t.moneda)}</b></div>
-                <div style={{ fontSize: 13, fontWeight: 700, marginTop: 3 }}>Total: {fmtMon(t.importeTotal, t.moneda)}</div>
-                {t.retencion4ta > 0 && (
-                  <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 3 }}>
-                    Retención de 4ta a declarar en el PLAME: {fmtMon(t.retencion4ta, t.moneda)}
-                  </div>
+      {/* ── LOS TOTALES: UNO PRINCIPAL Y LOS DEMÁS DE REFERENCIA ────
+          Pedido de Gabriel (23-set-2026): «es importante que esto se
+          contabilice en el resumen de soles… destacá que el principal a
+          revisar es el resumen por mes en soles».
+          Tiene razón y es además lo que manda el Registro de Compras: los
+          importes se anotan en soles al tipo de cambio de la fecha de emisión.
+          El resumen EN SOLES suma todo el mes —lo que ya está en soles y lo
+          que se convirtió— y es el que se declara. Las tarjetas por moneda
+          siguen, en chico, porque son lo que dice el papel y con eso se cotejan
+          los PDF. */}
+      {actual.totales.monedas.length === 0 ? (
+        <div className="card card-p" style={{ padding: 12, fontSize: 12.5, color: 'var(--tm)', marginBottom: 12 }}>
+          No hay {esCompras ? 'compras' : 'ventas'} registradas en {periodoTxt.toLowerCase()}.
+        </div>
+      ) : (() => {
+        const s = actual.totales.soles;
+        return (
+          <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}>
+            <div className="card card-p" style={{
+              padding: 14, border: '2px solid var(--amber)',
+              background: 'rgba(242,183,5,.06)',
+            }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--amber)', letterSpacing: .3 }}>
+                EL MES EN SOLES · lo que se declara
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 6 }}>
+                {s.filas} de {actual.totales.filas} comprobantes
+                {s.convertidos > 0 && <> · {s.convertidos} convertido{s.convertidos === 1 ? '' : 's'} al tipo de cambio de su fecha</>}
+              </div>
+              <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                {esCompras ? (
+                  <>
+                    <span style={{ fontSize: 12.5 }}>Base imponible: <b>{fmtMon(s.baseImponible, 'PEN')}</b></span>
+                    <span style={{ fontSize: 12.5 }}>IGV (crédito fiscal): <b>{fmtMon(s.igv, 'PEN')}</b></span>
+                    <span style={{ fontSize: 12.5 }}>No gravadas: <b>{fmtMon(s.noGravadas, 'PEN')}</b></span>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>Total: {fmtMon(s.importeTotal, 'PEN')}</span>
+                  </>
+                ) : (
+                  <>
+                    {s.exportacion > 0 && <span style={{ fontSize: 12.5 }}>Exportación: <b>{fmtMon(s.exportacion, 'PEN')}</b></span>}
+                    <span style={{ fontSize: 12.5 }}>Base imponible: <b>{fmtMon(s.baseImponible, 'PEN')}</b></span>
+                    <span style={{ fontSize: 12.5 }}>IGV y/o IPM: <b>{fmtMon(s.igv, 'PEN')}</b></span>
+                    <span style={{ fontSize: 16, fontWeight: 800 }}>Total: {fmtMon(s.importeTotal, 'PEN')}</span>
+                  </>
                 )}
-              </>
-            ) : (
-              <>
-                {t.exportacion > 0 && <div style={{ fontSize: 12 }}>Exportación: <b>{fmtMon(t.exportacion, t.moneda)}</b></div>}
-                <div style={{ fontSize: 12 }}>Base imponible: <b>{fmtMon(t.baseImponible, t.moneda)}</b></div>
-                <div style={{ fontSize: 12 }}>IGV y/o IPM: <b>{fmtMon(t.igv, t.moneda)}</b></div>
-                <div style={{ fontSize: 13, fontWeight: 700, marginTop: 3 }}>Total: {fmtMon(t.importeTotal, t.moneda)}</div>
-              </>
-            )}
+              </div>
+              {esCompras && s.retencion4ta > 0 && (
+                <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 4 }}>
+                  Retención de 4ta a declarar en el PLAME: {fmtMon(s.retencion4ta, 'PEN')}
+                </div>
+              )}
+              {/* Un total incompleto tiene que decir que lo está. */}
+              {s.sinTasa > 0 && (
+                <div style={{ fontSize: 11.5, color: '#d33', marginTop: 5 }}>
+                  ⚠ {s.sinTasa} comprobante{s.sinTasa === 1 ? '' : 's'} en otra moneda quedó fuera de este total porque
+                  falta su tipo de cambio. Traelo con el botón de arriba antes de declarar.
+                </div>
+              )}
+            </div>
+
+            {/* Por moneda, de referencia: lo que dice el papel. */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {actual.totales.monedas.map(t => (
+                <div key={t.moneda} className="card card-p" style={{ padding: 10, minWidth: 190, flex: '1 1 190px', opacity: .72 }}>
+                  <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                    Como lo dice el comprobante · {t.moneda === 'PEN' ? 'Soles' : t.moneda} · {t.filas} comprobantes
+                  </div>
+                  {esCompras ? (
+                    <>
+                      <div style={{ fontSize: 11.5 }}>Base imponible: <b>{fmtMon(t.baseImponible, t.moneda)}</b></div>
+                      <div style={{ fontSize: 11.5 }}>IGV (crédito fiscal): <b>{fmtMon(t.igv, t.moneda)}</b></div>
+                      <div style={{ fontSize: 11.5 }}>No gravadas: <b>{fmtMon(t.noGravadas, t.moneda)}</b></div>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>Total: {fmtMon(t.importeTotal, t.moneda)}</div>
+                    </>
+                  ) : (
+                    <>
+                      {t.exportacion > 0 && <div style={{ fontSize: 11.5 }}>Exportación: <b>{fmtMon(t.exportacion, t.moneda)}</b></div>}
+                      <div style={{ fontSize: 11.5 }}>Base imponible: <b>{fmtMon(t.baseImponible, t.moneda)}</b></div>
+                      <div style={{ fontSize: 11.5 }}>IGV y/o IPM: <b>{fmtMon(t.igv, t.moneda)}</b></div>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2 }}>Total: {fmtMon(t.importeTotal, t.moneda)}</div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
       {/* La hoja. Dos filas de título como en el modelo, y scroll horizontal:
           son 23 columnas y no se pueden achicar sin volverlas ilegibles. */}
@@ -635,7 +708,7 @@ export function RegistroComprasVentas({
           <tbody>
             {filas.length === 0 && (
               <tr><td colSpan={columnas.length + (modoSeleccion ? 2 : 1)} style={{ textAlign: 'center', padding: 16, color: 'var(--tm)', fontSize: 12.5 }}>
-                {soloAvisos ? 'Ninguna fila tiene avisos: el registro está limpio.' : 'No hay comprobantes en este período.'}
+                {soloAvisos ? 'Ninguna fila tiene avisos en esta hoja.' : 'No hay comprobantes en este período.'}
               </td></tr>
             )}
             {filas.map(f => (
@@ -658,10 +731,36 @@ export function RegistroComprasVentas({
                   // title: '01' no dice nada leído solo.
                   const ayuda = c.k === 'tipo' || c.k === 'refTipo' ? nombreTabla10(v)
                     : c.k === 'tipoDocIdent' ? nombreTabla2(v) : undefined;
+                  // ── LA COLUMNA EN DÓLARES Y SU VALOR EN SOLES ──────
+                  // Gabriel (23-set-2026): «el tipo de cambio no cambia las
+                  // columnas de base imponible, IGV, no gravadas, importe
+                  // total… colocalas en un color más opaco y al costado el
+                  // valor al cambio en soles».
+                  // El número del papel se atenúa (sigue estando: es contra lo
+                  // que se coteja el PDF) y al lado, en firme, va el soles —
+                  // que es el que suma en el resumen del mes y el que se
+                  // declara. Si falta la tasa no se inventa: se dice.
+                  const convertible = c.n && f.moneda !== 'PEN';
+                  const enSoles = convertible && f.soles ? f.soles[c.k] : null;
                   return (
                     <td key={c.k} title={ayuda || undefined}
                       style={{ textAlign: c.n ? 'right' : 'left', color: c.n && Number(v) < 0 ? 'var(--amber)' : undefined }}>
-                      {c.n ? n2(v) : String(v ?? '')}
+                      {c.n ? (
+                        convertible ? (
+                          <span style={{ whiteSpace: 'nowrap' }}>
+                            <span style={{ opacity: .45 }} title={`${f.moneda} — lo que dice el comprobante`}>{n2(v)}</span>
+                            {enSoles != null ? (
+                              <b style={{ marginLeft: 6 }} title={`S/ al tipo de cambio ${f.tipoCambio} de la fecha de emisión`}>
+                                {n2(enSoles)}
+                              </b>
+                            ) : (
+                              <span style={{ marginLeft: 6, color: '#d33' }} title="Falta el tipo de cambio de esta fecha: sin él no se puede declarar en soles.">
+                                s/ TC
+                              </span>
+                            )}
+                          </span>
+                        ) : n2(v)
+                      ) : String(v ?? '')}
                     </td>
                   );
                 })}
@@ -704,8 +803,13 @@ export function RegistroComprasVentas({
       <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 10, lineHeight: 1.5 }}>
         Las columnas «TIPO» son los códigos de las Tablas 10 y 2 de SUNAT — pasá el mouse para ver
         qué significa cada uno. La columna <b>CTA</b> es la misma cuenta PCGE del Libro Diario: si
-        está mal, se corrige ahí y acá cambia solo. Las filas en ámbar tienen algo que mirar antes
-        de declarar.
+        está mal, se corrige ahí y acá cambia solo. Las filas en ámbar tienen un <b>aviso</b>: algo
+        le falta a ese comprobante para declararse. El <b>escáner</b> (🩺) es otra cosa: busca
+        comprobantes que se contradicen entre sí, y por eso puede decir «sin incoherencias» aunque
+        haya avisos en la hoja.
+        {' '}En los comprobantes en otra moneda, el número <span style={{ opacity: .45 }}>atenuado</span> es
+        el del papel y el que está al lado, en negrita, el mismo importe en soles al tipo de cambio
+        de su fecha: <b>ése</b> es el que suma en el resumen del mes y el que se declara.
       </div>
 
       {/* ── EL ESCÁNER, COMO VENTANA ────────────────────────────────
