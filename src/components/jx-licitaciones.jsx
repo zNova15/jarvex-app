@@ -461,7 +461,7 @@ function LicitacionesPage({ showToast }) {
   const licAbierta = vivas.find(l => l.id === abierta) || null;
 
   return (
-    <div style={{ padding: 12 }}>
+    <div className="page-wrap">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 18 }}>Postulaciones</h2>

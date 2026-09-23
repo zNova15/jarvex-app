@@ -196,6 +196,70 @@ describe('cada pantalla abre', () => {
     expect(fallos, 'pantalla que revienta al abrir').toEqual([]);
   });
 
+  // ── ¿Y SE PUEDE BAJAR? ────────────────────────────────────────────
+  // Gabriel, 22-set-2026, sobre el Simulador de Órdenes: «aún no está todo
+  // adecuado bien al tamaño de la pantalla y resulta que no me deja
+  // desplazarme hacia abajo». Es la MISMA queja del 6-sep sobre Órdenes
+  // («quería deslizar hacia abajo y no me deja»), y por eso existe
+  // `css-clases-existen.test.js`… que no la ataja: aquel test caza una clase
+  // MAL ESCRITA, y acá la clase no estaba escrita en absoluto. El simulador
+  // abría con un `<div>` pelado.
+  //
+  // El shell de la app es `overflow:hidden` (jx-app.jsx): la pantalla que no
+  // trae su propio scrollport NO scrollea, y el único síntoma es que alguien
+  // la abre y no puede bajar. Ni el build, ni el lint, ni los otros dos
+  // barridos de este archivo lo ven: renderiza perfecto.
+  //
+  // La regla: la RAÍZ de cada pantalla tiene que traer `.page-wrap` (que es
+  // `overflow-y:auto; height:100%`) o declarar su propio layout con alto
+  // explícito — como Plantillas, que es full-height con el scroll adentro.
+  // Un `<div>` sin nada, o con solo un padding, es el bug.
+  //
+  // Corre DENTRO de una obra a propósito: sin obra activa, las pantallas de
+  // obra cortan en su `SinObraEmpty` y no dibujan nada. Con el barrido en el
+  // plano general, el simulador —que es justo el que Gabriel reportó— se
+  // salteaba por render vacío y el test pasaba con el bug puesto.
+  it('cada pantalla trae su propio scrollport: se puede bajar', () => {
+    const planoAntes = globalThis.__plano;
+    const getObraAntes = globalThis.__getObraActivaId;
+    globalThis.__plano = 'obra';
+    globalThis.__getObraActivaId = () => 'obra-1';
+    const sinScroll = [];
+    try {
+    for (const nombre of pantallas) {
+      let html = '';
+      try {
+        html = renderToString(React.createElement(globalThis[nombre], {
+          showToast: () => {}, onNav: () => {}, onEnterObra: () => {}, onVolver: () => {},
+        }));
+      } catch { continue; }          // que reviente ya lo dice el test de arriba
+      if (!html.trim()) continue;    // delega en otro componente / no dibuja nada
+      // React 19 IZA `<link>`/`<meta>`/`<title>` al principio del HTML server
+      // -side, así que el primer tag del string no tiene por qué ser la raíz
+      // de la pantalla. Sin saltarlos, Configuración (que sí trae page-wrap)
+      // salía marcada por un `<link>` de una fuente.
+      const cuerpo = html.replace(/^(\s*<(?:link|meta|title|style|script)\b[^>]*>(?:<\/(?:title|style|script)>)?)+/i, '');
+      const raiz = cuerpo.match(/^<(\w+)([^>]*)>/);
+      if (!raiz) continue;
+      const attrs = raiz[2] || '';
+      const clase = (attrs.match(/class="([^"]*)"/) || [, ''])[1];
+      const estilo = (attrs.match(/style="([^"]*)"/) || [, ''])[1];
+      const esScrollport = /\bpage-wrap\b/.test(clase);
+      const layoutPropio = /height|overflow/.test(estilo);
+      // Un estado vacío («seleccioná una obra») es una tarjeta que entra en
+      // pantalla: no necesita scroll y no es la raíz de la pantalla de verdad.
+      const estadoVacio = /empty-state|card/.test(clase);
+      if (!esScrollport && !layoutPropio && !estadoVacio) {
+        sinScroll.push(`${nombre}: <${raiz[1]} class="${clase}" style="${estilo}">`);
+      }
+    }
+    } finally {
+      globalThis.__plano = planoAntes;
+      globalThis.__getObraActivaId = getObraAntes;
+    }
+    expect(sinScroll, 'pantalla sin scrollport propio: se abre y no deja bajar').toEqual([]);
+  });
+
   // El MISMO barrido, pero parado DENTRO de un trabajo. Las pantallas DUALES
   // (Movimientos de esta obra, Órdenes de esta obra…) toman otro camino según
   // `window.__plano`, y ese camino no lo tocaba ningún test: en el plano

@@ -415,6 +415,7 @@ describe('sobres — partidas sin lista de insumos (§4.1)', () => {
     expect(sobres).toHaveLength(1);
     expect(sobres[0].techo).toBe(500);
     expect(sobres[0].enPartidas).toBe(2);
+    expect(sobres[0].partidaIds.sort()).toEqual(['p-corta', 'p-larga']);
     expect(sobres[0].descripcionLibre).toBe(true);
     expect(resumen.montoSobres).toBe(500);
   });
@@ -457,6 +458,111 @@ describe('sobres — partidas sin lista de insumos (§4.1)', () => {
       partidas, hoy: '2026-05-01', anclaje: 'cero',
     });
     expect(sobres.map(s => s.categoria)).toEqual(['servicios', 'materiales']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// QUÉ ES cada sobre (clasificación IUPC) — el pedido de Gabriel del 22-set:
+// «de allí se sacan varios grupos que podríamos asignarle, por ejemplo, a un
+// proveedor ferretero, otro a una librería».
+//
+// La subcategoría del simulador tiene CUATRO cajones y no alcanza para eso:
+// el flete, el monitoreo ambiental y las publicaciones caen los tres en
+// «servicios», y no se le compran al mismo proveedor. El IUPC los separa.
+//
+// Los doce nombres de acá abajo NO son inventados: son los doce sobres reales
+// de la obra de Miraflores, leídos de producción el 22-set-2026. Un test con
+// nombres de laboratorio («FLETE») no prueba nada — lo que rompe al
+// clasificador es «FLETE TERRESTRE SANEAMIENTO PM YSC».
+// ═══════════════════════════════════════════════════════════════════
+describe('el sobre dice QUÉ ES, no solo en qué cajón cae', () => {
+  const sobreReal = (nombre, unidad = 'glb', tipo = 'material') =>
+    ip('p-larga', tipo, nombre, unidad, 1, 1000);
+
+  const corridaDe = (nombres) => simularOrdenes({
+    insumosPartida: nombres.map(n => (Array.isArray(n) ? sobreReal(...n) : sobreReal(n))),
+    partidas, hoy: '2026-05-01', anclaje: 'cero',
+  }).sobres;
+
+  it('los tres fletes del expediente caen en el MISMO grupo', () => {
+    // Son tres nombres distintos y un solo transportista.
+    const sobres = corridaDe([
+      'FLETE TERRESTRE SANEAMIENTO PM YSC',
+      'FLETE TERRESTRE AGUA PM Y SC',
+      'ACARREO DE MATERIAL A MANO O ACEMILA AGUA PC Y SC',
+    ]);
+    expect(sobres.map(s => s.iupc.codigo)).toEqual(['S03', 'S03', 'S03']);
+    expect(sobres[0].iupc.etiqueta).toMatch(/Flete/i);
+    expect(sobres[0].iupc.tipo).toBe('servicio');
+  });
+
+  it('la herramienta manual NO cae con los fletes: es la compra de la ferretería', () => {
+    const [herramienta, flete] = corridaDe([
+      ['HERRAMIENTAS MANUALES', '%mo', 'equipo'],
+      'FLETE TERRESTRE AGUA PM Y SC',
+    ]);
+    expect(herramienta.iupc.codigo).toBe('37');
+    expect(herramienta.iupc.tipo).toBe('herramienta');
+    expect(flete.iupc.codigo).toBe('S03');
+    // Las dos son «servicios»/«herramientas» para el simulador, pero lo que
+    // importa acá es que NO comparten proveedor.
+    expect(herramienta.iupc.codigo).not.toBe(flete.iupc.codigo);
+  });
+
+  it('las publicaciones salen separadas: ésa es la imprenta, no la ferretería', () => {
+    const [pub] = corridaDe(['PUBLICACIONES']);
+    expect(pub.iupc.codigo).toBe('S12');
+    expect(pub.iupc.etiqueta).toMatch(/publicaciones/i);
+    expect(pub.iupc.banda).toBe('alta');
+  });
+
+  it('cada uno de los 12 sobres reales sale con un código y una banda', () => {
+    const REALES = [
+      'ACARREO DE MATERIAL A MANO O ACEMILA AGUA PC Y SC',
+      ['HERRAMIENTAS MANUALES', '%mo', 'equipo'],
+      'ACARREO DE MATERIAL A MANO O ACEMILA SANEAMIENTO PM Y SC',
+      'FLETE TERRESTRE SANEAMIENTO PM YSC',
+      'SUMINISTRO DE TIJERAL METALICO DE L=29.00M DE TUB. A500',
+      'FLETE TERRESTRE AGUA PM Y SC',
+      'MOVILIDAD',
+      ['MOVILIZACION Y DESMOVILIZACION DE EQUIPOS Y MAQUINARIA', 'glb', 'equipo'],
+      'PRESENTACION Y APROBACION DEL PLAN DE MONITOREO AL M.C.',
+      'INSTALACION DE DE ESTRUCTURA METALICA',
+      'SUMINISTRO DE PLACA DE ANCLAJE DE ESTRUCTURA METALICA',
+      'PUBLICACIONES',
+    ];
+    const sobres = corridaDe(REALES);
+    expect(sobres).toHaveLength(12);
+    for (const s of sobres) {
+      expect(s.iupc.codigo, `sobre sin código: ${s.nombre}`).toBeTruthy();
+      expect(s.iupc.etiqueta, `sobre sin etiqueta: ${s.nombre}`).toBeTruthy();
+      expect(s.iupc.banda, `sobre sin banda: ${s.nombre}`).toBeTruthy();
+      expect(s.iupc.score).toBeGreaterThan(0);
+    }
+    // Medido el 22-set-2026 contra producción: 9 de los 12 con banda alta.
+    // Es un PISO, no una foto — si una mejora del diccionario sube el número,
+    // el test no tiene por qué romperse; lo que no puede es bajar en silencio.
+    const altas = sobres.filter(s => s.iupc.banda === 'alta').length;
+    expect(altas).toBeGreaterThanOrEqual(9);
+  });
+
+  it('un nombre que nadie reconoce dice «sin clasificar», no un código plausible', () => {
+    const [raro] = corridaDe(['XKCD ZZZQQ 9999']);
+    expect(raro.iupc.codigo).toBe('sin_clasificar');
+  });
+
+  it('el diccionario propio le gana a la base oficial', () => {
+    const nombre = 'FLETE TERRESTRE AGUA PM Y SC';
+    const [base] = corridaDe([nombre]);
+    expect(base.iupc.codigo).toBe('S03');
+
+    // La misma corrida, con un término que Gabriel escribió en el Catálogo.
+    const { sobres } = simularOrdenes({
+      insumosPartida: [sobreReal(nombre)],
+      partidas, hoy: '2026-05-01', anclaje: 'cero',
+      terminosCustom: [{ termino: nombre, clasificacion_codigo: '37' }],
+    });
+    expect(sobres[0].iupc.codigo).toBe('37');
   });
 });
 

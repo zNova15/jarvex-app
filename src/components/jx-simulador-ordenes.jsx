@@ -40,6 +40,7 @@ import {
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
 } from "../lib/simulador-ordenes.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
+import { bandaConfianza } from "../lib/indices-unificados-iupc.js";
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
   PARAMS_DEFAULT, paramsDeMotor,
@@ -122,6 +123,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const ipHook = window.__hooks.useInsumosPartida(obraId);
   const partidasHook = window.__hooks.usePartidas(obraId);
   const personalHook = window.__hooks.usePersonal(obraId);
+  // El diccionario propio: le gana a la base oficial al clasificar los sobres.
+  const terminosCustom = (window.__hooks.useClasificacionTerminos?.() ?? { data: null }).data || null;
 
   const [vista, setVista] = uS(vistaInicial);
   const [abiertos, setAbiertos] = uS(() => new Set());
@@ -271,9 +274,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       ordenes: ordenesObra, ocItems,
       requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
       consumoSobres,
+      terminosCustom,
     });
   }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres]);
+    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom]);
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
@@ -398,6 +402,28 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   }, [obraId]);
 
   const cambiarParam = (patch) => mutar(e => conParams(e, patch));
+
+  // Un sobre sin detalle («ACARREO…», «HERRAMIENTAS MANUALES») casi siempre
+  // significa que a esa partida le faltó el desglose de insumos al importar
+  // el APU. En vez de mandar a adivinar dónde corregirlo, salta directo a
+  // «Insumos por Partida» con la partida ya elegida — mismo patrón intent
+  // (`__insumosTarget*`) que usan Partidas y el Gantt.
+  const irAInsumosDeSobre = (s) => {
+    const ids = s.partidaIds || [];
+    if (!ids.length) return;
+    if (ids.length > 1) {
+      toast(`Este sobre aparece en ${ids.length} partidas: se abre la primera.`, 'amber');
+    }
+    const partida = (partidasHook.data || []).find(p => p.id === ids[0]);
+    try {
+      window.__insumosTargetPartida = ids[0];
+      window.__insumosTargetCodigo = partida?.codigo_delfin || '';
+      window.__insumosTargetEsHoja = true;
+      window.__insumosFromPartidas = true;
+      window.__insumosFromGantt = false;
+      window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'insumos' } }));
+    } catch {}
+  };
 
   const toggleCategoria = (cat) => {
     const actuales = new Set(params.categorias);
@@ -640,7 +666,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   }
 
   return (
-    <div>
+    <div className="page-wrap">
       {/* ── ESCENARIO Y OBRA ───────────────────────────────────────── */}
       <div className="card card-p" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
@@ -929,6 +955,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           onEditar={(clave, id, patch) => mutar(e => editarLineaSobre(e, clave, id, patch))}
           onQuitar={(clave, id) => mutar(e => quitarLineaSobre(e, clave, id))}
           onProveedor={(clave, p) => mutar(e => proveedorDeSobre(e, clave, p))}
+          onIrAPartida={irAInsumosDeSobre}
         />
       )}
 
@@ -1219,7 +1246,68 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, re
 // SOBRES (§4.1): un techo de plata, no una lista de insumos
 // ═══════════════════════════════════════════════════════════════════
 
-function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor }) {
+/**
+ * QUÉ ES el sobre, según la clasificación oficial (IUPC para insumos, S01-S13
+ * para servicios). Es lo que deja mandar cada grupo al proveedor que
+ * corresponde: el flete al transportista, la herramienta manual a la
+ * ferretería, las publicaciones a la imprenta.
+ *
+ * Cuando el clasificador NO reconoce el nombre, el badge dice «sin clasificar»
+ * en gris y sin porcentaje: sugerir «no sé» con un badge verde al lado es lo
+ * mismo que no sugerir nada, y encima se lee como una respuesta.
+ */
+function BadgeIUPC({ iupc }) {
+  const sinClasificar = iupc.codigo === 'sin_clasificar';
+  const info = bandaConfianza(iupc.score);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <span className={`badge ${sinClasificar ? 'b-gray' : info.color}`}
+        title={sinClasificar
+          ? 'El clasificador no reconoció este nombre. Se resuelve en «Clasificación de insumos y servicios».'
+          : `${info.label} (${Math.round(iupc.score * 100)}%) · agrupa por tipo de proveedor`}>
+        {sinClasificar ? 'sin clasificar' : iupc.etiqueta}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * LOS GRUPOS, que es para lo que sirve clasificar: los tres fletes juntos son
+ * un pedido a un transportista, no tres decisiones sueltas. Sin agrupar, la
+ * lista son doce nombres de expediente y hay que leerlos de a uno para darse
+ * cuenta de que la mitad se le compra a la misma clase de proveedor.
+ *
+ * No lleva `uM`: son doce sobres y esta vista tiene un early return arriba
+ * —un hook acá abajo rompería la regla de orden de hooks (React #310)—.
+ */
+function GruposIUPC({ sobres }) {
+  const grupos = new Map();
+  for (const s of sobres) {
+    if (!s.iupc) continue;
+    const g = grupos.get(s.iupc.codigo) || { etiqueta: s.iupc.etiqueta, codigo: s.iupc.codigo, n: 0, techo: 0 };
+    g.n += 1;
+    g.techo += Number(s.techo) || 0;
+    grupos.set(s.iupc.codigo, g);
+  }
+  const lista = [...grupos.values()].sort((a, b) => b.techo - a.techo);
+  if (lista.length < 2) return null;
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 6 }}>
+        Por lo que ES cada sobre — de acá salen los grupos que se le pueden pedir a un mismo proveedor:
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {lista.map(g => (
+          <span key={g.codigo} className="badge b-gray" title={`${g.n} sobre(s) · ${soles(g.techo)}`}>
+            {g.codigo === 'sin_clasificar' ? 'sin clasificar' : g.etiqueta} · {g.n} · {solesK(g.techo)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor, onIrAPartida }) {
   if (!sobres.length) {
     return (
       <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
@@ -1236,6 +1324,7 @@ function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar
           expediente aparta una plata y después se compra contra ella, como una caja chica con tope. Acá se le escribe
           la orden a mano —3 combas, 5 picos— y la pantalla muestra cuánto del sobre queda.
         </p>
+        <GruposIUPC sobres={sobres} />
       </div>
       {sobres.map(s => (
         <div key={s.clave} className="card" style={{ marginBottom: 10, borderLeft: `3px solid ${COLOR_DECISION[s.decision]}` }}>
@@ -1245,6 +1334,14 @@ function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar
               <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
                 {s.unidad} · en {s.enPartidas} partida(s) · {SUBCATEGORIA_LABEL[s.subcategoria] || s.subcategoria}
               </div>
+              {s.iupc && <BadgeIUPC iupc={s.iupc} />}
+              {s.partidaIds?.length > 0 && (
+                <button className="btn btn-sm btn-ghost" style={{ marginTop: 4, padding: '2px 6px', fontSize: 11 }}
+                  onClick={() => onIrAPartida(s)}
+                  title="Si es un insumo o mano de obra sin desglosar, corregilo desde ahí">
+                  <JxIcon name="list" size={11} /> Corregir en Partidas
+                </button>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Techo del sobre</div>

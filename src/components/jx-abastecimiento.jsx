@@ -199,7 +199,7 @@ function AbastecimientoPage() {
   const cargando = obrasHook.loading || movsHook.loading || ipHook.loading;
 
   return (
-    <div>
+    <div className="page-wrap">
       <div className="card card-p" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
           <select className="fi" style={{ maxWidth: 420 }} value={obraId} onChange={e => { setObraId(e.target.value); setPedido({}); }}>

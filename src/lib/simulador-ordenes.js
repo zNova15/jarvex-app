@@ -47,7 +47,31 @@ import {
   clasificarInsumoDePresupuesto, CATEGORIAS_SIMULADOR,
   SUBCATEGORIA_LABEL, normUnidad,
 } from './insumo-clasificador.js';
+import { clasificarConIUPC, etiquetaCategoria, tipoDeCategoria } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
+
+/**
+ * La clasificación IUPC de un sobre. Se pasa por `clasificarConIUPC` con el
+ * diccionario propio, que es la capa que corrige la norma — con una salvedad
+ * que NO es de acá sino del clasificador: un nombre que coincide EXACTO con
+ * el Anexo 2 o con el árbol de servicios (capa `oficial-exacto`) no se pisa
+ * ni con un término propio.
+ *
+ * Devuelve SIEMPRE un objeto — cuando el clasificador no reconoce el nombre,
+ * el código es `sin_clasificar` y la banda lo dice. No se inventa un código
+ * plausible: una fila que dice «no sé» se filtra y se resuelve; una con un
+ * código inventado se pierde entre las buenas.
+ */
+function clasificarSobre(nombre, terminosCustom) {
+  const rec = clasificarConIUPC(nombre || '', { terminosCustom });
+  return {
+    codigo: rec.codigo,
+    etiqueta: etiquetaCategoria(rec.codigo),
+    tipo: tipoDeCategoria(rec.codigo),
+    banda: rec.banda,
+    score: r2(rec.score),
+  };
+}
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -415,6 +439,7 @@ export function simularOrdenes({
   ordenes = [], ocItems = [], yaComprado = null,
   requisiciones = [], requisicionItems = [],
   consumoSobres = null,
+  terminosCustom = null,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -516,12 +541,13 @@ export function simularOrdenes({
         s = {
           clave, nombre: ip.nombre_insumo || '', unidad: ip.unidad || '',
           categoria: cls.categoria, subcategoria: cls.subcategoria,
-          techo: 0, enPartidas: 0, porPeriodo: new Map(),
+          techo: 0, enPartidas: 0, partidaIds: new Set(), porPeriodo: new Map(),
         };
         sobres.set(clave, s);
       }
       s.techo += montoCrudo;
       s.enPartidas += 1;
+      if (ip.partida_id) s.partidaIds.add(ip.partida_id);
       for (const { periodo, fraccion } of plan.periodos) {
         s.porPeriodo.set(periodo, (s.porPeriodo.get(periodo) || 0) + montoCrudo * fraccion);
       }
@@ -688,6 +714,14 @@ export function simularOrdenes({
   }
 
   // ── 5) los sobres ─────────────────────────────────────────────────
+  // Cada sobre viaja con su clasificación IUPC además de la subcategoría del
+  // simulador. Las dos contestan preguntas distintas y por eso conviven: la
+  // subcategoría dice en qué cajón del filtro cae (4 cajones), y el IUPC dice
+  // QUÉ ES (82 códigos + los servicios). Lo segundo es lo que deja agrupar
+  // los sobres por el tipo de proveedor que los atiende — el flete con el
+  // transportista, la herramienta manual con la ferretería, las publicaciones
+  // con la imprenta— que con «servicios» a secas no se puede.
+  //
   // `consumido` es lo que ya se gastó del sobre. Si el caller no lo informó
   // NO se asume 0 en silencio: `consumoInformado` lo dice y `disponible`
   // queda en null. Un sobre que se cree entero cuando ya se gastó la mitad
@@ -698,7 +732,8 @@ export function simularOrdenes({
     return {
       clave: s.clave, nombre: s.nombre, unidad: s.unidad,
       categoria: s.categoria, subcategoria: s.subcategoria,
-      techo: r2(s.techo), enPartidas: s.enPartidas,
+      iupc: clasificarSobre(s.nombre, terminosCustom),
+      techo: r2(s.techo), enPartidas: s.enPartidas, partidaIds: [...s.partidaIds],
       consumido, consumoInformado: informado,
       disponible: informado ? r2(s.techo - consumido) : null,
       porPeriodo: [...s.porPeriodo]
