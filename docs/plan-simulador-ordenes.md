@@ -257,7 +257,18 @@ va anotando acá abajo a medida que se completan.*
       Cuatro pestañas: órdenes propuestas · sobres · mano de obra
       (referencia) · sin planificar. **No escribe nada**: las decisiones
       viven en el localStorage del navegador.
-- [ ] Tanda 4 — puente a orden real
+- [x] **Tanda 4 — el puente al documento real** (22-set-2026).
+      `src/lib/simulador-puente.js` (nueva, 53 tests) +
+      `src/lib/simulador-proveedor.js` (nueva, 23 tests) +
+      `requisiciones`/`requisicionItems` aditivos en `coberturaPrevia()` y
+      `simularOrdenes()` (`resumen.reqSinImputar`) +
+      **migración 226**, aplicada y verificada en producción el 22-set:
+      `requisiciones.origen` / `origen_ref`,
+      `requisicion_items.insumo_codigo` y el CHECK de `tipo_insumo` abierto
+      a `'servicio'`.
+      La pantalla gana el botón «Convertir en requisiciones», la pestaña
+      **Ya pedido** (emitir la orden de a una) y la fila de proveedores
+      sugeridos dentro de cada orden abierta.
 - [ ] Tanda 5 — OxI / calce de caja (opcional)
 
 ### Lo que la tanda 1 corrigió del diseño (medido el 22-set-2026)
@@ -380,3 +391,89 @@ va anotando acá abajo a medida que se completan.*
 - **`lineasAceptadas()` no entrega una línea sin precio.** Sale aparte, por
   `sinPrecio`, y la pantalla la reclama. Una requisición con un monto
   inventado no la vuelve a mirar nadie; una línea que falta, sí.
+
+### Lo que la tanda 4 corrigió del diseño (medido el 22-set-2026)
+
+- **El historial de precios sirve para el QUIÉN, no para el CUÁNTO.** El §6
+  pide «priorizar por historial real de precios» y mostrar «el último precio
+  real pagado al costado». Medido: `insumo_precios_historial` tiene **0
+  filas**, `material_precios_historial` 17, e `insumo_mapeo` —la tabla que
+  uniría descripción de factura con código del presupuesto— tiene **3**. Lo
+  único que existe son 1.814 líneas de factura con ítems, todas con
+  proveedor identificado, y para cruzarlas con el presupuesto hay que
+  emparejar textos. De los 427 insumos comprables de Miraflores, **12 (2,8%)**
+  coinciden exacto con alguna descripción de factura; con «2 palabras de 4
+  letras o más en común» el alcance sube a **174 de 419 (42%)**, que ya sirve.
+  Pero los pares que produce son:
+
+  | Pedís | Te vendió | A |
+  |---|---|---|
+  | VALVULA COMPUERTA DE BRONCE DE 2" | VALVULA ESFERICA DE 4" BRONCE | S/ 338,98 |
+  | TAPON HEMBRA PVC SP DE 1" | TAPON 2" HEMBRA | S/ 5,93 |
+  | BALDE HERMÉTICO PARA AGUA 10L | ALQUILER DE CAMIONETA … AGUA POTABLE … | S/ 10.423,73 |
+
+  El **proveedor** está bien en todos: quien vende válvulas vende válvulas.
+  El **precio** es de otro diámetro, de otro producto o de una camioneta.
+  Poner «último precio: S/ 10.423,73» al lado de un balde de S/ 25 no es un
+  dato flojo — es un número que alguien copia. Así que `sugerirProveedores()`
+  devuelve `precioSugerido: null` siempre, con la evidencia del par a la
+  vista, y el precio sigue siendo el del expediente (que es lo que el propio
+  §6 pide en su última frase). Hay un test que falla si alguien le agrega un
+  campo de precio.
+
+- **El rubro no se agrega como columna: se deduce de lo facturado.** La
+  tanda 3 dejó como pendiente «o `proveedores` necesita la columna `rubro`, o
+  sale del historial». Agregarla la habría dejado vacía en las 549 filas
+  esperando que alguien la llene a mano. `perfilarProveedores()` deduce el
+  rubro de lo que cada uno facturó de verdad (344 proveedores tienen al menos
+  una línea; 119 tienen 5 o más) y lo declara con `fuenteRubro:'facturas'`
+  para que nadie lo confunda con `companies.rubro`, que sí es una etiqueta
+  declarada.
+
+- **El CHECK de `requisicion_items.tipo_insumo` no admitía `'servicio'`**, y
+  eso es el **23% de la plata comprable**: S/ 843.850 de alquileres por `hm`
+  + S/ 304.365 de servicios cargados como `material` + S/ 5.000, sobre
+  ~S/ 4,98 M. Dexie no valida CHECKs, así que sin el ALTER esas filas se
+  guardaban local y rebotaban en el push con un 23514 — el sync en reintento
+  eterno de la regla 9 de CLAUDE.md. Por eso la mig 226 va antes que
+  cualquier escritura.
+
+- **Escribir la requisición y emitir la orden son DOS pasos, no uno.** El §7
+  los nombra juntos («líneas aceptadas → requisiciones → ordenes_compra») y
+  eso invita a un botón. Pero el plan de Miraflores son ~30 tarjetas: un
+  «convertir todo» emitiría 30 órdenes y quemaría 30 correlativos de la
+  ejecutora de un click, y un correlativo gastado no se recupera aunque la
+  orden se anule (encabezado de `ordenes.js`). La requisición se edita, se
+  borra y se rehace; la orden no. El primer paso es en lote, el segundo es de
+  a una, con el proveedor puesto a mano.
+
+- **La orden del plan nace en `borrador`, no en `recibida`.** Las órdenes de
+  `jx-ordenes` nacen `recibida` porque respaldan algo que YA pasó; ésta pide
+  algo que todavía no llegó. Y sus totales van por `totalesDesdeItems` (valor
+  de venta + IGV hacia arriba), no por `totalesDesdeTotal`, que es para el
+  caso retroactivo.
+
+- **La fecha de necesidad es la del período, no la de hoy.** Una requisición
+  de diciembre creada en septiembre con `fecha_necesidad` de septiembre nace
+  atrasada y aparece en rojo en todas las bandejas. Sale de
+  `rangoDePeriodo()` —el día 1 del mes, el lunes de la semana—, que ya existía
+  desde la tanda 2 y no se volvió a derivar acá.
+
+- **El descuento de lo requisado vive en `coberturaPrevia()`, no en el
+  puente.** Es la misma pregunta que el de las órdenes («qué parte de esta
+  línea ya está reservada») con las mismas dos reglas: la muerta no reserva,
+  y la que ya tiene `oc_id` no se cuenta dos veces porque ya la cuenta su
+  orden. Tenerlas en dos archivos es cómo se desincronizan. Se agregó
+  `resumen.reqSinImputar` como espejo de `ocSinImputar`: una requisición sin
+  código de insumo (las que carga el residente a mano) no se descuenta a ojo,
+  se cuenta aparte y la pantalla lo dice.
+
+- **`partida_id` solo se anota si toda la requisición es de la misma
+  partida.** La columna es una sola y «Materiales — diciembre» junta 167
+  insumos de decenas de partidas; poner la de la primera línea es una media
+  verdad que después alguien lee como la verdad entera.
+
+- **`requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`.**
+  Mandárselas hace que el push rechace la fila entera. El autor se marca solo
+  en las cabeceras, y va `null` —no el literal `'offline'`— cuando no hay
+  sesión, porque la columna es `uuid`.

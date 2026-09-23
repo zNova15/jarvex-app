@@ -108,10 +108,23 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(render()).toContain('CONSORCIO EL INCA');
   });
 
-  it('DICE que no emite nada y que el escenario vive en el navegador', () => {
+  it('DICE que el escenario vive en el navegador hasta que se convierta (tanda 4)', () => {
     const html = render();
     expect(html).toContain('queda guardado en este navegador');
-    expect(html).toContain('Nada de esto es todav');   // «…todavía un documento»
+    // Desde la tanda 4 la pantalla SÍ escribe, pero en dos pasos separados: la
+    // requisición se deshace, la orden quema un correlativo. Que eso esté
+    // dicho es lo que evita que alguien crea que aceptar ya emitió.
+    expect(html).toContain('Son dos pasos');
+    expect(html).toContain('Convertir en requisiciones');
+    expect(html).toContain('correlativo');
+  });
+
+  it('el botón de convertir arranca APAGADO: sin nada aceptado no hay qué escribir', () => {
+    const html = render();
+    const i = html.indexOf('Convertir en requisiciones');
+    expect(i).toBeGreaterThan(0);
+    // El `disabled` va en el mismo <button> que el rótulo.
+    expect(html.slice(Math.max(0, i - 260), i)).toContain('disabled');
   });
 
   it('la cobertura se mide contra lo COMPRABLE, no contra el presupuesto total', () => {

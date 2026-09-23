@@ -14,12 +14,13 @@
 // hoy» sin recalcular a mano.
 //
 // ── LO QUE ESTA PANTALLA NO HACE, A PROPÓSITO ─────────────────────
-//  1. NO EMITE NADA. Aceptar una orden acá no escribe ni una fila: deja la
-//     decisión guardada en el navegador. Convertirla en requisición y en
-//     orden real es la tanda 4, y va a estar restringida a la entidad
-//     ejecutora del trabajo (§7). Mientras eso no exista, el pie de la
-//     pantalla lo dice con todas las letras en vez de ofrecer un botón que
-//     no hace nada.
+//  1. ACEPTAR NO EMITE. Aceptar una orden acá sigue sin escribir una fila:
+//     deja la decisión guardada en el navegador. Desde la tanda 4 hay DOS
+//     botones más, y son dos pasos separados a propósito (ver el encabezado
+//     de `simulador-puente.js`): «Convertir en requisiciones» escribe el
+//     pedido —que se puede editar, borrar y rehacer—, y «Emitir la orden»,
+//     de a una, quema el correlativo de la ejecutora. Meterlos en un botón
+//     haría que aceptar 30 tarjetas queme 30 números que no se arreglan.
 //  2. NO PROPONE MANO DE OBRA COMO ORDEN. La planilla no se compra (§5): va
 //     en su propia pestaña, como número de referencia contra el padrón real,
 //     y con la leyenda puesta.
@@ -49,6 +50,12 @@ import {
   aplicarEscenario, lineasAceptadas,
   leerEscenarios, guardarEscenario, borrarEscenario,
 } from "../lib/simulador-escenarios.js";
+import {
+  armarRequisiciones, borradorDeOrdenDesdeRequisicion, cierreDeRequisicion,
+  consumoDeSobres, estadoDelPlan, puedeEmitirOrden,
+  MOTIVO_NO_EMITE_LABEL, MOTIVO_OMITIDA_LABEL,
+} from "../lib/simulador-puente.js";
+import { perfilarProveedores, sugerirProveedores, porQueEsteProveedor } from "../lib/simulador-proveedor.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { rubroLabel } from "../lib/rubros.js";
 
@@ -99,6 +106,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const toast = showToast || window.__showToast || (() => {});
 
   // ── Regla de hooks: TODOS antes de cualquier early return (React #310) ──
+  const auth = window.__useAuth?.();
+  const userId = auth?.profile?.id ?? 'offline';          // para la clave de idempotencia (texto)
+  const autorId = auth?.profile?.id ?? null;               // para created_by / updated_by (uuid)
+  const userNombre = auth?.profile?.nombre || auth?.profile?.full_name || auth?.profile?.email || null;
   const obrasHook = window.__hooks.useObras();
   const compHook = window.__hooks.useCompanies();
   const consHook = window.__hooks.useConsorcios();
@@ -122,6 +133,14 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [proveedores, setProveedores] = uS([]);
   const [ordenes, setOrdenes] = uS([]);
   const [ocItems, setOcItems] = uS([]);
+  // Tanda 4: lo que el plan YA escribió, y los movimientos con los que se
+  // deduce a quién conviene pedirle cada orden.
+  const [requisiciones, setRequisiciones] = uS([]);
+  const [reqItems, setReqItems] = uS([]);
+  const [movs, setMovs] = uS([]);
+  const [emitiendo, setEmitiendo] = uS(null);   // id de la requisición en curso
+  const convertirRef = uR(false);
+  const emitirRef = uR(false);
 
   // ── Escenarios (localStorage, por obra) ───────────────────────────
   const [escenarios, setEscenarios] = uS([]);
@@ -159,21 +178,32 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     let vivo = true;
     const cargar = async () => {
       try {
-        const [o, i, pv] = await Promise.all([
+        const [o, i, pv, rq, ri, mv] = await Promise.all([
           window.__db.ordenes_compra.toArray(),
           window.__db.oc_items.toArray(),
           window.__db.proveedores.toArray(),
+          window.__db.requisiciones.toArray(),
+          window.__db.requisicion_items.toArray(),
+          // Las compras del grupo son de dónde sale la sugerencia de
+          // proveedor (§6). Se leen enteras una vez y el perfilado se
+          // memoiza: son 1.814 líneas de ítems en 741 comprobantes.
+          window.__db.accounting_movements.toArray(),
         ]);
         if (!vivo) return;
         setOrdenes(o.filter(x => !x.deleted_at));
         setOcItems(i.filter(x => !x.deleted_at));
         setProveedores(pv.filter(x => !x.deleted_at));
-      } catch { if (vivo) { setOrdenes([]); setOcItems([]); setProveedores([]); } }
+        setRequisiciones(rq.filter(x => !x.deleted_at));
+        setReqItems(ri.filter(x => !x.deleted_at));
+        setMovs(mv.filter(x => !x.deleted_at));
+      } catch {
+        if (vivo) { setOrdenes([]); setOcItems([]); setProveedores([]); setRequisiciones([]); setReqItems([]); setMovs([]); }
+      }
     };
     cargar();
     const on = (e) => {
       const t = e?.detail?.tabla;
-      if (!t || t === 'ordenes_compra' || t === 'oc_items' || t === 'proveedores') cargar();
+      if (!t || ['ordenes_compra', 'oc_items', 'proveedores', 'requisiciones', 'requisicion_items', 'accounting_movements'].includes(t)) cargar();
     };
     window.addEventListener('jx_data_changed', on);
     window.addEventListener('jx_sync_pull', cargar);
@@ -195,6 +225,32 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     [ordenes, obraId]
   );
 
+  // ── Lo que el plan YA escribió (tanda 4) ──────────────────────────
+  // Es lo que evita que la corrida de noviembre vuelva a proponer lo que ya
+  // se requisó en octubre (§7: nada se pide dos veces).
+  const requisicionesObra = uM(
+    () => requisiciones.filter(r => !obraId || r.obra_id === obraId),
+    [requisiciones, obraId]
+  );
+  const reqItemsObra = uM(() => {
+    const ids = new Set(requisicionesObra.map(r => r.id));
+    return reqItems.filter(it => ids.has(it.requisicion_id));
+  }, [reqItems, requisicionesObra]);
+
+  // Cuánto se lleva gastado de cada sobre. Sin esto el motor deja
+  // `consumido` en null a propósito y la pantalla marca el techo como «no
+  // firme» — creer un sobre intacto cuando ya se gastó la mitad es el doble
+  // gasto que el §7 viene a evitar.
+  const consumoSobres = uM(
+    () => consumoDeSobres({ requisiciones: requisicionesObra, requisicionItems: reqItemsObra }),
+    [requisicionesObra, reqItemsObra]
+  );
+
+  const yaEscrito = uM(
+    () => estadoDelPlan({ requisiciones: requisicionesObra, requisicionItems: reqItemsObra }),
+    [requisicionesObra, reqItemsObra]
+  );
+
   const plazo = uM(() => (obra?.fecha_inicio
     ? { inicio: obra.fecha_inicio, fin: obra.fecha_fin_estimada || obra.fecha_fin || null }
     : null), [obra]);
@@ -213,8 +269,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       categorias: motor.categorias.filter(c => c !== 'mano_obra'),
       plazo,
       ordenes: ordenesObra, ocItems,
+      requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
+      consumoSobres,
     });
-  }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems]);
+  }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
+    requisicionesObra, reqItemsObra, consumoSobres]);
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
@@ -267,6 +326,30 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     const porNombre = (a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es');
     return [...grupo.sort(porNombre), ...catalogo.sort(porNombre)];
   }, [compHook.data, proveedores]);
+
+  // ── A QUIÉN PEDIRLE (§6, tanda 4) ─────────────────────────────────
+  // El rubro no alcanzaba: lo traen 28 de 577 candidatos. Lo que sí existe
+  // es qué facturó cada uno — 1.814 líneas con proveedor identificado. De
+  // ahí sale la sugerencia, y de ahí NO sale ningún precio: ver el
+  // encabezado de `simulador-proveedor.js`.
+  const perfiles = uM(() => {
+    if (!movs.length) return new Map();
+    const nombrePorId = {};
+    for (const p of proveedores) nombrePorId[p.id] = p.razon_social || p.nombre || '';
+    return perfilarProveedores(movs, { nombrePorId });
+  }, [movs, proveedores]);
+
+  // Se calcula solo para la tarjeta ABIERTA: perfilar contra 167 líneas por
+  // cada una de las ~30 tarjetas al pintar la lista cuelga la pestaña.
+  const sugerencias = uM(() => {
+    const out = {};
+    if (!perfiles.size) return out;
+    for (const p of (decorado.propuestas || [])) {
+      if (!abiertos.has(p.id)) continue;
+      out[p.id] = sugerirProveedores(p.lineas, perfiles, { max: 4 });
+    }
+    return out;
+  }, [perfiles, decorado.propuestas, abiertos]);
 
   // Escribir el nombre tiene que poder resolverse al id. Si no está en la
   // lista se guarda igual, solo con el nombre: el catálogo no tiene a todos y
@@ -395,6 +478,159 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     } finally { exportRef.current = false; }
   };
 
+  // ═══ EL PUENTE AL DOCUMENTO REAL (tanda 4, §7) ══════════════════
+  //
+  // Son DOS pasos y no uno, a propósito. Ver el encabezado de
+  // `simulador-puente.js`: la requisición se puede borrar y rehacer, la
+  // orden quema un correlativo de la ejecutora que no se recupera.
+
+  const permiso = uM(
+    () => puedeEmitirOrden({ obra, consorcios: consHook.data || [] }),
+    [obra, consHook.data]
+  );
+
+
+  // Anti doble-click (regla crítica 2): ref SÍNCRONO. El guard por estado se
+  // activa recién después del await a Dexie y en esa ventana un segundo
+  // click escribe el lote entero otra vez.
+  const convertirEnRequisiciones = async () => {
+    if (convertirRef.current) return;
+    const { lineas, sinPrecio } = entregable;
+    if (!lineas.length) { toast('Todavía no hay ninguna línea aceptada con precio', 'amber'); return; }
+
+    const plan = armarRequisiciones({
+      lineas, obraId,
+      escenario,
+      solicitante: { id: auth?.profile?.id || null, nombre: userNombre },
+      yaEscritas: requisicionesObra,
+      nuevoId: () => window.__newId(),
+    });
+
+    if (!plan.requisiciones.length) {
+      toast(plan.duplicadas.length
+        ? `Todo lo aceptado ya está escrito como requisición (${plan.duplicadas.length} línea(s))`
+        : 'No quedó nada para escribir', 'amber');
+      return;
+    }
+
+    const aviso = [
+      `Se van a crear ${plan.resumen.requisiciones} requisición(es) con ${plan.resumen.items} línea(s) por ${soles(plan.resumen.monto)}.`,
+      plan.duplicadas.length ? `${plan.duplicadas.length} línea(s) ya estaban escritas y se saltean.` : '',
+      plan.omitidas.length ? `${plan.omitidas.length} se omiten (mirá el detalle después).` : '',
+      sinPrecio.length ? `${sinPrecio.length} aceptada(s) sin precio NO se escriben.` : '',
+      '',
+      'Todavía no es una orden: se puede editar y borrar. ¿Seguimos?',
+    ].filter(Boolean).join('\n');
+    if (!window.confirm?.(aviso)) return;
+
+    convertirRef.current = true;
+    try {
+      const now = new Date().toISOString();
+      // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
+      // (mirá el esquema): mandarles esas columnas hace que el push las
+      // rechace entero. Por eso el autor se marca solo en las cabeceras.
+      const marca = (fila, tabla, { conAutor = false } = {}) => ({
+        ...fila,
+        created_at: now, updated_at: now,
+        // Las columnas de autor son uuid: sin sesión van NULL, no el
+        // literal 'offline' (que rebotaría con un 22P02).
+        ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
+      });
+      for (const { requisicion, items } of plan.requisiciones) {
+        await window.__db.requisiciones.add(marca(requisicion, 'req', { conAutor: true }));
+        for (const it of items) await window.__db.requisicion_items.add(marca(it, 'req_item'));
+      }
+      try {
+        await window.__logAudit?.({
+          action: 'create', table: 'requisiciones', recordId: null,
+          newData: { ...plan.resumen, obra_id: obraId, escenario: escenario?.nombre || null },
+          reason: `Simulador: ${plan.resumen.requisiciones} requisición(es) por ${soles(plan.resumen.monto)} desde el escenario «${escenario?.nombre || '—'}»`,
+        });
+      } catch {}
+      for (const t of ['requisiciones', 'requisicion_items']) {
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
+      }
+      toast(`✓ ${plan.resumen.requisiciones} requisición(es) creadas · ${plan.resumen.items} línea(s) por ${soles(plan.resumen.monto)}`, 'green');
+      setVista('documentos');
+    } catch (e) {
+      console.warn('[simulador] error al escribir requisiciones', e);
+      toast(`No se pudo escribir: ${e?.message || e}`, 'red');
+    } finally {
+      convertirRef.current = false;
+    }
+  };
+
+  const emitirOrden = async (requisicion, proveedorTexto) => {
+    if (emitirRef.current) return;
+    const items = reqItemsObra.filter(it => it.requisicion_id === requisicion.id);
+    const prov = resolverProveedor(proveedorTexto);
+    const b = borradorDeOrdenDesdeRequisicion({
+      requisicion, items,
+      obra, consorcios: consHook.data || [],
+      company: titular,
+      proveedor: prov.id || prov.nombre ? { id: prov.id, nombre: prov.nombre } : null,
+      // El correlativo se pide contra TODAS las órdenes de la empresa, no
+      // contra las de esta obra: la numeración es por empresa/tipo/año.
+      ordenes,
+      nuevoId: () => window.__newId(),
+    });
+    if (!b.ok) { toast(MOTIVO_NO_EMITE_LABEL[b.motivo] || 'No se puede emitir', 'amber'); return; }
+
+    if (!window.confirm?.(
+      `Se va a emitir ${b.orden.codigo} a nombre de ${titular?.name || titular?.legal_name || 'la ejecutora'}`
+      + ` por ${soles(b.orden.monto_total)} (${b.items.length} línea(s)), a ${b.orden.proveedor_nombre}.\n\n`
+      + 'El número queda tomado aunque después se anule. ¿Emitir?'
+    )) return;
+
+    emitirRef.current = true;
+    setEmitiendo(requisicion.id);
+    try {
+      const now = new Date().toISOString();
+      // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
+      // (mirá el esquema): mandarles esas columnas hace que el push las
+      // rechace entero. Por eso el autor se marca solo en las cabeceras.
+      const marca = (fila, tabla, { conAutor = false } = {}) => ({
+        ...fila,
+        created_at: now, updated_at: now,
+        // Las columnas de autor son uuid: sin sesión van NULL, no el
+        // literal 'offline' (que rebotaría con un 22P02).
+        ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
+        version: 1, sync_status: 'pending_create', last_synced_at: null,
+        idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
+      });
+      await window.__db.ordenes_compra.add(marca(b.orden, 'oc', { conAutor: true }));
+      for (const it of b.items) await window.__db.oc_items.add(marca(it, 'oc_item'));
+      // El otro sentido del puente: sin esto el plan sigue proponiendo lo que
+      // ya es un documento.
+      const fresca = (await window.__db.requisiciones.get(requisicion.id)) || requisicion;
+      await window.__db.requisiciones.update(requisicion.id, {
+        ...cierreDeRequisicion(b.orden),
+        updated_at: now, updated_by: autorId,
+        version: (fresca.version ?? 0) + 1,
+        sync_status: fresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'create', table: 'ordenes_compra', recordId: b.orden.id,
+          newData: { codigo: b.orden.codigo, monto_total: b.orden.monto_total, proveedor: b.orden.proveedor_nombre, requisicion_id: requisicion.id },
+          reason: `Orden ${b.orden.codigo} emitida desde el plan del simulador (${b.items.length} líneas)`,
+        });
+      } catch {}
+      for (const t of ['ordenes_compra', 'oc_items', 'requisiciones']) {
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
+      }
+      toast(`✓ ${b.orden.codigo} emitida por ${soles(b.orden.monto_total)}`, 'green');
+    } catch (e) {
+      console.warn('[simulador] error al emitir la orden', e);
+      toast(`No se pudo emitir: ${e?.message || e}`, 'red');
+    } finally {
+      emitirRef.current = false;
+      setEmitiendo(null);
+    }
+  };
+
   const cargando = obrasHook.loading || ipHook.loading || partidasHook.loading;
   const resumen = corrida?.resumen || null;
   const dec = decorado.resumen;
@@ -428,7 +664,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           {titular
             ? <>Las órdenes de este trabajo las emite <b>{titular.name || titular.legal_name}</b> — la entidad que lo ejecuta.</>
             : <>⚠ Este trabajo no tiene una ejecutora declarada. El plan se arma igual, pero la orden solo la puede emitir la ejecutora: cargala en Consorcios.</>}
-          {' '}Lo que decidas acá <b>queda guardado en este navegador</b> y no escribe nada todavía.
+          {' '}Lo que decidas acá <b>queda guardado en este navegador</b> hasta que lo conviertas en requisiciones,
+          abajo: recién ahí viaja a la base y lo ve el resto del equipo.
         </p>
       </div>
 
@@ -562,10 +799,19 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           </p>
         </div>
       )}
+      {resumen && resumen.reqSinImputar?.lineas > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
+          <b>{resumen.reqSinImputar.lineas} línea(s) ya requisadas ({solesK(resumen.reqSinImputar.monto)}) tampoco se pudieron descontar.</b>
+          <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
+            Son requisiciones sin código de insumo —las cargadas a mano desde el frente, por ejemplo—. Lo que escribe
+            este simulador sí nace con código, así que se descuenta solo desde la primera corrida.
+          </p>
+        </div>
+      )}
       {resumen && resumen.descontado.insumos > 0 && (
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 12px' }}>
           Ya se descontaron {resumen.descontado.insumos} insumo(s) por {solesK(resumen.descontado.monto)} que están en
-          órdenes vivas: eso no se vuelve a pedir.
+          órdenes o requisiciones vivas: eso no se vuelve a pedir.
         </p>
       )}
       {resumen && resumen.anclaje === 'restante' && resumen.montoOmitidoPorPasado > 0 && (
@@ -588,6 +834,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           ['sobres', `🧧 Sobres sin detalle (${decorado.sobres.length})`],
           ['dotacion', '👷 Mano de obra (referencia)'],
           ['pendientes', `⚠ Sin planificar (${corrida?.pendientes.length || 0})`],
+          ['documentos', `📄 Ya pedido (${yaEscrito.size})`],
         ].map(([id, lbl]) => (
           <button key={id} className={`btn btn-sm ${vista === id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVista(id)}>{lbl}</button>
         ))}
@@ -660,6 +907,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                     mutar(e => proveedorDePropuesta(e, p.id, p.lineas, prov));
                   }}
                   resolverProveedor={resolverProveedor}
+                  yaEscrita={yaEscrito.get(p.id) || null}
+                  sugeridos={sugerencias[p.id] || null}
                   editando={editando} setEditando={setEditando}
                   tope={verMas[p.id] || LINEAS_POR_TANDA}
                   onVerMas={() => setVerMas(v => ({ ...v, [p.id]: (v[p.id] || LINEAS_POR_TANDA) + LINEAS_POR_TANDA }))}
@@ -689,6 +938,18 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       {/* ═══ SIN PLANIFICAR ════════════════════════════════════════ */}
       {!cargando && vista === 'pendientes' && <PendientesVista pendientes={corrida?.pendientes || []} />}
 
+      {/* ═══ YA PEDIDO: lo que el plan escribió (tanda 4) ══════════ */}
+      {!cargando && vista === 'documentos' && (
+        <DocumentosVista
+          yaEscrito={yaEscrito}
+          ordenes={ordenes}
+          titular={titular}
+          permiso={permiso}
+          emitiendo={emitiendo}
+          onEmitir={emitirOrden}
+        />
+      )}
+
       {/* ── EL PIE: qué pasa con lo aceptado ────────────────────────── */}
       <div className="card card-p" style={{ marginTop: 16, borderLeft: '3px solid var(--blue)' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
@@ -707,15 +968,30 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
               </div>
             )}
           </div>
-          <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={exportarCsv}>
-            <JxIcon name="download" size={13} /> Descargar el plan aceptado
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button className="btn btn-sm btn-ghost" onClick={exportarCsv}>
+              <JxIcon name="download" size={13} /> Descargar el plan aceptado
+            </button>
+            <button className="btn btn-sm btn-amber"
+              disabled={!entregable.lineas.length}
+              title="Escribe lo aceptado como requisiciones. Todavía no es una orden: se puede editar y borrar."
+              onClick={convertirEnRequisiciones}>
+              <JxIcon name="check" size={13} /> Convertir en requisiciones
+            </button>
+          </div>
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
-          <b>Nada de esto es todavía un documento.</b> Convertir lo aceptado en requisiciones y en órdenes reales —solo
-          a nombre de la entidad que ejecuta el trabajo— es el paso que sigue. Hasta entonces el escenario vive en este
-          navegador: se puede volver a abrir, comparar contra otro y corregirlo sin que nadie más lo vea.
+          <b>Son dos pasos, y el primero se puede deshacer.</b> «Convertir en requisiciones» escribe el pedido en la
+          base —ahí sí lo ve el resto del equipo y viaja entre computadoras—, pero todavía no es una orden: se edita,
+          se borra y se vuelve a hacer. Emitir la orden se hace de a una desde <b>Ya pedido</b>, porque toma un número
+          correlativo de {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora'} que no se recupera
+          aunque después se anule.
         </p>
+        {!permiso.ok && permiso.motivo !== 'sin_obra' && (
+          <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '6px 0 0' }}>
+            ⚠ {MOTIVO_NO_EMITE_LABEL[permiso.motivo]} Las requisiciones se pueden escribir igual; la orden, no.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -725,7 +1001,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onProveedorOrden, resolverProveedor, editando, setEditando, tope, onVerMas }) {
+function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
   // El proveedor de la orden es el que tienen TODAS sus líneas. Si hay más de
   // uno (porque alguien pisó una línea suelta) el campo queda vacío y se dice
@@ -744,6 +1020,16 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
             {p.lineas.some(l => l.arrastrado) && ' · incluye atrasado arrastrado'}
             {p.tieneMontoIncompleto && ' · hay líneas sin precio'}
           </div>
+          {/* Ya es un documento: la tarjeta lo dice antes de que alguien la
+              vuelva a aceptar. Aceptar dos veces la misma propuesta es el
+              doble pedido que el §7 viene a evitar. */}
+          {yaEscrita && (
+            <div style={{ fontSize: 10.5, color: yaEscrita.ordenada ? 'var(--green)' : 'var(--blue)', marginTop: 2 }}>
+              {yaEscrita.ordenada
+                ? `✓ Ya emitida como ${yaEscrita.requisicion.oc_codigo || 'orden'}`
+                : `📄 Ya escrita como requisición · ${yaEscrita.items.length} línea(s) por ${soles(yaEscrita.monto)}`}
+            </div>
+          )}
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <b>{soles(p.montoEditado)}</b>
@@ -779,6 +1065,35 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
               Se aplica a las {p.lineas.length} líneas. Una línea suelta se pisa desde su ✎.
             </span>
           </div>
+
+          {/* ── A QUIÉN PEDIRLE (§6) ─────────────────────────────────
+              La sugerencia sale de lo que cada proveedor FACTURÓ, no de un
+              rubro declarado (lo traen 28 de 577 candidatos). Y no trae
+              precio a propósito: el emparejamiento por palabras acierta el
+              proveedor y erra el precio por órdenes de magnitud — ver el
+              encabezado de `simulador-proveedor.js`. */}
+          {sugeridos?.candidatos?.length > 0 && (
+            <div style={{ padding: '0 12px 10px' }}>
+              <div style={{ fontSize: 11, color: 'var(--tm)', marginBottom: 4 }}>
+                Ya te vendieron cosas parecidas ({sugeridos.alcance.conCandidato} de {sugeridos.alcance.lineas} líneas tienen antecedente):
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {sugeridos.candidatos.map(c => (
+                  <button key={c.clave} className="btn btn-sm btn-ghost"
+                    style={{ fontSize: 11.5 }}
+                    title={`${porQueEsteProveedor(c)}\n\n${c.ejemplos.map(e => `pedís «${e.pedido}» — te vendió «${e.vendio || '?'}»`).join('\n')}\n\nEl precio sigue siendo el del expediente: el historial dice a quién, no a cuánto.`}
+                    onClick={() => onProveedorOrden(c.nombre)}>
+                    {c.nombre}
+                    <span style={{ color: 'var(--tm)', marginLeft: 6 }}>{c.lineasCubiertas} línea(s)</span>
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 4 }}>
+                Sale de las facturas del grupo, no de un rubro declarado. <b>No trae precio</b>: el que aparece en la
+                tabla es el del expediente, porque emparejar por nombre acierta el proveedor pero no el diámetro.
+              </div>
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
           <table className="tbl">
             <thead>
@@ -1243,6 +1558,156 @@ function PendientesVista({ pendientes }) {
         </div>
       ))}
     </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// YA PEDIDO — lo que el plan escribió en la base (tanda 4, §7)
+//
+// Es la única pestaña donde se emite un documento, y se emite de a UNA.
+// La lista de acá arriba puede tener 30 tarjetas; un botón de «emitir todo»
+// quemaría 30 correlativos de la ejecutora en un click, y un correlativo
+// gastado no se recupera aunque la orden se anule (ver `ordenes.js`).
+// ═══════════════════════════════════════════════════════════════════
+
+function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEmitir }) {
+  const filas = uM(() => [...yaEscrito.values()]
+    .sort((a, b) => String(a.requisicion.fecha_necesidad || '').localeCompare(String(b.requisicion.fecha_necesidad || ''))),
+  [yaEscrito]);
+
+  const porId = uM(() => new Map((ordenes || []).map(o => [o.id, o])), [ordenes]);
+
+  if (!filas.length) {
+    return (
+      <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
+        Todavía no se convirtió ninguna propuesta. Aceptá lo que corresponda arriba y usá «Convertir en requisiciones».
+      </div>
+    );
+  }
+
+  const pendientes = filas.filter(f => !f.ordenada);
+  const emitidas = filas.filter(f => f.ordenada);
+  const montoPend = pendientes.reduce((s, f) => s + num(f.monto), 0);
+
+  return (
+    <>
+      <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)' }}>
+        <b>{pendientes.length} requisición(es) por {soles(montoPend)} esperando orden · {emitidas.length} ya emitida(s).</b>
+        <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
+          Una requisición se puede editar y borrar desde Compras. La <b>orden</b> toma un número correlativo de{' '}
+          {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora del trabajo'} que queda gastado aunque
+          después se anule — por eso se emite de a una, con el proveedor puesto a mano.
+        </p>
+        {!permiso.ok && (
+          <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '6px 0 0' }}>
+            ⚠ {MOTIVO_NO_EMITE_LABEL[permiso.motivo]}
+          </p>
+        )}
+      </div>
+
+      {filas.map(f => (
+        <RequisicionFila
+          key={f.requisicion.id} f={f}
+          orden={f.ordenada ? porId.get(f.requisicion.oc_id) : null}
+          puedeEmitir={permiso.ok}
+          ocupado={emitiendo === f.requisicion.id}
+          onEmitir={(texto) => onEmitir(f.requisicion, texto)}
+        />
+      ))}
+    </>
+  );
+}
+
+function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
+  const [abierta, setAbierta] = uS(false);
+  // El proveedor que el escenario dejó anotado en las líneas, como punto de
+  // partida. Se puede pisar: la orden se emite a quien la firma, no a quien
+  // sugirió una pantalla.
+  const sugerido = uM(() => {
+    const m = /Proveedor sugerido:\s*(.+)$/.exec(f.items.find(it => it.notas)?.notas || '');
+    return m ? m[1].trim() : '';
+  }, [f.items]);
+  const [prov, setProv] = uS(sugerido);
+  const r = f.requisicion;
+
+  return (
+    <div className="card" style={{ marginBottom: 8, borderLeft: `3px solid ${f.ordenada ? 'var(--green)' : 'var(--blue)'}` }}>
+      <div className="card-p" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', cursor: 'pointer' }}
+        onClick={() => setAbierta(v => !v)}>
+        <JxIcon name={abierta ? 'chevD' : 'chevR'} size={14} />
+        <div style={{ minWidth: 200 }}>
+          <b>{r.descripcion || r.origen_ref}</b>
+          <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+            {f.items.length} línea(s) · creada el {String(r.fecha || '').slice(0, 10)}
+            {r.fecha_necesidad && ` · se necesita para el ${r.fecha_necesidad}`}
+          </div>
+        </div>
+        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+          <b>{soles(f.monto)}</b>
+          <div style={{ fontSize: 10.5, color: f.ordenada ? 'var(--green)' : 'var(--tm)' }}>
+            {f.ordenada ? (r.oc_codigo || 'orden emitida') : 'sin orden'}
+          </div>
+        </div>
+      </div>
+
+      {abierta && (
+        <div style={{ borderTop: '1px solid var(--border)' }}>
+          {!f.ordenada && (
+            <div style={{ padding: '10px 12px', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
+              onClick={e => e.stopPropagation()}>
+              <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Emitir a:</span>
+              <input className="fi" list={DATALIST_PROVEEDORES} style={{ maxWidth: 300, fontSize: 12, padding: '4px 8px' }}
+                placeholder="Buscá por nombre…" value={prov} onChange={e => setProv(e.target.value)} />
+              <button className="btn btn-sm btn-amber"
+                disabled={!puedeEmitir || ocupado || !prov.trim()}
+                title={!puedeEmitir ? 'Solo la entidad ejecutora del trabajo puede emitir' : 'Toma el próximo correlativo de la ejecutora'}
+                onClick={() => onEmitir(prov)}>
+                <JxIcon name="file" size={13} /> {ocupado ? 'Emitiendo…' : 'Emitir la orden'}
+              </button>
+            </div>
+          )}
+          {f.ordenada && orden && (
+            <div style={{ padding: '10px 12px', fontSize: 11.5, color: 'var(--tm)' }}>
+              {orden.codigo} · {orden.proveedor_nombre || 'sin proveedor'} · {soles(orden.monto_total)}
+              {' '}(valor de venta {soles(orden.monto_subtotal)} + IGV {soles(orden.monto_igv)}).
+              {' '}Se ve y se imprime desde Órdenes de Compra.
+            </div>
+          )}
+          <div style={{ overflowX: 'auto', borderTop: '1px solid var(--border)' }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Insumo</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>Cantidad</th>
+                  <th style={{ textAlign: 'right', width: 110 }}>Precio</th>
+                  <th style={{ textAlign: 'right', width: 120 }}>Monto</th>
+                </tr>
+              </thead>
+              <tbody>
+                {f.items.slice(0, LINEAS_POR_TANDA).map(it => (
+                  <tr key={it.id}>
+                    <td className="col-p">
+                      <div style={{ fontSize: 12.5 }}>{it.nombre || it.nombre_libre}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                        {it.insumo_codigo || 'sin código'} · {it.unidad || '—'} · {SUBCATEGORIA_LABEL[it.tipo_insumo] || it.tipo_insumo}
+                      </div>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>{cant(it.cantidad)}</td>
+                    <td style={{ textAlign: 'right' }}>{cant(it.precio_estimado)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{soles(num(it.cantidad) * num(it.precio_estimado))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {f.items.length > LINEAS_POR_TANDA && (
+              <div style={{ padding: 8, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
+                …y {f.items.length - LINEAS_POR_TANDA} línea(s) más. El detalle completo está en Compras.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

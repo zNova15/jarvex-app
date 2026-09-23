@@ -281,9 +281,30 @@ function repartirTramo(tramo, periodos, { reparto, cuadrillas, repartoManual, pa
  * borraría material que sí hay que pedir. Es la misma regla de
  * `abastecimientoDeObra`.
  *
- * @returns {{cubierto:Map<string,number>, sinImputar:{lineas:number, monto:number}}}
+ * ── LAS REQUISICIONES TAMBIÉN RESERVAN (tanda 4) ─────────────────
+ * Desde que el simulador escribe requisiciones (§7, `simulador-puente.js`),
+ * una línea del plan deja de ser un plan en cuanto se convierte en fila: la
+ * corrida siguiente tiene que restarla o va a proponer de nuevo, en
+ * noviembre, todo lo que ya se requisó en octubre.
+ *
+ * Se cuenta con las mismas dos reglas que las órdenes, y por los mismos
+ * motivos:
+ *   · la requisición cancelada o rechazada NO reserva nada;
+ *   · la que ya tiene `oc_id` tampoco se cuenta acá — su orden ya la cuenta
+ *     el bloque de arriba, y restarla dos veces borraría material que sí hay
+ *     que pedir.
+ * Y la línea SIN código de insumo no se descuenta de nada: sale por
+ * `reqSinImputar`, igual que las 62 líneas de las órdenes retroactivas de
+ * Miraflores salen por `sinImputar`.
+ *
+ * @returns {{cubierto:Map<string,number>,
+ *            sinImputar:{lineas:number, monto:number},
+ *            reqSinImputar:{lineas:number, monto:number}}}
  */
-export function coberturaPrevia({ ordenes = [], ocItems = [], yaComprado = null } = {}) {
+export function coberturaPrevia({
+  ordenes = [], ocItems = [], yaComprado = null,
+  requisiciones = [], requisicionItems = [],
+} = {}) {
   const cubierto = new Map();
   const suma = (cod, cant) => cubierto.set(cod, (cubierto.get(cod) || 0) + num(cant));
 
@@ -313,7 +334,32 @@ export function coberturaPrevia({ ordenes = [], ocItems = [], yaComprado = null 
     suma(cod, it.cantidad);
   }
   sinImputar.monto = r2(sinImputar.monto);
-  return { cubierto, sinImputar };
+
+  // ── lo ya pedido por una requisición viva (tanda 4) ──────────────
+  const reqVivas = new Set();
+  for (const r of vivos(requisiciones)) {
+    if (r.estado === 'cancelada' || r.estado === 'rechazada') continue;
+    if (r.oc_id) continue;
+    reqVivas.add(r.id);
+  }
+  const reqSinImputar = { lineas: 0, monto: 0 };
+  for (const it of vivos(requisicionItems)) {
+    if (!reqVivas.has(it.requisicion_id)) continue;
+    // La cantidad APROBADA manda sobre la pedida cuando existe: si de 100
+    // bolsas se aprobaron 60, lo reservado son 60 y las otras 40 siguen
+    // haciendo falta.
+    const cantidad = num(it.cantidad_aprobada != null ? it.cantidad_aprobada : it.cantidad);
+    const cod = it.insumo_codigo && String(it.insumo_codigo).trim();
+    if (!cod) {
+      reqSinImputar.lineas += 1;
+      reqSinImputar.monto += cantidad * num(it.precio_estimado);
+      continue;
+    }
+    suma(cod, cantidad);
+  }
+  reqSinImputar.monto = r2(reqSinImputar.monto);
+
+  return { cubierto, sinImputar, reqSinImputar };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -344,6 +390,9 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  * @param {number}  [o.anticipacionDias=0]   adelanta el pedido N días antes
  *                  del tramo. Default 0: sin pedirlo, no cambia nada.
  * @param {Array}   [o.ordenes] @param {Array} [o.ocItems]   lo ya pedido.
+ * @param {Array}   [o.requisiciones] @param {Array} [o.requisicionItems]
+ *                  lo ya requisado — incluido lo que escribió este mismo
+ *                  simulador en una corrida anterior (tanda 4, §7).
  * @param {Map|Object|null} [o.yaComprado]   código → cantidad ya comprada.
  * @param {Object}  [o.consumoSobres]        clave de sobre → monto ya gastado.
  *
@@ -364,6 +413,7 @@ export function simularOrdenes({
   umbralTramoLargoDias = UMBRAL_TRAMO_LARGO_DIAS,
   anticipacionDias = 0,
   ordenes = [], ocItems = [], yaComprado = null,
+  requisiciones = [], requisicionItems = [],
   consumoSobres = null,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
@@ -392,6 +442,7 @@ export function simularOrdenes({
     montoArrastrado: 0, montoOmitidoPorPasado: 0,
     descontado: { insumos: 0, cantidad: 0, monto: 0 },
     ocSinImputar: { lineas: 0, monto: 0 },
+    reqSinImputar: { lineas: 0, monto: 0 },
     consumoSobresInformado: consumoSobres != null,
   };
 
@@ -514,8 +565,11 @@ export function simularOrdenes({
   // ── 2) restar lo ya comprado / ya ordenado ────────────────────────
   // El descuento se aplica de los períodos MÁS VIEJOS hacia adelante: lo que
   // ya está en obra cubre primero las necesidades más cercanas.
-  const { cubierto, sinImputar } = coberturaPrevia({ ordenes, ocItems, yaComprado });
+  const { cubierto, sinImputar, reqSinImputar } = coberturaPrevia({
+    ordenes, ocItems, yaComprado, requisiciones, requisicionItems,
+  });
   resumen.ocSinImputar = sinImputar;
+  resumen.reqSinImputar = reqSinImputar;
 
   if (anc !== 'cero' && cubierto.size) {
     const porClave = new Map();
