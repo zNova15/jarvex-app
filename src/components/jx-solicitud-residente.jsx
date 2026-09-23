@@ -1,7 +1,9 @@
 import React from "react";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
-import { TIPOS_INSUMO, TIPO_INSUMO_KEYS, recomendacionesInsumo, matchInsumoReal, registrarInsumoPendiente, normNombre } from "../lib/insumos-catalogo.js";
-const { useState: uS, useMemo: uM, useEffect: uE } = React;
+import { TIPOS_INSUMO, TIPO_INSUMO_KEYS, recomendacionesInsumo, matchInsumoReal, registrarInsumoPendiente, normNombre, leerInventarioReal } from "../lib/insumos-catalogo.js";
+import { repartirStock, coberturaDeLinea, claveInsumo } from "../lib/stock-comprometido.js";
+import { interpretarTexto, armarCatalogo, armarPersonal, volcarEnItems, armarRazon } from "../lib/asistente-solicitud-ai.js";
+const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
 // ═══════════════════════════════════════════════════════════════════
 // JARVEX — Solicitud de Insumos (antes "Solicitud de Materiales").
@@ -18,6 +20,10 @@ const { useState: uS, useMemo: uM, useEffect: uE } = React;
 // ═══════════════════════════════════════════════════════════════════
 
 const fmtN = (n) => Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 2 });
+
+// Las tres frases que la almacenera tiene que poder leer sin pensar.
+const COB_LABEL = { completa: '✓ Lo tenemos', parcial: '◐ A medias', ninguna: '✗ No tenemos' };
+const COB_COLOR = { completa: 'var(--green)', parcial: 'var(--amber)', ninguna: 'var(--red)' };
 
 const JxIcon = (props) => {
   const I = window.JxIcon;
@@ -47,6 +53,12 @@ function SolicitudResidentePage({ showToast }) {
   const [items, setItems] = uS([nuevoItem()]);
   const [submitBusy, setSubmitBusy] = uS(false);
   const [ultimaReq, setUltimaReq] = uS(null);
+
+  // ── Asistente de texto (pegar el mensaje de la obra) ──
+  const [textoIA, setTextoIA] = uS('');
+  const [iaBusy, setIaBusy] = uS(false);
+  const [iaInfo, setIaInfo] = uS(null);        // { confianza, advertencias, model }
+  const iaEnCursoRef = uR(false);              // anti-doble-click SÍNCRONO (regla 2)
 
   const sanearNombreItem = (nombre) => {
     if (!nombre) return '';
@@ -109,6 +121,69 @@ function SolicitudResidentePage({ showToast }) {
 
   const matsArr = uM(() => (materiales || []).filter(x => !x.deleted_at), [materiales]);
 
+  // ── Inventario REAL de los cinco tipos ──────────────────────────
+  // La columna de stock vieja solo sabía de materiales: herramientas, EPPs,
+  // emergencia y maquinaria mostraban «—» aunque hubiera de sobra en el
+  // almacén. Acá se leen los cinco para poder contestar «lo tenemos» sin
+  // importar qué se esté pidiendo.
+  const [inventario, setInventario] = uS(() => new Map());
+  uE(() => {
+    if (!obraId) return;
+    let cancel = false;
+    const load = async () => {
+      const m = new Map();
+      for (const tipo of TIPO_INSUMO_KEYS) m.set(tipo, await leerInventarioReal(tipo, obraId));
+      if (!cancel) setInventario(m);
+    };
+    load();
+    const on = () => load();
+    window.addEventListener('jx_data_changed', on);
+    window.addEventListener('jarvex_master_updated', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); window.removeEventListener('jarvex_master_updated', on); };
+  }, [obraId]);
+
+  // ── Requisiciones de la obra + sus ítems (lo que YA reservó stock) ──
+  const [reqData, setReqData] = uS({ requisiciones: [], requisicionItems: [] });
+  uE(() => {
+    if (!obraId) return;
+    let cancel = false;
+    const load = async () => {
+      try {
+        const reqs = (await window.__db.requisiciones.where('obra_id').equals(obraId).toArray())
+          .filter(r => !r.deleted_at);
+        const ids = new Set(reqs.map(r => r.id));
+        const its = (await window.__db.requisicion_items.filter(x => !x.deleted_at).toArray())
+          .filter(x => ids.has(x.requisicion_id));
+        if (!cancel) setReqData({ requisiciones: reqs, requisicionItems: its });
+      } catch { /* sin requisiciones el reparto queda vacío: se ve el stock crudo */ }
+    };
+    load();
+    const on = () => load();
+    window.addEventListener('jx_data_changed', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+
+  // Stock físico por clave de insumo, para el motor de reparto.
+  const stockMap = uM(() => {
+    const m = new Map();
+    for (const tipo of TIPO_INSUMO_KEYS) {
+      for (const row of (inventario.get(tipo) || [])) {
+        m.set(`${tipo}|${row.id}`, Number(row.stock_actual || 0));
+      }
+    }
+    return m;
+  }, [inventario]);
+
+  // El reparto FIFO: quién se lleva lo que hay. Se recalcula al leer — no se
+  // guarda en ninguna tabla (ver el encabezado de `stock-comprometido.js`).
+  const reparto = uM(() => repartirStock({
+    requisiciones: reqData.requisiciones,
+    requisicionItems: reqData.requisicionItems,
+    stock: stockMap,
+  }), [reqData, stockMap]);
+
+  const catalogoIA = uM(() => armarCatalogo(Object.fromEntries(inventario)), [inventario]);
+
   const addItem = () => setItems(prev => [...prev, nuevoItem()]);
   const removeItem = (id) => setItems(prev => prev.length === 1 ? prev : prev.filter(it => it.id !== id));
   const updateItem = (id, patch) => setItems(prev => prev.map(it => it.id === id ? { ...it, ...patch } : it));
@@ -129,13 +204,61 @@ function SolicitudResidentePage({ showToast }) {
 
   const cambiarTipo = (id, tipo) => updateItem(id, { tipo, insumo_id: '', nombre: '', unidad: '' });
 
-  // Stock (solo materiales con insumo real) — dato informativo para el revisor.
-  const stockDe = (it) => {
-    if (it.tipo !== 'material' || !it.insumo_id) return null;
-    const m = matsArr.find(x => x.id === it.insumo_id);
-    return m ? { stock: Number(m.stock_actual || 0), min: Number(m.stock_minimo || 0) } : null;
+  // ── Cobertura de una línea: ¿lo tenemos, a medias, o nada? ──────
+  // Reemplaza a la columna «Stock» vieja, que mostraba el `stock_actual` crudo
+  // y solo de materiales. Ese número mentía cuando dos requerimientos pedían
+  // lo mismo: los dos veían las mismas unidades como disponibles.
+  const coberturaDe = (it) => {
+    const clave = it.insumo_id ? claveInsumo({ tipo: it.tipo, insumo_id: it.insumo_id }) : '';
+    if (!clave) return null;    // insumo que todavía no existe: no hay stock que mirar
+    return coberturaDeLinea({ reparto, clave, cantidad: it.cantidad, stockSuelto: stockMap.get(clave) || 0 });
   };
 
+
+  // ── Asistente: pegar el mensaje de la obra y que salga la solicitud ──
+  // La IA PROPONE; nada se envía sin que una persona lo mire. Por eso vuelca
+  // sobre el formulario en vez de crear la requisición directo.
+  const interpretarInner = async () => {
+    const texto = textoIA.trim();
+    if (!texto) { showToast('Pegá el texto del requerimiento', 'red'); return; }
+    setIaBusy(true);
+    try {
+      const obra = await window.__db.obras.get(obraId).catch(() => null);
+      const { result, model } = await interpretarTexto({
+        texto,
+        catalogo: catalogoIA,
+        personal: armarPersonal(personal || []),
+        fechaActual: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
+        nombreObra: obra?.nombre_obra || obra?.nombre || '',
+      });
+
+      setItems(volcarEnItems(result, { catalogo: catalogoIA, nuevoItem }));
+      if (result.responsable_id) { setResponsableId(result.responsable_id); setResponsableNombre(''); }
+      else if (result.responsable_nombre) { setResponsableId(''); setResponsableNombre(result.responsable_nombre); }
+      const razonArmada = armarRazon(result);
+      if (razonArmada) setRazon(razonArmada);
+      if (result.descripcion) setDescripcion(result.descripcion);
+      if (result.fecha_necesidad) setFechaNecesidad(result.fecha_necesidad);
+      if (result.fecha_urgente) setFechaUrgente(result.fecha_urgente);
+      if (result.prioridad) setPrioridad(result.prioridad);
+
+      setIaInfo({ confianza: result.confianza, advertencias: result.advertencias || [], model });
+      const sinVincular = (result.items || []).filter(i => !i.insumo_id).length;
+      showToast(
+        `Se armó la solicitud: ${result.items?.length || 0} ítem(s)${sinVincular ? ` · ${sinVincular} sin inventario` : ''}. Revisá antes de enviar.`,
+        'green');
+    } catch (e) {
+      showToast(e.message || String(e), 'red');
+    } finally { setIaBusy(false); }
+  };
+
+  // Regla 2: guard SÍNCRONO por ref. El `busy` por estado se activa recién tras
+  // el primer await y un segundo click en esa ventana dispara dos llamadas.
+  const interpretar = async () => {
+    if (iaEnCursoRef.current) return;
+    iaEnCursoRef.current = true;
+    try { await interpretarInner(); } finally { iaEnCursoRef.current = false; }
+  };
 
   // ── Envío ──
   const handleSubmit = async () => {
@@ -251,6 +374,36 @@ function SolicitudResidentePage({ showToast }) {
       </div>
 
 
+      {/* ── Asistente: pegar el mensaje tal como llegó ── */}
+      <div className="card card-p" style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 10, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ts)' }}>✨ Pegá el requerimiento como llegó</div>
+            <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 2 }}>
+              El mensaje de WhatsApp tal cual: qué piden, quién, para cuándo, en qué frente y por qué. Se completa el formulario de abajo y lo revisás antes de enviar.
+            </div>
+          </div>
+          <button className="btn btn-amber btn-sm" disabled={iaBusy || !textoIA.trim()} onClick={interpretar}>
+            <JxIcon name="zap" size={11}/>{iaBusy ? 'Leyendo…' : 'Interpretar texto'}
+          </button>
+        </div>
+        <textarea className="fi" rows={4} value={textoIA} onChange={e => setTextoIA(e.target.value)}
+          placeholder={'Ej:\nRequerimiento: 9 unidades de Triplay de 30 cm x 55 cm, Cinta de embalaje (1 Und).\nResponsable: ING. ROXANA VÁSQUEZ\nFecha del requerimiento: 22/09/2026\nFrente: Todos los frentes de trabajo para señalización SST\nMínimo Necesario: 23/09/2026.'}/>
+        {iaInfo && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ts)' }}>
+            {iaInfo.confianza != null && (
+              <div style={{ color: iaInfo.confianza >= 0.85 ? 'var(--green)' : iaInfo.confianza >= 0.6 ? 'var(--amber)' : 'var(--red)' }}>
+                Confianza de la lectura: <strong>{Math.round(iaInfo.confianza * 100)}%</strong>
+                {iaInfo.confianza < 0.6 ? ' — revisá ítem por ítem antes de enviar.' : ''}
+              </div>
+            )}
+            {(iaInfo.advertencias || []).map((a, i) => (
+              <div key={i} style={{ color: 'var(--amber)', marginTop: 2 }}>⚠ {a}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* ── Datos del pedido ── */}
       <div className="card card-p" style={{ marginBottom: 14 }}>
         <div className="g2">
@@ -315,14 +468,14 @@ function SolicitudResidentePage({ showToast }) {
               <th style={{ minWidth: 90 }}>Cantidad</th>
               <th style={{ minWidth: 90 }}>Mín. urgente</th>
               <th style={{ minWidth: 70 }}>Unidad</th>
-              <th style={{ minWidth: 90 }}>Stock</th>
+              <th style={{ minWidth: 150 }}>¿Lo tenemos?</th>
               <th style={{ minWidth: 160 }}>Notas</th>
               <th></th>
             </tr></thead>
             <tbody>
               {items.map(it => {
                 const lista = recos.get(it.tipo) || [];
-                const st = stockDe(it);
+                const cob = coberturaDe(it);
                 const esNuevo = it.nombre.trim() && !it.insumo_id;
                 return (
                   <tr key={it.id}>
@@ -343,7 +496,28 @@ function SolicitudResidentePage({ showToast }) {
                     <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} onChange={e => updateItem(it.id, { cantidad: e.target.value })} style={{ textAlign: 'right' }}/></td>
                     <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad_minima} onChange={e => updateItem(it.id, { cantidad_minima: e.target.value })} placeholder="—" style={{ textAlign: 'right' }} title="Mínimo que necesitan de forma urgente (opcional)"/></td>
                     <td><input className="fi" value={it.unidad} onChange={e => updateItem(it.id, { unidad: e.target.value })} placeholder="bls/kg/m…" style={{ fontSize: 11, minWidth: 60 }}/></td>
-                    <td style={{ textAlign: 'right', fontSize: 11, color: st && st.stock <= st.min ? 'var(--red)' : 'var(--tm)' }}>{st ? `${fmtN(st.stock)} (mín ${fmtN(st.min)})` : '—'}</td>
+                    <td style={{ fontSize: 10.5, lineHeight: 1.45 }}>
+                      {!cob ? <span style={{ color: 'var(--tm)' }}>—</span> : (
+                        <>
+                          <div style={{ color: COB_COLOR[cob.cobertura], fontWeight: 700 }}>
+                            {cob.pedido <= 0 ? `Hay ${fmtN(cob.disponible)} disponible` : COB_LABEL[cob.cobertura]}
+                          </div>
+                          <div style={{ color: 'var(--tm)' }}>
+                            En obra {fmtN(cob.hay)}
+                            {cob.comprometido > 0 && <> · <span style={{ color: 'var(--amber)' }} title="Ya reservado por requerimientos aprobados que todavía no se atendieron">{fmtN(cob.comprometido)} con dueño</span></>}
+                            {' '}· libre {fmtN(cob.disponible)}
+                          </div>
+                          {cob.pedido > 0 && cob.comprar > 0 && (
+                            <div style={{ color: 'var(--red)' }}>Falta comprar {fmtN(cob.comprar)}</div>
+                          )}
+                          {cob.avisoCola && (
+                            <div style={{ color: 'var(--amber)' }} title="Otras solicitudes ya pidieron este insumo pero todavía no se aprobaron: si se aprueban antes, el disponible baja">
+                              ⚠ {fmtN(cob.enCola)} pedidos sin aprobar
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </td>
                     <td><input className="fi" value={it.notas} onChange={e => updateItem(it.id, { notas: e.target.value })} placeholder="opcional"/></td>
                     <td><button className="btn btn-ghost btn-xs" onClick={() => removeItem(it.id)} disabled={items.length === 1}><JxIcon name="trash" size={11}/></button></td>
                   </tr>

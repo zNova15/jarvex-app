@@ -1,5 +1,6 @@
 import React from "react";
 import { calcAlerta } from "../lib/stock-utils.js";
+import { repartirStock } from "../lib/stock-comprometido.js";
 import { detectarEPP, esProbablementeEPP } from "../lib/epp-utils.js";
 import { usePagination } from "../hooks/usePagination.js";
 import { useBusy } from "../hooks/useBusy.js";
@@ -390,6 +391,44 @@ function MaterialesPage({ showToast }) {
   const alertaDeNodo = (m) => m.es_grupo ? calcAlerta(stockDeNodo(m), Number(m.stock_minimo || 0)) : m.alerta;
   const [expandedGroups, setExpandedGroups] = uS(() => new Set());
   const toggleGroup = (id) => setExpandedGroups(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // ── LO QUE YA TIENE DUEÑO (23-set-2026) ─────────────────────────
+  // El `stock_actual` de esta tabla es lo que hay FÍSICAMENTE, y eso no
+  // alcanza para decidir: parte de lo que se ve en el estante ya está
+  // reservado por un requerimiento aprobado que todavía no se atendió. Sin
+  // este aviso la almacenera entrega material que le hacía falta a otro
+  // frente. El reparto se calcula al leer — ver `src/lib/stock-comprometido.js`.
+  const [reqComprometido, setReqComprometido] = uS({ requisiciones: [], requisicionItems: [] });
+  uE(() => {
+    if (!obraId) return;
+    let cancel = false;
+    const load = async () => {
+      try {
+        const reqs = (await window.__db.requisiciones.where('obra_id').equals(obraId).toArray()).filter(r => !r.deleted_at);
+        const ids = new Set(reqs.map(r => r.id));
+        const its = (await window.__db.requisicion_items.filter(x => !x.deleted_at).toArray()).filter(x => ids.has(x.requisicion_id));
+        if (!cancel) setReqComprometido({ requisiciones: reqs, requisicionItems: its });
+      } catch { /* sin requisiciones no hay nada comprometido que avisar */ }
+    };
+    load();
+    const on = () => load();
+    window.addEventListener('jx_data_changed', on);
+    return () => { cancel = true; window.removeEventListener('jx_data_changed', on); };
+  }, [obraId]);
+
+  const repartoMat = uM(() => {
+    const stock = new Map();
+    for (const m of (materiales || [])) {
+      if (!m.deleted_at) stock.set(`material|${m.id}`, Number(m.stock_actual || 0));
+    }
+    return repartirStock({
+      requisiciones: reqComprometido.requisiciones,
+      requisicionItems: reqComprometido.requisicionItems,
+      stock,
+    });
+  }, [materiales, reqComprometido]);
+  const comprometidoDe = (m) => Number(repartoMat.porInsumo.get(`material|${m.id}`)?.comprometido || 0);
+
   const sugerencias = uM(() => detectarSugerencias(materiales, 'nombre_material'), [materiales]);
   // ── EL CATÁLOGO CANÓNICO AL DAR DE ALTA (tanda 14, entrega 3) ────
   // Un catálogo que nadie ve no agiliza nada: acá es donde se nota. Al escribir
@@ -498,6 +537,19 @@ function MaterialesPage({ showToast }) {
             siguen con su gate de rol de siempre. */}
         <td style={{textAlign:'right'}} className="col-num">
           <span style={{ color: stockColor, fontWeight: 600 }}>{Number(m.stock_actual ?? 0).toLocaleString('es-PE')}</span>
+          {/* Lo ya reservado por un requerimiento aprobado: está en el estante
+              pero no se puede entregar a cualquiera. */}
+          {(() => {
+            const c = comprometidoDe(m);
+            if (!(c > 0)) return null;
+            const libre = Math.max(0, Number(m.stock_actual ?? 0) - c);
+            return (
+              <div style={{ fontSize: 10, color: 'var(--amber)', fontWeight: 600 }}
+                title={`${c.toLocaleString('es-PE')} ya están pedidos por requerimientos aprobados sin atender. Libre para entregar: ${libre.toLocaleString('es-PE')}.`}>
+                🔒 {c.toLocaleString('es-PE')} pedido · libre {libre.toLocaleString('es-PE')}
+              </div>
+            );
+          })()}
         </td>
         <td style={{textAlign:'right'}} className="col-num">{Number(m.stock_minimo ?? 0).toLocaleString('es-PE')}</td>
         <td style={{textAlign:'right'}} className="col-num"><span style={{color:'var(--green)'}}>{Number(m.total_entradas ?? 0).toLocaleString('es-PE')}</span></td>

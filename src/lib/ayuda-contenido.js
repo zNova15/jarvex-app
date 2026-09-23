@@ -219,6 +219,7 @@ const AYUDA = {
       'AL DAR DE ALTA, EL CATÁLOGO PROPONE: escribe dos letras del nombre y salen los insumos del catálogo del grupo (Análisis de Insumos → Catálogo) con SU UNIDAD y su subfamilia ya puestas — un clic llena el nombre, la unidad y la categoría. No bloquea nada: la obra compra cosas que ningún archivo previó, y escribir un nombre que no está en el catálogo sigue siendo válido.',
       'El stock NO se edita a mano: se mueve registrando entradas/salidas en "Mov. de Materiales".',
       'SIN PRECIOS EN LA LISTA (8-set): la columna «Precio est.» se fue del catálogo. Esta pantalla es de CONTEO —qué hay, dónde y cuánto falta—; el dinero de cada insumo se mira en Movimientos, en Compras y en Análisis de Insumos. El precio no se borró: sigue guardado y se consulta con el botón 💲 de la fila (historial de precios), para los roles que lo tenían.',
+      '🔒 "X PEDIDO · LIBRE Y" bajo el stock: ese material está en el estante pero una parte YA TIENE DUEÑO — la reservó un requerimiento aprobado que todavía no se atendió. Antes de entregarle a alguien que se acerca al almacén, mirá el número "libre": si entregás de lo reservado, el frente que lo tenía pedido se queda sin nada y su requisición ya no se puede cumplir. En ese caso, que la persona cargue su propio requerimiento en "Solicitud de Insumos".',
       'Definí stock mínimo para que la app te avise cuándo reponer (alerta "reponer"/"crítico").',
       '"Recalcular stocks" reconcilia el stock guardado con el historial de movimientos si algo no cuadra (ahora también disponible para el almacén, no solo admin). No toca los movimientos, solo el número de stock.',
       'DESAJUSTE POR SINCRONIZACIÓN: si registraste una entrada pero al sacar te dice "sin stock", suele ser que el número guardado no reflejó ese movimiento todavía. La app ahora se apoya en los MOVIMIENTOS (no solo en el número guardado) para no bloquearte una salida legítima, y te avisa del desajuste — tocá "Recalcular stocks" para corregir el número.',
@@ -274,7 +275,18 @@ const AYUDA = {
   'plantillas': { titulo: 'Plantillas', que: 'Formatos descargables de la obra (actas, formatos de registro) listos para imprimir o firmar.', como: ['Descargá la plantilla, completala/firmala y subila como evidencia del tipo que corresponda.'] },
 
   // ── COMPRAS / LOGÍSTICA ──────────────────────────────────────────
-  'solicitud-residente': { titulo: 'Solicitud de Insumos', que: 'El pedido técnico de materiales del frente/residente hacia logística.', como: ['Pedí lo que la obra necesita con cantidades y fecha requerida.', 'Logística lo convierte en requisición u orden de compra — acá no se maneja dinero.'] },
+  'solicitud-residente': {
+    titulo: 'Solicitud de Insumos',
+    que: 'El pedido técnico de insumos del frente/residente hacia logística. Cubre los cinco tipos: materiales, herramientas, EPPs, insumos de emergencia y maquinaria.',
+    como: [
+      '✨ PEGÁ EL MENSAJE COMO LLEGÓ: el recuadro de arriba acepta el texto de WhatsApp tal cual (qué piden, quién, para cuándo, en qué frente y por qué) y llena el formulario solo. Reconoce al responsable si está cargado en Personal, separa la cantidad de la unidad, y entiende el "mínimo necesario" como una fecha aparte de la deseada.',
+      'La IA PROPONE, no decide: todo queda editable y nada se envía hasta que apretás "Enviar solicitud". Si propone un insumo que no está en el inventario, lo deja sin vincular a propósito — nunca inventa el vínculo, porque un vínculo equivocado hace comprar otra cosa.',
+      '¿LO TENEMOS? es la columna que dice si hay que comprar. "En obra" es lo que hay físicamente; "con dueño" es lo que ya reservó un requerimiento APROBADO que todavía no se atendió; "libre" es lo que de verdad podés usar para este pedido.',
+      'Si tres frentes piden lo mismo y en obra hay menos que la suma, el primero que se aprueba se lleva el stock y los otros ven cero: por eso el número de "falta comprar" no se duplica.',
+      'El aviso "pedidos sin aprobar" significa que otras solicitudes ya anotaron ese insumo pero nadie las revisó. Si se aprueban antes que la tuya, tu disponible baja — conviene resolverlas juntas.',
+      'Logística la convierte en requisición u orden de compra — acá no se maneja dinero.',
+    ],
+  },
   'requisiciones': { titulo: 'Requisiciones', que: 'Consolidación de solicitudes en pedidos formales de compra.', como: ['Agrupá solicitudes, definí cantidades finales y pasalas a cotización u orden de compra.'] },
   'ordenes-compra': { titulo: 'Órdenes de Compra', que: 'Las OC emitidas a proveedores, con sus ítems, montos y recepciones.', como: ['Emití la OC al proveedor elegido y registrá las recepciones contra ella.', 'La OC firmada se puede subir como evidencia (tipo "OC Firmada").'] },
   'abastecimiento': {
