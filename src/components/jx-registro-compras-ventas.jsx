@@ -47,6 +47,11 @@ import {
 import { downloadPLE } from "../lib/sunat-ple.js";
 import { escanear, aplicarDecisionesEscaner, hallazgosPendientes } from "../lib/escaner-incoherencias.js";
 import { enPeriodo } from "../lib/fecha.js";
+import {
+  esDiferido, periodoDeEmision, periodoDeDeclaracion, humano,
+  periodosPresentados, validarPeriodoDeclarado,
+} from "../lib/periodo-declaracion.js";
+import { fijarPeriodoDeclarado } from "../lib/periodo-declaracion-db.js";
 import { EscanerIncoherencias, useEvidencias } from "./jx-cotejo-sunat.jsx";
 import { OjoComprobante, useVisorComprobante } from "./jx-visor-comprobante.jsx";
 
@@ -78,6 +83,13 @@ export function RegistroComprasVentas({
   const [seleccion, setSeleccion] = uS(() => new Set());
   const [escanerAbierto, setEscanerAbierto] = uS(false);
   const [busy, setBusy] = uS(false);
+  // ── MOVER UN COMPROBANTE A OTRO MES DE DECLARACIÓN (23-set-2026) ──
+  // Gabriel: «hay comprobantes emitidos en enero que se declaran en marzo; si
+  // las asistentes quieren mover uno de febrero 2026 a junio 2026, que les sea
+  // sencillo». Las reglas —qué se puede, qué se avisa— viven en
+  // `periodo-declaracion.js` con sus tests; acá está el control de la fila.
+  const [moviendo, setMoviendo] = uS(null);   // { mov, destino, avisos, error } | null
+  const moverRef = uR(false);                 // guard SÍNCRONO (regla 2)
   // La pasada de tipos de cambio (tanda 7): su progreso, y lo que haya que
   // cargar a mano cuando SUNAT no publicó ese día (feriado, domingo).
   const [pasada, setPasada] = uS(null);
@@ -172,6 +184,55 @@ export function RegistroComprasVentas({
         && enPeriodo(h.fecha, Number(anio), Number(mes)));
     } catch { return []; }
   }, [movs, companies, decHook.data, company?.id, anio, mes]);
+
+  // ── QUÉ MESES YA SE LE PRESENTARON A SUNAT ───────────────────────
+  // Sale de los cortes guardados: los CSV del RVIE y de la propuesta del RCE
+  // se bajan del portal recién cuando el período está presentado, así que que
+  // el corte EXISTA es la señal — no hay una casilla que alguien tenga que
+  // acordarse de marcar. Con esto, mover un comprobante a un mes ya declarado
+  // avisa que hay que rectificar, en vez de dejarlo pasar en silencio.
+  const presentados = uM(
+    () => periodosPresentados(cortesHook.data || [], { companyId: company?.id, libro: hoja }),
+    [cortesHook.data, company?.id, hoja],
+  );
+
+  // El permiso es el de MOVIMIENTOS CONTABLES: lo que se cambia es un campo del
+  // movimiento. Libros Electrónicos es 'r' para la ayudante de contabilidad y
+  // sin embargo ésta es justo la corrección que ella tiene que poder hacer.
+  const rolRegistro = (() => { try { return window.__useAuth?.()?.profile?.rol; } catch { return null; } })();
+  const puedeMover = rolRegistro === 'admin' || (window.__hasPerm?.(rolRegistro, 'Movs. Contables', 'w') ?? false);
+
+  const movDeFila = React.useCallback((f) => {
+    const id = f?.movimiento_id;
+    if (!id) return null;
+    if (movsById instanceof Map && movsById.has(id)) return movsById.get(id);
+    return (movsPeriodo || []).find(m => m.id === id) || null;
+  }, [movsById, movsPeriodo]);
+
+  const abrirMover = (f) => {
+    const mov = movDeFila(f);
+    if (!mov) return;
+    setMoviendo({ mov, destino: periodoDeDeclaracion(mov) || periodoCod, error: null, avisos: [] });
+  };
+
+  const confirmarMover = async () => {
+    if (moverRef.current || !moviendo) return;
+    moverRef.current = true;
+    try {
+      const r = await fijarPeriodoDeclarado(moviendo.mov.id, moviendo.destino, {
+        userId, periodosPresentados: presentados,
+      });
+      if (!r.ok) { setMoviendo(m => ({ ...m, error: r.error })); return; }
+      const emision = periodoDeEmision(moviendo.mov);
+      showToast?.(r.periodo
+        ? `✓ ${moviendo.mov.document_number || 'El comprobante'} pasa a declararse en ${humano(r.periodo)} (se emitió en ${humano(emision)}).`
+        : `✓ ${moviendo.mov.document_number || 'El comprobante'} vuelve a declararse en su mes de emisión (${humano(emision)}).`,
+      'green');
+      setMoviendo(null);
+    } catch (e) {
+      setMoviendo(m => ({ ...m, error: e?.message || String(e) }));
+    } finally { moverRef.current = false; }
+  };
 
   // ── SELECCIÓN ────────────────────────────────────────────────────
   // Al entrar al modo arranca TODO marcado: el caso normal del reemplazo es la
@@ -788,6 +849,43 @@ export function RegistroComprasVentas({
                       {mk.etiqueta}
                     </span>
                   ))}
+                  {/* ── EL MES DE DECLARACIÓN ───────────────────────
+                      El badge aparece SOLO cuando el comprobante se movió: si
+                      saliera en las 58 filas del mes, dejaría de significar
+                      algo. El botón ⇄ está siempre (con permiso de escribir en
+                      Movimientos Contables), porque mover uno es justamente la
+                      acción que no se podía hacer desde ningún lado. */}
+                  {(() => {
+                    const mov = movDeFila(f);
+                    if (!mov) return null;
+                    const diferido = esDiferido(mov);
+                    const emi = periodoDeEmision(mov);
+                    return (
+                      <>
+                        {diferido && (
+                          <span className="badge b-blue" style={{ fontSize: 9, marginRight: 3 }}
+                            title={`El comprobante se emitió en ${humano(emi)} y se declara en este mes. La fecha de emisión no se tocó.`}>
+                            ⇄ emitido en {humano(emi)}
+                          </span>
+                        )}
+                        {mov.falta_comprobante && (
+                          <span className="badge b-amber" style={{ fontSize: 9, marginRight: 3 }}
+                            title={'Registrado desde el corte de SUNAT para que el mes cuadre: el comprobante todavía no está.'
+                              + (mov.falta_comprobante_motivo ? `\n\n${mov.falta_comprobante_motivo}` : '')}>
+                            falta el comprobante
+                          </span>
+                        )}
+                        {puedeMover && (
+                          <button type="button" className="btn btn-ghost btn-xs"
+                            style={{ padding: '0 5px', fontSize: 9, marginRight: 3 }}
+                            title="Declarar este comprobante en otro mes (la fecha de emisión no se toca)"
+                            onClick={() => abrirMover(f)}>
+                            ⇄ mes
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
                   {(f.avisos || []).length > 0 && (
                     <span className="badge b-amber" style={{ fontSize: 9 }} title={f.avisos.join('\n\n')}>
                       ⚠ {f.avisos.length}
@@ -811,6 +909,59 @@ export function RegistroComprasVentas({
         el del papel y el que está al lado, en negrita, el mismo importe en soles al tipo de cambio
         de su fecha: <b>ése</b> es el que suma en el resumen del mes y el que se declara.
       </div>
+
+      {/* ── MOVER EL COMPROBANTE A OTRO MES DE DECLARACIÓN ──────────
+          La fecha de emisión NO se toca y la ventana lo dice con todas las
+          letras: cambiarla «para que salga en el mes correcto» dejaría el
+          registro cuadrado y el comprobante falseado. */}
+      {moviendo && (() => {
+        const mov = moviendo.mov;
+        const emi = periodoDeEmision(mov);
+        const v = validarPeriodoDeclarado(mov, moviendo.destino === emi ? '' : moviendo.destino,
+          { periodosPresentados: presentados });
+        return (
+          <div className="overlay" onClick={e => e.target === e.currentTarget && setMoviendo(null)}>
+            <div className="modal" style={{ maxWidth: 520, width: '95vw' }}>
+              <h3 style={{ marginTop: 0 }}>¿En qué mes se declara?</h3>
+              <div style={{ fontSize: 12.5, lineHeight: 1.6, marginBottom: 12 }}>
+                <b>{mov.document_number || 'El comprobante'}</b> · {mov.third_party_name || '—'}
+                <div style={{ color: 'var(--tm)' }}>
+                  Emitido el {mov.date} ({humano(emi)}) · {fmtMon(mov.amount, mov.currency)}
+                </div>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', lineHeight: 1.55, marginBottom: 10 }}>
+                El crédito fiscal de una compra se puede usar en el mes de emisión o dentro de los 12 meses
+                siguientes (Ley 29215). Al moverlo, el comprobante <b>sale de {humano(emi)}</b> y aparece en el
+                mes que elijas — en el registro, en el PLE y en el Libro Diario. La <b>fecha de emisión no se
+                toca</b>: es un dato del papel.
+              </div>
+              <label style={{ fontSize: 12 }}>Período de declaración (AAAAMM)
+                <input className="fi" inputMode="numeric" maxLength={6} placeholder={emi}
+                  value={moviendo.destino}
+                  onChange={e => setMoviendo(m => ({ ...m, destino: e.target.value.replace(/\D/g, '').slice(0, 6), error: null }))}/>
+              </label>
+              {(moviendo.error || (!v.ok && v.error)) && (
+                <div style={{ marginTop: 10, fontSize: 11.5, color: '#d33' }}>⛔ {moviendo.error || v.error}</div>
+              )}
+              {v.ok && v.avisos.length > 0 && (
+                <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(242,183,5,.12)', fontSize: 11.5, lineHeight: 1.5 }}>
+                  {v.avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}
+                </div>
+              )}
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                {esDiferido(mov) && (
+                  <button className="btn btn-ghost btn-sm" style={{ marginRight: 'auto' }}
+                    onClick={() => setMoviendo(m => ({ ...m, destino: emi, error: null }))}>
+                    Volver a {humano(emi)}
+                  </button>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => setMoviendo(null)}>Cancelar</button>
+                <button className="btn btn-amber btn-sm" disabled={!v.ok} onClick={confirmarMover}>Guardar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── EL ESCÁNER, COMO VENTANA ────────────────────────────────
           Ventana y no pestaña porque es una interrupción del trabajo del mes,

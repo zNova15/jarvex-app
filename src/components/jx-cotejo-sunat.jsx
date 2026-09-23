@@ -44,6 +44,9 @@ import {
   FAMILIAS,
 } from '../lib/escaner-incoherencias.js';
 import { guardarCorte, borrarCorte, decidirCotejo, decidirCotejoLote } from '../lib/cotejo-sunat-db.js';
+import {
+  sePuedeDarDeAlta, borradorDesdeFila, movimientoDesdeCorte, avisosDelBorrador,
+} from '../lib/alta-desde-sunat.js';
 import { evidenciasDeComprobantes } from '../lib/evidencia-de-comprobante.js';
 import { OjoComprobante, useVisorComprobante } from './jx-visor-comprobante.jsx';
 import { ventasSinEspejo, datosDelEspejo } from '../lib/interco-espejo.js';
@@ -156,6 +159,22 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   const [busy, setBusy] = uS(false);
   const enCursoRef = uR(false);              // guard SÍNCRONO (regla 2)
   const inputRef = uR(null);
+
+  // ── EL ALTA DE LO QUE FALTA (23-set-2026) ───────────────────────
+  // La pantalla era de SOLO LECTURA por decisión de Gabriel (8-set) y para el
+  // caso normal lo sigue siendo: lo que falta se carga por Captura Mágica con
+  // el PDF, que es lo único que trae el detalle. Lo que apareció después es el
+  // caso donde NO HAY PDF: las dos facturas del BANCO DE CRÉDITO de enero-2026
+  // que el portal de SUNAT no deja descargar, y sin las cuales el total de NO
+  // GRAVADAS del Registro de Compras no cuadra. La regla y su excepción viven
+  // documentadas en `alta-desde-sunat.js`; acá solo está la ventana.
+  const [altaBorrador, setAltaBorrador] = uS(null);   // { fila, libro, b } | null
+  const rolCotejo = (() => { try { return window.__useAuth?.()?.profile?.rol; } catch { return null; } })();
+  // El permiso es el de MOVIMIENTOS CONTABLES, no el de Libros Electrónicos:
+  // lo que se crea acá es un movimiento contable. Es lo que hace que la
+  // asistente (que tiene 'w' ahí y 'r' acá) pueda dar de alta lo que encuentra.
+  const puedeAlta = rolCotejo === 'admin' || (window.__hasPerm?.(rolCotejo, 'Movs. Contables', 'w') ?? false);
+  const { data: obrasCotejo = [] } = window.__hooks?.useObras?.() || { data: [] };
 
   const decHook = window.__hooks?.useCotejoDecisiones?.() || { data: [] };
   const decisiones = uM(
@@ -387,6 +406,56 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   const exportar = () => {
     const csv = exportarComparativaCsv(visibles, { periodo, empresa: company?.name || '' });
     descargarTexto(`cotejo-sunat-${company?.ruc || 'empresa'}-${periodo}.csv`, csv);
+  };
+
+  /**
+   * Dar de alta el comprobante que SUNAT tiene y JARVEX no.
+   *
+   * Mismo contrato que el resto de los botones que crean plata en esta app:
+   * la lib pura arma los campos (una sola definición, con tests), guard
+   * SÍNCRONO porque el doble clic duplicaría la factura, y auditoría. La
+   * diferencia es que acá NO se pregunta con un `confirm()`: la ventana de
+   * revisión YA es la confirmación, y es lo que Gabriel pidió — se registra
+   * plata, conviene verla antes.
+   */
+  const confirmarAlta = async () => {
+    if (enCursoRef.current || !altaBorrador) return;
+    if (!puedeAlta) { showToast?.('No tenés permiso para registrar comprobantes.', 'red'); return; }
+    enCursoRef.current = true;
+    try {
+      const { b, libro, fila } = altaBorrador;
+      const campos = movimientoDesdeCorte(b, {
+        companyId: company?.id, libro, periodo,
+        obraExiste: (id) => (obrasCotejo || []).some(o => o.id === id && !o.deleted_at),
+      });
+      const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+      const marcaModo = esPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' };
+      const movId = window.__newId();
+      const now = new Date().toISOString();
+      await window.__db.accounting_movements.add({
+        id: movId, ...campos,
+        created_by: userId, updated_by: userId,
+        created_at: now, updated_at: now,
+        version: 1, last_synced_at: null, ...marcaModo,
+        idempotency_key: `${userId}_acc_${movId}`,
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'insert', table: 'accounting_movements', recordId: movId,
+          newData: { doc: campos.document_number, total: campos.amount, corte: periodo, falta_comprobante: true },
+          reason: 'SUNAT vs JARVEX · alta desde el corte porque el comprobante no se pudo descargar del portal',
+        });
+      } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
+      // Se da por vista la diferencia que acaba de resolverse: si no, la fila
+      // sigue en «por revisar» hasta que alguien vuelva a cotejar, y parece
+      // que el alta no hizo nada.
+      try { await decidir(fila, 'revisada'); } catch {}
+      setAltaBorrador(null);
+      showToast?.(`✓ ${campos.document_number} registrado en ${company?.name || 'la empresa'}, marcado «falta el comprobante». Volvé a cotejar para verlo cuadrar.`, 'green');
+    } catch (e) {
+      showToast?.('No se pudo registrar: ' + (e?.message || e), 'red');
+    } finally { enCursoRef.current = false; }
   };
 
   const hayAlgo = todas.length > 0;
@@ -896,6 +965,22 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                             : '✏️'}
                         </button>
                       ) : null}
+                      {/* REGISTRARLA: solo en las que SUNAT tiene y acá faltan.
+                          Es para el comprobante que no se puede bajar del
+                          portal (los de bancos), no un atajo para cargar
+                          facturas sin mirarlas — por eso abre una ventana de
+                          revisión con el desglose del archivo. */}
+                      {puedeAlta && !f.decision && sePuedeDarDeAlta(f) && (
+                        <button
+                          type="button" className="btn btn-amber btn-sm" style={{ marginLeft: 4 }}
+                          title="Registrar este comprobante en JARVEX con el desglose que trae el archivo de SUNAT, marcado «falta el comprobante»"
+                          onClick={() => setAltaBorrador({
+                            fila: f, libro: f.libro,
+                            b: borradorDesdeFila(f, { periodo }),
+                          })}>
+                          + Registrar
+                        </button>
+                      )}
                       {f.estado === 'cuadra' ? null : f.decision ? (
                         <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={() => decidir(f, null)}>Deshacer</button>
                       ) : (
@@ -912,6 +997,106 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
           </div>
         </>
       )}
+      {/* ── LA VENTANA DE REVISIÓN DEL ALTA ─────────────────────────
+          Lo que muestra es lo MISMO que se va a guardar (`borradorDesdeFila`
+          arma el objeto y `movimientoDesdeCorte` lo convierte sin volver a
+          calcular nada), así lo confirmado y lo guardado no pueden diferir. */}
+      {altaBorrador && (() => {
+        const b = altaBorrador.b;
+        const set = (patch) => setAltaBorrador(prev => ({ ...prev, b: { ...prev.b, ...patch } }));
+        const num = (v) => (v === '' ? 0 : Number(v));
+        const avisos = avisosDelBorrador(b);
+        const esVenta = altaBorrador.libro === 'ventas';
+        const sim = b.currency === 'PEN' ? 'S/' : b.currency === 'USD' ? 'US$' : b.currency;
+        return (
+          <div className="overlay" onClick={e => e.target === e.currentTarget && setAltaBorrador(null)}>
+            <div className="modal" style={{ maxWidth: 680, width: '95vw', maxHeight: '90vh', overflowY: 'auto' }}>
+              <h3 style={{ marginTop: 0 }}>Registrar el comprobante que falta</h3>
+              <div style={{ fontSize: 12, color: 'var(--tm)', lineHeight: 1.55, marginBottom: 12 }}>
+                Se registra en <b>{company?.name}</b> como {esVenta ? 'venta' : 'compra'} de {periodo}, con el desglose
+                que trae el archivo de SUNAT. Queda marcado <b>«falta el comprobante»</b>: el registro existe para que el
+                mes cuadre, y cuando consigas el papel lo subís por Captura Mágica.
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <label style={{ fontSize: 12 }}>Comprobante
+                  <input className="fi" value={b.documentNumber} onChange={e => set({ documentNumber: e.target.value })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>Fecha de emisión
+                  <input className="fi" type="date" value={b.date} onChange={e => set({ date: e.target.value })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>{esVenta ? 'RUC del cliente' : 'RUC del proveedor'}
+                  <input className="fi" value={b.ruc} onChange={e => set({ ruc: e.target.value })}/>
+                </label>
+                <label style={{ fontSize: 12, gridColumn: '1 / -1' }}>Razón social
+                  <input className="fi" value={b.nombre} onChange={e => set({ nombre: e.target.value })}/>
+                </label>
+              </div>
+
+              <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--tm)' }}>
+                EL DESGLOSE, en {b.currency}{b.tipoCambio ? ` (el archivo lo trae en soles al TC ${b.tipoCambio}; acá vuelve a su moneda)` : ''}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+                <label style={{ fontSize: 12 }}>Base gravada
+                  <input className="fi" inputMode="decimal" value={b.base} onChange={e => set({ base: num(e.target.value) })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>IGV
+                  <input className="fi" inputMode="decimal" value={b.igv} onChange={e => set({ igv: num(e.target.value) })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>No gravadas
+                  <input className="fi" inputMode="decimal" value={b.noGravado} onChange={e => set({ noGravado: num(e.target.value) })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>Importe total
+                  <input className="fi" inputMode="decimal" value={b.amount} onChange={e => set({ amount: num(e.target.value) })}/>
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 12 }}>
+                {/* EL MES EN QUE SE DECLARA. Viene con el del corte porque es
+                    ahí donde SUNAT lo está declarando; se puede mover si el
+                    comprobante es de otro mes y el crédito se usa más tarde. */}
+                <label style={{ fontSize: 12 }}>Se declara en el período
+                  <input className="fi" inputMode="numeric" placeholder="202601" maxLength={6}
+                    value={b.periodoDeclarado}
+                    onChange={e => set({ periodoDeclarado: e.target.value.replace(/\D/g, '').slice(0, 6) })}/>
+                </label>
+                <label style={{ fontSize: 12 }}>Destino
+                  <select className="fi" value={b.destinoSel} onChange={e => set({ destinoSel: e.target.value })}>
+                    <option value="__nose__">No sé — que lo decida la Contadora Jefe</option>
+                    <option value="__empresa__">Gastos generales de la empresa</option>
+                    <option value="__otros__">Contabilidad neta</option>
+                    {(obrasCotejo || []).filter(o => !o.deleted_at).map(o => (
+                      <option key={o.id} value={o.id}>Obra: {o.nombre || o.name || o.id}</option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ fontSize: 12, gridColumn: '1 / -1' }}>¿Por qué no está el comprobante? (opcional)
+                  <input className="fi" placeholder="El portal de SUNAT no deja descargar los emitidos por bancos"
+                    value={b.faltaComprobanteMotivo}
+                    onChange={e => set({ faltaComprobanteMotivo: e.target.value })}/>
+                </label>
+              </div>
+
+              {avisos.length > 0 && (
+                <div style={{ marginTop: 12, padding: '8px 10px', borderRadius: 6, background: 'rgba(242,183,5,.12)', fontSize: 11.5, lineHeight: 1.5 }}>
+                  {avisos.map((a, i) => <div key={i}>⚠ {a}</div>)}
+                </div>
+              )}
+
+              <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+                <span style={{ marginRight: 'auto', fontSize: 13, fontWeight: 700 }}>
+                  {sim} {Number(b.amount || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}
+                </span>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAltaBorrador(null)}>Cancelar</button>
+                <button className="btn btn-amber btn-sm" onClick={confirmarAlta} disabled={!b.documentNumber || !b.date}>
+                  Registrar en JARVEX
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {visorModal}
     </div>
   );

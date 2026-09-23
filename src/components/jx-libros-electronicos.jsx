@@ -12,7 +12,7 @@ import { cargarBancarizados } from '../lib/bancarizado-db.js';
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de-comprobante.js';
 import { activoPorLinea, activoDeLineaDe } from '../lib/naturaleza-insumo.js';
 import { destinoPorNombre } from '../lib/destino-inventario.js';
-import { enPeriodo } from '../lib/fecha.js';
+import { declaraEnPeriodo } from '../lib/periodo-declaracion.js';
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { ComparativaSunat } from './jx-cotejo-sunat.jsx';
@@ -24,9 +24,6 @@ const MESES_LARGOS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function pad2(n) { return String(n || 0).padStart(2, '0'); }
 
-// Por string (src/lib/fecha.js), no por new Date(): 'YYYY-MM-DD' se parsea como
-// medianoche UTC y en Perú una factura del 01/07 se declaraba en JUNIO.
-const isInPeriodo = (fecha, anio, mes) => enPeriodo(fecha, Number(anio), Number(mes));
 
 function LibrosElectronicosPage({ showToast }) {
   const today = new Date();
@@ -78,12 +75,22 @@ function LibrosElectronicosPage({ showToast }) {
   // referencian facturas que suelen ser de meses anteriores.
   const movsById = uM(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
 
+  // ── EL MES ES EL DE DECLARACIÓN, NO EL DE EMISIÓN (23-set-2026) ──
+  // Una factura emitida en febrero se puede declarar en junio (el crédito
+  // fiscal se usa dentro de los 12 meses siguientes, Ley 29215 art. 2), y las
+  // asistentes tenían que poder moverla. `declaraEnPeriodo` es la ÚNICA
+  // función que contesta en qué mes cae un comprobante: usa `periodo_declarado`
+  // si lo tiene y, si no, su fecha de emisión —que es el 100 % de lo ya
+  // cargado—. Acá se filtra con ella para que el registro, el PLE y los
+  // asientos del mes digan todos lo mismo; preguntarle a `date` en alguno de
+  // los tres haría aparecer el comprobante en dos meses distintos según quién
+  // pregunte.
   const movsPeriodo = uM(() => {
     return (movs || []).filter(m => {
       if (!m || m.deleted_at) return false;
       if (m.payment_status === 'cancelled') return false;
       if (companyId && m.company_id && m.company_id !== companyId) return false;
-      return isInPeriodo(m.date || m.created_at, anio, mes);
+      return declaraEnPeriodo(m, Number(anio), Number(mes));
     });
   }, [movs, anio, mes, companyId]);
 

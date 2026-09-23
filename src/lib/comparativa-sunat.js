@@ -341,6 +341,10 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       sunatNoGravado: r2(f.noGravado),
       sunatTotal: r2(f.total),
       moneda: f.moneda,
+      // El tipo de cambio del archivo viaja en la fila: lo necesita el alta
+      // (`alta-desde-sunat.js`) para volver el importe a la moneda del
+      // comprobante — SUNAT lo manda ya convertido a soles.
+      tipoCambioSunat: Number(f.tipoCambio) || null,
       modifica: f.modificaSerie && f.modificaNumero
         ? `${f.modificaSerie}-${Number(f.modificaNumero) || f.modificaNumero}` : '',
     };

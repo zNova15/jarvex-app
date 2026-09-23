@@ -75,7 +75,10 @@ function candidatos(mov) {
   const nf = (n.factura && typeof n.factura === 'object') ? n.factura : {};
   return [
     { sub: num(m.subtotal), igv: num(m.igv_amount) },
-    { sub: num(n.subtotal), igv: num(n.igv) },
+    // `no_gravado` solo lo trae el corte del RCE de SUNAT (ver
+    // `alta-desde-sunat.js`): el archivo separa exonerado e inafecto en su
+    // propia columna y ese es el único lugar donde el dato llega EXPLÍCITO.
+    { sub: num(n.subtotal), igv: num(n.igv), ng: num(n.no_gravado) },
     { sub: num(nf.subtotal), igv: num(nf.igv) },
     { sub: num(fi.subtotal), igv: num(fi.igv) },
   ];
@@ -105,7 +108,11 @@ export function desglosarIgv(mov) {
   const salida = (igvAbs, origen, baseGravadaAbs) => {
     const igvFinal = r2(Math.min(Math.max(igvAbs, 0), absTotal));
     const subFinal = r2(absTotal - igvFinal);
-    const base = (baseGravadaAbs != null && baseGravadaAbs > 0) ? r2(baseGravadaAbs) : null;
+    // `>= 0`, no `> 0`: una base gravada de CERO es un dato, no la falta de un
+    // dato. Es el caso de una comisión bancaria exonerada —todo el importe es
+    // no gravado— y tratarla como «no sé» mandaba el total entero a la columna
+    // de adquisiciones gravadas. Quien no sabe la base pasa `null`.
+    const base = (baseGravadaAbs != null && baseGravadaAbs >= 0) ? r2(baseGravadaAbs) : null;
     const refBase = base != null ? base : subFinal;
     return {
       total,
@@ -122,7 +129,21 @@ export function desglosarIgv(mov) {
   };
 
   for (const c of candidatos(m)) {
-    if (c.sub == null && c.igv == null) continue;
+    if (c.sub == null && c.igv == null && c.ng == null) continue;
+    // ── LA FACTURA 100 % NO GRAVADA (23-set-2026) ──────────────────
+    // Una comisión bancaria exonerada tiene base gravada 0 e IGV 0, y con la
+    // regla de abajo el candidato se descartaba y el movimiento terminaba
+    // ESTIMADO al 18 %: S/ 40,50 salían como S/ 34,32 + S/ 6,18 de crédito
+    // fiscal que no existe, y el total de NO GRAVADAS del Registro de Compras
+    // no cuadraba. Es lo que encontró la asistente cuadrando enero de GASOMI.
+    // Cuando el desglose trae `no_gravado` EXPLÍCITO, los ceros de base e IGV
+    // son el dato, no la falta de dato.
+    const ngAbs = c.ng == null ? null : Math.abs(c.ng);
+    if (ngAbs != null && ngAbs > TOL) {
+      // Base gravada = lo que declara el archivo (puede ser 0). El resto del
+      // total lo absorbe `noGravado`, que sale de la resta subtotal − base.
+      return salida(c.igv != null ? Math.abs(c.igv) : 0, 'comprobante', c.sub == null ? 0 : Math.abs(c.sub));
+    }
     // Ambos en cero = el OCR no leyó nada (no es un comprobante exonerado:
     // ese trae subtotal = total con igv 0). No sirve como desglose.
     if ((c.sub || 0) === 0 && (c.igv || 0) === 0) continue;
