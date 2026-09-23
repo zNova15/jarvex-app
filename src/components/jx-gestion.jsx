@@ -7,7 +7,13 @@ import { segmentarAvance, colorIngeniero } from "../lib/color-ingeniero.js";
 import { calcAvanceFinanciero } from "../lib/avance-financiero.js";
 import { esUnidadPorcentaje } from "../lib/apuParser.js";
 import { cssVar } from "../lib/tema.js";
-const { useState: uSG, useMemo: uMG, useEffect: uEG } = React;
+import { etiquetaCategoria, bandaConfianza, categoriasParaElegir } from "../lib/indices-unificados-iupc.js";
+import {
+  resumirInsumosDePresupuesto, resumenDeClasificacion, filtrarClasificacion,
+} from "../lib/clasificacion-presupuesto.js";
+import { agregarTermino, quitarTermino } from "../lib/clasificaciones-db.js";
+import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
+const { useState: uSG, useMemo: uMG, useEffect: uEG, useId: uIdG } = React;
 
 const numG = (x) => Number(x || 0).toLocaleString('es-PE');
 const SEMc = { verde: 'var(--green)', ambar: 'var(--amber)', rojo: 'var(--red)', sin_dato: 'var(--tm)' };
@@ -50,6 +56,220 @@ function useObraActiva() {
   return obraId;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// CLASIFICAR EL PRESUPUESTO (22-set-2026)
+//
+// Gabriel: «debemos tener dónde clasificar el presupuesto, puede ser dentro de
+// la sección del mismo donde se ven sus insumos».
+//
+// EL AGUJERO QUE TAPA. Los insumos del presupuesto NO se guardaban clasificados
+// en ninguna parte: el simulador los clasificaba al vuelo en cada corrida y no
+// había pantalla para corregir un error. Miraflores son 6.722 líneas y 432
+// nombres distintos — y de esos 432 sale el agrupamiento de las órdenes.
+//
+// DÓNDE SE GUARDA, Y POR QUÉ NO HAY TABLA NUEVA. La corrección va al MISMO
+// diccionario propio (`clasificacion_terminos`) que corrige las facturas. Es
+// la capa de corrección que ya define la regla 8 del CLAUDE.md, y tiene un
+// efecto que una tabla por obra no tendría: decir una vez que «SEÑAL
+// INFORMATIVA DE MADERA» es señalización arregla el presupuesto, las compras
+// y las órdenes de todas las obras a la vez. Es el mismo objeto del mundo.
+//
+// SE ESCRIBE COMO `origen: 'manual'` A PROPÓSITO. Los términos provisionales
+// —los que deja una decisión de la bandeja o un recorrido con IA— entran
+// DESPUÉS de la norma y no pueden pisar una coincidencia exacta del Anexo 2.
+// Lo que alguien elige acá es una corrección deliberada y va antes que todo,
+// que es lo único que hace que el cambio se VEA.
+// ═══════════════════════════════════════════════════════════════════
+function ClasificacionPresupuesto({ obraId, showToast }) {
+  const terHook = window.__hooks.useClasificacionTerminos();
+  const clasHook = window.__hooks.useClasificaciones?.() || { data: [] };
+  const auth = window.__useAuth ? window.__useAuth() : null;
+  const userId = auth?.profile?.id ?? null;
+
+  const [crudo, setCrudo] = uSG(null);     // null = cargando
+  const [busca, setBusca] = uSG('');
+  const [filtro, setFiltro] = uSG('todos'); // todos | sin | dudosas
+  const [guardando, setGuardando] = uSG('');
+  const listId = uIdG();
+
+  // Todas las líneas del presupuesto de la obra, UNA vez. Es la misma lectura
+  // que ya hace el contador de insumos por partida de esta pantalla.
+  uEG(() => {
+    let cancelado = false;
+    if (!obraId) { setCrudo([]); return undefined; }
+    (async () => {
+      try {
+        const rows = await window.__db.insumos_partida
+          .where('obra_id').equals(obraId).filter(r => !r.deleted_at).toArray();
+        if (!cancelado) setCrudo(rows || []);
+      } catch { if (!cancelado) setCrudo([]); }
+    })();
+    return () => { cancelado = true; };
+  }, [obraId]);
+
+  const terminosCustom = terHook.data || null;
+  const opciones = uMG(() => categoriasParaElegir(clasHook.data || []), [clasHook.data]);
+
+  // Un nombre = una fila. La plata y las partidas se suman: sin eso no se sabe
+  // por cuál conviene empezar, y con 432 nombres eso es todo el trabajo.
+  const filas = uMG(
+    () => (crudo ? resumirInsumosDePresupuesto(crudo, { terminosCustom }) : null),
+    [crudo, terminosCustom]
+  );
+  const visibles = uMG(() => (filas ? filtrarClasificacion(filas, { filtro, busca }) : []), [filas, filtro, busca]);
+  const resumen = uMG(() => (filas ? resumenDeClasificacion(filas) : null), [filas]);
+
+  // La corrección se guarda como término MANUAL. Si ya había uno para ese
+  // nombre se quita primero: `moverTermino` conserva el origen, y un término
+  // que quedó como «provisional» no puede pisar al Anexo 2 — se guardaría sin
+  // que el cambio se vea, que es el peor de los finales.
+  const clasificar = async (fila, codigo) => {
+    if (!codigo || codigo === fila.codigo) return;
+    if (codigo === 'sin_clasificar') {
+      showToast?.('«Sin clasificar» no se puede elegir: es lo que dice el motor cuando no reconoce el nombre.', 'amber');
+      return;
+    }
+    setGuardando(fila.clave);
+    try {
+      const previo = (terHook.data || []).find(t => !t.deleted_at && t.norm === fila.clave);
+      if (previo) await quitarTermino(previo.id, { userId });
+      const r = await agregarTermino({ termino: fila.nombre, clasificacionCodigo: codigo }, { userId });
+      if (r && r.ok === false) { showToast?.(r.motivo || 'No se pudo guardar', 'amber'); return; }
+      await terHook.refresh?.();
+      showToast?.(`«${fila.nombre.slice(0, 40)}» quedó como ${etiquetaCategoria(codigo)}`, 'green');
+    } catch (e) {
+      showToast?.(`Error: ${e?.message || e}`, 'red');
+    } finally {
+      setGuardando('');
+    }
+  };
+
+  const irAComprado = () => {
+    try {
+      window.__analisisInsumosIntent = { tab: 'catalogo', vista: 'reconocer' };
+      window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'analisis-insumos' } }));
+    } catch {}
+  };
+
+  if (filas === null) {
+    return <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Leyendo el presupuesto…</div>;
+  }
+  if (!filas.length) {
+    return (
+      <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
+        Este trabajo todavía no tiene insumos de presupuesto cargados.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <ClasificacionDatalist id={listId} opciones={opciones} />
+
+      <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)' }}>
+        <b>Qué ES cada insumo del presupuesto.</b>
+        <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
+          De esto salen los grupos con los que el <b>Simulador de Órdenes</b> arma cada orden: lo que se clasifica
+          acá es lo que después viaja junto al mismo proveedor. Lo que corrijas queda en el <b>diccionario propio</b>,
+          así que también arregla las facturas y las otras obras — es el mismo objeto del mundo.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, marginTop: 10 }}>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Nombres distintos</div><b>{resumen.total}</b></div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>Sin clasificar</div>
+            <b style={{ color: resumen.sinClasificar ? 'var(--amber)' : 'var(--green)' }}>{resumen.sinClasificar}</b>
+          </div>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Plata sin clasificar</div><b>{fmtS(resumen.montoSinClasificar)}</b></div>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Corregidos a mano</div><b>{resumen.decididas}</b></div>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Grupos de proveedor</div><b>{resumen.rubros}</b></div>
+          <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={irAComprado}
+            title="Lo que YA se compró se clasifica en su propia bandeja, por empresa">
+            <JxIcon name="package" size={13} /> Clasificar lo comprado →
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <input className="fi" style={{ maxWidth: 280 }} placeholder="Buscar insumo o clasificación…"
+          value={busca} onChange={e => setBusca(e.target.value)} />
+        {[['todos', `Todos (${resumen.total})`],
+          ['dudosas', `Por revisar (${resumen.porRevisar})`],
+          ['sin', `Sin clasificar (${resumen.sinClasificar})`]].map(([id, lbl]) => (
+          <button key={id} className={`btn btn-sm ${filtro === id ? 'btn-amber' : 'btn-ghost'}`}
+            onClick={() => setFiltro(id)}>{lbl}</button>
+        ))}
+        <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+          Ordenado por plata: arriba está lo que más mueve el plan.
+        </span>
+      </div>
+
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Insumo del presupuesto</th>
+                <th style={{ width: 300 }}>Qué es</th>
+                <th style={{ width: 190 }}>Va con</th>
+                <th style={{ width: 80, textAlign: 'right' }}>Partidas</th>
+                <th style={{ width: 110, textAlign: 'right' }}>Monto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibles.slice(0, 300).map(f => {
+                const info = bandaConfianza(f.score);
+                const sinClas = f.sinClasificar;
+                return (
+                  <tr key={f.clave}>
+                    <td className="col-p">
+                      <div style={{ fontSize: 12.5, fontWeight: 600 }}>{f.nombre}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                        {f.unidad || 'sin unidad'}
+                        {f.decidido
+                          ? <span style={{ color: 'var(--green)' }}> · lo decidiste vos</span>
+                          : <span className={`badge ${sinClas ? 'b-gray' : info.color}`}
+                              style={{ marginLeft: 6, fontSize: 9 }}>
+                              {sinClas ? 'no lo reconoce' : `${Math.round((f.score || 0) * 100)}%`}
+                            </span>}
+                      </div>
+                    </td>
+                    <td>
+                      <SelectorClasificacion
+                        listId={listId} opciones={opciones}
+                        value={sinClas ? '' : f.codigo}
+                        actualLabel={sinClas ? '' : f.etiqueta}
+                        placeholder={sinClas ? '⚠ elegí qué es…' : 'Escribí para cambiar…'}
+                        disabled={guardando === f.clave}
+                        onChange={(cod) => clasificar(f, cod)}
+                        style={{ fontSize: 12, padding: '3px 6px' }}
+                      />
+                    </td>
+                    <td style={{ fontSize: 11.5 }}>
+                      {f.rubroIcono} {f.rubroNombre}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>{f.nPartidas}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(f.monto)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {visibles.length > 300 && (
+          <div style={{ padding: 8, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
+            Mostrando 300 de {visibles.length}. Buscá o filtrá para ver el resto.
+          </div>
+        )}
+        {!visibles.length && (
+          <div style={{ padding: 20, textAlign: 'center', color: 'var(--tm)', fontSize: 12.5 }}>
+            Nada con este filtro.
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 // ─── INSUMOS POR PARTIDA ──────────────────────────────────
 // Comparativa Presupuestado (desde APU/Delphin → tabla insumos_partida)
 // vs Real (desde movimientos de materiales con partida_id asignado).
@@ -68,6 +288,13 @@ function InsumosPage({ showToast }) {
   const [foco, setFoco] = uSG(() => {
     const w = typeof window !== 'undefined' ? window : {};
     return (w.__insumosTargetCodigo && !w.__insumosTargetEsHoja) ? String(w.__insumosTargetCodigo) : null;
+  });
+  // «Por partida» (lo de siempre) o «Clasificación» (qué ES cada insumo).
+  // Se puede llegar directo a la segunda con `window.__insumosVista`.
+  const [vista, setVista] = uSG(() => {
+    const v = typeof window !== 'undefined' ? window.__insumosVista : null;
+    if (v) { try { delete window.__insumosVista; } catch {} return String(v); }
+    return 'partidas';
   });
   const [fromGantt] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromGantt);
   const [fromPartidas] = uSG(() => typeof window !== 'undefined' && !!window.__insumosFromPartidas);
@@ -423,18 +650,34 @@ function InsumosPage({ showToast }) {
           <div className="pg-title">Insumos por Partida</div>
           <div className="pg-sub">Comparativa <strong>presupuestado</strong> (APU/Delphin) vs <strong>real</strong> (movimientos)</div>
         </div>
-        <div style={{ width: 460, maxWidth: '46vw' }}>
-          <SearchableSelect
-            value={foco !== null ? '' : (partidaSel || '')}
-            onChange={v => { if (v && !String(v).startsWith('cap_')) { setPartidaSel(v); setFoco(null); } }}
-            options={opcionesPartida}
-            placeholder="— Buscar partida por código o nombre —"/>
-          <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, textAlign: 'right' }}>
-            🎯 elegí una partida · 📁 capítulos: abrilos en la lista o la ruta
+        {vista === 'partidas' && (
+          <div style={{ width: 460, maxWidth: '46vw' }}>
+            <SearchableSelect
+              value={foco !== null ? '' : (partidaSel || '')}
+              onChange={v => { if (v && !String(v).startsWith('cap_')) { setPartidaSel(v); setFoco(null); } }}
+              options={opcionesPartida}
+              placeholder="— Buscar partida por código o nombre —"/>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 3, textAlign: 'right' }}>
+              🎯 elegí una partida · 📁 capítulos: abrilos en la lista o la ruta
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
+      {/* DOS PREGUNTAS DISTINTAS SOBRE LOS MISMOS INSUMOS (22-set). «Por
+          partida» es cuánto lleva consumido cada una; «Clasificación» es QUÉ
+          ES cada insumo, que es de donde el simulador saca con quién agrupar
+          cada orden. Van juntas porque se miran una después de la otra. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+        {[['partidas', '📦 Por partida'], ['clasificacion', '🏷 Clasificación de los insumos']].map(([id, lbl]) => (
+          <button key={id} className={`btn btn-sm ${vista === id ? 'btn-amber' : 'btn-ghost'}`}
+            onClick={() => setVista(id)}>{lbl}</button>
+        ))}
+      </div>
+
+      {vista === 'clasificacion' && <ClasificacionPresupuesto obraId={obraId} showToast={showToast} />}
+
+      {vista === 'partidas' && <>
       {/* Breadcrumb de navegación (capítulos → sub-capítulos → partida) */}
       {(foco !== null || codigoActual) && (
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4, marginBottom: 14, fontSize: 12 }}>
@@ -720,6 +963,7 @@ function InsumosPage({ showToast }) {
         )}
       </>
       )}
+      </>}
     </div>
   );
 }
@@ -1829,3 +2073,9 @@ function VersionesPage({ showToast }) {
 }
 
 Object.assign(window, { InsumosPage, CostosPage, IncidenciasPage, VersionesPage });
+
+// `InsumosPage` resuelve la obra activa en un efecto, así que un render de
+// servidor nunca pasa de su «Cargando insumos…». El panel de clasificación
+// recibe la obra por prop y sí se puede montar solo: se exporta para poder
+// testearlo de verdad, no para que lo use otra pantalla.
+export { ClasificacionPresupuesto };
