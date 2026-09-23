@@ -637,7 +637,7 @@ describe('filtro de categorías (§3.4)', () => {
 });
 
 describe('las propuestas que ve Gabriel', () => {
-  it('se agrupan por período y subcategoría, con el título del §1', () => {
+  it('se agrupan por período y RUBRO DE PROVEEDOR, con el título del §1', () => {
     const { propuestas } = simularOrdenes({
       insumosPartida: [
         ip('p-corta', 'equipo', 'ZAPATOS PUNTA DE ACERO', 'par', 20, 85),
@@ -646,11 +646,59 @@ describe('las propuestas que ve Gabriel', () => {
       ],
       partidas, hoy: '2026-05-01', anclaje: 'cero',
     });
-    const epp = propuestas.find(p => p.subcategoria === 'epp');
-    expect(epp.titulo).toBe('EPPs — primera dotación');
-    expect(epp.lineas).toHaveLength(2);
-    const serv = propuestas.find(p => p.subcategoria === 'servicio');
-    expect(serv.titulo).toBe('Servicios y alquileres — junio 2026');
+    const seg = propuestas.find(p => p.rubro === 'seguridad');
+    expect(seg.titulo).toBe('Seguridad y señalización — primera dotación');
+    expect(seg.lineas).toHaveLength(2);
+    // La compresora es un alquiler de maquinaria: otro proveedor, otra orden.
+    const maq = propuestas.find(p => p.rubro !== 'seguridad');
+    expect(maq.titulo).toMatch(/— junio 2026$/);
+    expect(maq.lineas).toHaveLength(1);
+  });
+
+  // El pedido de Gabriel del 22-set, en un test: la orden tiene que poder
+  // mandarse a UN proveedor. Antes estos cinco caían juntos en «Materiales»
+  // porque el S10 los trae a todos con tipo_insumo='material'.
+  it('una orden por proveedor: el cemento con sus aditivos, la señal con los cachacos', () => {
+    const { propuestas } = simularOrdenes({
+      insumosPartida: [
+        ip('p-corta', 'material', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bol', 100, 30, CEMENTO),
+        ip('p-corta', 'material', 'ADITIVO IMPERMEABILIZANTE', 'gal', 10, 50),
+        ip('p-corta', 'material', 'ARENA GRUESA', 'm³', 20, 60),
+        ip('p-corta', 'material', 'SEÑAL INFORMATIVA DE MADERA (INCLUYE POSTE DE MADERA)', 'und', 5, 210),
+        ip('p-corta', 'material', 'MALLA CERCADORA NARANJA', 'rll', 10, 300),
+        ip('p-corta', 'material', 'EXAMENES MÉDICOS PREOCUPACIONALES', 'und', 30, 250),
+        ip('p-corta', 'material', 'MONITOREO DE CALIDAD DE AGUA', 'und', 4, 1500),
+      ],
+      partidas, hoy: '2026-05-01', anclaje: 'cero',
+    });
+    const de = (rubro) => propuestas.find(p => p.rubro === rubro);
+
+    // El ejemplo textual de Gabriel: cemento + aditivo + agregado, una orden.
+    expect(de('concreto').lineas.map(l => l.nombre).sort()).toEqual([
+      'ADITIVO IMPERMEABILIZANTE', 'ARENA GRUESA', 'CEMENTO PORTLAND TIPO I (42.5 kg)',
+    ]);
+    // Y el otro: la señal DE MADERA no va con el encofrado, va con la malla.
+    expect(de('seguridad').lineas.map(l => l.nombre).sort()).toEqual([
+      'MALLA CERCADORA NARANJA', 'SEÑAL INFORMATIVA DE MADERA (INCLUYE POSTE DE MADERA)',
+    ]);
+    // Los dos servicios que el S10 llamaba «material» salen por su lado, y no
+    // juntos entre sí: el de salud y el ambiental no son el mismo proveedor.
+    expect(de('salud').lineas.map(l => l.nombre)).toEqual(['EXAMENES MÉDICOS PREOCUPACIONALES']);
+    expect(de('ambiental').lineas.map(l => l.nombre)).toEqual(['MONITOREO DE CALIDAD DE AGUA']);
+    // Ninguna orden mezcla rubros.
+    expect(new Set(propuestas.map(p => p.rubro)).size).toBe(propuestas.length);
+
+    // Y CADA LÍNEA viaja con su clasificación, que es lo que la pantalla
+    // muestra al abrir la orden para que se vea por qué entró ahí. Sin este
+    // contrato el rubro es una caja negra: una línea mal clasificada se ve
+    // rara y no hay forma de saber de dónde salió.
+    for (const p of propuestas) {
+      for (const l of p.lineas) {
+        expect(l.iupc?.codigo, `línea sin clasificación: ${l.nombre}`).toBeTruthy();
+        expect(l.iupc?.etiqueta, `línea sin etiqueta: ${l.nombre}`).toBeTruthy();
+        expect(l.rubro).toBe(p.rubro);
+      }
+    }
   });
 
   it('el mismo insumo en dos partidas del mismo mes se junta en una línea', () => {

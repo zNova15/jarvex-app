@@ -133,6 +133,50 @@ const ES_POLIZA = /\b(seguros?|polizas?)\s+(de|contra|vehicular|complementari\w+
 const CON_MOTOR = /\b(electric\w*|inalambric\w*|bateria|motor|motorizad\w*|neumatic\w*|hidraulic\w*|gasolinero|rotomartillo|demoledor|combustion)\b/;
 const SIN_MOTOR = /\b(carretilla|buggy|pala|palana|pico|lampa|barreta|combo|comba|cincel|llave|alicate|destornillador|serrucho|escuadra|wincha|plomada|badilejo|frotacho|bugui|tijera|arco de sierra)\b/;
 
+// ── 7. SEÑALIZACIÓN DE OBRA ↔ EL MATERIAL DEL CARTEL ──────────────
+// Gabriel, 22-set-2026, mirando el simulador: «MALLA CERCADORA NARANJA, SEÑAL
+// INFORMATIVA DE MADERA (INCLUYE POSTE DE MADERA), CACHACOS DE SEGURIDAD DE
+// C° 1.20m … esto va como artículos de seguridad».
+//
+// Es el mismo par que el [83] de la regla 2 pero por el otro lado: aquélla
+// mira la PRENDA que se pone una persona; ésta, lo que se planta en el piso
+// para que nadie se caiga. Y falla igual de feo porque la descripción nombra
+// el material: la señal DE MADERA caía en [43] Madera para encofrado, la
+// malla cercadora NARANJA (que es plástico) en [46] Malla de acero, y la
+// cinta de señalización en [37] Herramienta manual. Las tres se le compran al
+// mismo proveedor de seguridad y ninguna es lo que decía.
+const SENIALIZACION = /\b(senalizacion|senaletica|senalizar|tranquera|tranqueras|baliza|balizas|cachaco|cachacos|delineador|delineadores|malla cercadora|malla naranja|malla de seguridad|cinta de seguridad|barrera de seguridad)\b/;
+// «SEÑAL», «CARTEL» y «LETRERO» son señalización salvo que sean otra cosa.
+const CARTEL = /\b(senal|senales|cartel|carteles|letrero|letreros|gigantografia)\b/;
+// Dos trampas medidas en el presupuesto de Miraflores: «CONO DE REBOSE 4"-3"»
+// es una pieza de tanque, no un cono vial; y «PALETA» puede ser de albañil.
+// Por eso esas dos palabras solo cuentan con el contexto de seguridad al lado.
+const ES_CONO_VIAL = /\b(cono|conos)\b(?!\s+de\s+rebose)/;
+const CONTEXTO_SEGURIDAD = /\b(seguridad|senalizacion|vial|naranja|pare y siga|reflectiv\w*|obra)\b/;
+const PALETA_SEGURIDAD = /\b(paleta|paletas)\b/;
+// Un cartel IMPRESO se le compra a la imprenta, no al proveedor de seguridad:
+// «GIGANTOGRAFÍA DE 3.60X2.40» es el cartel de obra y sale de una gráfica.
+//
+// OJO CON «MANUAL»: estuvo acá media hora y se llevó puesto a «HERRAMIENTAS
+// MANUALES», que pasó de [37] a la imprenta. El adjetivo «manual» es de la
+// herramienta; el sustantivo «manual» es el librito. No se pueden distinguir
+// por regex, y el clasificador base ya manda «MANUALES Y SU RESPECTIVA
+// ENTREGA» a [S12] por su cuenta — así que acá no hace falta.
+const IMPRESO = /\b(gigantografia|gigantografias|banner|banners|impresion|impresiones|afiche|afiches|folleto|folletos|volante|volantes)\b/;
+
+// ── 8. LO QUE NO ES UN INSUMO NI UN SERVICIO CONCRETO ──────────────
+// «SUB-CONTRATOS» salía [78] Válvula de hierro y acero —el parecido de tokens
+// pegándole a cualquier cosa— y «GASTOS OPERATIVOS» quedaba sin clasificar.
+// Ninguno de los dos es un material que alguien compre en una ferretería.
+const ES_SUBCONTRATO = /\b(sub\s?contrato|sub\s?contratos|subcontrato|subcontratos|subcontracion|subcontratacion)\b/;
+const GASTO_OPERATIVO = /\b(gastos? operativos?|gastos? generales|gastos? administrativos?|gastos? de gestion)\b/;
+
+// Y la trampa por el otro lado: el Anexo 2 tiene «Cono de seguridad» bajo
+// [83], y «cono» es un token tan corto que se lleva puesto al CONO DE REBOSE
+// —la pieza que va en el tanque de agua—. Medido en Miraflores: tres filas
+// que aterrizaban entre los cachacos y los conos viales.
+const PIEZA_DE_TUBERIA = /\b(cono de rebose|cono de tanque|cono de reboce)\b/;
+
 /**
  * LAS SEIS REGLAS. Cada una:
  *   · `cuando(n)`  — si esta descripción entra en el par difícil.
@@ -220,6 +264,49 @@ export const DESEMPATES = [
       ? 'Tiene motor (eléctrico, neumático o hidráulico): maquinaria liviana, no herramienta manual'
       : 'Se opera a mano, sin motor: herramienta manual, no maquinaria'),
     prompt: 'Entre [37] Herramienta manual y [48] Maquinaria liviana decide el MOTOR: eléctrico, a batería, neumático o hidráulico → [48]; lo que se opera a pulso (carretilla, pala, combo, llave) → [37].',
+  },
+  {
+    id: 'senalizacion-vs-material',
+    par: '[83] señalización de obra ↔ el material del que está hecho el cartel',
+    cuando: (n) => !IMPRESO.test(n) && (
+      SENIALIZACION.test(n)
+      || CARTEL.test(n)
+      || (ES_CONO_VIAL.test(n) && CONTEXTO_SEGURIDAD.test(n))
+      || (PALETA_SEGURIDAD.test(n) && CONTEXTO_SEGURIDAD.test(n))
+    ),
+    gana: () => '83',
+    pisa: 'material',
+    motivo: () => 'Es señalización de obra: manda para qué sirve, no la madera, el plástico o el concreto con que está hecha',
+    prompt: 'Señales, carteles, conos y paletas viales, mallas cercadoras, tranqueras, balizas y cachacos son [83] Implemento y accesorio de seguridad AUNQUE la descripción diga madera, concreto o malla: el material es un adjetivo, la señalización es el objeto.',
+  },
+  {
+    id: 'pieza-vs-senalizacion',
+    par: 'pieza de tubería ↔ [83], por el parecido con «Cono de seguridad»',
+    cuando: (n) => PIEZA_DE_TUBERIA.test(n),
+    gana: () => '72',
+    pisa: ['83'],
+    motivo: () => 'Es una pieza del tanque: el «cono» del Diccionario Oficial es el cono de seguridad, no el de rebose',
+    prompt: 'Un CONO DE REBOSE es una pieza de tubería [72], no un cono de señalización [83].',
+  },
+  {
+    id: 'impreso-vs-material',
+    par: '[S12] impresos y publicaciones ↔ el material del cartel',
+    cuando: (n) => IMPRESO.test(n),
+    gana: () => 'S12',
+    pisa: 'material',
+    motivo: () => 'Es material impreso: se le compra a una gráfica, no al proveedor de seguridad ni a la ferretería',
+    prompt: 'Gigantografías, banners, afiches, folletos y manuales son [S12] Gestión documental y publicaciones: salen de una imprenta.',
+  },
+  {
+    id: 'subcontrato-y-gasto-vs-material',
+    par: 'subcontrato / gasto operativo ↔ el material que el parecido le encontró',
+    cuando: (n) => ES_SUBCONTRATO.test(n) || GASTO_OPERATIVO.test(n),
+    gana: (n) => (ES_SUBCONTRATO.test(n) ? 'S09' : 'administrativos'),
+    pisa: 'material',
+    motivo: (cod) => (cod === 'S09'
+      ? 'Es obra ejecutada por un tercero, no un insumo que se compra'
+      : 'Es un gasto operativo de la obra, no un insumo que se compra'),
+    prompt: '«SUB-CONTRATOS» es [S09] Subcontrato de obra y «GASTOS OPERATIVOS» va a «administrativos»: ninguno de los dos es un material, por más que el parecido de palabras le encuentre uno.',
   },
 ];
 

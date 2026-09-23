@@ -134,11 +134,15 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('la planilla no se cubre con órdenes');
   });
 
-  it('arma órdenes por período y NUNCA una de mano de obra', () => {
+  it('arma órdenes por período y por RUBRO, y NUNCA una de mano de obra', () => {
     const html = render();
-    // El título de una orden es «Subcategoría — período» (§1 del plan).
-    expect(html).toContain('Materiales — octubre 2026');
-    expect(html).toContain('Materiales — noviembre 2026');
+    // Desde el 22-set el título de una orden es «Rubro de proveedor —
+    // período»: el cemento con la arena en una, la tubería en otra. Antes las
+    // tres caían juntas en «Materiales — octubre 2026», que es la orden
+    // mezclada que Gabriel no podía mandarle a nadie.
+    expect(html).toContain('Concreto, agregados y aditivos — octubre 2026');
+    expect(html).toContain('Tubería, válvulas y accesorios — noviembre 2026');
+    expect(html).not.toContain('Materiales — octubre 2026');
     // La planilla no se compra: no puede aparecer como una orden propuesta.
     expect(html).not.toContain('Mano de obra — octubre 2026');
   });
@@ -187,6 +191,29 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('ARENA GRUESA');
     expect(html).toContain('no tiene fecha de inicio planificada');
     expect(html).toContain('no las reparte «parejo» para que el total cierre');
+  });
+
+  // ── Los tres pedidos de Gabriel del 22-set ────────────────────────
+  it('hay un botón para pedir una recomendación nueva', () => {
+    // «No hay botón para solicitar nueva recomendación, solo cambia cambiando
+    // los filtros de arriba». El plan se recalculaba solo con una perilla o
+    // con un sync, y no había forma de decir «volvé a mirar».
+    const html = render();
+    expect(html).toContain('Nueva recomendación');
+  });
+
+  it('la pestaña de mano de obra abre con la SIMULACIÓN, no con el padrón', () => {
+    const html = render({ vistaInicial: 'dotacion' });
+    // Lo que el plan dice por su cuenta: cuánto cuesta y cuánta gente pide.
+    expect(html).toContain('Costo de la planilla en el plan');
+    expect(html).toContain('Pico de gente que pide el plan');
+    expect(html).toContain('Promedio por');
+    // 8.000 HH × S/ 20 = S/ 160 k de planilla, que antes no se mostraba.
+    expect(html).toContain('S/ 160 k');
+    // El padrón sigue, pero DESPUÉS y dicho como lo que es.
+    expect(html).toContain('Y recién acá, el contraste con la obra real');
+    expect(html.indexOf('Costo de la planilla en el plan'))
+      .toBeLessThan(html.indexOf('Personas en el padrón'));
   });
 
   it('sin obra activa no revienta: muestra el vacío', () => {

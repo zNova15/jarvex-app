@@ -191,7 +191,11 @@ describe('reglasDesempateParaIA', () => {
       expect(r.prompt.length).toBeLessThan(400);   // el prompt se paga por token
       expect(typeof r.par).toBe('string');
     }
-    expect(DESEMPATES).toHaveLength(6);
+    // Eran SEIS (los seis pares medidos el 15-set). El 22-set se sumaron
+    // cuatro más, de medir el presupuesto de Miraflores contra el simulador:
+    // señalización de obra, impresos, subcontrato/gasto operativo, y la pieza
+    // de tubería que el «Cono de seguridad» del Anexo 2 se llevaba puesta.
+    expect(DESEMPATES).toHaveLength(10);
   });
 });
 

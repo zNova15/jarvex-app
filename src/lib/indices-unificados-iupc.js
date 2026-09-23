@@ -2209,3 +2209,105 @@ export function gastoDeCategoria(codigo) {
   if (c === 'sin_clasificar') return 'otros';
   return GASTO_POR_TIPO[tipoDeCategoria(c)] || 'otros';
 }
+
+// ── EL TERCER PUENTE: A QUÉ PROVEEDOR SE LE COMPRA ──────────────────
+//
+// Gabriel, 22-set-2026, mirando una orden del simulador con 58 líneas que
+// mezclaban exámenes médicos, monitoreos, gigantografías y cemento: «si no,
+// vamos a generar una orden con cosas súper mezcladas, que es ilógico. Lo
+// ideal sería tener agrupado cosas que se relacionan, por ejemplo órdenes de
+// compra de cemento con sus aditivos, o [malla cercadora, señales, cachacos]
+// pues esto va como artículos de seguridad».
+//
+// POR QUÉ NO ALCANZABA NINGUNO DE LOS DOS PUENTES QUE YA HABÍA. `tipo` dice a
+// qué tabla de inventario va, y `gasto` cómo lo agrupa la contadora: los dos
+// son demasiado gruesos para armar UNA orden. Y el IUPC solo es demasiado
+// FINO en la otra dirección — el cemento [21], los agregados [04]/[05] y el
+// aditivo [81] son cuatro códigos y una sola visita a la misma ferretería.
+// Éste es el corte del medio: **qué clase de proveedor vende esto**.
+//
+// No es una taxonomía nueva: es una reagrupación de los códigos oficiales, y
+// por eso vive acá y no en otro archivo (misma razón que `tipoDeCategoria`).
+const RUBRO_POR_CODIGO = new Map();
+const defRubro = (rubro, codigos) => codigos.forEach(c => RUBRO_POR_CODIGO.set(c, rubro));
+
+defRubro('concreto',      ['21', '22', '23', '04', '05', '38', '80', '81', '31', '62', '69', '70']);
+defRubro('acero',         ['02', '03', '46', '50', '51', '52', '56', '57', '61', '85', '09']);
+defRubro('tuberia',       ['65', '66', '68', '71', '72', '73', '77', '78', '89', '90', '10']);
+defRubro('electrico',     ['06', '07', '08', '18', '19', '82', '11', '12']);
+defRubro('madera',        ['41', '42', '43', '44', '84', '94']);
+defRubro('pintura',       ['54', '55', '86']);
+defRubro('seguridad',     ['83']);
+defRubro('acabados',      ['17', '24', '26', '40', '64', '14', '16', '59', '60', '79', '87', '88', '91']);
+defRubro('combustible',   ['01', '34', '53']);
+defRubro('herramienta',   ['37']);
+defRubro('maquinaria',    ['48', '49', '95']);
+defRubro('explosivos',    ['27', '28']);
+defRubro('asfalto',       ['13', '20']);
+defRubro('flete',         ['32', '33', '92', 'S03']);
+defRubro('ambiental',     ['S05']);
+defRubro('salud',         ['S04', 'S06']);
+defRubro('consultoria',   ['S07']);
+defRubro('imprenta',      ['S12']);
+defRubro('subcontrato',   ['S09', 'S14']);
+defRubro('alquiler',      ['S01', 'S02']);
+defRubro('servicios',     ['93', 'servicios', 'S08', 'S10', 'S11', 'S13']);
+defRubro('administrativos', ['administrativos', '30', '39']);
+defRubro('mano_obra',     ['47', '47-1']);
+
+/** Cómo se llama cada rubro en la pantalla, y en qué orden se muestran. */
+export const RUBROS_COMPRA = [
+  { rubro: 'concreto',       nombre: 'Concreto, agregados y aditivos', icono: '🧱' },
+  { rubro: 'acero',          nombre: 'Acero y metalmecánica',          icono: '🏗' },
+  { rubro: 'tuberia',        nombre: 'Tubería, válvulas y accesorios', icono: '🚰' },
+  { rubro: 'madera',         nombre: 'Madera y encofrado',             icono: '🪵' },
+  { rubro: 'acabados',       nombre: 'Acabados y albañilería',         icono: '🧰' },
+  { rubro: 'electrico',      nombre: 'Material eléctrico',             icono: '💡' },
+  { rubro: 'pintura',        nombre: 'Pintura y pegamentos',           icono: '🎨' },
+  { rubro: 'seguridad',      nombre: 'Seguridad y señalización',       icono: '🦺' },
+  { rubro: 'herramienta',    nombre: 'Herramientas',                   icono: '🔨' },
+  { rubro: 'maquinaria',     nombre: 'Maquinaria y equipos',           icono: '🚜' },
+  { rubro: 'combustible',    nombre: 'Combustible y lubricantes',      icono: '⛽' },
+  { rubro: 'asfalto',        nombre: 'Asfalto',                        icono: '🛣' },
+  { rubro: 'explosivos',     nombre: 'Explosivos',                     icono: '🧨' },
+  { rubro: 'flete',          nombre: 'Flete y transporte',             icono: '🚚' },
+  { rubro: 'alquiler',       nombre: 'Alquileres',                     icono: '🔑' },
+  { rubro: 'subcontrato',    nombre: 'Subcontratos de obra',           icono: '📐' },
+  { rubro: 'ambiental',      nombre: 'Servicios ambientales',          icono: '🧪' },
+  { rubro: 'salud',          nombre: 'Salud ocupacional y capacitación', icono: '🩺' },
+  { rubro: 'consultoria',    nombre: 'Estudios y consultoría',         icono: '📋' },
+  { rubro: 'imprenta',       nombre: 'Imprenta y publicaciones',       icono: '🖨' },
+  { rubro: 'servicios',      nombre: 'Otros servicios',                icono: '🛠' },
+  { rubro: 'administrativos', nombre: 'Gastos administrativos',        icono: '📎' },
+  { rubro: 'mano_obra',      nombre: 'Mano de obra',                   icono: '👷' },
+  { rubro: 'sin_clasificar', nombre: 'Sin clasificar',                 icono: '❓' },
+];
+
+export const RUBRO_COMPRA_POR_ID = new Map(RUBROS_COMPRA.map(r => [r.rubro, r]));
+const ORDEN_RUBRO = new Map(RUBROS_COMPRA.map((r, i) => [r.rubro, i]));
+
+/**
+ * El rubro de compra de una categoría cualquiera: **a qué clase de proveedor
+ * se le compra esto**. Es lo que arma una orden que una persona puede mandar.
+ *
+ * Una clasificación propia (`custom:…`) no tiene rubro asignado y cae en
+ * `sin_clasificar` a propósito: inventarle uno la mezclaría con insumos que no
+ * tienen nada que ver, que es justo el problema que este puente viene a
+ * resolver. Se resuelve eligiéndole un código oficial en el Catálogo.
+ */
+export function rubroDeCompra(codigo) {
+  const c = String(codigo || '').trim();
+  if (!c) return 'sin_clasificar';
+  const directo = RUBRO_POR_CODIGO.get(c);
+  if (directo) return directo;
+  // Un código reagrupado (22/23 → 21) hereda el rubro de su cabecera.
+  const real = REAGRUPACIONES_IUPC[c];
+  if (real && RUBRO_POR_CODIGO.has(real)) return RUBRO_POR_CODIGO.get(real);
+  return 'sin_clasificar';
+}
+
+/** El orden en que se muestran los rubros (los de obra antes que los de gasto). */
+export function ordenDeRubro(rubro) {
+  const i = ORDEN_RUBRO.get(rubro);
+  return i == null ? RUBROS_COMPRA.length : i;
+}

@@ -142,6 +142,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [reqItems, setReqItems] = uS([]);
   const [movs, setMovs] = uS([]);
   const [emitiendo, setEmitiendo] = uS(null);   // id de la requisición en curso
+  // «No hay botón para solicitar nueva recomendación, solo cambia cambiando
+  // los filtros de arriba» (Gabriel, 22-set). El plan se recalcula solo
+  // cuando cambia una perilla o llega un sync, y eso deja la duda de si lo
+  // que se está mirando es de hace media hora. Este contador fuerza las dos
+  // cosas: volver a leer los datos y volver a correr el motor.
+  const [recalcN, setRecalcN] = uS(0);
   const convertirRef = uR(false);
   const emitirRef = uR(false);
 
@@ -215,7 +221,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       window.removeEventListener('jx_data_changed', on);
       window.removeEventListener('jx_sync_pull', cargar);
     };
-  }, []);
+  }, [recalcN]);
 
   const obra = uM(() => obras.find(o => o.id === obraId) || null, [obras, obraId]);
   const titularId = uM(() => titularContableDeObra(obra, consHook.data || []), [obra, consHook.data]);
@@ -277,7 +283,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       terminosCustom,
     });
   }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom]);
+    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, recalcN]);
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
@@ -682,7 +688,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           </button>
           <button className="btn btn-sm btn-ghost" onClick={renombrarEscenario}><JxIcon name="edit" size={13} /> Renombrar</button>
           <button className="btn btn-sm btn-ghost" onClick={eliminarEscenario}><JxIcon name="trash" size={13} /> Borrar</button>
-          <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={() => setPanelParams(v => !v)}>
+          <button className="btn btn-sm btn-amber" style={{ marginLeft: 'auto' }}
+            onClick={() => { setRecalcN(n => n + 1); toast('Plan recalculado con lo último que hay cargado', 'green'); }}
+            title="Vuelve a leer las órdenes, requisiciones y compras, y corre el plan de nuevo. Tus decisiones se conservan.">
+            <JxIcon name="refresh" size={13} /> Nueva recomendación
+          </button>
+          <button className="btn btn-sm btn-ghost" onClick={() => setPanelParams(v => !v)}>
             <JxIcon name={panelParams ? 'chevU' : 'chevD'} size={13} /> Parámetros
           </button>
         </div>
@@ -1040,7 +1051,7 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
       <div className="card-p" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', cursor: 'pointer' }} onClick={onToggle}>
         <JxIcon name={abierta ? 'chevD' : 'chevR'} size={14} />
         <div style={{ minWidth: 200 }}>
-          <b>{p.titulo}</b>
+          <b>{p.rubroIcono ? `${p.rubroIcono} ` : ''}{p.titulo}</b>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
             {p.lineas.length} línea(s)
             {p.lineas.some(l => l.tramoLargo) && ' · con tramo largo repartido'}
@@ -1174,6 +1185,17 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, re
         )}
         <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
           {l.insumo_codigo || 'sin código'} · {l.unidad}
+          {/* QUÉ ES, que es lo que explica por qué está en ESTA orden. Sin
+              esto el rubro es una caja negra y una línea mal clasificada no
+              se puede discutir: se ve rara y no se sabe por qué entró. */}
+          {l.iupc && (
+            <span style={{ color: l.iupc.codigo === 'sin_clasificar' ? 'var(--amber)' : 'var(--tm)' }}
+              title={l.iupc.codigo === 'sin_clasificar'
+                ? 'El clasificador no reconoció este nombre: por eso cayó en «Sin clasificar». Se corrige en «Clasificación de insumos y servicios».'
+                : `Por esto entró en esta orden · ${Math.round((l.iupc.score || 0) * 100)}% de coincidencia`}>
+              {' · '}{l.iupc.codigo === 'sin_clasificar' ? 'sin clasificar' : l.iupc.etiqueta}
+            </span>
+          )}
           {l.tramoLargo && <span title="Viene de una partida de tramo largo: esta cantidad es la parte que toca a este período"> · repartido</span>}
           {l.arrastrado && <span style={{ color: 'var(--amber)' }} title="Venía de un período ya vencido y se arrastró acá"> · atrasado</span>}
           {!l.montoConocido && <span style={{ color: 'var(--amber)' }}> · sin precio en el expediente</span>}
@@ -1433,7 +1455,25 @@ function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar
 
 function DotacionVista({ d, params, onParam }) {
   const plan = uM(() => (d ? planDeContratacion(d) : []), [d]);
+  // La foto que contesta «¿cuánta gente hay que tener?» sin mirar el padrón.
+  // Va en un uM antes del early return (regla de hooks: React #310).
+  const cuantaGente = uM(() => {
+    const ps = (d?.periodos || []).filter(p => num(p.personasNecesarias) > 0);
+    if (!ps.length) return { pico: { personas: 0, etiqueta: '' }, promedio: 0, conDemanda: 0 };
+    const top = ps.reduce((a, b) => (num(b.personasNecesarias) > num(a.personasNecesarias) ? b : a));
+    const suma = ps.reduce((s, p) => s + num(p.personasNecesarias), 0);
+    return {
+      pico: { personas: Math.ceil(num(top.personasNecesarias)), etiqueta: top.etiquetaPeriodo },
+      promedio: Math.round(suma / ps.length),
+      conDemanda: ps.length,
+    };
+  }, [d]);
   if (!d) return <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Calculando…</div>;
+
+  const pico = cuantaGente.pico;
+  const promedioPersonas = cuantaGente.promedio;
+  const periodosConDemanda = cuantaGente.conDemanda;
+  const esSemanal = d.resumen?.granularidad === 'semana';
 
   const { resumen, periodos, cargos, padron, sinCargo } = d;
   return (
@@ -1470,14 +1510,54 @@ function DotacionVista({ d, params, onParam }) {
         </span>
       </div>
 
-      <div className="card card-p" style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', gap: 18 }}>
-        <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>HH que pide el cronograma</div><b>{cant(resumen.hhRequeridas)}</b></div>
-        <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>HH que rinde el padrón</div><b>{cant(resumen.hhDisponibles)}</b></div>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--tm)' }}>Cobertura</div>
-          <b style={{ color: resumen.cobertura >= 0.95 ? 'var(--green)' : 'var(--red)' }}>{pct(resumen.cobertura)}</b>
+      {/* PRIMERO LA SIMULACIÓN, DESPUÉS LA COMPARACIÓN (22-set). Antes esta
+          pestaña abría con «cobertura 10%» contra el padrón, que es lo que
+          la simulación NO es: Gabriel pidió «que quede como simulador — acá
+          no sale cuánta gente se estima contratar en el mes, ni el monto».
+          El padrón sigue estando, una fila más abajo y dicho como lo que es:
+          un contraste con la obra real, no el resultado. */}
+      <div className="card card-p" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>Costo de la planilla en el plan</div>
+            <b style={{ fontSize: 16 }}>{solesK(resumen.montoTotalManoObra)}</b>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{cant(resumen.hhTotalManoObra)} HH del expediente</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>Pico de gente que pide el plan</div>
+            <b style={{ fontSize: 16 }}>{pico.personas || '—'}</b>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+              {pico.etiqueta ? `en ${pico.etiqueta}` : 'sin período con demanda'}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>Promedio por {esSemanal ? 'semana' : 'mes'}</div>
+            <b style={{ fontSize: 16 }}>{promedioPersonas || '—'}</b>
+            <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{periodosConDemanda} período(s) con trabajo</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>HH que pide el cronograma</div>
+            <b style={{ fontSize: 16 }}>{cant(resumen.hhRequeridas)}</b>
+          </div>
         </div>
-        <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Personas en el padrón</div><b>{padron.total}</b></div>
+        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '10px 0 0' }}>
+          Esto es <b>lo que el expediente pide</b>, período por período, con la jornada de arriba. Es la simulación:
+          todavía no se compara con nadie.
+        </p>
+      </div>
+
+      <div className="card card-p" style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11.5, color: 'var(--tm)', marginBottom: 8 }}>
+          Y recién acá, el contraste con la obra real:
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>HH que rinde el padrón</div><b>{cant(resumen.hhDisponibles)}</b></div>
+          <div>
+            <div style={{ fontSize: 11, color: 'var(--tm)' }}>Cobertura</div>
+            <b style={{ color: resumen.cobertura >= 0.95 ? 'var(--green)' : 'var(--red)' }}>{pct(resumen.cobertura)}</b>
+          </div>
+          <div><div style={{ fontSize: 11, color: 'var(--tm)' }}>Personas en el padrón</div><b>{padron.total}</b></div>
+        </div>
       </div>
 
       {plan.length > 0 && (

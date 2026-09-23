@@ -50,7 +50,17 @@ const INSUMOS = [
   { id: 'i3', partida_id: 'p2', insumo_codigo: 'MAT-003', nombre_insumo: 'TUBERIA PVC 4"',
     unidad: 'm', tipo_insumo: 'material', cantidad_presupuestada: 500, precio_presupuestado: 12,
     costo_presupuestado: 6000 },
+  // Desde el 22-set las órdenes se agrupan por RUBRO DE PROVEEDOR, no por
+  // subcategoría: cemento y ladrillo ya no caen juntos («concreto» vs
+  // «acabados»). La arena va con el cemento y es lo que deja probar la
+  // decisión por LÍNEA, que necesita una orden con más de una.
+  { id: 'i4', partida_id: 'p1', insumo_codigo: 'MAT-004', nombre_insumo: 'ARENA GRUESA',
+    unidad: 'm3', tipo_insumo: 'material', cantidad_presupuestada: 40, precio_presupuestado: 50,
+    costo_presupuestado: 2000 },
 ];
+
+/** La orden con más de una línea, que es donde se puede decidir por línea. */
+const conVariasLineas = (c) => c.propuestas.find(p => p.lineas.length > 1);
 
 const corrida = (extra = {}) => simularOrdenes({
   insumosPartida: INSUMOS, partidas: PARTIDAS,
@@ -138,7 +148,7 @@ describe('decidir — la decisión sobrevive a volver a correr el motor', () => 
 
   it('la decisión de la línea le gana a la de su orden', () => {
     const c = corrida();
-    const p0 = c.propuestas[0];
+    const p0 = conVariasLineas(c);
     let esc = decidirPropuesta(nuevoEscenario({}), p0.id, 'aceptada');
     esc = decidirLinea(esc, p0.id, p0.lineas[0], 'rechazada');
     const { propuestas, resumen } = aplicarEscenario(c, esc);
@@ -269,7 +279,7 @@ describe('editar — el expediente es el punto de partida, el desvío se ve', ()
 
   it('y se puede pisar en una línea suelta sin tocar el resto', () => {
     const c = corrida();
-    const p0 = c.propuestas[0];
+    const p0 = conVariasLineas(c);
     let esc = decidirPropuesta(nuevoEscenario({}), p0.id, 'aceptada');
     esc = proveedorDePropuesta(esc, p0.id, p0.lineas, { id: 'c1', nombre: 'FERRETERÍA SAC' });
     esc = editarLinea(esc, p0.id, p0.lineas[0], { proveedor_id: 'c2', proveedor_nombre: 'OTRA SAC' });
@@ -280,7 +290,7 @@ describe('editar — el expediente es el punto de partida, el desvío se ve', ()
 
   it('con `soloAceptadas` no le pone proveedor a lo que no se va a emitir', () => {
     const c = corrida();
-    const p0 = c.propuestas[0];
+    const p0 = conVariasLineas(c);
     let esc = decidirLinea(nuevoEscenario({}), p0.id, p0.lineas[0], 'aceptada');
     const conDecision = aplicarEscenario(c, esc).propuestas.find(p => p.id === p0.id);
     esc = proveedorDePropuesta(esc, p0.id, conDecision.lineas, { id: 'c1', nombre: 'FERRE' }, { soloAceptadas: true });

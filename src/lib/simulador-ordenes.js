@@ -47,7 +47,10 @@ import {
   clasificarInsumoDePresupuesto, CATEGORIAS_SIMULADOR,
   SUBCATEGORIA_LABEL, normUnidad,
 } from './insumo-clasificador.js';
-import { clasificarConIUPC, etiquetaCategoria, tipoDeCategoria } from './indices-unificados-iupc.js';
+import {
+  clasificarConIUPC, etiquetaCategoria, tipoDeCategoria,
+  rubroDeCompra, RUBRO_COMPRA_POR_ID, ordenDeRubro,
+} from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
 
 /**
@@ -62,7 +65,7 @@ import { hoyLocal } from './fecha.js';
  * plausible: una fila que dice «no sé» se filtra y se resuelve; una con un
  * código inventado se pierde entre las buenas.
  */
-function clasificarSobre(nombre, terminosCustom) {
+function clasificacionDe(nombre, terminosCustom) {
   const rec = clasificarConIUPC(nombre || '', { terminosCustom });
   return {
     codigo: rec.codigo,
@@ -451,6 +454,18 @@ export function simularOrdenes({
 
   const porId = new Map(vivos(partidas).map(p => [p.id, p]));
 
+  // La clasificación se hace UNA VEZ POR NOMBRE, no por línea: Miraflores
+  // tiene 6.722 líneas de insumo y 432 nombres distintos, y `clasificarConIUPC`
+  // recorre el diccionario del Anexo 2 en cada llamada. Sin este memo, la
+  // corrida entera se repite en cada cambio de perilla.
+  const memoIUPC = new Map();
+  const clasificarNombre = (nombre) => {
+    const k = String(nombre || '');
+    let v = memoIUPC.get(k);
+    if (!v) { v = clasificacionDe(k, terminosCustom); memoIUPC.set(k, v); }
+    return v;
+  };
+
   // acumuladores
   const celdas = new Map();     // `${periodo}|${clave}` → línea acumulada
   const sobres = new Map();     // clave de sobre → { …, porPeriodo:Map }
@@ -561,10 +576,12 @@ export function simularOrdenes({
       const k = `${periodo}|${clave}`;
       let c = destino.get(k);
       if (!c) {
+        const iupc = clasificarNombre(ip.nombre_insumo);
         c = {
           periodo, clave, insumo_codigo: ip.insumo_codigo || null,
           nombre: ip.nombre_insumo || '', unidad: ip.unidad || '',
           categoria: cls.categoria, subcategoria: cls.subcategoria,
+          iupc, rubro: rubroDeCompra(iupc.codigo),
           cantidad: 0, monto: 0, montoConocido: true,
           partidas: new Set(), porPartida: new Map(),
           tramoLargo: false, arrastrado: false,
@@ -662,17 +679,30 @@ export function simularOrdenes({
   aplicarAnclaje(manoObra);
 
   // ── 4) armar las propuestas ───────────────────────────────────────
-  // Una propuesta = un período × una subcategoría. Es la unidad que se
+  // Una propuesta = un período × un RUBRO DE PROVEEDOR. Es la unidad que se
   // acepta o se rechaza entera en la pantalla (tanda 3).
+  //
+  // HASTA EL 22-SET ERA «período × subcategoría», y con cuatro cajones el
+  // resultado era una orden sola de 58 líneas donde convivían los exámenes
+  // médicos preocupacionales, los monitoreos de calidad de agua, una
+  // gigantografía y el cemento. Gabriel: «vamos a generar una orden con cosas
+  // súper mezcladas, que es ilógico». No se le puede mandar a nadie.
+  //
+  // El rubro sale de la clasificación oficial (`rubroDeCompra`), así que la
+  // orden agrupa lo que UN proveedor vende: el cemento con sus aditivos y sus
+  // agregados, las señales con los cachacos y los EPPs, los cuatro monitoreos
+  // juntos. Salen MÁS órdenes por mes y cada una se puede mandar.
   const grupos = new Map();
   for (const c of celdas.values()) {
     if (c.cantidad <= 0.0001 && c.monto <= 0.004) continue;   // quedó cubierto
-    const k = `${c.periodo}|${c.subcategoria}`;
+    const k = `${c.periodo}|${c.rubro}`;
     let g = grupos.get(k);
     if (!g) {
       g = {
         id: k, periodo: c.periodo, etiquetaPeriodo: etiquetaPeriodo(c.periodo),
         categoria: c.categoria, subcategoria: c.subcategoria,
+        rubro: c.rubro, rubroNombre: RUBRO_COMPRA_POR_ID.get(c.rubro)?.nombre || c.rubro,
+        rubroIcono: RUBRO_COMPRA_POR_ID.get(c.rubro)?.icono || '',
         titulo: '', lineas: [], monto: 0, tieneMontoIncompleto: false,
       };
       grupos.set(k, g);
@@ -691,23 +721,30 @@ export function simularOrdenes({
       montoConocido: c.montoConocido, tramoLargo: c.tramoLargo,
       arrastrado: c.arrastrado, partidas: [...c.partidas],
       categoria: c.categoria, subcategoria: c.subcategoria,
+      // QUÉ ES esta línea, para que se vea por qué está en esta orden y se
+      // pueda discutir. Sin esto, el rubro es una caja negra.
+      iupc: c.iupc, rubro: c.rubro,
     });
     g.monto += c.monto;
     if (!c.montoConocido) g.tieneMontoIncompleto = true;
   }
 
+  // Dentro de un mismo período las órdenes salen en el orden de los rubros
+  // (los de obra antes que los de gasto), no por monto: así la lista de un mes
+  // se lee siempre igual y se encuentra la orden que uno busca.
   const propuestas = [...grupos.values()].sort((a, b) =>
     (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0)
+    || (ordenDeRubro(a.rubro) - ordenDeRubro(b.rubro))
     || (b.monto - a.monto));
 
-  // El título: «EPPs — primera dotación» para la PRIMERA tanda de EPPs (el
-  // ejemplo del §1 del plan), y «Subcategoría — período» para el resto.
-  const primerPeriodoEpp = propuestas.find(p => p.subcategoria === 'epp')?.periodo;
+  // El título: «Seguridad y señalización — primera dotación» para la PRIMERA
+  // tanda del rubro de seguridad (el ejemplo del §1 del plan, que hablaba de
+  // EPPs), y «Rubro — período» para el resto.
+  const primerPeriodoSeguridad = propuestas.find(p => p.rubro === 'seguridad')?.periodo;
   for (const g of propuestas) {
-    const etiqueta = SUBCATEGORIA_LABEL[g.subcategoria] || g.subcategoria;
-    g.titulo = (g.subcategoria === 'epp' && g.periodo === primerPeriodoEpp)
-      ? 'EPPs — primera dotación'
-      : `${etiqueta} — ${g.etiquetaPeriodo}`;
+    g.titulo = (g.rubro === 'seguridad' && g.periodo === primerPeriodoSeguridad)
+      ? `${g.rubroNombre} — primera dotación`
+      : `${g.rubroNombre} — ${g.etiquetaPeriodo}`;
     g.monto = r2(g.monto);
     g.lineas.sort((a, b) => b.monto - a.monto);
     resumen.montoPropuesto += g.monto;
@@ -732,7 +769,7 @@ export function simularOrdenes({
     return {
       clave: s.clave, nombre: s.nombre, unidad: s.unidad,
       categoria: s.categoria, subcategoria: s.subcategoria,
-      iupc: clasificarSobre(s.nombre, terminosCustom),
+      iupc: clasificacionDe(s.nombre, terminosCustom),
       techo: r2(s.techo), enPartidas: s.enPartidas, partidaIds: [...s.partidaIds],
       consumido, consumoInformado: informado,
       disponible: informado ? r2(s.techo - consumido) : null,
