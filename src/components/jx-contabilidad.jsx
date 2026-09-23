@@ -7937,7 +7937,7 @@ function VisorEvidenciaModal({ entry, onClose }) {
     onClose?.();
   };
   return (
-    <Modal title={`Comprobante: ${entry?.nombre || ''}`} icon="eye" onClose={cerrar} wide>
+    <Modal title={`Comprobante: ${entry?.nombre || ''}`} icon="eye" onClose={cerrar} wide elevated>
       <div style={{ minHeight: 480, maxHeight: '70vh', background: 'var(--bg-p)', borderRadius: 6, overflow: 'hidden' }}>
         {error ? (
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60vh', gap:8, color:'var(--tm)', fontSize:12 }}>

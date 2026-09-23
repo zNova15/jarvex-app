@@ -155,6 +155,70 @@ describe('2. notas de crédito', () => {
     ];
     expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_anulada_viva')).toHaveLength(0);
   });
+
+  // Gabriel, 23-set-2026: «un comprobante fue emitido y declarado en una fecha
+  // anterior a la de la emisión, lo cual es súper ilógico y hay que tener
+  // cuidado con eso». No hay ningún caso hoy en producción — el chequeo se
+  // agrega DE TODOS MODOS: es imposible, cero falsos positivos, y si algún día
+  // pasa (una fecha mal tipeada en la nota o en la factura) hay que atajarlo.
+  it('🔴 una nota fechada ANTES que la factura que modifica es imposible', () => {
+    const movs = [
+      compra('f', JARVEX, 'E001-50', '20999999999', 9000, '2026-05-02'),
+      compra('n', JARVEX, 'E001-50', '20999999999', -100, '2026-01-10', { document_type: 'nota_credito', related_movement_id: 'f' }),
+    ];
+    const r = notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible');
+    expect(r).toHaveLength(1);
+    expect(r[0].gravedad).toBe('alta');
+    expect(r[0].movimientoId).toBe('n');       // ancla en la NOTA
+    expect(r[0].facturaId).toBe('f');          // pero conoce a la factura, para el segundo 👁
+  });
+
+  it('también atrapa a la NOTA DE DÉBITO, no solo a la de crédito', () => {
+    const movs = [
+      compra('f', JARVEX, 'E001-51', '20999999999', 9000, '2026-05-02'),
+      compra('n', JARVEX, 'E001-51', '20999999999', 100, '2026-01-10', { document_type: 'nota_debito', related_movement_id: 'f' }),
+    ];
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(1);
+  });
+
+  it('el caso normal —la nota es POSTERIOR— no dispara nada', () => {
+    const movs = [
+      compra('f', JARVEX, 'E001-52', '20999999999', 9000, '2026-01-10'),
+      compra('n', JARVEX, 'E001-52', '20999999999', -100, '2026-05-02', { document_type: 'nota_credito', related_movement_id: 'f' }),
+    ];
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(0);
+  });
+
+  it('el MISMO día no es "anterior": es el caso legítimo de anular el día que se emite', () => {
+    const movs = [
+      compra('f', JARVEX, 'E001-53', '20999999999', 9000, '2026-05-02'),
+      compra('n', JARVEX, 'E001-53', '20999999999', -9000, '2026-05-02', { document_type: 'nota_credito', related_movement_id: 'f' }),
+    ];
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(0);
+  });
+
+  it('una nota huérfana no dispara TAMBIÉN esta regla: son problemas distintos', () => {
+    const movs = [compra('n', JARVEX, 'E001-93', '20999999999', -850, '2026-07-20', { document_type: 'nota_credito' })];
+    const r = notasIncoherentes(movs);
+    expect(r.filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(0);
+  });
+
+  it('el espejo intercompany (nota que apunta a otra nota) no cuenta como "anterior a la factura"', () => {
+    const movs = [
+      compra('n1', JARVEX, 'E001-1', '20999999999', -100, '2026-01-01', { document_type: 'nota_credito' }),
+      compra('n2', INCA, 'E001-1', '20615646505', -100, '2025-01-01', { document_type: 'nota_credito', related_movement_id: 'n1' }),
+    ];
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(0);
+  });
+
+  it('la factura anulada trae los ids de sus notas, para el segundo 👁', () => {
+    const movs = [
+      venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06'),
+      venta('n', JARVEX, 'E001-1', '20615346081', -12920, '2026-07-06', { document_type: 'nota_credito', related_movement_id: 'f' }),
+    ];
+    const [h] = notasIncoherentes(movs).filter(x => x.regla === 'factura_anulada_viva');
+    expect(h.notasIds).toEqual(['n']);
+  });
 });
 
 describe('3. importes que no cuadran solos', () => {

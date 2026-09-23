@@ -40,6 +40,7 @@ import { partirDocumento, SERIE_RE } from './serie-comprobante.js';
 import { esVentaMov } from './costo-obra.js';
 import { esNotaCredito, esNota, notasPorFactura } from './notas-credito.js';
 import { desglosarIgv } from './igv-desglose.js';
+import { ymdDe } from './fecha.js';
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const abs = (n) => Math.abs(Number(n) || 0);
@@ -50,7 +51,11 @@ const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at)
 const TOLERANCIA = 0.05;
 export const FAMILIAS = {
   intercompany: 'Intercompany sin espejo',
-  nota_credito: 'Notas de crédito',
+  // El nombre quedó "nota_credito" por compatibilidad con las decisiones ya
+  // guardadas (`aplicarDecisionesEscaner` busca por este id), pero la familia
+  // cubre las dos notas desde el 23-set-2026 (`nota_fecha_imposible` también
+  // atrapa a la nota de débito).
+  nota_credito: 'Notas de crédito y débito',
   importes: 'Importes que no cuadran',
   serie: 'Serie o número imposible',
 };
@@ -197,6 +202,37 @@ export function notasIncoherentes(movs) {
       monto: abs(f.amount),
       titulo: 'Factura anulada que sigue contando',
       detalle: `${info.etiqueta}, pero ${f.document_number || 'la factura'} sigue activa por S/ ${abs(f.amount).toLocaleString('es-PE', { minimumFractionDigits: 2 })} y suma en los reportes.`,
+      // Los ids de las notas que la anulan — para que la pantalla pueda
+      // mostrar el 👁 de la factura Y el de cada nota, y así comprobarse una
+      // contra la otra en vez de tener que confiar en el texto.
+      notasIds: info.notas.map(x => x.id),
+    }));
+  }
+
+  // ── UNA NOTA NO PUEDE SER ANTERIOR A LO QUE MODIFICA (23-set-2026) ──
+  // Gabriel: «un comprobante fue emitido y declarado en una fecha anterior a
+  // la de la emisión, lo cual es súper ilógico y hay que tener cuidado con
+  // eso». Una nota de crédito o débito corrige un comprobante que YA EXISTE:
+  // no puede tener una fecha anterior a la de eso que corrige — SUNAT no deja
+  // emitir una nota contra un comprobante que, a esa fecha, todavía no existía.
+  // Cubre las DOS notas (crédito y débito), a diferencia de la huérfana de
+  // arriba que solo mira crédito: el orden de las fechas es el mismo problema
+  // para las dos. Cero falsos positivos posibles: es una imposibilidad, no una
+  // sospecha, así que no hace falta ningún freno adicional (regla de oro).
+  for (const n of vivas) {
+    if (!esNota(n)) continue;
+    const destino = n.related_movement_id ? porId.get(n.related_movement_id) : null;
+    if (!destino || esNota(destino)) continue;   // huérfana o espejo intercompany: otra regla
+    const fNota = ymdDe(n.date || n.created_at);
+    const fOriginal = ymdDe(destino.date || destino.created_at);
+    if (!fNota || !fOriginal || fNota >= fOriginal) continue;
+    out.push(hallazgo('nota_credito', 'nota_fecha_imposible', n, {
+      gravedad: 'alta',
+      monto: abs(n.amount),
+      titulo: 'La nota es anterior al comprobante que modifica',
+      detalle: `${n.document_number || 'La nota'} está fechada el ${fNota}, ANTES que ${destino.document_number || 'el comprobante'} `
+        + `que dice modificar (${fOriginal}). Una de las dos fechas está mal cargada.`,
+      facturaId: destino.id,
     }));
   }
   return out;

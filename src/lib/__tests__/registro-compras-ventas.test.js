@@ -386,3 +386,47 @@ describe('el resumen del mes en soles', () => {
     expect(compras.totales.soles.importeTotal).toBe(1180);   // la de dólares NO entra
   });
 });
+
+// ── LA NOTA NO PUEDE SER ANTERIOR A LO QUE MODIFICA (23-set-2026) ──
+// Gabriel: «un comprobante fue emitido y declarado en una fecha anterior a la
+// de la emisión, lo cual es súper ilógico y hay que tener cuidado con eso».
+describe('la nota con fecha anterior a su comprobante original', () => {
+  const nc = (extra = {}) => factura({
+    id: 'nc1', document_type: 'nota_credito', document_number: 'FC01-9',
+    amount: -1180, related_movement_id: 'f1', date: '2026-01-10', ...extra,
+  });
+
+  it('avisa cuando la nota es de una fecha ANTERIOR a la factura que modifica', () => {
+    const movsById = new Map([['f1', factura({ date: '2026-05-02' })]]);
+    const f = filaCompra(nc(), { correlativo: 1, movsById });
+    expect(f.avisos.join(' ')).toMatch(/ANTERIOR/);
+    expect(f.avisos.join(' ')).toMatch(/10\/01\/2026/);
+    expect(f.avisos.join(' ')).toMatch(/02\/05\/2026/);
+  });
+
+  it('no avisa cuando la nota es POSTERIOR a la factura, el caso normal', () => {
+    const movsById = new Map([['f1', factura({ date: '2026-01-05' })]]);
+    const f = filaCompra(nc(), { correlativo: 1, movsById });
+    expect(f.avisos.join(' ')).not.toMatch(/ANTERIOR/);
+  });
+
+  it('el mismo día no cuenta como anterior', () => {
+    const movsById = new Map([['f1', factura({ date: '2026-01-10' })]]);
+    const f = filaCompra(nc(), { correlativo: 1, movsById });
+    expect(f.avisos.join(' ')).not.toMatch(/ANTERIOR/);
+  });
+
+  it('sin original (ya avisado por "no encontrado") no duplica el aviso de fecha', () => {
+    const f = filaCompra(nc(), { correlativo: 1, movsById: new Map() });
+    expect(f.avisos.join(' ')).toMatch(/no se encontró el comprobante original/);
+    expect(f.avisos.join(' ')).not.toMatch(/ANTERIOR/);
+  });
+
+  it('referenciaOriginal() no cambia de forma: sigue devolviendo exactamente sus 5 campos', () => {
+    // Guarda de que el chequeo de fecha se resuelve APARTE, sin tocar el
+    // contrato ya testeado de la función pública.
+    const movsById = new Map([['f1', factura({ date: '2026-05-02' })]]);
+    expect(Object.keys(referenciaOriginal(nc(), movsById)).sort())
+      .toEqual(['falta', 'fecha', 'numero', 'serie', 'tipo']);
+  });
+});

@@ -159,6 +159,15 @@ textarea.fi { resize: vertical; min-height: 80px; }
 
 /* ── MODAL ── */
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.68); backdrop-filter: blur(6px); z-index: 900; display: flex; align-items: center; justify-content: center; animation: fadeIn .2s ease; }
+/* El visor de un comprobante puede abrirse DESDE DENTRO de otro modal ya
+   abierto (p.ej. "Ver factura" en Editar Movimiento, o el ojo de una fila
+   dentro del escáner de incoherencias). Dos .overlay con el mismo z-index
+   se apilan por orden de aparición en el DOM, y el que abrió segundo no
+   siempre es el que está arriba en el árbol — el visor terminaba pintado
+   DETRÁS del modal que lo abrió (23-set-2026). El visor de comprobante
+   tiene que ganar siempre: es una consulta puntual sobre lo que ya se está
+   editando, nunca al revés. */
+.overlay-visor { z-index: 950; }
 .modal { background: var(--bg-c); border: 1px solid var(--border-h); border-radius: 12px; padding: 26px 28px; width: min(600px,95vw); max-height: 88vh; overflow-y: auto; animation: fadeUp .22s ease; }
 .modal-hd { font-size: 16px; font-weight: 700; color: var(--tp); margin-bottom: 22px; display: flex; align-items: center; justify-content: space-between; }
 .modal-hd-left { display: flex; align-items: center; gap: 10px; }

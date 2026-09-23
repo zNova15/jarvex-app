@@ -3,15 +3,20 @@
 // usan <Modal> sin importarlo, vía window.Modal global.
 import React from "react";
 
-function Modal({ title, icon, onClose, children, wide, size, closeOnOverlay = true }) {
+function Modal({ title, icon, onClose, children, wide, size, closeOnOverlay = true, elevated = false }) {
   // OJO: .modal tiene width: min(600px, 95vw), así que setear solo maxWidth NO
   // ensancha (el width 600 ya manda). Hay que pisar `width`.
   const sz = size || (wide ? 'wide' : null);
   const wStyle = sz === 'xl' ? { width: 'min(1120px, 96vw)', maxWidth: 'none' }
     : sz === 'wide' ? { width: 'min(880px, 95vw)', maxWidth: 'none' }
     : {};
+  // `elevated`: para un modal que puede abrirse DESDE DENTRO de otro modal ya
+  // abierto (el visor de un comprobante, llamado desde «Editar Movimiento» o
+  // desde una fila del escáner de incoherencias). Sin esto, dos .overlay con
+  // el mismo z-index se apilan por orden de aparición en el DOM y el visor
+  // podía terminar pintado DETRÁS del modal que lo abrió (23-set-2026).
   return (
-    <div className="overlay" onClick={e => {
+    <div className={elevated ? 'overlay overlay-visor' : 'overlay'} onClick={e => {
       if (closeOnOverlay !== false && e.target === e.currentTarget) onClose?.();
     }}>
       <div className="modal" style={{ maxHeight: '92vh', ...wStyle }}>

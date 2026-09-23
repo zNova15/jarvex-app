@@ -124,6 +124,25 @@ function comun(m, movsById) {
   if (ref.falta) {
     avisos.push('Es una nota y no se encontró el comprobante original que modifica: SUNAT observa las notas sin referencia.');
   }
+  // ── LA NOTA NO PUEDE SER ANTERIOR A LO QUE MODIFICA (23-set-2026) ──
+  // Gabriel: «un comprobante fue emitido y declarado en una fecha anterior a
+  // la de la emisión, lo cual es súper ilógico». Una nota de crédito o débito
+  // corrige un comprobante que YA EXISTE — no puede tener una fecha anterior a
+  // la de eso que corrige, es tan imposible como una factura fechada antes de
+  // que se fundara la empresa. Se compara por STRING 'YYYY-MM-DD' (fecha.js),
+  // nunca con `new Date()`. `ref.falta` ya cubrió el caso sin original; acá
+  // solo hace falta el original CRUDO —`referenciaOriginal()` devuelve la
+  // fecha ya formateada dd/mm/aaaa para la columna, no comparable como string—
+  // así que se vuelve a buscar, sin tocar el contrato de esa función.
+  if (!ref.falta) {
+    const original = (movsById instanceof Map && m.related_movement_id) ? movsById.get(m.related_movement_id) : null;
+    const fNota = ymdDe(m.date || m.created_at);
+    const fOriginal = ymdDe(original?.date || original?.created_at);
+    if (fNota && fOriginal && fNota < fOriginal) {
+      avisos.push(`La fecha de emisión (${fechaRegistro(fNota)}) es ANTERIOR a la del comprobante que modifica `
+        + `(${fechaRegistro(fOriginal)}): revisá cuál de las dos fechas está mal cargada.`);
+    }
+  }
 
   return {
     movimiento_id: m.id,

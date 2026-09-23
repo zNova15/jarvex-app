@@ -1210,7 +1210,47 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   }, [pendientes, movs]);
 
   const movsPorId = uM(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
-  const evidencias = useEvidencias(uM(() => pendientes.map(h => h.movimientoId), [pendientes]));
+
+  // ── LOS DOCUMENTOS QUE HAY QUE PODER MIRAR PARA CADA HALLAZGO ─────
+  // 🔴 Gabriel (23-set-2026): «actualmente solo muestras un ojo, y puede ser
+  // necesario en otros casos donde comparas una incoherencia entre 2
+  // comprobantes o más, en esos casos debes poder mostrarme el icono de
+  // visualización de los 2 documentos». La mayoría de las reglas son sobre UN
+  // comprobante y ahí alcanza con el 👁 de siempre. Pero tres reglas COMPARAN
+  // dos papeles —¿es el mismo dos veces?, ¿esta nota corrige a esta factura?—
+  // y con un solo ojo había que ir a Movimientos Contables a buscar el
+  // segundo. Cada regla ya trae el id del otro documento en su propio
+  // hallazgo (`gemeloId`, `notasIds`, `facturaId`): acá solo se arma la lista
+  // de a quiénes mostrar, con una etiqueta que diga cuál es cuál.
+  const docsDelHallazgo = React.useCallback((h) => {
+    if (h.regla === 'comprobante_duplicado' && h.gemeloId) {
+      return [
+        { id: h.movimientoId, etiqueta: 'Ver esta copia' },
+        { id: h.gemeloId, etiqueta: 'Ver la copia original' },
+      ];
+    }
+    if (h.regla === 'factura_anulada_viva' && h.notasIds?.length) {
+      return [
+        { id: h.movimientoId, etiqueta: 'Ver la factura' },
+        ...h.notasIds.map((id, i) => ({
+          id, etiqueta: h.notasIds.length > 1 ? `Ver la nota ${i + 1} de ${h.notasIds.length}` : 'Ver la nota de crédito',
+        })),
+      ];
+    }
+    if (h.regla === 'nota_fecha_imposible' && h.facturaId) {
+      return [
+        { id: h.movimientoId, etiqueta: 'Ver la nota' },
+        { id: h.facturaId, etiqueta: 'Ver el comprobante que modifica' },
+      ];
+    }
+    return [{ id: h.movimientoId, etiqueta: 'Ver el comprobante cargado' }];
+  }, []);
+
+  const evidencias = useEvidencias(uM(() => {
+    const ids = new Set();
+    for (const h of pendientes) for (const d of docsDelHallazgo(h)) if (d.id) ids.add(d.id);
+    return [...ids];
+  }, [pendientes, docsDelHallazgo]));
 
   // ── LAS SOLUCIONES ──────────────────────────────────────────────
   // 1) La compra espejo que falta. Se propone SOLO cuando `ventasSinEspejo` —la
@@ -1731,7 +1771,14 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
                   )}
                 </div>
                 <div style={{ whiteSpace: 'nowrap' }}>
-                  <OjoComprobante entry={evidencias.get(h.movimientoId)} onAbrir={abrir} />
+                  {/* Un 👁 por cada documento relevante — dos cuando la
+                      incoherencia compara un papel contra otro, para poder
+                      verificar mirándolos en vez de confiar en el texto. */}
+                  {docsDelHallazgo(h).map((d, i) => (
+                    <span key={d.id || i} style={{ marginLeft: i ? 4 : 0, display: 'inline-block' }}>
+                      <OjoComprobante entry={evidencias.get(d.id)} onAbrir={abrir} titulo={d.etiqueta} />
+                    </span>
+                  ))}
                   <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={() => decidir(h, 'revisada')}>Ya la vi</button>
                   <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={() => decidir(h, 'no_aplica')}>No aplica</button>
                 </div>
