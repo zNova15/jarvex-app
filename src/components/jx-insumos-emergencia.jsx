@@ -18,11 +18,15 @@ import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen, validarSalidaUb
 import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial } from "../lib/precio-historial.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { hoyLocal } from "../lib/fecha.js";
+import { validarSalidaCronologica } from "../lib/stock-cronologia.js";
 
 const ITEM_TIPO = 'emergencia'; // item_tipo en stock_ubicaciones (mig 074)
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
-const hoyISO = () => new Date().toISOString().slice(0, 10);
+// Hoy en la zona de la obra (regla 7): el toISOString daba el día UTC, y
+// después de las 19:00 en Lima la fecha por defecto salía de MAÑANA.
+const hoyISO = () => hoyLocal();
 const alertaClase = (a) => (a === 'agotado' || a === 'critico') ? 'b-red' : (a === 'reponer' || a === 'cerca') ? 'b-amber' : 'b-green';
 
 function InsumosEmergenciaPage({ showToast }) {
@@ -295,7 +299,15 @@ function InsumosEmergenciaPage({ showToast }) {
   };
 
   // Traspaso entre almacenes (mueve stock; el total del insumo no cambia).
-  const ejecutarTraspaso = async ({ item_id, origenId, destinoId, cantidad }) => {
+  // Guard SÍNCRONO anti doble-click (24-set, regla 2): el traspaso son 3
+  // escrituras (desglose + salida + entrada); un doble click las duplicaba.
+  const ejecutarTraspasoEnCursoRef = React.useRef(false);
+  const ejecutarTraspaso = async (args) => {
+    if (ejecutarTraspasoEnCursoRef.current) return;
+    ejecutarTraspasoEnCursoRef.current = true;
+    try { await ejecutarTraspasoInner(args); } finally { ejecutarTraspasoEnCursoRef.current = false; }
+  };
+  const ejecutarTraspasoInner = async ({ item_id, origenId, destinoId, cantidad }) => {
     const insumo = insumoById.get(item_id);
     if (!insumo) return;
     try {
@@ -311,7 +323,15 @@ function InsumosEmergenciaPage({ showToast }) {
     } catch (e) { showToast('Error: ' + (e.message || e), 'red'); }
   };
 
+  // Guard SÍNCRONO (24-set, regla 2): `busy` se activaba recién después de
+  // varias lecturas de Dexie — un doble click en esa ventana registraba dos.
+  const guardarMovEnCursoRef = React.useRef(false);
   const guardarMov = async () => {
+    if (guardarMovEnCursoRef.current) return;
+    guardarMovEnCursoRef.current = true;
+    try { await guardarMovInner(); } finally { guardarMovEnCursoRef.current = false; }
+  };
+  const guardarMovInner = async () => {
     if (busy) return;
     const insumo = (insumos || []).find(i => i.id === form.insumo_emergencia_id);
     if (!insumo) { showToast('Elegí un insumo', 'red'); return; }
@@ -347,7 +367,6 @@ function InsumosEmergenciaPage({ showToast }) {
       if (!editingMovId && form.fecha) {
         let hist = [];
         try { hist = await window.__db.movimientos_insumos_emergencia.filter(m => m.insumo_emergencia_id === insumo.id).toArray(); } catch {}
-        const { validarSalidaCronologica } = await import('../lib/stock-cronologia.js');
         const rc = validarSalidaCronologica({ movimientos: hist, fecha: form.fecha, cantidad: cant, stockActualHoy: Number(insumo.stock_actual ?? 0) });
         if (!rc.ok) {
           showToast(`❌ Incongruencia de fechas: al ${form.fecha}, "${insumo.nombre}" solo tenía ${rc.disponible} ${insumo.unidad} disponible(s) — las entradas posteriores a esa fecha no cuentan. Corregí la fecha o la cantidad.`, 'red');

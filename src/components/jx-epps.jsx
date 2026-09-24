@@ -13,6 +13,7 @@ import { CATALOGO_EPP, epppTipo, detectarEPP } from "../lib/epp-utils.js";
 import { calcAlerta } from "../lib/stock-utils.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
+import { buscarMovimientosParecidos, armarAvisoMovimientos, mapaNombresUsuarios, buscarNombresParecidos } from "../lib/almacen-duplicados.js";
 import { diagnosticoStock } from "../lib/stock-conciliacion.js";
 import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { useFotosEvidencias, FotoInsumoCell } from "./jx-foto-insumo.jsx";
@@ -588,7 +589,15 @@ function EppsInventarioPage({ showToast }) {
   const openTraspaso = (preId = '') => { setTraspasoPreId(preId || ''); setModal('traspaso'); };
 
   // Traspaso EPP entre almacenes: mueve stock_ubicaciones + 2 movimientos de trazabilidad.
-  const ejecutarTraspasoEpp = async ({ item_id, origenId, destinoId, cantidad }) => {
+  // Guard SÍNCRONO anti doble-click (24-set, regla 2): el traspaso son 3
+  // escrituras (desglose + salida + entrada); un doble click las duplicaba.
+  const ejecutarTraspasoEppEnCursoRef = React.useRef(false);
+  const ejecutarTraspasoEpp = async (args) => {
+    if (ejecutarTraspasoEppEnCursoRef.current) return;
+    ejecutarTraspasoEppEnCursoRef.current = true;
+    try { await ejecutarTraspasoEppInner(args); } finally { ejecutarTraspasoEppEnCursoRef.current = false; }
+  };
+  const ejecutarTraspasoEppInner = async ({ item_id, origenId, destinoId, cantidad }) => {
     try {
       await traspasar({ obraId, itemTipo: 'epp', itemId: item_id, origenId, destinoId, cantidad, userId: auth?.profile?.id || null });
       const epp = epps.find(e => e.id === item_id);
@@ -604,10 +613,39 @@ function EppsInventarioPage({ showToast }) {
     } catch (e) { showToast('Error en traspaso: ' + (e.message || e), 'red'); }
   };
 
+  // Guard SÍNCRONO (regla 2). Este alta no tenía NINGÚN guard: el botón ni
+  // siquiera se deshabilitaba, un doble click creaba el EPP dos veces.
+  const eppEnCursoRef = React.useRef(false);
   const handleSubmitEpp = async () => {
+    if (eppEnCursoRef.current) return;
+    eppEnCursoRef.current = true;
+    try { await handleSubmitEppInner(); } finally { eppEnCursoRef.current = false; }
+  };
+  const handleSubmitEppInner = async () => {
     if (!form.nombre_epp || !form.tipo_epp) {
       showToast('Completá nombre y tipo', 'red');
       return;
+    }
+    // ¿Ya existe? (24-set) Mismo aviso que materiales; la talla cuenta como
+    // variante (ZAPATOS 39 ≠ ZAPATOS 40 aunque se llamen igual).
+    if (!editingId) {
+      const parecidos = buscarNombresParecidos(form.nombre_epp, epps, {
+        getNombre: e => e.nombre_epp, variante: form.talla, getVariante: e => e.talla,
+      });
+      if (parecidos.length) {
+        const seguir = await window.__avisoDuplicado({
+          titulo: parecidos[0].tipo === 'igual' ? 'Ese EPP ya existe' : 'Hay un EPP parecido',
+          intro: `Vas a crear "${form.nombre_epp}${form.talla ? ' talla ' + form.talla : ''}". En esta obra ya ${parecidos.length === 1 ? 'está' : 'están'}:`,
+          grupos: parecidos.map(({ item, tipo }) => ({
+            titulo: `${item.nombre_epp}${item.talla ? ' · talla ' + item.talla : ''}${tipo === 'igual' ? ' (mismo nombre)' : ''}`,
+            filas: [`Stock actual: ${Number(item.stock_actual ?? 0)} ${item.unidad || ''}`.trim()],
+          })),
+          pregunta: 'Si es el mismo, cancelá y registrá el ingreso sobre el que ya existe. Crear otro separa su stock en dos.',
+          textoSi: 'Es otro EPP — crear igual',
+          textoNo: 'Cancelar, uso el que existe',
+        });
+        if (!seguir) return;
+      }
     }
     try {
       if (editingId) {
@@ -825,7 +863,51 @@ function EppsInventarioPage({ showToast }) {
       }
     }
 
+    // Aviso de POSIBLE DUPLICADO (24-set, src/lib/almacen-duplicados.js). En la
+    // SALIDA solo cuenta si es al MISMO trabajador: la misma dotación a varias
+    // personas el mismo día es lo normal.
+    try {
+      const tipoMov = tipo === 'ingreso' ? 'entrada' : 'salida';
+      const destinoDe = (it) => {
+        if (tipo !== 'salida') return null;
+        const d = splitDestino((loteComunes.usarMismaPersona ? loteComunes.personal_id : it.personal_id) || null);
+        return d.responsable_id || d.subcontratista_id || null;
+      };
+      const filasAviso = [];
+      for (const it of itemsValidos) {
+        const cant = parseFloat(it.cantidad) || 0;
+        const hist = await window.__db.movimientos_epp.where('epp_id').equals(it.epp_id).toArray();
+        const parecidos = buscarMovimientosParecidos(
+          { itemId: it.epp_id, tipo: tipoMov, cantidad: cant, fecha: form.fecha, destino: destinoDe(it) }, hist,
+          { getItemId: m => m.epp_id, ...(tipo === 'salida' ? { getDestino: m => m.personal_id || m.subcontratista_id || null } : {}) });
+        if (parecidos.length) {
+          const epp = epps.find(e => e.id === it.epp_id);
+          filasAviso.push({ nombre: `${epp?.nombre_epp || 'EPP'}${epp?.talla ? ' talla ' + epp.talla : ''}`, unidad: epp?.unidad, cantidad: cant, fecha: form.fecha, parecidos });
+        }
+      }
+      if (filasAviso.length) {
+        const nombres = mapaNombresUsuarios(await window.__db.profiles.toArray().catch(() => []));
+        const seguir = await window.__avisoDuplicado({
+          titulo: 'Posible movimiento duplicado',
+          intro: tipo === 'salida'
+            ? 'Antes de guardar esta entrega: a esta misma persona ya se le registró una entrega igual (mismo EPP y cantidad). Si solo estás verificando si se guardó, NO la registres otra vez.'
+            : 'Antes de guardar este ingreso: ya hay registrado uno igual (mismo EPP y cantidad). Si solo estás verificando si se guardó, NO lo registres otra vez.',
+          grupos: armarAvisoMovimientos(filasAviso, { nombreDe: (id) => nombres.get(id) || null }),
+          pregunta: '¿Es un movimiento NUEVO, distinto del que ya está?',
+          textoSi: 'Sí, es otro — registrar',
+          textoNo: 'No, ya estaba — no registrar',
+        });
+        if (!seguir) return;
+      }
+    } catch (e) { console.warn('[aviso-duplicado epp]', e?.message); }
+
     let exitosos = 0, fallidos = 0;
+    // Stock optimista ACUMULADO por EPP (24-set): con 2+ filas del MISMO EPP en
+    // el lote, `epps` (array de React) queda viejo durante el loop y cada fila
+    // recalculaba desde el stock original — solo quedaba el delta de la ÚLTIMA
+    // (mismo bug que materiales arregló antes). El server lo corregía en el
+    // próximo pull, pero mientras tanto la pantalla mostraba un stock falso.
+    const stockOptimista = new Map();
     let firmaUrlCommon = null;
     // Subir firma una vez (si es salida y todos comparten persona)
     if (tipo === 'salida' && firmaBlob) {
@@ -894,7 +976,9 @@ function EppsInventarioPage({ showToast }) {
         try { await window.__logAudit?.({ action:'insert', table:'movimientos_epp', recordId:movCreated?.id, newData:movCreated, reason:`${tipo} de ${cantNum} ${epp.nombre_epp}` }); } catch {}
         // Stock optimist
         const delta = tipo === 'ingreso' ? cantNum : -cantNum;
-        const nuevoStock = (epp.stock_actual ?? 0) + delta;
+        const baseStock = stockOptimista.has(it.epp_id) ? stockOptimista.get(it.epp_id) : Number(epp.stock_actual ?? 0);
+        const nuevoStock = baseStock + delta;
+        stockOptimista.set(it.epp_id, nuevoStock);
         const minimo = Number(epp.stock_minimo || 0);
         const nuevaAlerta = nuevoStock <= 0 ? 'agotado'
           : minimo > 0 && nuevoStock <= minimo * 0.5 ? 'critico'

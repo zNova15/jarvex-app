@@ -14,6 +14,7 @@
 // crea los movimientos de entrada al inventario.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import { hoyLocal, horaLocal } from "../lib/fecha.js";
 import { TIPO_INSUMO_LABEL, TIPO_INSUMO_BADGE } from "../lib/insumo-clasificador.js";
 import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { calcAlerta } from "../lib/stock-utils.js";
@@ -580,7 +581,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
   const [obsGlobal, setObsGlobal] = uS('');
   // Fecha del MOVIMIENTO de ingreso (editable): por defecto hoy, pero se puede
   // backdatear si la mercadería se recibió antes y recién ahora la vinculamos.
-  const [fechaMov, setFechaMov] = uS(() => new Date().toISOString().slice(0, 10));
+  const [fechaMov, setFechaMov] = uS(() => hoyLocal());
   const [ubicaciones, setUbicaciones] = uS([]);
   // Movimientos de ingreso candidatos para VINCULAR (cache por insumo).
   const [candCache, setCandCache] = uS({});     // `${tipo}:${matchId}` -> array
@@ -919,7 +920,7 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
           const movId = window.__newId();
           const obs = ['Recepción factura ' + facFresh.document_number, obsGlobal, it.obs_item, notaConv].filter(Boolean).join(' · ');
           const baseMov = {
-            id: movId, obra_id: obraId, fecha: (fechaMov || now.slice(0, 10)), hora: now.slice(11, 16),
+            id: movId, obra_id: obraId, fecha: (fechaMov || hoyLocal()), hora: horaLocal(),  // hora de la obra: now.slice(11,16) era UTC (+5 h)
             cantidad: cantStock, unidad: (factor !== 1 ? (unidadInsumo || it.unidad) : it.unidad) || 'und', observaciones: obs,
             proveedor_id: facFresh.proveedor_id || null, documento_asociado: facFresh.document_number || null,
             accounting_movement_id: facFresh.id || null,
@@ -1355,9 +1356,9 @@ function RegistrarRecepcionModal({ factura, items, obraId, userId, catalogoCompl
       <div style={{ marginBottom: 12, display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10 }}>
         <div>
           <label className="flabel">Fecha del ingreso</label>
-          <input className="fi" type="date" value={fechaMov} max={new Date().toISOString().slice(0, 10)}
+          <input className="fi" type="date" value={fechaMov} max={hoyLocal()}
             title="Fecha del movimiento de ingreso al almacén. Cambiala si la mercadería llegó otro día (no hoy)."
-            onChange={e => setFechaMov(e.target.value || new Date().toISOString().slice(0, 10))} />
+            onChange={e => setFechaMov(e.target.value || hoyLocal())} />
         </div>
         <div>
           <label className="flabel">Observación general de la recepción</label>

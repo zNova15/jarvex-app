@@ -5,7 +5,8 @@ import { aplicarDelta } from "../lib/stock-ubicaciones.js";
 import { revertirEstadoMovHerr, ESTADOS_COND } from "../lib/stock-estados.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
-import { hoyLocal, horaLocal } from "../lib/fecha.js";
+import { hoyLocal, horaLocal, fechaLocalDe } from "../lib/fecha.js";
+import { ordenarMovimientos, cargadoDespues } from "../lib/almacen-duplicados.js";
 import { exportarDataset } from "../lib/export-historico.js";
 // Extraídas de acá a una lib compartida (8-set-2026): el Excel de estos
 // mismos movimientos exportaba una sola columna «Almacén» y perdía la mitad
@@ -1212,6 +1213,10 @@ function MovMaterialesPage({ showToast }) {
   const [q, setQ] = uSM(() => { try { const v = window.__movMatBuscar; if (v) { delete window.__movMatBuscar; return v; } } catch {} return ''; });
   const [tipo, setTipo] = uSM('todos');
   const [soloSinFrente, setSoloSinFrente] = uSM(false);   // filtro del banner "salidas sin frente"
+  // Orden del registro (24-set): 'fecha' = fecha del movimiento (lo de siempre);
+  // 'cargado' = lo último que se REGISTRÓ arriba. Lo cargado hoy con fecha
+  // atrasada quedaba enterrado ("lo subí pero no sale en el registro").
+  const [orden, setOrden] = uSM('fecha');
   // Auto-reset: al asignar el último frente pendiente, el banner (con el
   // toggle) desaparece — sin esto el filtro quedaba atascado en tabla vacía.
   uEM(() => {
@@ -1237,12 +1242,8 @@ function MovMaterialesPage({ showToast }) {
   const sorted = uMM(() => {
     if (!movs) return [];
     // Excluir movimientos eliminados (soft delete)
-    return movs.filter(m => !m.deleted_at).sort((a, b) => {
-      const fa = (a.fecha || '') + ' ' + (a.hora || '');
-      const fb = (b.fecha || '') + ' ' + (b.hora || '');
-      return fb.localeCompare(fa);
-    });
-  }, [movs]);
+    return ordenarMovimientos(movs.filter(m => !m.deleted_at), orden);
+  }, [movs, orden]);
 
   const filtered = uMM(() => {
     return sorted.filter(m => {
@@ -1267,6 +1268,9 @@ function MovMaterialesPage({ showToast }) {
     total: sorted.length,
     entradasHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'entrada').length,
     salidasHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'salida').length,
+    // Lo CARGADO hoy, sea cual sea su fecha: si registró algo con fecha
+    // atrasada, acá lo ve contar (los "Hoy" de arriba cuentan por fecha).
+    cargadosHoy: sorted.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
     valorMes: sorted
       .filter(m => (m.fecha || '').startsWith(monthStart) && m.tipo_movimiento === 'entrada')
       .reduce((s, m) => s + (Number(m.precio_unitario_real || 0) * Number(m.cantidad || 0)), 0),
@@ -1607,14 +1611,15 @@ function MovMaterialesPage({ showToast }) {
           showToast={showToast}/>
       )}
 
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:18 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:12, marginBottom:18 }}>
         {[
           { label:'Total Movimientos', val:stats.total.toLocaleString('es-PE'), color:'var(--blue)' },
           { label:'Entradas Hoy',      val:stats.entradasHoy.toLocaleString('es-PE'), color:'var(--green)' },
           { label:'Salidas Hoy',       val:stats.salidasHoy.toLocaleString('es-PE'),  color:'var(--orange)' },
+          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>setOrden('cargado') },
           { label:'Valor Entradas Mes', val:fmtS(stats.valorMes), color:'var(--amber)' },
         ].map((s,i)=>(
-          <div key={i} className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:24, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
+          <div key={i} className="card card-p" title={s.title} onClick={s.onClick} style={s.onClick ? { cursor:'pointer' } : undefined}><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:24, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
         ))}
       </div>
 
@@ -1625,6 +1630,10 @@ function MovMaterialesPage({ showToast }) {
             {t==='todos' ? 'Todos' : MOV_MAT_TIPO[t]?.lbl || t}
           </button>
         ))}
+        <button onClick={()=>setOrden(o => o === 'fecha' ? 'cargado' : 'fecha')} className={`btn btn-sm ${orden==='cargado'?'btn-amber':'btn-ghost'}`}
+          title="Por defecto se ordena por la FECHA del movimiento. Un movimiento cargado hoy con fecha de hace días queda abajo, junto a los de esa fecha. Con este botón, lo último que se cargó va primero.">
+          {orden === 'cargado' ? '⏱ Orden: últimos cargados' : '📅 Orden: por fecha'}
+        </button>
       </div>
 
       {filtered.length === 0 ? (
@@ -1657,7 +1666,9 @@ function MovMaterialesPage({ showToast }) {
                 const alm = almacenesDe(m);
                 return (
                   <tr key={m.id} style={{ opacity: yaReversado ? 0.55 : 1 }}>
-                    <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
+                    <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span>
+                      {(() => { const c = cargadoDespues(m, fechaLocalDe); return c ? <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`La fecha del movimiento es ${m.fecha}, pero se registró en el sistema el ${c}.`}>cargado el {c.slice(8,10)}/{c.slice(5,7)}</div> : null; })()}
+                    </td>
                     <td>
                       {/* Un traspaso son 2 movimientos (salida+entrada): lo rotulamos
                           como TRASPASO para que se lea como una sola operación. */}
@@ -2113,6 +2124,10 @@ function MovHerramientasPage({ showToast }) {
   // igual que el 📜 de materiales y de EPPs.
   const [q, setQ] = uSM(() => { try { const v = window.__movHerrBuscar; if (v) { delete window.__movHerrBuscar; return v; } } catch {} return ''; });
   const [accion, setAccion] = uSM('todas');
+  // Orden del registro (24-set): 'fecha' = fecha del movimiento (lo de siempre);
+  // 'cargado' = lo último que se REGISTRÓ arriba. Lo cargado hoy con fecha
+  // atrasada quedaba enterrado ("lo subí pero no sale en el registro").
+  const [orden, setOrden] = uSM('fecha');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
   const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
@@ -2124,12 +2139,8 @@ function MovHerramientasPage({ showToast }) {
   const sorted = uMM(() => {
     if (!movs) return [];
     // Excluir movimientos eliminados (soft delete)
-    return movs.filter(m => !m.deleted_at).sort((a, b) => {
-      const fa = (a.fecha || '') + ' ' + (a.hora || '');
-      const fb = (b.fecha || '') + ' ' + (b.hora || '');
-      return fb.localeCompare(fa);
-    });
-  }, [movs]);
+    return ordenarMovimientos(movs.filter(m => !m.deleted_at), orden);
+  }, [movs, orden]);
 
   // Resumen de sync (mismo patrón que Materiales): la almacenera reportó
   // movimientos de herramientas que "no se subían" SIN ningún aviso — el
@@ -2173,6 +2184,9 @@ function MovHerramientasPage({ showToast }) {
     devolHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'devolucion' && !m.reverses_id).length,
     ingresosHoy: sorted.filter(m => m.fecha === today && m.accion === 'entrada' && m.tipo_movimiento !== 'devolucion' && m.tipo_movimiento !== 'reverso' && !m.reverses_id).length,
     danadas: sorted.filter(m => m.estado_devolucion === 'malo').length,
+    // Lo CARGADO hoy, sea cual sea su fecha: si registró algo con fecha
+    // atrasada, acá lo ve contar (los "Hoy" de arriba cuentan por fecha).
+    cargadosHoy: sorted.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
   }), [sorted]);
 
   const danadasRecientes = uMM(() =>
@@ -2380,14 +2394,15 @@ function MovHerramientasPage({ showToast }) {
         </div>
       )}
 
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:18 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:12, marginBottom:18 }}>
         {[
           { label:'Total Movimientos',     val:stats.total.toLocaleString('es-PE'),        color:'var(--blue)' },
           { label:'Ingresos Hoy',          val:stats.ingresosHoy.toLocaleString('es-PE'),  color:'var(--green)' },
           { label:'Salidas Hoy',           val:stats.salidasHoy.toLocaleString('es-PE'),   color:'var(--amber)' },
           { label:'Devoluciones Hoy',      val:stats.devolHoy.toLocaleString('es-PE'),     color:'var(--blue)' },
+          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>setOrden('cargado') },
         ].map((s,i)=>(
-          <div key={i} className="card card-p"><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:26, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
+          <div key={i} className="card card-p" title={s.title} onClick={s.onClick} style={s.onClick ? { cursor:'pointer' } : undefined}><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:26, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
         ))}
       </div>
 
@@ -2398,6 +2413,10 @@ function MovHerramientasPage({ showToast }) {
             {a==='todas' ? 'Todas' : a==='entrada' ? 'Ingreso' : a==='devolucion' ? 'Devolución' : MOV_HER_ACCION[a]?.lbl || a}
           </button>
         ))}
+        <button onClick={()=>setOrden(o => o === 'fecha' ? 'cargado' : 'fecha')} className={`btn btn-sm ${orden==='cargado'?'btn-amber':'btn-ghost'}`}
+          title="Por defecto se ordena por la FECHA del movimiento. Un movimiento cargado hoy con fecha de hace días queda abajo, junto a los de esa fecha. Con este botón, lo último que se cargó va primero.">
+          {orden === 'cargado' ? '⏱ Orden: últimos cargados' : '📅 Orden: por fecha'}
+        </button>
       </div>
 
       {filtered.length === 0 ? (
@@ -2427,7 +2446,9 @@ function MovHerramientasPage({ showToast }) {
                 const alm = almacenesDeMov(m, ubicNombreH);
                 return (
                   <tr key={m.id} style={{ background: danado ? 'rgba(231,76,60,0.06)' : '', opacity: yaReversado ? 0.55 : 1 }}>
-                    <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span></td>
+                    <td className="col-m">{m.fecha || '—'}<br/><span style={{ fontSize:11 }}>{m.hora || ''}</span>
+                      {(() => { const c = cargadoDespues(m, fechaLocalDe); return c ? <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`La fecha del movimiento es ${m.fecha}, pero se registró en el sistema el ${c}.`}>cargado el {c.slice(8,10)}/{c.slice(5,7)}</div> : null; })()}
+                    </td>
                     <td className="col-p">{h?.nombre_herramienta || '(herramienta eliminada)'}</td>
                     <td>
                       {alm.esTraspaso

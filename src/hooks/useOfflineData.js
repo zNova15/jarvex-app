@@ -48,9 +48,19 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
     };
   }, [tabla, refresh]);
 
+  // `loading` solo en la CARGA INICIAL (o al cambiar de tabla/obra). Antes cada
+  // refresh (cada alta, cada ajuste de stock, cada pull del sync) volvía a
+  // poner loading=true, y las páginas que hacen `if (loading) return
+  // <Cargando…/>` desmontaban la lista entera y la volvían a pintar: el
+  // "parpadeo" que reportó la almacenera al registrar ingresos/salidas (un lote
+  // de 5 ítems parpadeaba ~10 veces y la lista volvía arriba). En un refresh
+  // se sigue mostrando lo que había hasta que llega lo nuevo.
+  const depsKey = JSON.stringify([tabla, ...deps]);
+  const cargadoConRef = useRef(null);
+
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (cargadoConRef.current !== depsKey) setLoading(true);
     const fn = queryFnRef.current;
     (async () => {
       try {
@@ -59,7 +69,7 @@ export function useOfflineData(tabla, queryFn = null, deps = []) {
         // Filtra por modo (prueba/edicion/produccion) — separa data demo de real
         if (!cancelled) setData(filterByMode(result));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) { cargadoConRef.current = depsKey; setLoading(false); }
       }
     })();
     return () => { cancelled = true; };

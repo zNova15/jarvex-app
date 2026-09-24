@@ -9,6 +9,7 @@ import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { opcionesDestinoFlat, splitDestino } from "../lib/destino-mov.js";
 import { getDesgloseBulk, aplicarDelta, traspasar, baseSalidaUbicacion } from "../lib/stock-ubicaciones.js";
 import { validarSalidaCronologica, agruparCantidades } from "../lib/stock-cronologia.js";
+import { buscarMovimientosParecidos, armarAvisoMovimientos, mapaNombresUsuarios, buscarNombresParecidos } from "../lib/almacen-duplicados.js";
 import { stockDisponibleConfiable, stockSegunMovimientos, diagnosticoStock } from "../lib/stock-conciliacion.js";
 import { DesglosePopup, TraspasoStockModal, ubicacionAutoOrigen } from "./jx-stock-ubic.jsx";
 import { hoyLocal, horaLocal } from "../lib/fecha.js";
@@ -739,7 +740,15 @@ function MaterialesPage({ showToast }) {
   // Mueve stock de una ubicación a otra. El total del material no cambia.
   // Registra 2 movimientos (salida + entrada) marcados como traspaso para
   // que quede el rastro en el historial.
-  const ejecutarTraspaso = async ({ material_id, origenId, destinoId, cantidad }) => {
+  // Guard SÍNCRONO anti doble-click (24-set, regla 2): el traspaso son 3
+  // escrituras (desglose + salida + entrada); un doble click las duplicaba.
+  const ejecutarTraspasoEnCursoRef = React.useRef(false);
+  const ejecutarTraspaso = async (args) => {
+    if (ejecutarTraspasoEnCursoRef.current) return;
+    ejecutarTraspasoEnCursoRef.current = true;
+    try { await ejecutarTraspasoInner(args); } finally { ejecutarTraspasoEnCursoRef.current = false; }
+  };
+  const ejecutarTraspasoInner = async ({ material_id, origenId, destinoId, cantidad }) => {
     const mat = materiales.find(m => m.id === material_id);
     if (!mat) { showToast('Material no encontrado', 'red'); return false; }
     const userId = auth?.profile?.id || null;
@@ -1465,11 +1474,39 @@ function MaterialesPage({ showToast }) {
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
+  // Guard SÍNCRONO (el de estado `busyMat` tiene la ventana de carrera de la
+  // regla 2 del CLAUDE.md): ACEITE SINTÉTICO 10W30 4T quedó creado dos veces.
+  const matEnCursoRef = React.useRef(false);
   const handleSubmitMaterial = async () => {
+    if (matEnCursoRef.current) return;
+    matEnCursoRef.current = true;
+    try { await handleSubmitMaterialInner(); } finally { matEnCursoRef.current = false; }
+  };
+  const handleSubmitMaterialInner = async () => {
     if (busyMat) return; // doble click guard
     if (!form.nombre_material || !form.unidad) {
       showToast('Completa nombre y unidad', 'red');
       return;
+    }
+    // ¿Ya existe? (24-set) UNIONES SIMPLES 1" se creó dos veces y un typo
+    // (ESCHUFE) terminó con ENCHUFE creado aparte y el mismo ingreso contado
+    // en los dos. Se avisa con el nombre existente y su stock; nunca bloquea.
+    if (!editingId) {
+      const parecidos = buscarNombresParecidos(form.nombre_material, materiales, { getNombre: m => m.nombre_material });
+      if (parecidos.length) {
+        const seguir = await window.__avisoDuplicado({
+          titulo: parecidos[0].tipo === 'igual' ? 'Ese material ya existe' : 'Hay un material parecido',
+          intro: `Vas a crear "${form.nombre_material}". En esta obra ya ${parecidos.length === 1 ? 'está' : 'están'}:`,
+          grupos: parecidos.map(({ item, tipo }) => ({
+            titulo: `${item.nombre_material}${tipo === 'igual' ? ' (mismo nombre)' : ''}`,
+            filas: [`Stock actual: ${Number(item.stock_actual ?? 0)} ${item.unidad || ''}`.trim()],
+          })),
+          pregunta: 'Si es el mismo, cancelá y registrá el movimiento sobre el que ya existe (buscalo en la lista). Crear otro separa su stock en dos.',
+          textoSi: 'Es otro material — crear igual',
+          textoNo: 'Cancelar, uso el que existe',
+        });
+        if (!seguir) return;
+      }
     }
     setBusyMat(true);
     try {
@@ -1545,7 +1582,7 @@ function MaterialesPage({ showToast }) {
             mime_type: foto.blob.type || 'image/jpeg',
             blob: foto.blob,
             observaciones: `Foto referencial del material ${form.nombre_material}`,
-            fecha: new Date().toISOString().slice(0, 10),
+            fecha: hoyLocal(),
             created_by: auth?.profile?.id || null,
           });
         } catch (e) {
@@ -1574,7 +1611,7 @@ function MaterialesPage({ showToast }) {
       showToast('La cantidad debe ser mayor a 0', 'red');
       return;
     }
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = hoyLocal();
     if (form.fecha && form.fecha > hoy) {
       showToast('No podés registrar un movimiento con fecha futura', 'red');
       return;
@@ -1724,7 +1761,7 @@ function MaterialesPage({ showToast }) {
       showToast('Agregá al menos un material con cantidad', 'red');
       return;
     }
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = hoyLocal();
     if (form.fecha && form.fecha > hoy) {
       showToast('No podés registrar un movimiento con fecha futura', 'red');
       return;
@@ -1733,28 +1770,38 @@ function MaterialesPage({ showToast }) {
       // No es obligatorio responsable, pero advertir
     }
 
-    // ── AVISO ANTI-DUPLICADO (22-jul): la otra mitad de los duplicados fueron
-    // RE-REGISTROS humanos minutos después (TUBO PVC ×2 a 34 min, ENMALLADO
-    // ×3). Si en las últimas 6 horas ya se registró un movimiento IDÉNTICO
-    // (mismo material, tipo, cantidad y fecha), avisar antes de guardar.
-    // Nunca bloquea: el confirm deja registrar si es legítimo.
+    // ── AVISO ANTI-DUPLICADO. La otra mitad de los duplicados son RE-REGISTROS
+    // humanos ("no lo veo, lo subo de nuevo"). El aviso del 22-jul exigía la
+    // MISMA fecha y < 6 h, así que el re-registro con la fecha "corregida" se
+    // colaba. Ahora (24-set, src/lib/almacen-duplicados.js): misma cantidad y
+    // (misma fecha, o cargado hace < 72 h con fecha a ±7 días). El cuadro dice
+    // QUÉ, CUÁNDO y QUIÉN lo cargó. Nunca bloquea: si es legítimo, se registra.
     try {
-      const hace6h = Date.now() - 6 * 3600 * 1000;
       const tipoMov = tipo === 'ingreso' ? 'entrada' : 'salida';
-      const repetidos = [];
+      const filasAviso = [];
       for (const it of itemsValidos) {
         const cant = parseFloat(it.cantidad) || 0;
-        const previos = await window.__db.movimientos_materiales
-          .filter(m => !m.deleted_at && m.material_id === it.material_id && m.tipo_movimiento === tipoMov
-            && Number(m.cantidad) === cant && m.fecha === form.fecha && Date.parse(m.created_at || 0) > hace6h)
-          .count();
-        if (previos > 0) {
+        const hist = await window.__db.movimientos_materiales.where('material_id').equals(it.material_id).toArray();
+        const parecidos = buscarMovimientosParecidos(
+          { itemId: it.material_id, tipo: tipoMov, cantidad: cant, fecha: form.fecha }, hist);
+        if (parecidos.length) {
           const mat = materiales.find(x => x.id === it.material_id);
-          repetidos.push(`${mat?.nombre_material || 'material'} ×${cant}`);
+          filasAviso.push({ nombre: mat?.nombre_material || 'material', unidad: mat?.unidad, cantidad: cant, fecha: form.fecha, parecidos });
         }
       }
-      if (repetidos.length && !window.confirm(`⚠ POSIBLE DUPLICADO\n\nHoy ya registraste un movimiento IDÉNTICO de:\n• ${repetidos.join('\n• ')}\n\nSi solo estás verificando, cancelá — el registro anterior YA quedó guardado.\n\n¿Registrar OTRA VEZ de todos modos?`)) return;
-    } catch { /* el aviso nunca debe romper el flujo */ }
+      if (filasAviso.length) {
+        const nombres = mapaNombresUsuarios(await window.__db.profiles.toArray().catch(() => []));
+        const seguir = await window.__avisoDuplicado({
+          titulo: 'Posible movimiento duplicado',
+          intro: `Antes de guardar esta ${tipo === 'ingreso' ? 'entrada' : 'salida'}: ya hay registrado un movimiento igual (mismo material y cantidad). Si solo estás verificando si se guardó, NO lo registres otra vez — el anterior ya quedó.`,
+          grupos: armarAvisoMovimientos(filasAviso, { nombreDe: (id) => nombres.get(id) || null }),
+          pregunta: '¿Es un movimiento NUEVO, distinto del que ya está?',
+          textoSi: 'Sí, es otro — registrar',
+          textoNo: 'No, ya estaba — no registrar',
+        });
+        if (!seguir) return;
+      }
+    } catch (e) { console.warn('[aviso-duplicado]', e?.message); /* el aviso nunca debe romper el flujo */ }
 
     // ── Validación CUMULATIVA de stock para SALIDA ────────────────
     // Antes solo se chequeaba cada fila contra el stock actual, pero si
@@ -2144,7 +2191,12 @@ function MaterialesPage({ showToast }) {
     }
 
     if (fallidos === 0) {
-      showToast(`✓ Lote registrado: ${exitosos} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}`, 'green');
+      // Si la fecha NO es hoy, decirlo: en el registro (ordenado por fecha) el
+      // movimiento queda junto a los de ESA fecha, no arriba (caso COLLARINES).
+      const avisoFecha = form.fecha && form.fecha !== hoyLocal()
+        ? ` con fecha ${form.fecha.slice(8,10)}/${form.fecha.slice(5,7)} — en el registro aparece en esa fecha (o usá «Orden: últimos cargados»)`
+        : '';
+      showToast(`✓ Lote registrado: ${exitosos} ${tipo === 'ingreso' ? 'ingresos' : 'salidas'}${avisoFecha}`, 'green');
     } else if (exitosos === 0) {
       showToast(`✗ Falló el lote: ${errores[0] || 'sin detalles'}`, 'red');
     } else {
@@ -2604,7 +2656,7 @@ function MaterialesPage({ showToast }) {
         )}
 
         <div className="g2">
-          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+          <div><label className="flabel">Fecha</label><input className="fi" type="date" max={hoyLocal()} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
           <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
           <div><label className="flabel">Documento / Guía (n°){loteComunes.sinFactura ? ' (opcional)' : ''}</label><input className="fi" placeholder={loteComunes.sinFactura ? 'Opcional — se puede llenar cuando llegue la factura' : 'N° guía o factura — se aplica a todos'} value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
         </div>
@@ -2774,7 +2826,7 @@ function MaterialesPage({ showToast }) {
       {modal==='salida' && (() => {
         const personalActivo = personal.filter(p => {
           if (p.estado !== 'activo') return false;
-          const hoy = new Date().toISOString().slice(0, 10);
+          const hoy = hoyLocal();
           if (p.fecha_ingreso && String(p.fecha_ingreso) > hoy) return false;
           if (p.obra_id && obraId && p.obra_id !== obraId) return false;
           return true;
@@ -2785,7 +2837,7 @@ function MaterialesPage({ showToast }) {
         return (
         <Modal title="Registrar Salida de Materiales (lote)" icon="arrowOut" onClose={()=>setModal(null)} size="xl">
           <div className="g2">
-            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
+            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={hoyLocal()} value={form.fecha||''} onChange={e=>setForm({...form, fecha:e.target.value})}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={form.hora||''} onChange={e=>setForm({...form, hora:e.target.value})}/></div>
             <div><label className="flabel">Documento / Vale (n°)</label><input className="fi" placeholder="N° vale de salida" value={form.documento||''} onChange={e=>setForm({...form, documento:e.target.value})}/></div>
           </div>
@@ -3466,7 +3518,7 @@ function MaterialesPage({ showToast }) {
         {superAdmin && editingId && (
           <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
             <label className="flabel" style={{ color:'var(--red)' }}>⚡ Fecha de registro (Super Admin)</label>
-            <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+            <input className="fi" type="date" max={hoyLocal()}
               value={form.fecha_registro || ''}
               onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
             <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
@@ -4040,6 +4092,36 @@ function HerramientasPage({ showToast }) {
       showToast('Elegí el frente de trabajo, o marcá "lo completo después".', 'red');
       return;
     }
+    // Aviso de POSIBLE DUPLICADO (24-set) — mismo criterio que materiales
+    // (src/lib/almacen-duplicados.js). tipo_movimiento distingue ingreso de
+    // devolución, que son cosas distintas aunque las dos sumen.
+    try {
+      const filasAviso = [];
+      for (const it of itemsValidos) {
+        const cant = parseFloat(it.cantidad) || 0;
+        const hist = await window.__db.movimientos_herramientas.where('herramienta_id').equals(it.herramienta_id).toArray();
+        const parecidos = buscarMovimientosParecidos(
+          { itemId: it.herramienta_id, tipo, cantidad: cant, fecha: loteCantForm.fecha }, hist,
+          { getItemId: m => m.herramienta_id, getTipo: m => m.tipo_movimiento || (m.accion === 'entrada' ? 'ingreso' : m.accion) });
+        if (parecidos.length) {
+          const h = herramientas.find(x => x.id === it.herramienta_id);
+          filasAviso.push({ nombre: h?.nombre_herramienta || 'herramienta', unidad: h?.unidad, cantidad: cant, fecha: loteCantForm.fecha, parecidos });
+        }
+      }
+      if (filasAviso.length) {
+        const nombres = mapaNombresUsuarios(await window.__db.profiles.toArray().catch(() => []));
+        const lbl = tipo === 'ingreso' ? 'ingreso' : tipo === 'salida' ? 'salida' : 'devolución';
+        const seguir = await window.__avisoDuplicado({
+          titulo: 'Posible movimiento duplicado',
+          intro: `Antes de guardar esta ${lbl}: ya hay registrado un movimiento igual (misma herramienta y cantidad). Si solo estás verificando si se guardó, NO lo registres otra vez — el anterior ya quedó.`,
+          grupos: armarAvisoMovimientos(filasAviso, { nombreDe: (id) => nombres.get(id) || null }),
+          pregunta: '¿Es un movimiento NUEVO, distinto del que ya está?',
+          textoSi: 'Sí, es otro — registrar',
+          textoNo: 'No, ya estaba — no registrar',
+        });
+        if (!seguir) return;
+      }
+    } catch (e) { console.warn('[aviso-duplicado herr]', e?.message); }
     // Idempotencia a nivel LOTE: una clave por click → sub-clave determinista por
     // item. Si el browser re-envía, el server rechaza el duplicado por UNIQUE.
     const loteKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -4137,11 +4219,22 @@ function HerramientasPage({ showToast }) {
       }
       refresh();
       const etq = tipo === 'ingreso' ? 'ingresos' : tipo === 'devolucion' ? 'devoluciones' : 'salidas';
-      showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${etq}`, fail ? 'amber' : 'green');
+      const avisoFechaH = loteCantForm.fecha && loteCantForm.fecha !== hoyLocal()
+        ? ` con fecha ${loteCantForm.fecha.slice(8,10)}/${loteCantForm.fecha.slice(5,7)} — en el registro aparece en esa fecha (o usá «Orden: últimos cargados»)`
+        : '';
+      showToast(fail ? `⚠ ${ok} ok, ${fail} fallaron` : `✓ ${ok} ${etq}${avisoFechaH}`, fail ? 'amber' : 'green');
       setLoteCant(null); setLoteCantItems([]); setLoteCantForm({}); setFrenteSalida(''); setFrentePendiente(false);
     } finally { setBusyLoteCant(false); }
   };
-  const ejecutarTraspasoHerr = async ({ item_id, origenId, destinoId, cantidad }) => {
+  // Guard SÍNCRONO anti doble-click (24-set, regla 2): el traspaso son 3
+  // escrituras (desglose + salida + entrada); un doble click las duplicaba.
+  const ejecutarTraspasoHerrEnCursoRef = React.useRef(false);
+  const ejecutarTraspasoHerr = async (args) => {
+    if (ejecutarTraspasoHerrEnCursoRef.current) return;
+    ejecutarTraspasoHerrEnCursoRef.current = true;
+    try { await ejecutarTraspasoHerrInner(args); } finally { ejecutarTraspasoHerrEnCursoRef.current = false; }
+  };
+  const ejecutarTraspasoHerrInner = async ({ item_id, origenId, destinoId, cantidad }) => {
     try {
       await traspasar({ obraId, itemTipo: 'herramienta', itemId: item_id, origenId, destinoId, cantidad, userId: auth?.profile?.id || null });
       const h = herramientas.find(x => x.id === item_id);
@@ -4560,11 +4653,40 @@ function HerramientasPage({ showToast }) {
     } catch (e) { showToast('Error al eliminar: ' + (e.message||e), 'red'); }
   };
 
+  // Guard SÍNCRONO (regla 2): el estado busyHerr tiene ventana de carrera.
+  const herrEnCursoRef = React.useRef(false);
   const handleSubmitHerr = async () => {
+    if (herrEnCursoRef.current) return;
+    herrEnCursoRef.current = true;
+    try { await handleSubmitHerrInner(); } finally { herrEnCursoRef.current = false; }
+  };
+  const handleSubmitHerrInner = async () => {
     if (busyHerr) return; // doble click guard
     if (!form.nombre_herramienta) {
       showToast('Falta nombre', 'red');
       return;
+    }
+    // ¿Ya existe? (24-set) Mismo aviso que materiales. Dos herramientas con el
+    // mismo nombre y DISTINTA serie son legítimas: por eso se muestra la serie.
+    if (!editingId) {
+      const parecidos = buscarNombresParecidos(form.nombre_herramienta, herramientas, { getNombre: h => h.nombre_herramienta });
+      if (parecidos.length) {
+        const seguir = await window.__avisoDuplicado({
+          titulo: parecidos[0].tipo === 'igual' ? 'Esa herramienta ya existe' : 'Hay una herramienta parecida',
+          intro: `Vas a crear "${form.nombre_herramienta}". En esta obra ya ${parecidos.length === 1 ? 'está' : 'están'}:`,
+          grupos: parecidos.map(({ item, tipo }) => ({
+            titulo: `${item.nombre_herramienta}${tipo === 'igual' ? ' (mismo nombre)' : ''}`,
+            filas: [
+              `Stock actual: ${Number(item.stock_actual ?? 0)} ${item.unidad || ''}`.trim(),
+              ...(item.serie ? [`Serie: ${item.serie}`] : []),
+            ],
+          })),
+          pregunta: 'Si es la misma, cancelá y registrá el ingreso sobre la que ya existe. Crear otra separa su stock en dos.',
+          textoSi: 'Es otra herramienta — crear igual',
+          textoNo: 'Cancelar, uso la que existe',
+        });
+        if (!seguir) return;
+      }
     }
     setBusyHerr(true);
     try {
@@ -4647,7 +4769,7 @@ function HerramientasPage({ showToast }) {
             mime_type: foto.blob.type || 'image/jpeg',
             blob: foto.blob,
             observaciones: `Foto referencial · ${form.nombre_herramienta}`,
-            fecha: new Date().toISOString().slice(0, 10),
+            fecha: hoyLocal(),
             created_by: auth?.profile?.id || null,
           });
         } catch (e) {
@@ -4922,7 +5044,7 @@ function HerramientasPage({ showToast }) {
         {superAdmin && editingId && (
           <div style={{ marginTop:10, padding:'10px 12px', background:'rgba(231,76,60,0.06)', border:'1px solid rgba(231,76,60,0.3)', borderRadius:6 }}>
             <label className="flabel" style={{ color:'var(--red)' }}>⚡ Fecha de registro (Super Admin)</label>
-            <input className="fi" type="date" max={new Date().toISOString().slice(0,10)}
+            <input className="fi" type="date" max={hoyLocal()}
               value={form.fecha_registro || ''}
               onChange={e=>setForm({...form, fecha_registro:e.target.value})}/>
             <div style={{ fontSize:10.5, color:'var(--tm)', marginTop:3 }}>
@@ -5057,7 +5179,7 @@ function HerramientasPage({ showToast }) {
             </div>
           )}
           <div className="g2">
-            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={loteCantForm.fecha || ''} onChange={e=>setLoteCantForm(f=>({...f, fecha:e.target.value}))}/></div>
+            <div><label className="flabel">Fecha</label><input className="fi" type="date" max={hoyLocal()} value={loteCantForm.fecha || ''} onChange={e=>setLoteCantForm(f=>({...f, fecha:e.target.value}))}/></div>
             <div><label className="flabel">Hora</label><input className="fi" type="time" value={loteCantForm.hora || ''} onChange={e=>setLoteCantForm(f=>({...f, hora:e.target.value}))}/></div>
             {ubicacionesActivasH.length > 0 && (
               <div><label className="flabel">{labelAlmacen}</label>
@@ -6278,7 +6400,7 @@ function AsistenciaPage({ showToast }) {
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Asistencia', 'w') ?? false);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = hoyLocal();
   const [date, setDate] = uS(today);
   const [modal, setModal] = uS(null); // null | 'masivo' | 'editar'
   const [editingAsist, setEditingAsist] = uS(null); // asistencia individual en edición
@@ -6408,7 +6530,7 @@ function AsistenciaPage({ showToast }) {
       return;
     }
     // No permitir asistencia con fecha futura
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = hoyLocal();
     if (date > hoy) {
       showToast('No podés registrar asistencia de una fecha futura', 'red');
       return;
@@ -6543,7 +6665,7 @@ function AsistenciaPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div><div className="pg-title">Control de Asistencia</div><div className="pg-sub">Registro diario masivo · 1 evidencia por día</div></div>
         <div style={{display:'flex',gap:8,alignItems:'center', flexWrap:'wrap'}}>
-          <input className="fi" type="date" max={new Date().toISOString().slice(0,10)} value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
+          <input className="fi" type="date" max={hoyLocal()} value={date} onChange={e=>setDate(e.target.value)} style={{width:'auto'}}/>
           {canWrite ? (
             <button className="btn btn-amber btn-sm" onClick={openMasivo}>
               <JxIcon name="users" size={13}/>Registrar Asistencia Diaria
