@@ -380,19 +380,57 @@ export const factorDeItem = (it) => {
  * columna el factor es 1: todo lo escrito antes de la 2.2 ya estaba en la
  * unidad del expediente.
  *
+ * ── EL ALMACÉN (ronda 2, tanda 2.5) ───────────────────────────────
+ * En Miraflores lo comprado casi nunca pasó por una orden: el almacén
+ * registró 3.140 bolsas de cemento entradas y las órdenes explican 2.250.
+ * Cada ítem del almacén que alguien imputó a un insumo del presupuesto
+ * (`imputacion='insumo'`, ver `simulador-imputacion.js`) resta según
+ * `almacenModo`, decidido por Gabriel el 24-set como perilla del escenario:
+ *   · 'entradas' — todo lo que ENTRÓ (default). Es lo coherente con este
+ *     motor, que mira la necesidad desde el inicio de la obra: lo que entró y
+ *     ya se gastó cubrió meses pasados, y no restarlo lo volvería a pedir.
+ *   · 'stock'    — lo que HAY hoy. Vuelve a pedir lo que ya se consumió; la
+ *     pantalla lo advierte.
+ *   · 'nada'     — el almacén no resta.
+ *   · 'personalizado' — insumo por insumo (`almacenPorInsumo`): entradas,
+ *     stock, nada o una cantidad fija en unidades del presupuesto.
+ *
+ * Y **manda el almacén** (Gabriel, 24-set): en un insumo que el almacén ya
+ * cubre, una orden RECIBIDA no se suma — lo que llegó ya está en las
+ * entradas, y sumarla contaría el mismo cemento dos veces. La que todavía no
+ * llegó sí se suma. Se decide por insumo y no por fila porque solo 21 de las
+ * 716 entradas de Miraflores están atadas a una factura: emparejar orden con
+ * entrada una por una no es posible.
+ *
+ * ── LO QUE NO ES UN INSUMO (tanda 2.5) ────────────────────────────
+ * Una línea de orden imputada a un SOBRE (`imputacion='sobre'`, las
+ * herramientas de OC-002 contra «HERRAMIENTAS MANUALES») no resta cantidad:
+ * gasta plata del sobre, y sale por `consumoSobre` (código → monto). Una
+ * imputada como FUERA del presupuesto (los estudios del documento de
+ * trabajo) sale por `fueraPresupuesto` — ya no es «no se sabe», es «no
+ * corresponde», y la pantalla lo dice distinto.
+ *
  * @returns {{cubierto:Map<string,number>,
  *            sinImputar:{lineas:number, monto:number},
- *            reqSinImputar:{lineas:number, monto:number}}}
+ *            reqSinImputar:{lineas:number, monto:number},
+ *            consumoSobre:Map<string,number>,
+ *            fueraPresupuesto:{lineas:number, monto:number},
+ *            almacen:Object}}
  */
 export function coberturaPrevia({
   ordenes = [], ocItems = [], yaComprado = null,
   requisiciones = [], requisicionItems = [],
+  almacen = [], almacenModo = 'entradas', almacenPorInsumo = null,
 } = {}) {
   const cubierto = new Map();
   const suma = (cod, cant) => cubierto.set(cod, (cubierto.get(cod) || 0) + num(cant));
 
   const previas = yaComprado instanceof Map ? [...yaComprado] : Object.entries(yaComprado || {});
   for (const [cod, cant] of previas) if (cod) suma(String(cod), cant);
+
+  // ── lo que entró al almacén (tanda 2.5) ──────────────────────────
+  const alm = aporteDelAlmacen(almacen, { modo: almacenModo, porInsumo: almacenPorInsumo });
+  for (const [cod, cant] of alm.porCodigo) suma(cod, cant);
 
   const vivas = new Map();
   for (const o of vivos(ordenes)) {
@@ -404,19 +442,47 @@ export function coberturaPrevia({
   }
 
   const sinImputar = { lineas: 0, monto: 0 };
+  const fueraPresupuesto = { lineas: 0, monto: 0 };
+  const consumoSobre = new Map();
+  const cubiertasPorAlmacen = { lineas: 0, monto: 0 };
   for (const it of vivos(ocItems)) {
-    if (!vivas.has(it.orden_compra_id)) continue;
+    const orden = vivas.get(it.orden_compra_id);
+    if (!orden) continue;
+    const monto = num(it.subtotal) || num(it.cantidad) * num(it.precio_unitario);
+    if (it.imputacion === 'fuera') {
+      fueraPresupuesto.lineas += 1;
+      fueraPresupuesto.monto += monto;
+      continue;
+    }
     const cod = it.insumo_codigo && String(it.insumo_codigo).trim();
     if (!cod) {
       // Sin código no se puede descontar de ninguna línea del presupuesto.
-      // Se cuenta aparte y se dice: en Miraflores esto es el 100% (62/62).
+      // Se cuenta aparte y se dice: en Miraflores esto era el 100% (62/62)
+      // hasta la tanda 2.5.
       sinImputar.lineas += 1;
-      sinImputar.monto += num(it.subtotal) || num(it.cantidad) * num(it.precio_unitario);
+      sinImputar.monto += monto;
       continue;
     }
-    suma(cod, num(it.cantidad) * factorDeItem(it));
+    if (it.imputacion === 'sobre') {
+      consumoSobre.set(cod, (consumoSobre.get(cod) || 0) + monto);
+      continue;
+    }
+    // Manda el almacén: lo que ya llegó está en sus entradas.
+    let cantidad = num(it.cantidad);
+    if (alm.gobierna.has(cod)) {
+      if (orden.estado === 'recibida') {
+        cubiertasPorAlmacen.lineas += 1;
+        cubiertasPorAlmacen.monto += monto;
+        continue;
+      }
+      if (orden.estado === 'recibida_parcial') cantidad = Math.max(0, cantidad - num(it.cantidad_recibida));
+    }
+    suma(cod, cantidad * factorDeItem(it));
   }
   sinImputar.monto = r2(sinImputar.monto);
+  fueraPresupuesto.monto = r2(fueraPresupuesto.monto);
+  cubiertasPorAlmacen.monto = r2(cubiertasPorAlmacen.monto);
+  for (const [k, v] of consumoSobre) consumoSobre.set(k, r2(v));
 
   // ── lo ya pedido por una requisición viva (tanda 4) ──────────────
   const reqVivas = new Set();
@@ -442,12 +508,86 @@ export function coberturaPrevia({
   }
   reqSinImputar.monto = r2(reqSinImputar.monto);
 
-  return { cubierto, sinImputar, reqSinImputar };
+  return {
+    cubierto, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto,
+    almacen: { ...alm.resumen, ordenesCubiertas: cubiertasPorAlmacen },
+  };
+}
+
+/** Qué resta el almacén en cada modo (ver `coberturaPrevia`). */
+export const ALMACEN_MODOS = ['entradas', 'stock', 'nada', 'personalizado'];
+export const ALMACEN_MODO_LABEL = {
+  entradas: 'Todo lo que entró',
+  stock: 'Solo lo que hay hoy',
+  nada: 'Nada',
+  personalizado: 'Personalizado por insumo',
+};
+/** Lo que se puede elegir para UN insumo en el modo personalizado. */
+export const ALMACEN_MODOS_INSUMO = ['entradas', 'stock', 'nada', 'cantidad'];
+
+/**
+ * Cuánto resta el almacén de cada código del presupuesto, en unidades del
+ * presupuesto. Solo cuentan los ítems imputados a un insumo
+ * (`imputacion='insumo'`): lo no imputado no se resta a ojo, se cuenta en
+ * `resumen.sinImputar` para que la pantalla lo diga.
+ *
+ * `gobierna` son los códigos donde el almacén efectivamente aporta: en esos,
+ * las órdenes recibidas ya están contadas por sus entradas.
+ *
+ * @param {Array} filas  salida de `existenciasDelAlmacen()` (simulador-imputacion.js)
+ */
+export function aporteDelAlmacen(filas = [], { modo = 'entradas', porInsumo = null } = {}) {
+  const m = ALMACEN_MODOS.includes(modo) ? modo : 'entradas';
+  const porCodigo = new Map();
+  const gobierna = new Set();
+  const resumen = {
+    modo: m, items: 0, itemsImputados: 0, itemsFuera: 0, insumos: 0,
+    sinImputar: { items: 0 },
+  };
+  const fijos = new Map();   // código → cantidad fija (personalizado)
+  const modoDe = (cod) => {
+    if (m !== 'personalizado') return m;
+    const cfg = porInsumo && porInsumo[cod];
+    const mi = cfg && ALMACEN_MODOS_INSUMO.includes(cfg.modo) ? cfg.modo : 'entradas';
+    if (mi === 'cantidad') fijos.set(cod, Math.max(0, num(cfg.cantidad)));
+    return mi;
+  };
+  for (const f of (filas || [])) {
+    if (!f || f.deleted_at || f.es_grupo) continue;
+    const entradas = num(f.entradas);
+    const stock = num(f.stock);
+    // Un ítem que nunca recibió nada no es algo que imputar.
+    if (!(entradas > 0) && !(stock > 0)) continue;
+    resumen.items += 1;
+    if (f.imputacion === 'fuera') { resumen.itemsFuera += 1; continue; }
+    const cod = f.imputacion === 'insumo' && f.insumo_codigo ? String(f.insumo_codigo).trim() : '';
+    if (!cod) { resumen.sinImputar.items += 1; continue; }
+    resumen.itemsImputados += 1;
+    const mi = modoDe(cod);
+    if (mi === 'nada') continue;
+    gobierna.add(cod);
+    if (mi === 'cantidad') continue;       // se suma una vez por código, abajo
+    const cant = (mi === 'stock' ? stock : entradas) * factorDeItem(f);
+    porCodigo.set(cod, (porCodigo.get(cod) || 0) + cant);
+  }
+  for (const [cod, cant] of fijos) {
+    if (!gobierna.has(cod)) continue;
+    porCodigo.set(cod, cant);
+  }
+  resumen.insumos = gobierna.size;
+  return { porCodigo, gobierna, resumen };
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // EL MOTOR
 // ═══════════════════════════════════════════════════════════════════
+
+/**
+ * La clave de un sobre: por nombre y unidad, no por código — así venía desde
+ * la tanda 1 y es con lo que el plan escribe `origen_ref = 'sobre:<clave>'`.
+ * Exportada para que la bandeja de imputación (tanda 2.5) no la re-derive.
+ */
+export const claveDeSobre = (ip) => `${String(ip?.nombre_insumo || ip?.nombre || '').trim().toLowerCase()}|${normUnidad(ip?.unidad)}`;
 
 /** Clave con la que se juntan dos líneas que son el mismo insumo. */
 const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim())
@@ -487,6 +627,12 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  * @param {Object}  [o.frecuenciaPorRubro]   rubro → frecuencia, pisa la general.
  * @param {number}  [o.montoMinimoOrden=0]   una orden por debajo se junta con
  *                  la siguiente del mismo rubro. 0 = no se junta.
+ * @param {Array}   [o.almacen]              ítems del almacén de la obra con su
+ *                  imputación (tanda 2.5, `existenciasDelAlmacen()`).
+ * @param {string}  [o.almacenModo='entradas'] qué resta el almacén — ver
+ *                  `coberturaPrevia`.
+ * @param {Object}  [o.almacenPorInsumo]     código → {modo, cantidad}, solo en
+ *                  el modo 'personalizado'.
  *
  * @returns {{propuestas:Array, sobres:Array, manoObra:Array, pendientes:Array, resumen:Object}}
  */
@@ -512,6 +658,9 @@ export function simularOrdenes({
   frecuencia = FRECUENCIA_DEFAULT,
   frecuenciaPorRubro = null,
   montoMinimoOrden = 0,
+  almacen = [],
+  almacenModo = 'entradas',
+  almacenPorInsumo = null,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -556,6 +705,8 @@ export function simularOrdenes({
     descontado: { insumos: 0, cantidad: 0, monto: 0 },
     ocSinImputar: { lineas: 0, monto: 0 },
     reqSinImputar: { lineas: 0, monto: 0 },
+    fueraPresupuesto: { lineas: 0, monto: 0 },
+    almacen: null,
     consumoSobresInformado: consumoSobres != null,
     // Consolidación (tanda 2.3): cuántas órdenes habría sin juntar, cuántas
     // se juntaron por monto y cuántas quedan chicas igual.
@@ -627,18 +778,22 @@ export function simularOrdenes({
     // Un SOBRE no es una lista de insumos: es un techo de plata. Va por su
     // propio carril y nunca entra a una propuesta con cantidad (§4.1).
     if (cls.esSobre) {
-      const clave = `${String(ip.nombre_insumo || '').trim().toLowerCase()}|${normUnidad(ip.unidad)}`;
+      const clave = claveDeSobre(ip);
       let s = sobres.get(clave);
       if (!s) {
         s = {
           clave, nombre: ip.nombre_insumo || '', unidad: ip.unidad || '',
           categoria: cls.categoria, subcategoria: cls.subcategoria,
           techo: 0, enPartidas: 0, partidaIds: new Set(), porPeriodo: new Map(),
+          codigos: new Set(),
         };
         sobres.set(clave, s);
       }
       s.techo += montoCrudo;
       s.enPartidas += 1;
+      // El código deja imputarle una línea de orden (tanda 2.5): la clave del
+      // sobre es por nombre, pero la orden se imputa por código.
+      if (ip.insumo_codigo) s.codigos.add(String(ip.insumo_codigo).trim());
       if (ip.partida_id) s.partidaIds.add(ip.partida_id);
       for (const { periodo, fraccion } of plan.periodos) {
         s.porPeriodo.set(periodo, (s.porPeriodo.get(periodo) || 0) + montoCrudo * fraccion);
@@ -710,11 +865,16 @@ export function simularOrdenes({
   // ── 2) restar lo ya comprado / ya ordenado ────────────────────────
   // El descuento se aplica de los períodos MÁS VIEJOS hacia adelante: lo que
   // ya está en obra cubre primero las necesidades más cercanas.
-  const { cubierto, sinImputar, reqSinImputar } = coberturaPrevia({
+  const {
+    cubierto, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto, almacen: almResumen,
+  } = coberturaPrevia({
     ordenes, ocItems, yaComprado, requisiciones, requisicionItems,
+    almacen, almacenModo, almacenPorInsumo,
   });
   resumen.ocSinImputar = sinImputar;
   resumen.reqSinImputar = reqSinImputar;
+  resumen.fueraPresupuesto = fueraPresupuesto;
+  resumen.almacen = almResumen;
 
   if (anc !== 'cero' && cubierto.size) {
     const porClave = new Map();
@@ -937,13 +1097,22 @@ export function simularOrdenes({
   // queda en null. Un sobre que se cree entero cuando ya se gastó la mitad
   // es exactamente el doble gasto que el §7 viene a evitar.
   const sobresOut = [...sobres.values()].map(s => {
-    const informado = consumoSobres != null && consumoSobres[s.clave] != null;
-    const consumido = informado ? r2(consumoSobres[s.clave]) : null;
+    // Lo gastado sale de dos lados: lo que el plan ya requisó contra el sobre
+    // (por clave) y las órdenes imputadas a él (por código, tanda 2.5).
+    let deOrdenes = 0, hayDeOrdenes = false;
+    for (const cod of s.codigos) {
+      if (consumoSobre.has(cod)) { deOrdenes += consumoSobre.get(cod); hayDeOrdenes = true; }
+    }
+    const deReq = consumoSobres != null && consumoSobres[s.clave] != null;
+    const informado = deReq || hayDeOrdenes;
+    const consumido = informado ? r2((deReq ? num(consumoSobres[s.clave]) : 0) + deOrdenes) : null;
     return {
       clave: s.clave, nombre: s.nombre, unidad: s.unidad,
       categoria: s.categoria, subcategoria: s.subcategoria,
       iupc: clasificacionDe(s.nombre, terminosCustom),
       techo: r2(s.techo), enPartidas: s.enPartidas, partidaIds: [...s.partidaIds],
+      codigos: [...s.codigos],
+      consumidoPorOrdenes: hayDeOrdenes ? r2(deOrdenes) : 0,
       consumido, consumoInformado: informado,
       disponible: informado ? r2(s.techo - consumido) : null,
       porPeriodo: [...s.porPeriodo]

@@ -452,11 +452,12 @@ const FAMILIA_UNIDAD = [
   ['m', /^(m|ml|mt|mts|mtr|mtrs|metro|metros)$/],
   ['kg', /^(kg|kgs|kilo|kilos|kilogramo|kilogramos)$/],
   ['gal', /^(gal|gl|galon|galones)$/],
-  ['bls', /^(bls|bl|bolsa|bolsas)$/],
+  // «bol» es como la escribe el presupuesto (CEMENTO PORTLAND … [bol]).
+  ['bls', /^(bls|bl|bol|bols|bolsa|bolsas)$/],
   ['rll', /^(rll|rollo|rollos)$/],
   ['par', /^(par|pares)$/],
-  ['m2', /^(m2|mt2|metro cuadrado)$/],
-  ['m3', /^(m3|mt3|metro cubico)$/],
+  ['m2', /^(m2|m²|mt2|metro cuadrado)$/],
+  ['m3', /^(m3|m³|mt3|metro cubico)$/],
 ];
 export function familiaUnidad(u) {
   const t = plegar(u).replace(/[.\s]+$/, '').trim();

@@ -761,5 +761,46 @@ no puede: explicar un enfoque y variarlo con criterio.
       36. No hay resaltado del chip activo por scroll-spy: no lo pidió
       Gabriel y sumaba un IntersectionObserver para un dato que el propio
       click ya deja claro.
-- [ ] Tanda 2.5 — imputar las 62 líneas + stock del almacén
+- [x] Tanda 2.5 — imputar lo ya comprado: órdenes + almacén (24-set).
+      `src/lib/simulador-imputacion.js` (nueva, pura, 33 tests) + almacén en
+      `coberturaPrevia()` (`aporteDelAlmacen`, 14 tests nuevos en
+      `simulador-ordenes.test.js`) + pestaña «🧾 Imputar lo ya comprado» +
+      perilla «Del almacén, restar» en el escenario + **migración 229,
+      aplicada y verificada** (`imputacion` en oc_items; `imputacion`,
+      `insumo_codigo`, `factor_presupuesto` en materiales/herramientas/epps,
+      con CHECK de coherencia).
+      **Lo que cambió respecto de §13:**
+      · **El almacén no era un detalle: es donde está lo comprado.** Medido en
+        Miraflores: 3.140 bolsas de cemento entradas contra 2.250 en órdenes;
+        467 ítems con entradas, sin código del presupuesto. Solo 21 de 716
+        entradas están atadas a una factura, así que orden y entrada NO se
+        pueden emparejar una por una.
+      · **Qué resta el almacén lo eligió Gabriel como perilla del escenario:**
+        todo lo que entró (default) / solo lo que hay / nada / personalizado
+        por insumo (entradas, stock, nada o cantidad fija). «Lo que entró» es
+        lo coherente con este motor (necesidad desde el inicio de la obra):
+        restar solo las 62 bolsas que quedan volvería a pedir las 3.078 ya
+        gastadas; la pantalla lo advierte en el modo «stock».
+      · **Manda el almacén** (Gabriel): en un insumo que el almacén cubre, la
+        orden RECIBIDA no se suma (ya está en las entradas); la no recibida sí;
+        la recibida parcial suma `cantidad − cantidad_recibida`.
+      · **Tres destinos, no uno:** insumo (con factor), SOBRE (solo órdenes:
+        las ~43 herramientas de OC-002 gastan «HERRAMIENTAS MANUALES»; el
+        consumo del sobre ahora suma órdenes + requisiciones) y FUERA del
+        presupuesto (estudios del documento de trabajo) — ya no cuenta como
+        «no se sabe». El almacén no puede ir a un sobre: no tiene precio.
+      · **La sugerencia reusa `match-solicitud.js` y NO decide:** 156 de 467
+        ítems del almacén salen sugeridos (137 con factor), y hay errores
+        («VÁLVULA DE 1/2" PARA MEDIDOR» → «VÁLVULA CHECK»). Sin «aceptar
+        todas». El factor sale de `resolverCompra` (tubo de 5/6 m leído del
+        nombre del presupuesto, o la corrección de la obra) o de la misma
+        unidad escrita distinto (`bol` = Bolsas, agregado a la familia de
+        unidades); si no se sabe, se pide.
+      · `match-solicitud.js` quedó como chunk compartido (hoja de 9,7 KB,
+        cero imports) entre Solicitud de Insumos y el simulador: el caso
+        inocuo, igual que `stock-comprometido`.
+      · Permisos: escribir la imputación requiere UPDATE en oc_items y en el
+        almacén (rls033: admin, gerente, jefe_compras, …). El SyncEngine no
+        sube `stock_actual` ni totales (TRIGGER_MANAGED_FIELDS), así que
+        imputar un material no pisa su stock.
 - [ ] Tanda 2.6 (opcional) — escenarios con IA, solo si Gabriel la pide

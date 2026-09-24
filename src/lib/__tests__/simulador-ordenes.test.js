@@ -946,3 +946,162 @@ describe('cantidades comprables (tanda 2.2)', () => {
     expect(cubierto.get(CEMENTO)).toBe(10);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA 2.5 — el almacén resta, y lo que no es insumo se dice distinto
+//
+// Miraflores (24-set-2026): el almacén registró 3.140 bolsas de cemento
+// entradas (quedan 62) y las 14 órdenes explican 2.250, todas «recibida».
+// ═══════════════════════════════════════════════════════════════════
+describe('el almacén resta (tanda 2.5)', () => {
+  const insumos = [
+    ip('p-corta', 'material', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bol', 1000, 30, CEMENTO),
+    ip('p-larga', 'material', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bol', 600, 30, CEMENTO),
+  ];
+  const base = { insumosPartida: insumos, partidas, hoy: '2026-05-01', anclaje: 'restante', reparto: 'inicio' };
+  const cementoAlmacen = { tabla: 'materiales', id: 'm1', nombre: 'CEMENTO', unidad: 'Bolsas', entradas: 1200, stock: 62, imputacion: 'insumo', insumo_codigo: CEMENTO, factor_presupuesto: null };
+  const ordenRecibida = {
+    ordenes: [{ id: 'oc1', estado: 'recibida' }],
+    ocItems: [{ id: 'i1', orden_compra_id: 'oc1', insumo_codigo: CEMENTO, imputacion: 'insumo', cantidad: 750, subtotal: 22500 }],
+  };
+
+  it('por defecto resta TODO lo que entró, no lo que queda', () => {
+    const { resumen } = simularOrdenes({ ...base, almacen: [cementoAlmacen] });
+    // Restar solo las 62 volvería a pedir las 1.138 que ya se usaron en obra.
+    expect(resumen.descontado.cantidad).toBe(1200);
+    expect(resumen.almacen.modo).toBe('entradas');
+    expect(resumen.almacen.itemsImputados).toBe(1);
+  });
+
+  it('«solo lo que hay» resta el stock actual', () => {
+    const { resumen } = simularOrdenes({ ...base, almacen: [cementoAlmacen], almacenModo: 'stock' });
+    expect(resumen.descontado.cantidad).toBe(62);
+  });
+
+  it('«nada» no resta el almacén, y entonces la orden recibida vuelve a contar', () => {
+    const { resumen } = simularOrdenes({ ...base, ...ordenRecibida, almacen: [cementoAlmacen], almacenModo: 'nada' });
+    expect(resumen.descontado.cantidad).toBe(750);
+  });
+
+  it('MANDA EL ALMACÉN: una orden recibida del mismo insumo no se suma encima', () => {
+    const { resumen } = simularOrdenes({ ...base, ...ordenRecibida, almacen: [cementoAlmacen] });
+    // 1.200 entradas, no 1.200 + 750: lo que llegó ya está en las entradas.
+    expect(resumen.descontado.cantidad).toBe(1200);
+    expect(resumen.almacen.ordenesCubiertas).toEqual({ lineas: 1, monto: 22500 });
+  });
+
+  it('una orden que todavía no llegó SÍ se suma a lo del almacén', () => {
+    const { resumen } = simularOrdenes({
+      ...base, almacen: [cementoAlmacen],
+      ordenes: [{ id: 'oc1', estado: 'enviada' }],
+      ocItems: [{ id: 'i1', orden_compra_id: 'oc1', insumo_codigo: CEMENTO, cantidad: 300 }],
+    });
+    expect(resumen.descontado.cantidad).toBe(1500);
+  });
+
+  it('una recibida parcial suma solo lo que falta recibir', () => {
+    const { resumen } = simularOrdenes({
+      ...base, almacen: [cementoAlmacen],
+      ordenes: [{ id: 'oc1', estado: 'recibida_parcial' }],
+      ocItems: [{ id: 'i1', orden_compra_id: 'oc1', insumo_codigo: CEMENTO, cantidad: 300, cantidad_recibida: 100 }],
+    });
+    expect(resumen.descontado.cantidad).toBe(1400);
+  });
+
+  it('el factor del ítem lleva a la unidad del presupuesto (tubo → m)', () => {
+    const tuberia = [ip('p-corta', 'material', 'TUBERIA PVC UF S25 DE 8" x 6m', 'm', 600, 10, TUBERIA)];
+    const { resumen } = simularOrdenes({
+      insumosPartida: tuberia, partidas, hoy: '2026-05-01', anclaje: 'restante',
+      almacen: [{ tabla: 'materiales', id: 't1', nombre: 'TUBO PVC-U 200', unidad: 'unidad', entradas: 20, stock: 5, imputacion: 'insumo', insumo_codigo: TUBERIA, factor_presupuesto: 6 }],
+    });
+    expect(resumen.descontado.cantidad).toBe(120);
+  });
+
+  it('lo NO imputado no se resta a ojo: se cuenta', () => {
+    const { resumen } = simularOrdenes({
+      ...base,
+      almacen: [
+        { ...cementoAlmacen, id: 'mx', imputacion: null, insumo_codigo: null },
+        { ...cementoAlmacen, id: 'my', imputacion: 'fuera', insumo_codigo: null },
+        // Nunca recibió nada: no es algo que imputar.
+        { ...cementoAlmacen, id: 'mz', imputacion: null, insumo_codigo: null, entradas: 0, stock: 0 },
+      ],
+    });
+    expect(resumen.descontado.cantidad).toBe(0);
+    expect(resumen.almacen.sinImputar.items).toBe(1);
+    expect(resumen.almacen.itemsFuera).toBe(1);
+    expect(resumen.almacen.items).toBe(2);
+  });
+
+  it('personalizado: cada insumo elige entradas, stock, nada o una cantidad', () => {
+    const otro = { ...cementoAlmacen, id: 't1', insumo_codigo: TUBERIA, entradas: 50, stock: 10 };
+    const cub = (almacenPorInsumo) => coberturaPrevia({
+      almacen: [cementoAlmacen, otro], almacenModo: 'personalizado', almacenPorInsumo,
+    }).cubierto;
+    // Sin elegir nada, cada insumo resta lo que entró.
+    expect(cub({}).get(CEMENTO)).toBe(1200);
+    expect(cub({ [CEMENTO]: { modo: 'stock' } }).get(CEMENTO)).toBe(62);
+    expect(cub({ [CEMENTO]: { modo: 'nada' } }).has(CEMENTO)).toBe(false);
+    const fija = cub({ [CEMENTO]: { modo: 'cantidad', cantidad: 900 }, [TUBERIA]: { modo: 'stock' } });
+    expect(fija.get(CEMENTO)).toBe(900);
+    expect(fija.get(TUBERIA)).toBe(10);
+  });
+
+  it('personalizado en «nada» también devuelve la orden recibida a la cuenta', () => {
+    const { resumen } = simularOrdenes({
+      ...base, ...ordenRecibida, almacen: [cementoAlmacen],
+      almacenModo: 'personalizado', almacenPorInsumo: { [CEMENTO]: { modo: 'nada' } },
+    });
+    expect(resumen.descontado.cantidad).toBe(750);
+    expect(resumen.almacen.insumos).toBe(0);
+  });
+
+  it('una orden «fuera del presupuesto» deja de contarse como sin imputar', () => {
+    const { resumen } = simularOrdenes({
+      ...base,
+      ordenes: [{ id: 'os1', estado: 'recibida' }],
+      ocItems: [
+        { id: 'i1', orden_compra_id: 'os1', imputacion: 'fuera', insumo_codigo: null, cantidad: 1, subtotal: 38135.59 },
+        { id: 'i2', orden_compra_id: 'os1', imputacion: null, insumo_codigo: null, cantidad: 1, subtotal: 100 },
+      ],
+    });
+    expect(resumen.fueraPresupuesto).toEqual({ lineas: 1, monto: 38135.59 });
+    expect(resumen.ocSinImputar).toEqual({ lineas: 1, monto: 100 });
+  });
+
+  it('una orden imputada a un SOBRE gasta su plata, no resta cantidad', () => {
+    const HERR = '370020009';
+    const conSobre = [
+      ...insumos,
+      ip('p-corta', 'equipo', 'HERRAMIENTAS MANUALES', '%mo', 1, 120, HERR),
+      ip('p-larga', 'equipo', 'HERRAMIENTAS MANUALES', '%mo', 1, 380, HERR),
+    ];
+    const { sobres, resumen } = simularOrdenes({
+      insumosPartida: conSobre, partidas, hoy: '2026-05-01', anclaje: 'restante',
+      ordenes: [{ id: 'oc2', estado: 'recibida' }],
+      ocItems: [
+        { id: 'i1', orden_compra_id: 'oc2', imputacion: 'sobre', insumo_codigo: HERR, cantidad: 40, subtotal: 180 },
+        { id: 'i2', orden_compra_id: 'oc2', imputacion: 'sobre', insumo_codigo: HERR, cantidad: 12, subtotal: 20 },
+      ],
+      // Lo que el plan ya requisó contra el sobre se suma a lo de las órdenes.
+      consumoSobres: { 'herramientas manuales|%mo': 50 },
+    });
+    expect(resumen.descontado.cantidad).toBe(0);
+    expect(sobres[0].consumido).toBe(250);
+    expect(sobres[0].consumidoPorOrdenes).toBe(200);
+    expect(sobres[0].disponible).toBe(250);
+    expect(sobres[0].codigos).toEqual([HERR]);
+  });
+
+  it('con solo órdenes contra el sobre (sin requisiciones) el consumo ya está informado', () => {
+    const HERR = '370020009';
+    const { sobres } = simularOrdenes({
+      insumosPartida: [ip('p-corta', 'equipo', 'HERRAMIENTAS MANUALES', '%mo', 1, 500, HERR)],
+      partidas, hoy: '2026-05-01', anclaje: 'cero',
+      ordenes: [{ id: 'oc2', estado: 'recibida' }],
+      ocItems: [{ id: 'i1', orden_compra_id: 'oc2', imputacion: 'sobre', insumo_codigo: HERR, cantidad: 1, subtotal: 120 }],
+    });
+    expect(sobres[0].consumoInformado).toBe(true);
+    expect(sobres[0].disponible).toBe(380);
+  });
+});

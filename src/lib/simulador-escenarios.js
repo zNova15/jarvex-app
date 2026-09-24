@@ -40,6 +40,7 @@
 import {
   ANCLAJES, CRONOGRAMAS, REPARTOS, GRANULARIDADES,
   CATEGORIAS_SIMULADOR, UMBRAL_TRAMO_LARGO_DIAS,
+  ALMACEN_MODOS, ALMACEN_MODOS_INSUMO,
 } from './simulador-ordenes.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
 import { normalizarCompra } from './simulador-compra.js';
@@ -93,6 +94,11 @@ export const PARAMS_DEFAULT = {
   frecuencia: FRECUENCIA_DEFAULT,
   frecuenciaPorRubro: {},
   montoMinimoOrden: 0,
+  // Tanda 2.5 — qué resta el almacén de la obra (ver `coberturaPrevia`). Es
+  // del ESCENARIO a propósito: «¿y si solo cuento lo que hay?» es una
+  // pregunta que se compara contra «todo lo que entró».
+  almacenModo: 'entradas',
+  almacenPorInsumo: {},
 };
 
 const enLista = (v, lista, def) => (lista.includes(v) ? v : def);
@@ -143,7 +149,30 @@ export function normalizarParams(p = {}) {
       .filter(([r, f]) => RUBRO_COMPRA_POR_ID.has(r) && FRECUENCIAS.includes(f))
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     montoMinimoOrden: entre(p.montoMinimoOrden, 0, 10000000, 0),
+    almacenModo: enLista(p.almacenModo, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModo),
+    almacenPorInsumo: normalizarAlmacenPorInsumo(p.almacenPorInsumo),
   };
+}
+
+/**
+ * La elección por insumo del modo personalizado, saneada: solo modos que
+ * existen, y la cantidad solo cuando el modo es «cantidad» (≥ 0). Las claves
+ * ordenadas, por lo mismo que `frecuenciaPorRubro`.
+ */
+export function normalizarAlmacenPorInsumo(obj) {
+  const out = [];
+  for (const [cod, cfg] of Object.entries(obj || {})) {
+    if (!cod || !cfg || !ALMACEN_MODOS_INSUMO.includes(cfg.modo)) continue;
+    if (cfg.modo === 'cantidad') {
+      const c = Number(cfg.cantidad);
+      if (!Number.isFinite(c) || c < 0) continue;
+      out.push([cod, { modo: 'cantidad', cantidad: Math.round(c * 10000) / 10000 }]);
+    } else if (cfg.modo !== 'entradas') {
+      // 'entradas' es el default de un insumo: no hace falta guardarlo.
+      out.push([cod, { modo: cfg.modo }]);
+    }
+  }
+  return Object.fromEntries(out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 /** Los parámetros que van al motor de órdenes, tal cual los espera. */
@@ -160,6 +189,8 @@ export function paramsDeMotor(params) {
     frecuencia: p.frecuencia,
     frecuenciaPorRubro: p.frecuenciaPorRubro,
     montoMinimoOrden: p.montoMinimoOrden,
+    almacenModo: p.almacenModo,
+    almacenPorInsumo: p.almacenPorInsumo,
   };
 }
 

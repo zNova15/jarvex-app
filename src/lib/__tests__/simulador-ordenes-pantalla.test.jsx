@@ -224,6 +224,25 @@ describe('la pantalla del Simulador de Órdenes', () => {
       .toBeLessThan(html.indexOf('Personas en el padrón'));
   });
 
+  it('ofrece qué resta el almacén, con «todo lo que entró» por defecto (tanda 2.5)', () => {
+    const html = render();
+    expect(html).toContain('Del almacén, restar');
+    expect(html).toMatch(/<option value="entradas" selected="">Todo lo que entró<\/option>/);
+    expect(html).toContain('Solo lo que hay hoy');
+    expect(html).toContain('Personalizado por insumo');
+    expect(html).toContain('Imputar lo ya comprado');
+  });
+
+  it('la bandeja de imputación DICE que nada se imputa solo (tanda 2.5)', () => {
+    const html = render({ vistaInicial: 'imputar' });
+    expect(html).toContain('Para que el plan no vuelva a pedir lo que ya se compró');
+    expect(html).toContain('Nada se imputa solo');
+    expect(html).toContain('Órdenes ya emitidas');
+    expect(html).toContain('Almacén de la obra');
+    // Nunca un botón de aceptar en lote.
+    expect(html).not.toMatch(/Aceptar todas<\/button>|Imputar todas/);
+  });
+
   it('sin obra activa no revienta: muestra el vacío', () => {
     const antes = globalThis.__getObraActivaId;
     const antesHooks = globalThis.__hooks.useObras;

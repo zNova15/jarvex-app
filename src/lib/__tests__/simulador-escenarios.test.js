@@ -107,6 +107,8 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
 
   it('paramsDeMotor no le manda al motor lo que el motor no entiende', () => {
     expect(Object.keys(paramsDeMotor(PARAMS_DEFAULT)).sort()).toEqual([
+      // tanda 2.5: qué resta el almacén
+      'almacenModo', 'almacenPorInsumo',
       'anclaje', 'anticipacionDias', 'categorias', 'cronograma',
       // tanda 2.3: cómo se juntan las órdenes
       'frecuencia', 'frecuenciaPorRubro',

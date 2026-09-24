@@ -39,7 +39,12 @@ import {
   REPARTOS, REPARTO_LABEL, GRANULARIDADES,
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
   mesDePeriodo, etiquetaPeriodo,
+  ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
 } from "../lib/simulador-ordenes.js";
+import {
+  catalogoDelPresupuesto, existenciasDelAlmacen, bandejaImputacion, parcheImputacion,
+  insumosCubiertosPorAlmacen, factorPropuesto, IMPUTACION_LABEL, TABLAS_ALMACEN,
+} from "../lib/simulador-imputacion.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
 import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro } from "../lib/indices-unificados-iupc.js";
 import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js";
@@ -153,6 +158,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [recalcN, setRecalcN] = uS(0);
   const convertirRef = uR(false);
   const emitirRef = uR(false);
+  // Tanda 2.5: el almacén de la obra (lo que entró y lo que hay) y el
+  // guard síncrono de la imputación (regla 2 de CLAUDE.md).
+  const [almacenCrudo, setAlmacenCrudo] = uS(null);
+  const imputarRef = uR(false);
+  const [imputando, setImputando] = uS(null);
 
   // ── Escenarios (localStorage, por obra) ───────────────────────────
   const [escenarios, setEscenarios] = uS([]);
@@ -230,6 +240,44 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     };
   }, [recalcN]);
 
+  // ── El almacén de la obra (tanda 2.5) ─────────────────────────────
+  // Es donde de verdad quedó lo comprado: en Miraflores entraron 3.140
+  // bolsas de cemento y las órdenes explican 2.250. Se lee solo el de esta
+  // obra (todas las tablas tienen índice por obra_id).
+  uE(() => {
+    let vivo = true;
+    if (!obraId) { setAlmacenCrudo(null); return undefined; }
+    const TABLAS = ['materiales', 'herramientas', 'epps', 'movimientos_materiales', 'movimientos_herramientas', 'movimientos_epp'];
+    const cargar = async () => {
+      try {
+        const [mat, her, epp, mm, mh, me] = await Promise.all(TABLAS.map(t => (
+          window.__db[t] ? window.__db[t].where('obra_id').equals(obraId).toArray() : Promise.resolve([])
+        )));
+        if (vivo) setAlmacenCrudo({ mat, her, epp, mm, mh, me });
+      } catch {
+        if (vivo) setAlmacenCrudo({ mat: [], her: [], epp: [], mm: [], mh: [], me: [] });
+      }
+    };
+    cargar();
+    const on = (e) => { const t = e?.detail?.tabla; if (!t || TABLAS.includes(t)) cargar(); };
+    window.addEventListener('jx_data_changed', on);
+    window.addEventListener('jx_sync_pull', cargar);
+    return () => {
+      vivo = false;
+      window.removeEventListener('jx_data_changed', on);
+      window.removeEventListener('jx_sync_pull', cargar);
+    };
+  }, [obraId, recalcN]);
+
+  const almacenFilas = uM(() => (almacenCrudo ? existenciasDelAlmacen({
+    materiales: almacenCrudo.mat, herramientas: almacenCrudo.her, epps: almacenCrudo.epp,
+    movMateriales: almacenCrudo.mm, movHerramientas: almacenCrudo.mh, movEpp: almacenCrudo.me,
+    obraId,
+  }) : []), [almacenCrudo, obraId]);
+
+  // El presupuesto como catálogo contra el que se imputa: uno por código.
+  const catalogoPres = uM(() => catalogoDelPresupuesto(ipHook.data || []), [ipHook.data]);
+
   const obra = uM(() => obras.find(o => o.id === obraId) || null, [obras, obraId]);
   const titularId = uM(() => titularContableDeObra(obra, consHook.data || []), [obra, consHook.data]);
   const titular = uM(() => (compHook.data || []).find(c => c.id === titularId) || null, [compHook.data, titularId]);
@@ -289,9 +337,26 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       consumoSobres,
       terminosCustom,
       compras,
+      almacen: almacenFilas,
     });
   }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, recalcN]);
+    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, almacenFilas, recalcN]);
+
+  // ── La bandeja de imputación (tanda 2.5) ──────────────────────────
+  // Cuesta ~170 ms en Miraflores (529 filas contra 413 insumos): se arma solo
+  // con la pestaña abierta. El contador de la pestaña sale del resumen del
+  // motor, que ya está calculado.
+  const bandeja = uM(() => {
+    if (!obraId || vista !== 'imputar') return null;
+    return bandejaImputacion({
+      ordenes: ordenesObra, ocItems, almacen: almacenFilas, catalogo: catalogoPres, compras,
+    });
+  }, [obraId, vista, ordenesObra, ocItems, almacenFilas, catalogoPres, compras]);
+  const cubiertosAlmacen = uM(
+    () => (vista === 'imputar' && params.almacenModo === 'personalizado'
+      ? insumosCubiertosPorAlmacen(almacenFilas, catalogoPres) : []),
+    [vista, params.almacenModo, almacenFilas, catalogoPres]
+  );
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
@@ -733,6 +798,55 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     }
   };
 
+  // ── Imputar una fila al presupuesto (tanda 2.5) ───────────────────
+  // El parche sale SOLO de `parcheImputacion`, que respeta el CHECK de la
+  // mig 229: Dexie no lo valida y una fila mal formada rebotaría en el push
+  // (regla 9 de CLAUDE.md). El guard es un ref síncrono (regla 2): dos clics
+  // seguidos no escriben dos veces.
+  const imputar = async (fila, decision) => {
+    if (imputarRef.current) return;
+    const r = parcheImputacion(decision, { permiteSobre: fila.fuente === 'orden', catalogo: catalogoPres });
+    if (!r.ok) { toast(r.motivo, 'amber'); return; }
+    const tabla = window.__db?.[fila.tabla];
+    if (!tabla) { toast('No se encontró la tabla local', 'red'); return; }
+    imputarRef.current = true;
+    setImputando(`${fila.tabla}:${fila.id}`);
+    try {
+      const fresca = await tabla.get(fila.id);
+      if (!fresca) { toast('Esa fila ya no existe', 'red'); return; }
+      const now = new Date().toISOString();
+      await tabla.update(fila.id, {
+        ...r.patch,
+        updated_at: now,
+        // `oc_items` no tiene columnas de autor: mandarla rechaza el push entero.
+        ...(fila.tabla !== 'oc_items' ? { updated_by: autorId } : {}),
+        version: (fresca.version ?? 0) + 1,
+        sync_status: fresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+      });
+      const destino = r.patch.insumo_codigo ? catalogoPres.porCodigo.get(r.patch.insumo_codigo) : null;
+      try {
+        await window.__logAudit?.({
+          action: 'update', table: fila.tabla, recordId: fila.id,
+          oldData: { imputacion: fresca.imputacion ?? null, insumo_codigo: fresca.insumo_codigo ?? null, factor_presupuesto: fresca.factor_presupuesto ?? null },
+          newData: r.patch,
+          reason: r.patch.imputacion
+            ? `Simulador: «${fila.nombre}» imputada ${r.patch.imputacion === 'fuera' ? 'fuera del presupuesto' : `a ${destino?.nombre || r.patch.insumo_codigo}`}`
+            : `Simulador: se deshizo la imputación de «${fila.nombre}»`,
+        });
+      } catch {}
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: fila.tabla } })); } catch {}
+      toast(r.patch.imputacion
+        ? `✓ ${IMPUTACION_LABEL[r.patch.imputacion]}${destino ? `: ${destino.nombre}` : ''}`
+        : 'Imputación deshecha', 'green');
+    } catch (e) {
+      console.warn('[simulador] error al imputar', e);
+      toast(`No se pudo guardar: ${e?.message || e}`, 'red');
+    } finally {
+      imputarRef.current = false;
+      setImputando(null);
+    }
+  };
+
   const cargando = obrasHook.loading || ipHook.loading || partidasHook.loading;
   const resumen = corrida?.resumen || null;
   const dec = decorado.resumen;
@@ -877,6 +991,28 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
             </details>
           )}
 
+          {/* ── QUÉ RESTA EL ALMACÉN (tanda 2.5) ───────────────────────
+              Decidido por Gabriel el 24-set como perilla del escenario. Solo
+              resta lo IMPUTADO: lo que no dice a qué insumo corresponde no se
+              resta a ojo (pestaña «Imputar lo ya comprado»). */}
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+            <label style={{ display: 'block' }}
+              title="Lo que ya entró al almacén de la obra no se vuelve a pedir. Solo cuenta lo imputado a un insumo del presupuesto.">
+              <span className="flabel">Del almacén, restar</span>
+              <select className="fi" value={params.almacenModo || 'entradas'} onChange={e => cambiarParam({ almacenModo: e.target.value })}>
+                {ALMACEN_MODOS.map(m => <option key={m} value={m}>{ALMACEN_MODO_LABEL[m]}</option>)}
+              </select>
+            </label>
+            <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
+              {(params.almacenModo || 'entradas') === 'entradas' && 'Lo que entró y ya se usó cubrió meses pasados: restarlo evita volver a pedirlo.'}
+              {params.almacenModo === 'stock' && <span style={{ color: 'var(--amber)' }}>⚠ Vuelve a pedir lo que ya se usó en obra: el plan mira la necesidad desde el inicio.</span>}
+              {params.almacenModo === 'nada' && 'El almacén no resta: solo cuentan órdenes y requisiciones.'}
+              {params.almacenModo === 'personalizado' && (
+                <>Cada insumo se elige en <button className="btn btn-sm btn-ghost" style={{ padding: '0 6px' }} onClick={() => setVista('imputar')}>Imputar lo ya comprado</button>.</>
+              )}
+            </div>
+          </div>
+
           {/* El reparto por cuadrilla y el manual necesitan un dato que hoy no
               existe en ningún lado. El motor devuelve esas líneas por
               «Sin planificar» con su motivo — nunca un «parejo» de consuelo. */}
@@ -971,9 +1107,38 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
             No tienen código de insumo, así que no hay contra qué línea del presupuesto restarlas. El plan de abajo
             puede estar pidiendo de nuevo algo que ya se pidió. El simulador prefiere decirlo antes que descontar
-            a ojo — cuando esas órdenes tengan código imputado, el descuento empieza a funcionar solo.
+            a ojo — en cuanto cada línea diga a qué corresponde, el descuento funciona solo.
           </p>
+          <button className="btn btn-sm btn-amber" style={{ marginTop: 8 }} onClick={() => setVista('imputar')}>
+            Imputarlas →
+          </button>
         </div>
+      )}
+      {resumen && resumen.almacen && resumen.almacen.modo !== 'nada' && resumen.almacen.sinImputar.items > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
+          <b>{resumen.almacen.sinImputar.items} ítem(s) del almacén con entradas todavía no se restan.</b>
+          <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
+            El almacén no guarda el código del presupuesto: hasta que cada ítem diga a qué insumo corresponde (y
+            cuánto trae cada unidad —un tubo son 5 o 6 m—), lo que entró no se descuenta y el plan lo puede
+            volver a pedir.
+            {resumen.almacen.itemsImputados > 0 && <> Ya se restan {resumen.almacen.itemsImputados} ítem(s) imputados.</>}
+          </p>
+          <button className="btn btn-sm btn-amber" style={{ marginTop: 8 }} onClick={() => setVista('imputar')}>
+            Imputar el almacén →
+          </button>
+        </div>
+      )}
+      {resumen && (resumen.fueraPresupuesto?.lineas > 0 || resumen.almacen?.ordenesCubiertas?.lineas > 0) && (
+        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 12px' }}>
+          {resumen.fueraPresupuesto?.lineas > 0 && (
+            <>{resumen.fueraPresupuesto.lineas} línea(s) de orden ({solesK(resumen.fueraPresupuesto.monto)}) están marcadas
+              fuera del presupuesto: no restan nada, y está bien. </>
+          )}
+          {resumen.almacen?.ordenesCubiertas?.lineas > 0 && (
+            <>{resumen.almacen.ordenesCubiertas.lineas} línea(s) de órdenes recibidas no se suman porque lo que llegó ya
+              está en las entradas del almacén.</>
+          )}
+        </p>
       )}
       {resumen && resumen.reqSinImputar?.lineas > 0 && (
         <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
@@ -1011,6 +1176,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           ['dotacion', '👷 Mano de obra (referencia)'],
           ['pendientes', `⚠ Sin planificar (${corrida?.pendientes.length || 0})`],
           ['documentos', `📄 Ya pedido (${yaEscrito.size})`],
+          ['imputar', `🧾 Imputar lo ya comprado (${(resumen?.ocSinImputar?.lineas || 0) + (resumen?.almacen?.sinImputar?.items || 0)})`],
         ].map(([id, lbl]) => (
           <button key={id} className={`btn btn-sm ${vista === id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVista(id)}>{lbl}</button>
         ))}
@@ -1147,6 +1313,21 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           permiso={permiso}
           emitiendo={emitiendo}
           onEmitir={emitirOrden}
+        />
+      )}
+
+      {/* ═══ IMPUTAR LO YA COMPRADO (tanda 2.5) ════════════════════ */}
+      {!cargando && vista === 'imputar' && (
+        <ImputarVista
+          bandeja={bandeja}
+          catalogo={catalogoPres}
+          compras={compras}
+          params={params}
+          onParam={cambiarParam}
+          cubiertos={cubiertosAlmacen}
+          imputando={imputando}
+          onImputar={imputar}
+          cargandoAlmacen={!almacenCrudo}
         />
       )}
 
@@ -2228,6 +2409,295 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// IMPUTAR LO YA COMPRADO (tanda 2.5)
+//
+// Cada línea de orden sin código y cada ítem del almacén dice a qué línea
+// del presupuesto corresponde. La sugerencia es de `match-solicitud.js`, que
+// es estricto y aun así se equivoca («VÁLVULA DE 1/2" PARA MEDIDOR» →
+// «VÁLVULA CHECK»): por eso NO hay «aceptar todas». Una imputación mala resta
+// el insumo equivocado — pide dos veces uno y deja corto el otro.
+// ═══════════════════════════════════════════════════════════════════
+
+const DATALIST_PRESUPUESTO = 'jx-sim-presupuesto';
+const FILAS_POR_TANDA = 40;
+const COLOR_IMPUTACION = { pendiente: 'var(--amber)', insumo: 'var(--green)', sobre: 'var(--blue)', fuera: 'var(--tm)' };
+
+// El texto del datalist empieza por el código: «210020001 · CEMENTO … [bol]».
+const opcionDe = (e) => `${e.codigo} · ${e.esSobre ? 'SOBRE · ' : ''}${e.nombre} [${e.unidad || '—'}]`;
+const codigoDeTexto = (t) => String(t || '').split(' · ')[0].trim();
+
+function ImputarVista({ bandeja, catalogo, compras, params, onParam, cubiertos, imputando, onImputar, cargandoAlmacen }) {
+  const [lado, setLado] = React.useState('ordenes');
+  const [filtro, setFiltro] = React.useState('pendientes');
+  const [busca, setBusca] = React.useState('');
+  const [tope, setTope] = React.useState(FILAS_POR_TANDA);
+  React.useEffect(() => { setTope(FILAS_POR_TANDA); }, [lado, filtro, busca]);
+
+  const filas = React.useMemo(() => {
+    if (!bandeja) return [];
+    const base = lado === 'ordenes' ? bandeja.ordenes : bandeja.almacen;
+    const q = busca.trim().toLowerCase();
+    return base.filter(f => (filtro === 'todas' || f.estado === 'pendiente')
+      && (!q || String(f.nombre).toLowerCase().includes(q) || String(f.ordenCodigo || '').toLowerCase().includes(q)));
+  }, [bandeja, lado, filtro, busca]);
+
+  if (!bandeja) {
+    return <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Armando la bandeja…</div>;
+  }
+  const r = bandeja.resumen;
+  const modo = params.almacenModo || 'entradas';
+
+  return (
+    <div>
+      <datalist id={DATALIST_PRESUPUESTO}>
+        {catalogo.insumos.map(e => <option key={e.codigo} value={opcionDe(e)} />)}
+        {lado === 'ordenes' && catalogo.sobres.map(e => <option key={e.codigo} value={opcionDe(e)} />)}
+      </datalist>
+
+      <div className="card card-p" style={{ marginBottom: 12 }}>
+        <b>Para que el plan no vuelva a pedir lo que ya se compró</b>, cada línea de orden y cada ítem del almacén
+        tiene que decir a qué línea del presupuesto corresponde.
+        <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
+          La sugerencia 🔎 es solo eso: la decidís vos. Nada se imputa solo y no hay «aceptar todas», porque una
+          imputación equivocada resta el insumo equivocado. Lo que no está en el presupuesto (los estudios del
+          documento de trabajo, útiles de oficina) se marca como tal, y deja de figurar como «no se sabe».
+          Queda guardado en la base: lo ve el resto del equipo y vale para todos los escenarios.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10, alignItems: 'center' }}>
+        <button className={`btn btn-sm ${lado === 'ordenes' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setLado('ordenes')}>
+          Órdenes ya emitidas · {r.ordenes.pendiente} sin imputar de {r.ordenes.total}
+        </button>
+        <button className={`btn btn-sm ${lado === 'almacen' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setLado('almacen')}>
+          Almacén de la obra · {r.almacen.pendiente} sin imputar de {r.almacen.total}
+        </button>
+        <span style={{ flex: 1 }} />
+        <select className="fi" style={{ maxWidth: 170 }} value={filtro} onChange={e => setFiltro(e.target.value)}>
+          <option value="pendientes">Solo sin imputar</option>
+          <option value="todas">Todas</option>
+        </select>
+        <input className="fi" style={{ maxWidth: 220 }} placeholder="Buscar…" value={busca} onChange={e => setBusca(e.target.value)} />
+      </div>
+
+      {lado === 'almacen' && (
+        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 10px' }}>
+          Del almacén se resta hoy: <b>{ALMACEN_MODO_LABEL[modo]}</b> (se cambia arriba, en los parámetros del escenario).
+          Si una orden recibida y un ítem del almacén son el mismo insumo, manda el almacén: lo que llegó ya está en sus
+          entradas y la orden no se suma encima.
+        </p>
+      )}
+      {lado === 'almacen' && modo === 'personalizado' && (
+        <PersonalizadoAlmacen cubiertos={cubiertos} porInsumo={params.almacenPorInsumo || {}} onParam={onParam} />
+      )}
+
+      {lado === 'almacen' && cargandoAlmacen && (
+        <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Leyendo el almacén de la obra…</div>
+      )}
+      {!filas.length && !(lado === 'almacen' && cargandoAlmacen) && (
+        <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>
+          {filtro === 'pendientes' ? '✓ No queda nada sin imputar de este lado.' : 'No hay filas.'}
+        </div>
+      )}
+      <div style={{ display: 'grid', gap: 8 }}>
+        {filas.slice(0, tope).map(f => (
+          <FilaImputar key={`${f.tabla}:${f.id}`} f={f} catalogo={catalogo} compras={compras}
+            ocupado={imputando === `${f.tabla}:${f.id}`} onImputar={onImputar} />
+        ))}
+      </div>
+      {filas.length > tope && (
+        <div style={{ textAlign: 'center', marginTop: 8 }}>
+          <button className="btn btn-sm btn-ghost" onClick={() => setTope(t => t + FILAS_POR_TANDA)}>
+            Ver {Math.min(FILAS_POR_TANDA, filas.length - tope)} más (quedan {filas.length - tope})
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilaImputar({ f, catalogo, compras, ocupado, onImputar }) {
+  const esOrden = f.fuente === 'orden';
+  const sug = f.sugerencia;
+  const [texto, setTexto] = React.useState('');
+  const [factor, setFactor] = React.useState('');
+  const [abierta, setAbierta] = React.useState(false);
+
+  const elegido = catalogo.porCodigo.get(codigoDeTexto(texto)) || null;
+  const elegir = (e) => {
+    setTexto(opcionDe(e));
+    setAbierta(true);
+    if (e.esSobre) { setFactor(''); return; }
+    const fp = factorPropuesto(f.unidad, e, { compras });
+    setFactor(fp.factor != null ? String(fp.factor) : '');
+  };
+  const confirmar = () => {
+    if (!elegido) return;
+    onImputar(f, elegido.esSobre
+      ? { tipo: 'sobre', codigo: elegido.codigo }
+      : { tipo: 'insumo', codigo: elegido.codigo, factor: Number(factor) });
+  };
+
+  const meta = esOrden
+    ? `${f.ordenCodigo} · ${cant(f.cantidad)} ${f.unidad || ''} · ${soles(f.monto)}${f.proveedor ? ` · ${f.proveedor}` : ''}`
+    : `${TABLAS_ALMACEN[f.tabla]?.label || f.tabla} · entraron ${cant(f.entradas)} ${f.unidad || ''} · hay ${cant(f.stock)}`;
+
+  return (
+    <div className="card card-p" style={{ borderLeft: `3px solid ${COLOR_IMPUTACION[f.estado]}`, opacity: ocupado ? 0.6 : 1 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 280px', minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, overflowWrap: 'anywhere' }}>{f.nombre || '—'}</div>
+          <div style={{ fontSize: 11, color: 'var(--tm)' }}>{meta}</div>
+        </div>
+        <span style={{ fontSize: 11, color: COLOR_IMPUTACION[f.estado], fontWeight: 600 }}>{IMPUTACION_LABEL[f.estado]}</span>
+      </div>
+
+      {f.estado !== 'pendiente' && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12 }}>
+          {f.estado === 'fuera'
+            ? <span style={{ color: 'var(--tm)' }}>No corresponde a ninguna línea del presupuesto: no resta nada.</span>
+            : (
+              <span>
+                → {f.estado === 'sobre' ? 'sobre ' : ''}<b>{f.destino?.nombre || f.insumo_codigo}</b>
+                {f.destino?.unidad ? ` [${f.destino.unidad}]` : ''}
+                {f.estado === 'insumo' && num(f.factor) > 0 && num(f.factor) !== 1 && ` · 1 ${f.unidad || 'u'} = ${cant(f.factor)} ${f.destino?.unidad || ''}`}
+                {f.estado === 'insumo' && !f.destino && <span style={{ color: 'var(--amber)' }}> · ⚠ ese código ya no está en el presupuesto</span>}
+              </span>
+            )}
+          <button className="btn btn-sm btn-ghost" disabled={ocupado} onClick={() => onImputar(f, { tipo: null })}>Deshacer</button>
+        </div>
+      )}
+
+      {f.estado === 'pendiente' && (
+        <div style={{ marginTop: 6, display: 'grid', gap: 6 }}>
+          {sug && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+              <span>
+                🔎 Sugerido: {sug.tipo === 'sobre' ? 'sobre ' : ''}<b>{sug.nombre}</b> [{sug.unidad || '—'}]
+                {sug.score != null && <span style={{ color: 'var(--tm)' }}> · {pct(sug.score)}</span>}
+                {sug.tipo === 'insumo' && sug.factor != null && sug.factor !== 1 && <span style={{ color: 'var(--tm)' }}> · {sug.motivoFactor}</span>}
+              </span>
+              {(sug.tipo === 'sobre' || sug.factor != null) ? (
+                <button className="btn btn-sm btn-green" disabled={ocupado}
+                  onClick={() => onImputar(f, sug.tipo === 'sobre'
+                    ? { tipo: 'sobre', codigo: sug.codigo }
+                    : { tipo: 'insumo', codigo: sug.codigo, factor: sug.factor })}>
+                  ✓ Es este
+                </button>
+              ) : (
+                <button className="btn btn-sm btn-ghost" disabled={ocupado} title={sug.motivoFactor}
+                  onClick={() => elegir(catalogo.porCodigo.get(sug.codigo))}>
+                  Es este — falta el factor
+                </button>
+              )}
+            </div>
+          )}
+          {f.alternativas?.length > 0 && (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', fontSize: 11 }}>
+              <span style={{ color: 'var(--tm)' }}>{sug ? 'O alguno de estos:' : '¿Es alguno de estos?'}</span>
+              {f.alternativas.slice(0, 4).map(a => (
+                <button key={a.codigo} className="btn btn-sm btn-ghost" style={{ fontSize: 11, padding: '1px 6px' }}
+                  disabled={ocupado} onClick={() => elegir(catalogo.porCodigo.get(a.codigo))}>
+                  {a.nombre} [{a.unidad}]
+                </button>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input className="fi" style={{ flex: '1 1 260px', minWidth: 0, fontSize: 12 }} list={DATALIST_PRESUPUESTO}
+              placeholder={esOrden ? 'Buscar insumo o sobre del presupuesto…' : 'Buscar insumo del presupuesto…'}
+              value={texto}
+              onChange={e => {
+                setTexto(e.target.value);
+                const e2 = catalogo.porCodigo.get(codigoDeTexto(e.target.value));
+                if (e2) elegir(e2);
+              }} />
+            {abierta && elegido && !elegido.esSobre && (
+              <label style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11.5 }}
+                title="Cuántas unidades del presupuesto trae UNA unidad de esta fila. Un tubo de 6 m contra metros = 6.">
+                1 {f.unidad || 'u'} =
+                <input className="fi" type="number" min="0" step="any" style={{ width: 80, fontSize: 12 }}
+                  value={factor} onChange={e => setFactor(e.target.value)} />
+                {elegido.unidad}
+              </label>
+            )}
+            {abierta && elegido && (
+              <button className="btn btn-sm btn-amber" disabled={ocupado || (!elegido.esSobre && !(Number(factor) > 0))} onClick={confirmar}>
+                Imputar
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost" disabled={ocupado} onClick={() => onImputar(f, { tipo: 'fuera' })}
+              title="No corresponde a ninguna línea del presupuesto. Deja de contarse como «no se sabe».">
+              {esOrden ? 'Fuera del presupuesto' : 'No está en el presupuesto'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Modo «personalizado»: insumo por insumo, qué resta el almacén.
+function PersonalizadoAlmacen({ cubiertos, porInsumo, onParam }) {
+  const set = (cod, cfg) => {
+    const nuevo = { ...porInsumo };
+    if (!cfg || cfg.modo === 'entradas') delete nuevo[cod]; else nuevo[cod] = cfg;
+    onParam({ almacenPorInsumo: nuevo });
+  };
+  const LBL = { entradas: 'Lo que entró', stock: 'Lo que hay', nada: 'Nada', cantidad: 'Una cantidad' };
+  if (!cubiertos.length) {
+    return (
+      <div className="card card-p" style={{ marginBottom: 10, fontSize: 12, color: 'var(--tm)' }}>
+        Modo personalizado: todavía no hay ítems del almacén imputados. Imputá primero, y acá vas a poder elegir
+        insumo por insumo qué se resta.
+      </div>
+    );
+  }
+  return (
+    <div className="card" style={{ marginBottom: 10, overflowX: 'auto' }}>
+      <table className="tbl" style={{ width: '100%', fontSize: 12 }}>
+        <thead>
+          <tr>
+            <th className="col-p">Insumo del presupuesto</th>
+            <th style={{ textAlign: 'right' }}>Pide</th>
+            <th style={{ textAlign: 'right' }}>Entró</th>
+            <th style={{ textAlign: 'right' }}>Hay</th>
+            <th>Restar</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cubiertos.map(c => {
+            const cfg = porInsumo[c.codigo] || { modo: 'entradas' };
+            return (
+              <tr key={c.codigo}>
+                <td className="col-p">{c.nombre} <span style={{ color: 'var(--tm)' }}>[{c.unidad}]</span></td>
+                <td style={{ textAlign: 'right' }}>{c.necesita != null ? cant(c.necesita) : '—'}</td>
+                <td style={{ textAlign: 'right' }}>{cant(c.entradas)}</td>
+                <td style={{ textAlign: 'right' }}>{cant(c.stock)}</td>
+                <td>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <select className="fi" style={{ fontSize: 11.5, padding: '2px 6px', maxWidth: 140 }} value={cfg.modo}
+                      onChange={e => set(c.codigo, e.target.value === 'cantidad'
+                        ? { modo: 'cantidad', cantidad: c.entradas }
+                        : { modo: e.target.value })}>
+                      {ALMACEN_MODOS_INSUMO.map(m => <option key={m} value={m}>{LBL[m]}</option>)}
+                    </select>
+                    {cfg.modo === 'cantidad' && (
+                      <input className="fi" type="number" min="0" step="any" style={{ width: 90, fontSize: 11.5 }}
+                        value={cfg.cantidad ?? ''} onChange={e => set(c.codigo, { modo: 'cantidad', cantidad: e.target.value })} />
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
