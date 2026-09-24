@@ -153,7 +153,12 @@ describe('reparto por cronograma', () => {
       insumosPartida: [insumos[1]], partidas, hoy: '2026-05-01', anclaje: 'cero', reparto: 'parejo',
     });
     expect(propuestas.map(p => p.periodo)).toEqual(['2026-06', '2026-07', '2026-08']);
-    expect(propuestas.map(p => p.lineas[0].cantidad)).toEqual([1000, 1000, 1000]);
+    // 1.000 m por mes, pedidos en tubos de 6 m (lo dice el nombre, tanda
+    // 2.2): 166,67 tubos por mes redondeados ACUMULADO dan 167 + 167 + 166 =
+    // 500 tubos = los 3.000 m exactos.
+    expect(propuestas.map(p => p.lineas[0].necesidad)).toEqual([1000, 1000, 1000]);
+    expect(propuestas.map(p => p.lineas[0].cantidad)).toEqual([167, 167, 166]);
+    expect(propuestas[0].lineas[0].unidad).toBe('tubo de 6 m');
     // La plata total no cambia por repartirla.
     expect(resumen.montoPropuesto).toBe(450000);
     expect(resumen.lineasTramoLargo).toBe(1);
@@ -783,5 +788,148 @@ describe('las constantes que la pantalla va a ofrecer', () => {
     expect(CRONOGRAMAS).toEqual(['gantt', 'reprogramado', 'sin_cronograma']);
     expect(REPARTOS).toEqual(['parejo', 'inicio', 'cuadrilla', 'manual']);
     expect(UMBRAL_TRAMO_LARGO_DIAS).toBe(30);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// RONDA 2, TANDA 2.2 — cantidades que se pueden pedir
+// (docs/plan-simulador-ordenes.md §12.1 punto 1, §12.2, §12.3)
+// ═══════════════════════════════════════════════════════════════════
+describe('cantidades comprables (tanda 2.2)', () => {
+  // Una partida de 3 meses, para que el reparto parejo parta en tres.
+  const P3 = partida('p3', '2026-06-01', '2026-08-20');
+  const cemento = (cant) => ip('p3', 'material', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bol', cant, 30, CEMENTO);
+  const tubo = (cant) => ip('p3', 'material', 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', 'm', cant, 150, TUBERIA);
+  const base = { partidas: [P3], hoy: '2026-05-01', anclaje: 'cero', reparto: 'parejo' };
+  const lineasDe = (propuestas, clave) => propuestas.flatMap(p => p.lineas
+    .filter(l => l.clave === clave).map(l => ({ ...l, periodo: p.periodo })));
+
+  it('EL CASO DEL PLAN: «3,37 bol» por mes ya no sale — y no se sobrepide todos los meses', () => {
+    const { propuestas, resumen } = simularOrdenes({ ...base, insumosPartida: [cemento(10.11)] });
+    const ls = lineasDe(propuestas, CEMENTO);
+    expect(ls.map(l => l.cantidad)).toEqual([4, 3, 4]);
+    expect(ls.map(l => l.necesidad)).toEqual([3.37, 3.37, 3.37]);
+    // 11 bolsas para 10,11: la de más es el redondeo, y se dice aparte.
+    expect(resumen.montoPropuesto).toBe(330);
+    expect(resumen.montoRedondeo).toBe(26.7);
+  });
+
+  it('el redondeo no infla la cobertura: se mide contra lo del expediente', () => {
+    const { resumen } = simularOrdenes({ ...base, insumosPartida: [cemento(10.11)] });
+    expect(resumen.cobertura).toBe(1);
+    expect(resumen.montoComprable).toBe(303.3);
+  });
+
+  it('un mes que ya cubrió el redondeo de otro sale de la orden, y el otro lo dice', () => {
+    // 1,2 bolsas en tres meses: 0,4 por mes. Se pide 1 en junio, 0 en julio
+    // (alcanza) y 1 en agosto.
+    const { propuestas } = simularOrdenes({ ...base, insumosPartida: [cemento(1.2)] });
+    const ls = lineasDe(propuestas, CEMENTO);
+    expect(ls.map(l => [l.periodo, l.cantidad])).toEqual([['2026-06', 1], ['2026-08', 1]]);
+    expect(ls[0].alcanzaHasta).toBe('2026-07');
+    expect(ls[0].etiquetaAlcanzaHasta).toBe('julio 2026');
+    expect(ls[1].alcanzaHasta).toBe(null);
+  });
+
+  it('la tubería se pide en tubos porque el nombre dice «x 6m», y el precio es por tubo', () => {
+    const { propuestas, resumen } = simularOrdenes({ ...base, insumosPartida: [tubo(600)] });
+    const ls = lineasDe(propuestas, TUBERIA);
+    expect(ls.map(l => l.cantidad)).toEqual([34, 33, 33]);  // 100 tubos = 600 m
+    expect(ls[0]).toMatchObject({
+      unidad: 'tubo de 6 m', unidadExpediente: 'm', factor: 6, precio_unitario: 900, compraOrigen: 'nombre',
+    });
+    expect(resumen.montoPropuesto).toBe(90000);             // no cambia la plata
+  });
+
+  it('lo fijado a mano gana sobre el nombre (el tubo era de 5 m, o se pide en metros)', () => {
+    const de5 = simularOrdenes({
+      ...base, insumosPartida: [tubo(600)], compras: { [TUBERIA]: { unidadCompra: 'tubo de 5 m', factor: 5 } },
+    });
+    expect(lineasDe(de5.propuestas, TUBERIA).reduce((s, l) => s + l.cantidad, 0)).toBe(120);
+    const metros = simularOrdenes({
+      ...base, insumosPartida: [tubo(600)], compras: { [TUBERIA]: { unidadCompra: 'm', factor: 1 } },
+    });
+    expect(lineasDe(metros.propuestas, TUBERIA).map(l => l.cantidad)).toEqual([200, 200, 200]);
+  });
+
+  it('la clave de la línea NO cambia con la unidad de compra: las decisiones sobreviven', () => {
+    const a = simularOrdenes({ ...base, insumosPartida: [tubo(600)] });
+    const b = simularOrdenes({
+      ...base, insumosPartida: [tubo(600)], compras: { [TUBERIA]: { unidadCompra: 'm', factor: 1 } },
+    });
+    expect(a.propuestas.map(p => p.lineas[0].clave)).toEqual(b.propuestas.map(p => p.lineas[0].clave));
+    expect(a.propuestas.map(p => p.id)).toEqual(b.propuestas.map(p => p.id));
+  });
+
+  it('el colchón es 0% por defecto: sin fijarlo, se pide lo del expediente', () => {
+    const { resumen } = simularOrdenes({ ...base, insumosPartida: [cemento(300)] });
+    expect(resumen.montoColchon).toBe(0);
+    expect(resumen.insumosConColchon).toBe(0);
+    expect(resumen.montoPropuesto).toBe(9000);
+  });
+
+  it('el colchón por insumo suma cantidad y plata, y se dice aparte', () => {
+    const { propuestas, resumen } = simularOrdenes({
+      ...base, insumosPartida: [cemento(300)], compras: { [CEMENTO]: { colchonPct: 5 } },
+    });
+    const ls = lineasDe(propuestas, CEMENTO);
+    expect(ls.map(l => l.cantidad)).toEqual([105, 105, 105]);
+    expect(ls[0].colchonPct).toBe(5);
+    expect(resumen.montoColchon).toBe(450);
+    expect(resumen.insumosConColchon).toBe(1);
+    // La cobertura no pasa del 100% por el colchón: es plata de más.
+    expect(resumen.cobertura).toBe(1);
+  });
+
+  it('el colchón va ANTES del descuento: lo ya pedido con colchón no se vuelve a pedir', () => {
+    // 300 + 5% = 315 hacen falta; ya hay 315 pedidas → nada.
+    const { propuestas, resumen } = simularOrdenes({
+      ...base, anclaje: 'restante', insumosPartida: [cemento(300)],
+      compras: { [CEMENTO]: { colchonPct: 5 } }, yaComprado: { [CEMENTO]: 315 },
+    });
+    expect(propuestas).toHaveLength(0);
+    expect(resumen.montoColchon).toBe(0);
+  });
+
+  it('el lote junta meses: la arena de a 5 m³', () => {
+    const arena = ip('p3', 'material', 'ARENA GRUESA', 'm³', 6, 90, '040001');
+    const { propuestas } = simularOrdenes({ ...base, insumosPartida: [arena], compras: { '040001': { lote: 5 } } });
+    expect(lineasDe(propuestas, '040001').map(l => [l.periodo, l.cantidad])).toEqual([['2026-06', 5], ['2026-08', 5]]);
+  });
+
+  it('la mano de obra NO se redondea: son HH de referencia para la dotación', () => {
+    const peon = ip('p3', 'mano_obra', 'PEON', 'hh', 100, 20, '470101');
+    const { manoObra } = simularOrdenes({ ...base, insumosPartida: [peon], categorias: ['mano_obra'] });
+    expect(manoObra.map(m => m.cantidad)).toEqual([33.3333, 33.3333, 33.3333]);
+  });
+
+  it('NADA SE PIDE DOS VECES en otra unidad: 100 tubos requisados descuentan 600 m, no 100', () => {
+    const { propuestas, resumen } = simularOrdenes({
+      ...base, anclaje: 'restante', insumosPartida: [tubo(1200)],
+      requisiciones: [{ id: 'r1', estado: 'borrador' }],
+      requisicionItems: [{
+        id: 'ri1', requisicion_id: 'r1', insumo_codigo: TUBERIA, cantidad: 100,
+        unidad: 'tubo de 6 m', factor_presupuesto: 6, precio_estimado: 900,
+      }],
+    });
+    expect(resumen.descontado.cantidad).toBe(600);
+    expect(lineasDe(propuestas, TUBERIA).reduce((s, l) => s + l.cantidad, 0)).toBe(100);
+  });
+
+  it('coberturaPrevia: el factor de la orden y de la requisición lleva a la unidad del presupuesto', () => {
+    const { cubierto } = coberturaPrevia({
+      ordenes: [{ id: 'oc1', estado: 'borrador' }],
+      ocItems: [{ id: 'i1', orden_compra_id: 'oc1', insumo_codigo: TUBERIA, cantidad: 10, factor_presupuesto: 6 }],
+      requisiciones: [{ id: 'r1', estado: 'borrador' }],
+      requisicionItems: [
+        { id: 'ri1', requisicion_id: 'r1', insumo_codigo: TUBERIA, cantidad: 5, factor_presupuesto: 6 },
+        // Sin factor = misma unidad: lo escrito antes de la 2.2.
+        { id: 'ri2', requisicion_id: 'r1', insumo_codigo: CEMENTO, cantidad: 7 },
+        // Un factor basura no puede hacer desaparecer lo pedido.
+        { id: 'ri3', requisicion_id: 'r1', insumo_codigo: CEMENTO, cantidad: 3, factor_presupuesto: 0 },
+      ],
+    });
+    expect(cubierto.get(TUBERIA)).toBe(90);
+    expect(cubierto.get(CEMENTO)).toBe(10);
   });
 });

@@ -19,6 +19,7 @@ import {
   decidirSobre, agregarLineaSobre, editarLineaSobre, quitarLineaSobre, proveedorDeSobre,
   aplicarEscenario, lineasAceptadas,
   leerEscenarios, guardarEscenario, guardarEscenarios, borrarEscenario, claveStorage,
+  leerCompras, guardarCompra, claveStorageCompras,
 } from '../simulador-escenarios.js';
 
 // ── Un localStorage de mentira, para no depender del browser ──
@@ -547,5 +548,102 @@ describe('persistencia — el borrador de una persona, por obra', () => {
     e = conParams(e, { anclaje: 'cero' });
     expect(e.params.anclaje).toBe('cero');
     expect(e.decisiones.propuestas[p0.id]).toBe('aceptada');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Tanda 2.2 — cómo se compra cada insumo, y las correcciones que quedaron
+// en otra unidad.
+// ═══════════════════════════════════════════════════════════════════
+describe('cómo se compra cada insumo (tanda 2.2)', () => {
+  // Un insumo que el nombre dice «x 6m»: sale en tubos.
+  const TUBO = { id: 't1', partida_id: 'p2', insumo_codigo: 'MAT-009',
+    nombre_insumo: 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435', unidad: 'm', tipo_insumo: 'material',
+    cantidad_presupuestada: 120, precio_presupuestado: 30, costo_presupuestado: 3600 };
+  const conTubo = (compras = null) => simularOrdenes({
+    insumosPartida: [TUBO], partidas: PARTIDAS, hoy: '2026-10-01',
+    ...paramsDeMotor(PARAMS_DEFAULT), compras,
+  });
+
+  it('se guarda por OBRA y aparte de los escenarios', () => {
+    const st = storageFalso();
+    guardarCompra('o', 'MAT-009', { unidadCompra: 'tubo de 5 m', factor: 5 }, st);
+    guardarCompra('o', 'MAT-001', { colchonPct: 3 }, st);
+    expect(leerCompras('o', st)).toEqual({
+      'MAT-009': { unidadCompra: 'tubo de 5 m', factor: 5 },
+      'MAT-001': { colchonPct: 3 },
+    });
+    expect(claveStorageCompras('o')).not.toBe(claveStorage('o'));
+    expect(leerEscenarios('o', st)).toEqual([]);
+    expect(leerCompras('otra', st)).toEqual({});
+  });
+
+  it('vaciar un campo lo devuelve al default, y la unidad se va con su factor', () => {
+    const st = storageFalso();
+    guardarCompra('o', 'MAT-009', { unidadCompra: 'tubo de 5 m', factor: 5, colchonPct: 2 }, st);
+    guardarCompra('o', 'MAT-009', { factor: null }, st);
+    expect(leerCompras('o', st)).toEqual({ 'MAT-009': { colchonPct: 2 } });
+    guardarCompra('o', 'MAT-009', { colchonPct: null }, st);
+    expect(leerCompras('o', st)).toEqual({});
+  });
+
+  it('un JSON roto no deja la pantalla muerta', () => {
+    const st = storageFalso();
+    st.setItem(claveStorageCompras('o'), '{roto');
+    expect(leerCompras('o', st)).toEqual({});
+    st.setItem(claveStorageCompras('o'), '[1,2]');
+    expect(leerCompras('o', st)).toEqual({});
+  });
+
+  it('una corrección de cantidad guarda en qué unidad se hizo', () => {
+    const c = conTubo();
+    const p = c.propuestas[0];
+    const l = p.lineas[0];
+    expect(l.unidad).toBe('tubo de 6 m');
+    const e = editarLinea(nuevoEscenario({}), p.id, l, { cantidad: 25 });
+    expect(e.ediciones[refLinea(p.id, l.clave)]).toEqual({ cantidad: 25, unidad_edicion: 'tubo de 6 m' });
+    const d = aplicarEscenario(c, e).propuestas[0].lineas[0];
+    expect(d.cantidad).toBe(25);
+    expect(d.edicionOtraUnidad).toBe(null);
+  });
+
+  it('si después cambia la unidad de compra, la corrección vieja NO se aplica: 25 tubos no son 25 metros', () => {
+    const c6 = conTubo();
+    const p = c6.propuestas[0];
+    const e = editarLinea(nuevoEscenario({}), p.id, p.lineas[0], { cantidad: 25, precio_unitario: 170 });
+    const cm = conTubo({ 'MAT-009': { unidadCompra: 'm', factor: 1 } });
+    const d = aplicarEscenario(cm, e).propuestas[0].lineas[0];
+    expect(d.unidad).toBe('m');
+    expect(d.cantidad).toBe(120);
+    expect(d.precio_unitario).toBe(30);
+    expect(d.edicionOtraUnidad).toBe('tubo de 6 m');
+  });
+
+  it('una corrección de ANTES de la 2.2 (sin unidad) se hizo en la del expediente', () => {
+    const c = conTubo();
+    const p = c.propuestas[0];
+    const l = p.lineas[0];
+    // Tal como quedó guardada en el localStorage el 22-set: sin unidad.
+    const vieja = { ...nuevoEscenario({}), ediciones: { [refLinea(p.id, l.clave)]: { cantidad: 110, nota: 'ojo' } } };
+    const d = aplicarEscenario(c, vieja).propuestas[0].lineas[0];
+    expect(d.cantidad).toBe(20);                // los 20 tubos del motor, no 110
+    expect(d.edicionOtraUnidad).toBe('m');
+    expect(d.nota).toBe('ojo');                 // lo que no es un número se conserva
+    // Y en un insumo que no cambió de unidad, la corrección vieja sigue valiendo.
+    const cc = corrida();
+    const pc = cc.propuestas.find(x => x.lineas.some(y => y.insumo_codigo === 'MAT-002'));
+    const lc = pc.lineas.find(y => y.insumo_codigo === 'MAT-002');
+    const v2 = { ...nuevoEscenario({}), ediciones: { [refLinea(pc.id, lc.clave)]: { cantidad: 1800 } } };
+    const d2 = aplicarEscenario(cc, v2).propuestas.find(x => x.id === pc.id).lineas.find(y => y.insumo_codigo === 'MAT-002');
+    expect(d2.cantidad).toBe(1800);
+    expect(d2.edicionOtraUnidad).toBe(null);
+  });
+
+  it('lineasAceptadas entrega el factor: es lo que la requisición necesita para no pedir dos veces', () => {
+    const c = conTubo();
+    const p = c.propuestas[0];
+    const e = decidirPropuesta(nuevoEscenario({}), p.id, 'aceptada');
+    const { lineas } = lineasAceptadas(aplicarEscenario(c, e));
+    expect(lineas[0]).toMatchObject({ unidad: 'tubo de 6 m', cantidad: 20, factor: 6, unidadExpediente: 'm' });
   });
 });

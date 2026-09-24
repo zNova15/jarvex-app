@@ -193,7 +193,11 @@ export function abastecimientoDeObra({
     const emp = it.proveedor_company_id;
     if (!cod || !emp) continue;   // línea de una orden retroactiva: no reserva stock
     const k = `${emp}|${cod}`;
-    comprometido.set(k, (comprometido.get(k) || 0) + num(it.cantidad));
+    // Una orden del simulador pide en unidades de compra (tubos, varillas) y
+    // guarda cuántas unidades del presupuesto trae cada una (mig 228). La
+    // reserva se cuenta en la unidad del presupuesto, que es la del stock.
+    const f = Number(it.factor_presupuesto);
+    comprometido.set(k, (comprometido.get(k) || 0) + num(it.cantidad) * (Number.isFinite(f) && f > 0 ? f : 1));
   }
 
   const filas = [];

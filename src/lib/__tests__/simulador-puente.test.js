@@ -501,3 +501,41 @@ describe('estadoDelPlan — qué propuesta ya es un documento', () => {
     expect(estadoDelPlan({ requisiciones, requisicionItems }).has('2026-12|material')).toBe(false);
   });
 });
+
+describe('el factor viaja con lo pedido (tanda 2.2, mig 228)', () => {
+  const company = { id: EJECUTORA, name: 'CONSORCIO EL INCA', codigo_doc_prefix: 'EI' };
+  const tubos = linea({
+    insumo_codigo: '020005001', clave: '020005001',
+    descripcion: 'TUBERIA PVC UF S25 DE 8"(200mm) x 6m ISO 4435',
+    unidad: 'tubo de 6 m', cantidad: 28, precio_unitario: 192, monto: 5376,
+    factor: 6, unidadExpediente: 'm',
+  });
+
+  it('la requisición en tubos guarda cuántos metros trae cada tubo', () => {
+    const { requisiciones } = armarRequisiciones({ lineas: [tubos], obraId: OBRA_ID, hoy: '2026-09-24', nuevoId: contador() });
+    expect(requisiciones[0].items[0]).toMatchObject({ unidad: 'tubo de 6 m', cantidad: 28, factor_presupuesto: 6 });
+  });
+
+  it('con factor 1 la columna NO se escribe: la requisición común no depende de la migración', () => {
+    const { requisiciones } = armarRequisiciones({ lineas: [linea({ factor: 1 })], obraId: OBRA_ID, hoy: '2026-09-24', nuevoId: contador() });
+    expect('factor_presupuesto' in requisiciones[0].items[0]).toBe(false);
+    const sinFactor = armarRequisiciones({ lineas: [linea()], obraId: OBRA_ID, hoy: '2026-09-24', nuevoId: contador() });
+    expect('factor_presupuesto' in sinFactor.requisiciones[0].items[0]).toBe(false);
+  });
+
+  it('la orden hereda el factor de su requisición', () => {
+    const { requisiciones } = armarRequisiciones({ lineas: [tubos], obraId: OBRA_ID, hoy: '2026-09-24', nuevoId: contador() });
+    const { requisicion, items } = requisiciones[0];
+    const b = borradorDeOrdenDesdeRequisicion({ requisicion, items, obra, company, proveedor: { nombre: 'X' }, nuevoId: contador() });
+    expect(b.items[0]).toMatchObject({ cantidad: 28, factor_presupuesto: 6 });
+  });
+
+  it('IDA Y VUELTA: lo requisado en tubos se descuenta en metros en la corrida siguiente', () => {
+    const { requisiciones } = armarRequisiciones({ lineas: [tubos], obraId: OBRA_ID, hoy: '2026-09-24', nuevoId: contador() });
+    const { cubierto } = coberturaPrevia({
+      requisiciones: requisiciones.map(r => r.requisicion),
+      requisicionItems: requisiciones.flatMap(r => r.items),
+    });
+    expect(cubierto.get('020005001')).toBe(168);
+  });
+});

@@ -42,6 +42,7 @@ import {
   CATEGORIAS_SIMULADOR, UMBRAL_TRAMO_LARGO_DIAS,
 } from './simulador-ordenes.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
+import { normalizarCompra } from './simulador-compra.js';
 import { hoyLocal } from './fecha.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -317,6 +318,12 @@ export function editarLinea(esc, propuestaId, linea, patch = {}) {
       else ed[campo] = n;
     } else ed[campo] = valor;
   }
+  // Una cantidad o un precio corregidos valen EN UNA UNIDAD. Si después se
+  // cambia cómo se compra el insumo (de metros a tubos de 6 m), «164» deja de
+  // significar lo mismo: `aplicarEscenario` compara contra esto y no aplica
+  // la corrección vieja en vez de pedir 164 tubos.
+  if (ed.cantidad != null || ed.precio_unitario != null) ed.unidad_edicion = String(linea.unidad || '');
+  else delete ed.unidad_edicion;
   const eds = { ...esc.ediciones };
   if (Object.keys(ed).length) eds[k] = ed;
   else delete eds[k];
@@ -445,10 +452,19 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
       const precioOriginal = l.precio_unitario == null ? null : num(l.precio_unitario);
       const montoOriginal = num(l.monto);
 
-      const cantidad = ed && ed.cantidad != null ? num(ed.cantidad) : cantidadOriginal;
-      const precio = ed && ed.precio_unitario != null ? num(ed.precio_unitario) : precioOriginal;
-      const editadaCant = !!(ed && ed.cantidad != null && ed.cantidad !== cantidadOriginal);
-      const editadaPrec = !!(ed && ed.precio_unitario != null && ed.precio_unitario !== precioOriginal);
+      // ¿La corrección se hizo en la unidad en que hoy sale la línea? Una
+      // corrección de antes de la tanda 2.2 no trae la unidad: se hizo en la
+      // del expediente. Si no coincide, NO se aplica — «164» en metros no son
+      // 164 tubos — y la línea lo dice para que se vuelva a corregir.
+      const tieneNumeros = !!(ed && (ed.cantidad != null || ed.precio_unitario != null));
+      const unidadEd = ed && ed.unidad_edicion != null ? ed.unidad_edicion : (l.unidadExpediente ?? l.unidad);
+      const edicionOtraUnidad = tieneNumeros && String(unidadEd || '') !== String(l.unidad || '');
+      const edNum = edicionOtraUnidad ? null : ed;
+
+      const cantidad = edNum && edNum.cantidad != null ? num(edNum.cantidad) : cantidadOriginal;
+      const precio = edNum && edNum.precio_unitario != null ? num(edNum.precio_unitario) : precioOriginal;
+      const editadaCant = !!(edNum && edNum.cantidad != null && edNum.cantidad !== cantidadOriginal);
+      const editadaPrec = !!(edNum && edNum.precio_unitario != null && edNum.precio_unitario !== precioOriginal);
 
       // El monto solo se recalcula si alguien tocó cantidad o precio. Si no,
       // manda el del expediente: `costo_presupuestado` no siempre es
@@ -473,6 +489,8 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
         proveedor_nombre: (ed && ed.proveedor_nombre) || '',
         nota: (ed && ed.nota) || '',
         editada: !!ed,
+        // La unidad en que se había corregido, si ya no es la de la línea.
+        edicionOtraUnidad: edicionOtraUnidad ? String(unidadEd || '') : null,
         decision,
         decisionHeredada: !esc.decisiones.lineas[ref],
       };
@@ -579,6 +597,11 @@ export function lineasAceptadas({ propuestas = [], sobres = [] } = {}) {
         insumo_codigo: l.insumo_codigo || null, clave: l.clave,
         descripcion: l.nombre, unidad: l.unidad,
         cantidad: l.cantidad, precio_unitario: l.precio_unitario, monto: l.monto,
+        // Cuántas unidades del expediente trae cada unidad pedida (tanda 2.2).
+        // Viaja a la requisición como `factor_presupuesto`: sin él, la corrida
+        // siguiente restaría «28 tubos» de los metros del presupuesto.
+        factor: num(l.factor) > 0 ? num(l.factor) : 1,
+        unidadExpediente: l.unidadExpediente || l.unidad,
         proveedor_id: l.proveedor_id || null, proveedor_nombre: l.proveedor_nombre || '',
         partidas: l.partidas || [], nota: l.nota || '',
         origen: 'simulador',
@@ -598,6 +621,7 @@ export function lineasAceptadas({ propuestas = [], sobres = [] } = {}) {
         insumo_codigo: null, clave: `${s.clave}|${l.id}`,
         descripcion: l.descripcion, unidad: l.unidad,
         cantidad: num(l.cantidad), precio_unitario: num(l.precio), monto: num(l.monto),
+        factor: 1, unidadExpediente: l.unidad,
         proveedor_id: s.proveedor_id || null, proveedor_nombre: s.proveedor_nombre || '',
         partidas: [], nota: `Contra el sobre «${s.nombre}» (techo S/ ${s.techo})`,
         origen: 'simulador_sobre', sobre: s.clave,
@@ -662,4 +686,64 @@ export function borrarEscenario(obraId, escenarioId, storage = null) {
   const lista = leerEscenarios(obraId, storage).filter(e => e.id !== escenarioId);
   guardarEscenarios(obraId, lista, storage);
   return lista;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CÓMO SE COMPRA CADA INSUMO (tanda 2.2) — por OBRA, no por escenario
+//
+// Que el tubo de 8" venga de 6 m, que la arena se pida de a 1 m³ o que el
+// cemento lleve un 3% de colchón no es una hipótesis que se compara entre
+// escenarios: es cómo se compra ese insumo en esa obra. Guardarlo adentro de
+// cada escenario obligaría a volver a cargarlo en cada «Guardar como…», y dos
+// escenarios con factores distintos para el mismo tubo no comparan nada.
+//
+// Mismo criterio de persistencia que los escenarios: es un borrador de una
+// persona, vive en el localStorage y no justifica una tabla sincronizada. Lo
+// que sí llega a la base es el factor de cada línea que se convierte en
+// requisición (`requisicion_items.factor_presupuesto`, mig 228).
+// ═══════════════════════════════════════════════════════════════════
+
+export const claveStorageCompras = (obraId) => `${STORAGE_PREFIX}:compras:${obraId || 'sin_obra'}`;
+
+/** clave de línea → `{unidadCompra, factor, lote, colchonPct}` de esa obra. */
+export function leerCompras(obraId, storage = null) {
+  const st = almacen(storage);
+  if (!st) return {};
+  try {
+    const obj = JSON.parse(st.getItem(claveStorageCompras(obraId)) || '{}');
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const n = normalizarCompra(v);
+      if (Object.keys(n).length) out[k] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Cambia cómo se compra UN insumo. `null` en un campo lo devuelve al default
+ * (lo que dice el nombre, o la unidad del expediente; lote 1; colchón 0%).
+ * `unidadCompra` y `factor` se borran juntos: uno sin el otro no se puede
+ * leer.
+ */
+export function guardarCompra(obraId, clave, patch = {}, storage = null) {
+  const todas = leerCompras(obraId, storage);
+  const actual = { ...(todas[clave] || {}) };
+  for (const [campo, valor] of Object.entries(patch || {})) {
+    if (valor === null || valor === undefined || valor === '') {
+      delete actual[campo];
+      if (campo === 'factor') delete actual.unidadCompra;
+      if (campo === 'unidadCompra') delete actual.factor;
+    } else actual[campo] = valor;
+  }
+  const n = normalizarCompra(actual);
+  if (Object.keys(n).length) todas[clave] = n; else delete todas[clave];
+  const st = almacen(storage);
+  if (st) {
+    try { st.setItem(claveStorageCompras(obraId), JSON.stringify(todas)); } catch { /* lleno o bloqueado */ }
+  }
+  return todas;
 }

@@ -40,6 +40,13 @@
 // Es el mismo cero silencioso que ya evita `abastecimiento.js`: un cero
 // callado acá se traduce en comprar dos veces.
 //
+// ── DESDE LA RONDA 2 (tanda 2.2): SE PIDE EN LO QUE SE COMPRA ─────
+// Las líneas salen en unidades de COMPRA (tubos, piezas) y en enteros,
+// redondeadas acumulado por insumo (pasos 1b y 3b, `simulador-compra.js`).
+// Lo del expediente viaja al lado (`necesidad`, `unidadExpediente`,
+// `factor`) y el descuento de lo ya pedido sigue siendo en la unidad del
+// expediente, gracias a `factor_presupuesto` (mig 228).
+//
 // Testeado en __tests__/simulador-ordenes.test.js
 // ═══════════════════════════════════════════════════════════════════
 
@@ -52,6 +59,7 @@ import {
   rubroDeCompra, RUBRO_COMPRA_POR_ID, ordenDeRubro,
 } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
+import { resolverCompra, cantidadesDeCompra } from './simulador-compra.js';
 
 /**
  * La clasificación IUPC de un sobre. Se pasa por `clasificarConIUPC` con el
@@ -299,6 +307,12 @@ function repartirTramo(tramo, periodos, { reparto, cuadrillas, repartoManual, pa
 // LO YA CUBIERTO (§7 — nada se pide dos veces)
 // ═══════════════════════════════════════════════════════════════════
 
+/** Unidades del expediente que trae cada unidad pedida de un ítem (default 1). */
+export const factorDeItem = (it) => {
+  const f = Number(it?.factor_presupuesto);
+  return Number.isFinite(f) && f > 0 ? f : 1;
+};
+
 /**
  * Cuánto de cada insumo ya está comprado o comprometido por una orden viva.
  *
@@ -323,6 +337,15 @@ function repartirTramo(tramo, periodos, { reparto, cuadrillas, repartoManual, pa
  * Y la línea SIN código de insumo no se descuenta de nada: sale por
  * `reqSinImputar`, igual que las 62 líneas de las órdenes retroactivas de
  * Miraflores salen por `sinImputar`.
+ *
+ * ── LA CANTIDAD PEDIDA NO ESTÁ EN LA UNIDAD DEL PRESUPUESTO (tanda 2.2) ──
+ * Desde la ronda 2 el plan pide en unidades de COMPRA: 28 tubos, no 164 m.
+ * Restar «28» de los metros del presupuesto dejaría 136 m por pedir que ya
+ * están pedidos. Por eso cada ítem escrito por el plan lleva
+ * `factor_presupuesto` (mig 228) —cuántas unidades del expediente trae cada
+ * unidad pedida— y el descuento se hace en unidades del expediente. Sin la
+ * columna el factor es 1: todo lo escrito antes de la 2.2 ya estaba en la
+ * unidad del expediente.
  *
  * @returns {{cubierto:Map<string,number>,
  *            sinImputar:{lineas:number, monto:number},
@@ -358,7 +381,7 @@ export function coberturaPrevia({
       sinImputar.monto += num(it.subtotal) || num(it.cantidad) * num(it.precio_unitario);
       continue;
     }
-    suma(cod, it.cantidad);
+    suma(cod, num(it.cantidad) * factorDeItem(it));
   }
   sinImputar.monto = r2(sinImputar.monto);
 
@@ -382,7 +405,7 @@ export function coberturaPrevia({
       reqSinImputar.monto += cantidad * num(it.precio_estimado);
       continue;
     }
-    suma(cod, cantidad);
+    suma(cod, cantidad * factorDeItem(it));
   }
   reqSinImputar.monto = r2(reqSinImputar.monto);
 
@@ -422,6 +445,10 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  simulador en una corrida anterior (tanda 4, §7).
  * @param {Map|Object|null} [o.yaComprado]   código → cantidad ya comprada.
  * @param {Object}  [o.consumoSobres]        clave de sobre → monto ya gastado.
+ * @param {Object}  [o.compras]              clave de línea → cómo se compra ese
+ *                  insumo `{unidadCompra, factor, lote, colchonPct}` (tanda 2.2,
+ *                  ver `simulador-compra.js`). Lo que no venga se deduce del
+ *                  nombre o queda en la unidad del expediente, sin colchón.
  *
  * @returns {{propuestas:Array, sobres:Array, manoObra:Array, pendientes:Array, resumen:Object}}
  */
@@ -443,6 +470,7 @@ export function simularOrdenes({
   requisiciones = [], requisicionItems = [],
   consumoSobres = null,
   terminosCustom = null,
+  compras = null,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -480,6 +508,10 @@ export function simularOrdenes({
     montoPresupuesto: 0, montoComprable: 0, montoManoObra: 0,
     montoFiltrado: 0, montoSobres: 0, montoPropuesto: 0,
     montoArrastrado: 0, montoOmitidoPorPasado: 0,
+    // Plata que el plan pide POR ENCIMA del expediente, y por qué. Las dos
+    // son decisiones de compra, no del presupuesto: la cobertura se mide sin
+    // ellas o un colchón del 10% se leería como «ya planificaste el 110%».
+    montoColchon: 0, montoRedondeo: 0, insumosConColchon: 0,
     descontado: { insumos: 0, cantidad: 0, monto: 0 },
     ocSinImputar: { lineas: 0, monto: 0 },
     reqSinImputar: { lineas: 0, monto: 0 },
@@ -605,6 +637,31 @@ export function simularOrdenes({
     }
   }
 
+  // ── 1b) cómo se compra cada insumo, y su colchón (tanda 2.2) ──────
+  // Se resuelve UNA vez por insumo. El colchón va ANTES del descuento: es
+  // parte de lo que la obra necesita pedir, así que lo ya pedido se resta de
+  // la necesidad con colchón. Al revés, una corrida posterior volvería a
+  // proponer el colchón que ya se requisó.
+  const compraPorClave = new Map();
+  const compraDe = (c) => {
+    let v = compraPorClave.get(c.clave);
+    if (!v) {
+      v = resolverCompra(compras?.[c.clave], { nombre: c.nombre, unidad: c.unidad });
+      compraPorClave.set(c.clave, v);
+    }
+    return v;
+  };
+  const conColchon = new Set();
+  for (const c of celdas.values()) {
+    const { colchonPct } = compraDe(c);
+    if (!(colchonPct > 0)) continue;
+    const extra = colchonPct / 100;
+    c.cantidad *= 1 + extra;
+    c.monto *= 1 + extra;
+    conColchon.add(c.clave);
+  }
+  resumen.insumosConColchon = conColchon.size;
+
   // ── 2) restar lo ya comprado / ya ordenado ────────────────────────
   // El descuento se aplica de los períodos MÁS VIEJOS hacia adelante: lo que
   // ya está en obra cubre primero las necesidades más cercanas.
@@ -678,6 +735,47 @@ export function simularOrdenes({
   aplicarAnclaje(celdas);
   aplicarAnclaje(manoObra);
 
+  // ── 3b) llevar a cantidades que se pueden pedir (tanda 2.2) ───────
+  // Va DESPUÉS del descuento y del anclaje, porque se redondea lo que
+  // efectivamente queda por pedir, período por período y acumulado (ver
+  // `cantidadesDeCompra`). La mano de obra no pasa por acá: son HH de
+  // referencia y el motor de dotación las necesita con sus decimales.
+  const seriePorClave = new Map();
+  for (const c of celdas.values()) {
+    // Una celda sin cantidad (cubierta entera, o un costo sin cantidad en el
+    // expediente) no se redondea: no hay nada que llevar a unidades.
+    if (!(c.cantidad > 0.0001)) continue;
+    const arr = seriePorClave.get(c.clave) || [];
+    arr.push(c);
+    seriePorClave.set(c.clave, arr);
+  }
+  for (const [clave, arr] of seriePorClave) {
+    arr.sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0));
+    const compra = compraDe(arr[0]);
+    const pedidas = cantidadesDeCompra(arr.map(c => c.cantidad), compra);
+    arr.forEach((c, i) => {
+      const { cantidad, alcanzaHasta } = pedidas[i];
+      // El precio de la unidad del expediente de ESTA celda: puede variar de
+      // un mes a otro si el insumo tiene precios distintos en distintas
+      // partidas, y promediarlo entre meses movería plata de un mes a otro.
+      const precioExp = c.monto / c.cantidad;
+      const montoNuevo = cantidad * compra.factor * precioExp;
+      // La parte del colchón se mide sobre lo que QUEDÓ por pedir, después
+      // del descuento y del anclaje: si lo ya pedido cubrió el mes entero,
+      // ese colchón no es plata del plan.
+      if (compra.colchonPct > 0) resumen.montoColchon += c.monto * (compra.colchonPct / (100 + compra.colchonPct));
+      resumen.montoRedondeo += montoNuevo - c.monto;
+      c.necesidad = c.cantidad;             // lo que de verdad hace falta este período
+      c.cantidadCompra = cantidad;
+      c.monto = montoNuevo;
+      c.compra = compra;
+      c.alcanzaHasta = alcanzaHasta > i ? arr[alcanzaHasta].periodo : null;
+      // Lo que pedía este período ya lo cubrió el redondeo de uno anterior:
+      // sale de la orden en vez de quedar como una línea de cero.
+      if (cantidad <= 0) celdas.delete(`${c.periodo}|${clave}`);
+    });
+  }
+
   // ── 4) armar las propuestas ───────────────────────────────────────
   // Una propuesta = un período × un RUBRO DE PROVEEDOR. Es la unidad que se
   // acepta o se rechaza entera en la pantalla (tanda 3).
@@ -695,6 +793,10 @@ export function simularOrdenes({
   const grupos = new Map();
   for (const c of celdas.values()) {
     if (c.cantidad <= 0.0001 && c.monto <= 0.004) continue;   // quedó cubierto
+    // Sin pasar por 3b (celda sin cantidad) se muestra tal cual vino.
+    const compra = c.compra || compraDe(c);
+    const cantidadLinea = c.cantidadCompra != null ? c.cantidadCompra : c.cantidad;
+    const unidadLinea = c.cantidadCompra != null ? compra.unidadCompra : c.unidad;
     const k = `${c.periodo}|${c.rubro}`;
     let g = grupos.get(k);
     if (!g) {
@@ -715,9 +817,25 @@ export function simularOrdenes({
       // que es de este módulo. Dos derivaciones paralelas se desincronizan y
       // el día que lo hagan, una decisión aceptada se pierde sin aviso.
       clave: c.clave,
-      insumo_codigo: c.insumo_codigo, nombre: c.nombre, unidad: c.unidad,
-      cantidad: r4(c.cantidad), monto: r2(c.monto),
-      precio_unitario: c.cantidad > 0 ? r4(c.monto / c.cantidad) : null,
+      insumo_codigo: c.insumo_codigo, nombre: c.nombre,
+      // Desde la tanda 2.2 la cantidad está en la unidad de COMPRA (28 tubos,
+      // no 164 m) y el precio es el de esa unidad. Lo del expediente viaja al
+      // lado para que siempre se pueda ver contra qué se compara.
+      unidad: unidadLinea,
+      cantidad: r4(cantidadLinea), monto: r2(c.monto),
+      precio_unitario: cantidadLinea > 0 ? r4(c.monto / cantidadLinea) : null,
+      unidadExpediente: c.unidad,
+      factor: c.cantidadCompra != null ? compra.factor : 1,
+      // Lo que de verdad hace falta en este período, en unidades del
+      // expediente y con el colchón ya puesto. La diferencia con
+      // `cantidad × factor` es el redondeo.
+      necesidad: r4(c.necesidad != null ? c.necesidad : c.cantidad),
+      lote: compra.lote, colchonPct: compra.colchonPct,
+      compraOrigen: compra.origen, compraMotivo: compra.motivo,
+      // Lo pedido acá cubre también los períodos siguientes hasta éste: sus
+      // líneas no aparecen porque el redondeo ya las pidió.
+      alcanzaHasta: c.alcanzaHasta || null,
+      etiquetaAlcanzaHasta: c.alcanzaHasta ? etiquetaPeriodo(c.alcanzaHasta) : null,
       montoConocido: c.montoConocido, tramoLargo: c.tramoLargo,
       arrastrado: c.arrastrado, partidas: [...c.partidas],
       categoria: c.categoria, subcategoria: c.subcategoria,
@@ -811,7 +929,8 @@ export function simularOrdenes({
   resumen.lineasPendientes = pendientes.length;
   resumen.sobres = sobresOut.length;
   for (const k of ['montoPresupuesto', 'montoComprable', 'montoManoObra', 'montoFiltrado',
-    'montoSobres', 'montoPropuesto', 'montoArrastrado', 'montoOmitidoPorPasado']) {
+    'montoSobres', 'montoPropuesto', 'montoArrastrado', 'montoOmitidoPorPasado',
+    'montoColchon', 'montoRedondeo']) {
     resumen[k] = r2(resumen[k]);
   }
   resumen.descontado.cantidad = r4(resumen.descontado.cantidad);
@@ -819,10 +938,12 @@ export function simularOrdenes({
 
   // La barra de cobertura de la pantalla apunta a ESTO y no al presupuesto
   // total: el 47% de Miraflores es planilla y nunca va a cubrirse con
-  // órdenes (§2 del plan).
+  // órdenes (§2 del plan). Y se mide SIN el colchón ni el redondeo (tanda
+  // 2.2): son plata de más que se decidió pedir, no presupuesto cubierto.
   resumen.montoPlanificado = r2(resumen.montoPropuesto + resumen.montoSobres);
+  const planificadoDelExpediente = resumen.montoPlanificado - resumen.montoColchon - resumen.montoRedondeo;
   resumen.cobertura = resumen.montoComprable > 0
-    ? Math.min(1, r4(resumen.montoPlanificado / resumen.montoComprable))
+    ? Math.min(1, Math.max(0, r4(planificadoDelExpediente / resumen.montoComprable)))
     : 0;
 
   return { propuestas, sobres: sobresOut, manoObra: manoObraOut, pendientes, resumen };

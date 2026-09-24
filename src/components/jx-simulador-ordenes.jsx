@@ -50,6 +50,7 @@ import {
   decidirSobre, agregarLineaSobre, editarLineaSobre, quitarLineaSobre, proveedorDeSobre,
   aplicarEscenario, lineasAceptadas,
   leerEscenarios, guardarEscenario, borrarEscenario,
+  leerCompras, guardarCompra,
 } from "../lib/simulador-escenarios.js";
 import {
   armarRequisiciones, borradorDeOrdenDesdeRequisicion, cierreDeRequisicion,
@@ -156,6 +157,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [escenario, setEscenario] = uS(null);
   const escRef = uR(null);
   const exportRef = uR(false);
+  // Cómo se compra cada insumo (unidad, lote, colchón): de la OBRA, no del
+  // escenario — ver `leerCompras` en simulador-escenarios.js.
+  const [compras, setCompras] = uS({});
 
   uE(() => {
     if (!obraId && obras.length) {
@@ -169,7 +173,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   // ninguno se crea uno con los defaults: entrar y encontrar la pantalla
   // vacía pidiendo «creá un escenario» es una puerta cerrada de más.
   uE(() => {
-    if (!obraId) { setEscenarios([]); setEscenario(null); escRef.current = null; return; }
+    if (!obraId) { setEscenarios([]); setEscenario(null); escRef.current = null; setCompras({}); return; }
+    setCompras(leerCompras(obraId));
     let lista = leerEscenarios(obraId);
     if (!lista.length) {
       const base = nuevoEscenario({ nombre: 'Escenario base', obraId, params: PARAMS_DEFAULT });
@@ -281,9 +286,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
       consumoSobres,
       terminosCustom,
+      compras,
     });
   }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, recalcN]);
+    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, recalcN]);
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
@@ -409,6 +415,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 
   const cambiarParam = (patch) => mutar(e => conParams(e, patch));
 
+  // Vale para ese insumo en TODOS los meses y escenarios de la obra.
+  const cambiarCompra = uC((clave, patch) => {
+    if (!obraId || !clave) return;
+    setCompras(guardarCompra(obraId, clave, patch));
+  }, [obraId]);
+
   // Un sobre sin detalle («ACARREO…», «HERRAMIENTAS MANUALES») casi siempre
   // significa que a esa partida le faltó el desglose de insumos al importar
   // el APU. En vez de mandar a adivinar dónde corregirlo, salta directo a
@@ -491,11 +503,13 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     if (!entregable.lineas.length) { toast('Todavía no hay ninguna línea aceptada', 'amber'); return; }
     exportRef.current = true;
     try {
-      const cab = ['periodo', 'orden', 'categoria', 'codigo', 'descripcion', 'unidad', 'cantidad', 'precio_unitario', 'monto', 'proveedor', 'nota'];
+      const cab = ['periodo', 'orden', 'categoria', 'codigo', 'descripcion', 'unidad', 'cantidad', 'precio_unitario', 'monto',
+        'equivale_en_expediente', 'unidad_expediente', 'proveedor', 'nota'];
       const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const filas = entregable.lineas.map(l => [
         l.etiquetaPeriodo, l.propuesta_id, SUBCATEGORIA_LABEL[l.subcategoria] || l.subcategoria,
         l.insumo_codigo || '', l.descripcion, l.unidad, l.cantidad, l.precio_unitario, l.monto,
+        r4ui(num(l.cantidad) * (num(l.factor) || 1)), l.unidadExpediente || l.unidad,
         l.proveedor_nombre || '', l.nota || '',
       ].map(esc).join(';'));
       const csv = `﻿${cab.join(';')}\n${filas.join('\n')}`;
@@ -789,6 +803,16 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Planificado por el simulador</div>
               <b style={{ fontSize: 16 }}>{solesK(resumen.montoPlanificado)}</b>
               <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{resumen.propuestas} órdenes · {resumen.sobres} sobres</div>
+              {/* Plata por ENCIMA del expediente: se dice aparte y no cuenta
+                  para la cobertura, o un colchón se leería como avance. */}
+              {(resumen.montoRedondeo > 0.5 || resumen.montoColchon > 0.5) && (
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}
+                  title="Se pide en unidades enteras de compra (tubos, bolsas, m³) y con el colchón que fijaste por insumo. Esa plata está por encima del expediente y no cuenta para la cobertura.">
+                  incluye {resumen.montoRedondeo > 0.5 && <>+{solesK(resumen.montoRedondeo)} por pedir en enteros</>}
+                  {resumen.montoRedondeo > 0.5 && resumen.montoColchon > 0.5 && ' · '}
+                  {resumen.montoColchon > 0.5 && <>+{solesK(resumen.montoColchon)} de colchón ({resumen.insumosConColchon} insumo{resumen.insumosConColchon === 1 ? '' : 's'})</>}
+                </div>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Aceptado en este escenario</div>
@@ -939,6 +963,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                   onDecidirLinea={(l, d) => mutar(e => decidirLinea(e, p.id, l, d))}
                   onEditar={(l, patch) => mutar(e => editarLinea(e, p.id, l, patch))}
                   onLimpiar={(l) => mutar(e => limpiarEdicion(e, p.id, l))}
+                  onCompra={cambiarCompra}
                   onProveedorOrden={(texto) => {
                     const prov = resolverProveedor(texto);
                     mutar(e => proveedorDePropuesta(e, p.id, p.lineas, prov));
@@ -1039,7 +1064,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
+function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
   // El proveedor de la orden es el que tienen TODAS sus líneas. Si hay más de
   // uno (porque alguien pisó una línea suelta) el campo queda vacío y se dice
@@ -1137,7 +1162,7 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
             <thead>
               <tr>
                 <th>Insumo</th>
-                <th style={{ textAlign: 'right', width: 110 }}>Cantidad</th>
+                <th style={{ textAlign: 'right', width: 130 }}>Cantidad a pedir</th>
                 <th style={{ textAlign: 'right', width: 110 }}>Precio</th>
                 <th style={{ textAlign: 'right', width: 120 }}>Monto</th>
                 <th style={{ width: 170 }}>Proveedor</th>
@@ -1153,6 +1178,7 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
                   onDecidir={(d) => onDecidirLinea(l, d)}
                   onEditar={(patch) => onEditar(l, patch)}
                   onLimpiar={() => onLimpiar(l)}
+                  onCompra={(patch) => onCompra?.(l.clave, patch)}
                   resolverProveedor={resolverProveedor}
                 />
               ))}
@@ -1172,9 +1198,18 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
   );
 }
 
-function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, resolverProveedor }) {
+function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, onCompra, resolverProveedor }) {
   const color = COLOR_DECISION[l.decision];
+  const factor = num(l.factor) > 0 ? num(l.factor) : 1;
+  const unidadExp = l.unidadExpediente || l.unidad;
+  const equivale = r4ui(num(l.cantidad) * factor);
+  // Lo que se pide de más por redondear a enteros (en unidades del
+  // expediente). Solo tiene sentido contra la cantidad que propuso el motor:
+  // si alguien la corrigió a mano, la diferencia ya no es redondeo.
+  const redondeo = l.necesidad != null && num(l.cantidad) === num(l.cantidadOriginal)
+    ? r4ui(num(l.cantidadOriginal) * factor - num(l.necesidad)) : 0;
   return (
+    <>
     <tr style={{ opacity: l.decision === 'rechazada' ? 0.5 : 1 }}>
       <td className="col-p">
         {enEdicion ? (
@@ -1184,7 +1219,7 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, re
           <div style={{ fontWeight: 600, fontSize: 12.5 }}>{l.nombre}</div>
         )}
         <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
-          {l.insumo_codigo || 'sin código'} · {l.unidad}
+          {l.insumo_codigo || 'sin código'} · expediente en {unidadExp}
           {/* QUÉ ES, que es lo que explica por qué está en ESTA orden. Sin
               esto el rubro es una caja negra y una línea mal clasificada no
               se puede discutir: se ve rara y no se sabe por qué entró. */}
@@ -1206,7 +1241,35 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, re
         {enEdicion ? (
           <input className="fi" type="number" min="0" step="any" style={{ width: 92, padding: '3px 6px', fontSize: 12, textAlign: 'right' }}
             value={l.cantidad} onChange={e => onEditar({ cantidad: e.target.value })} />
-        ) : cant(l.cantidad)}
+        ) : <b>{cant(l.cantidad)}</b>}
+        <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{l.unidad}</div>
+        {/* Contra qué se compara: lo pedido en la unidad del expediente, y
+            cuánto hacía falta de verdad. Sin esto «28 tubos» no se puede
+            revisar contra el presupuesto. */}
+        {factor !== 1 && (
+          <div style={{ fontSize: 10, color: 'var(--tm)' }}>= {cant(equivale)} {unidadExp}</div>
+        )}
+        {redondeo > 0.005 && (
+          <div style={{ fontSize: 10, color: 'var(--tm)' }}
+            title="Se pide en enteros de la unidad de compra. El redondeo es acumulado: lo que sobra este mes cubre el que sigue, así que el total de la obra nunca se pasa en más de una unidad.">
+            hace falta {cant(l.necesidad)} {unidadExp}
+          </div>
+        )}
+        {num(l.colchonPct) > 0 && (
+          <div style={{ fontSize: 10, color: 'var(--blue)' }}>con {cant(l.colchonPct)}% de colchón</div>
+        )}
+        {l.etiquetaAlcanzaHasta && (
+          <div style={{ fontSize: 10, color: 'var(--green)' }}
+            title="Lo que se pide acá, redondeado, también cubre los meses siguientes: por eso ese insumo no aparece en sus órdenes.">
+            alcanza hasta {l.etiquetaAlcanzaHasta}
+          </div>
+        )}
+        {l.edicionOtraUnidad && (
+          <div style={{ fontSize: 10, color: 'var(--amber)' }}
+            title="La corrección de cantidad o precio se hizo en otra unidad y no se aplica: el número ya no significa lo mismo.">
+            tu corrección era en {l.edicionOtraUnidad}: volvé a hacerla
+          </div>
+        )}
       </td>
       <td style={{ textAlign: 'right' }}>
         {enEdicion ? (
@@ -1261,6 +1324,79 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, re
         </div>
       </td>
     </tr>
+    {enEdicion && onCompra && (
+      <tr>
+        <td colSpan={6} style={{ background: 'var(--tint-neutral)' }}>
+          <CompraEditor l={l} onCompra={onCompra} />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+const r4ui = (n) => Math.round(num(n) * 10000) / 10000;
+
+/**
+ * Cómo se compra ESTE insumo (tanda 2.2): unidad de compra, lote y colchón.
+ *
+ * No es una corrección de la línea: vale para el insumo en todos los meses y
+ * todos los escenarios de la obra, y así lo dice. La unidad y su factor se
+ * aplican juntos con un botón —cambiar solo uno de los dos a medio escribir
+ * recalcularía la obra entera con «1 tubo = 0 m»—; lote y colchón, al salir
+ * del campo.
+ *
+ * El colchón arranca vacío (0%) y no se sugiere ningún valor: es decisión de
+ * Gabriel, insumo por insumo (24-set-2026).
+ */
+function CompraEditor({ l, onCompra }) {
+  const unidadExp = l.unidadExpediente || l.unidad;
+  const [unidad, setUnidad] = React.useState(l.unidad || '');
+  const [factor, setFactor] = React.useState(String(num(l.factor) > 0 ? l.factor : 1));
+  React.useEffect(() => { setUnidad(l.unidad || ''); setFactor(String(num(l.factor) > 0 ? l.factor : 1)); }, [l.unidad, l.factor]);
+  const factorValido = Number(factor) > 0;
+  const cambiado = unidad.trim() !== String(l.unidad || '') || Number(factor) !== num(l.factor || 1);
+  const campo = { className: 'fi', style: { width: 80, padding: '3px 6px', fontSize: 12 } };
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', fontSize: 11.5, padding: '4px 2px' }}>
+      <b style={{ fontSize: 11.5 }}>Cómo se compra este insumo</b>
+      <span style={{ color: 'var(--tm)' }}>(vale para todos los meses y escenarios de esta obra)</span>
+      <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        se pide por
+        <input {...campo} style={{ ...campo.style, width: 130 }} value={unidad} onChange={e => setUnidad(e.target.value)} placeholder={unidadExp} />
+        · 1 = <input {...campo} type="number" min="0" step="any" value={factor} onChange={e => setFactor(e.target.value)} /> {unidadExp}
+        <button className="btn btn-sm btn-ghost" disabled={!factorValido || !cambiado}
+          onClick={() => onCompra({ unidadCompra: unidad.trim() || unidadExp, factor: Number(factor) })}>Aplicar</button>
+      </span>
+      <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}
+        title="Se pide de a esta cantidad (en la unidad de compra). Un mes que no llega se junta con el anterior.">
+        de a
+        <input {...campo} type="number" min="0" step="any" defaultValue={num(l.lote) > 0 ? l.lote : 1} key={`lote|${l.lote}`}
+          onBlur={e => onCompra({ lote: Number(e.target.value) > 0 && Number(e.target.value) !== 1 ? Number(e.target.value) : null })} />
+      </span>
+      <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}
+        title="Por robo, rotura o merma. 0% salvo que lo pongas vos. Esa plata se muestra aparte y no cuenta como presupuesto cubierto.">
+        colchón
+        <input {...campo} style={{ ...campo.style, width: 60 }} type="number" min="0" max="100" step="any" placeholder="0"
+          defaultValue={num(l.colchonPct) > 0 ? l.colchonPct : ''} key={`colchon|${l.colchonPct}`}
+          onBlur={e => onCompra({ colchonPct: Number(e.target.value) > 0 ? Number(e.target.value) : null })} /> %
+      </span>
+      <div style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', color: 'var(--tm)', fontSize: 10.5 }}>
+        <span>{l.compraOrigen === 'nombre' ? '📐 ' : ''}{l.compraMotivo}</span>
+        {(l.compraOrigen === 'nombre' || num(l.factor) !== 1) && (
+          <button className="btn btn-sm btn-ghost" style={{ fontSize: 10.5 }}
+            onClick={() => onCompra({ unidadCompra: unidadExp, factor: 1 })}>
+            Pedir en {unidadExp}
+          </button>
+        )}
+        {(l.compraOrigen === 'manual' || num(l.lote) !== 1 || num(l.colchonPct) > 0) && (
+          <button className="btn btn-sm btn-ghost" style={{ fontSize: 10.5 }}
+            onClick={() => onCompra({ factor: null, lote: null, colchonPct: null })}>
+            Quitar lo fijado a mano
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

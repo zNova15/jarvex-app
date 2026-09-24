@@ -655,8 +655,38 @@ no puede: explicar un enfoque y variarlo con criterio.
       «S. FACILITO» y queda `sin_clasificar`. `mes` entró a `UNIDADES_SOBRE`
       (3 líneas en toda la base, todas Miraflores, S/ 30.800). Tests en
       `palabra-generica.test.js` y `simulador-ordenes.test.js`.
-- [ ] Tanda 2.2 — cantidades comprables (unidad de compra, redondeo, lote
-      mínimo, colchón por insumo)
+- [x] Tanda 2.2 — cantidades comprables (24-set). `src/lib/simulador-compra.js`
+      (nueva, con tests) + pasos 1b (colchón) y 3b (unidades de compra) en
+      `simularOrdenes()` + `leerCompras`/`guardarCompra` en
+      `simulador-escenarios.js` + **migración 228, aplicada y verificada**
+      (`requisicion_items.factor_presupuesto` y `oc_items.factor_presupuesto`).
+      **Lo que cambió respecto de §12.3:**
+      · **La unidad de compra NO sale de una tabla por unidad de expediente:
+        sale del NOMBRE.** El expediente ya dice la presentación
+        («TUBERIA PVC UF S25 DE 8" x 6m», «MADERA TORNILLO 1"x 8"x8'»). En
+        Miraflores eso resuelve 17 insumos (15 tuberías + 2 maderas). Lo que
+        el nombre no dice («MADERA TORNILLO PARA ENCOFRADO» —S/ 478k—, «ACERO
+        CORRUGADO fy=4200» sin diámetro, la HDPE) queda en la unidad del
+        expediente, en enteros. La varilla por diámetro (NTP 341.031, 9 m) está
+        soportada pero en Miraflores no aplica: el acero no trae diámetro.
+      · **Se guarda por OBRA, no por escenario** (`jx_sim_ordenes_v1:compras:<obra>`):
+        que el tubo sea de 6 m no es una hipótesis que se compare entre
+        escenarios.
+      · **El lote mínimo no es un mecanismo aparte:** es el paso del redondeo
+        acumulado (default 1). Un mes que no llega se junta con el ANTERIOR
+        —no con el siguiente, que dejaría la obra corta— y la línea que lo
+        absorbió dice «alcanza hasta noviembre».
+      · **El factor tiene que viajar a la base (mig 228).** Sin él, la corrida
+        siguiente restaba «28 tubos» de los metros del presupuesto: el doble
+        pedido del §7. Solo se escribe cuando no es 1.
+      · **Una corrección de cantidad/precio guarda en qué unidad se hizo**; si
+        la unidad de compra cambia después, no se aplica y la línea lo avisa.
+      · El colchón va ANTES del descuento (lo ya pedido con colchón no se
+        vuelve a pedir); colchón y redondeo se informan aparte y NO cuentan
+        para la cobertura.
+      Medido en Miraflores (anclaje cero): 0 líneas con decimales (antes casi
+      todas), 1.612 → 1.370 líneas, 158 → 149 órdenes; el redondeo acumulado
+      cuesta S/ 3.525 en toda la obra (redondear mes por mes costaba ~S/ 150k).
 - [ ] Tanda 2.3 — consolidación de órdenes (frecuencia, monto mínimo,
       emisión vs entrega)
 - [ ] Tanda 2.4 — navegación por meses (chips)

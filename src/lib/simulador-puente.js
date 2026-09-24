@@ -57,6 +57,21 @@ const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 const r4 = (n) => Math.round((num(n) + Number.EPSILON) * 10000) / 10000;
 const vivos = (arr) => (Array.isArray(arr) ? arr : []).filter(x => x && !x.deleted_at);
 
+/**
+ * `factor_presupuesto` (mig 228): cuántas unidades del expediente trae cada
+ * unidad pedida — un tubo de 6 m son 6 m. Es lo que deja que la corrida
+ * siguiente descuente en la unidad del presupuesto (`coberturaPrevia`).
+ *
+ * Solo se escribe cuando NO es 1. Con factor 1 la columna es redundante
+ * (NULL ya significa «misma unidad»), y así una requisición común no depende
+ * de que la migración esté aplicada: el push de una columna que el servidor
+ * no conoce rechaza la fila entera.
+ */
+const conFactor = (factor) => {
+  const f = Number(factor);
+  return Number.isFinite(f) && f > 0 && Math.abs(f - 1) > 1e-9 ? { factor_presupuesto: r4(f) } : {};
+};
+
 let seq = 0;
 const idPorDefecto = () => {
   try {
@@ -244,6 +259,7 @@ export function armarRequisiciones({
       precio_estimado: l.precio_unitario != null ? r4(l.precio_unitario) : null,
       observacion: l.nota || null,
       notas: l.proveedor_nombre ? `Proveedor sugerido: ${l.proveedor_nombre}` : null,
+      ...conFactor(l.factor),
     }));
 
     requisiciones.push({ requisicion, items });
@@ -481,6 +497,9 @@ export function borradorDeOrdenDesdeRequisicion({
       cantidad_recibida: 0,
       precio_unitario: r4(precio),
       subtotal: r2(cantidad * precio),
+      // La orden hereda el factor de su requisición: una vez emitida, es ella
+      // la que descuenta en `coberturaPrevia()`, y en la misma unidad.
+      ...conFactor(it.factor_presupuesto),
     };
   });
 
