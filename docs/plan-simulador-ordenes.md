@@ -687,8 +687,66 @@ no puede: explicar un enfoque y variarlo con criterio.
       Medido en Miraflores (anclaje cero): 0 líneas con decimales (antes casi
       todas), 1.612 → 1.370 líneas, 158 → 149 órdenes; el redondeo acumulado
       cuesta S/ 3.525 en toda la obra (redondear mes por mes costaba ~S/ 150k).
-- [ ] Tanda 2.3 — consolidación de órdenes (frecuencia, monto mínimo,
-      emisión vs entrega)
+- [x] Tanda 2.3 — consolidación de órdenes (24-set).
+      `src/lib/simulador-consolidacion.js` (nueva, pura, sin imports) +
+      paso 4 de `simularOrdenes()` reescrito en átomos → órdenes → líneas con
+      `entregas` + decisiones por átomo en `simulador-escenarios.js` +
+      cronograma de entregas en el puente. Tests en
+      `simulador-consolidacion.test.js`. **Sin migración.**
+      **Lo que cambió respecto de §12.3:**
+      · **Emitir ≠ entregar se resolvió con ÁTOMOS.** Lo que hasta la 2.2 era
+        la orden (período × rubro, id `2026-10|concreto`) ahora es un átomo;
+        una orden junta átomos de un rubro y cada línea trae
+        `entregas: [{periodo, cantidad, monto, propuestaId}]`. El id de la
+        orden es el de su primer átomo, así que con los defaults el plan mes a
+        mes sale idéntico al de antes (mismos ids, misma cantidad de órdenes).
+      · **Las decisiones se guardan por átomo**, no por orden: juntar o separar
+        cambiando una perilla no borra nada, y los escenarios de antes se leen
+        tal cual (sus ids ya eran átomos). Si las entregas de una línea se
+        decidieron distinto cuando eran órdenes sueltas, la línea queda
+        `decisionMixta` y NO se entrega hasta volver a decidirla — pedir la
+        mitad porque dos decisiones viejas se juntaron es inventar cantidad.
+        Una cantidad corregida guarda `periodos_edicion` y no se aplica si la
+        orden se reagrupa (mismo patrón que `unidad_edicion` de la 2.2);
+        nombre, precio y proveedor sí sobreviven.
+      · **Frecuencia:** `periodo | mensual | bimestral | trimestral | unica`,
+        general y por rubro (por ESCENARIO: es una hipótesis que se compara).
+        La ventana se abre con la primera necesidad del rubro y cubre N meses
+        calendario; una semana es del mes de su jueves (`mesDePeriodo`).
+        Default `mensual`: mes a mes no cambia nada; semana a semana da una
+        orden mensual con entregas semanales (el caso del §12.3).
+      · **Monto mínimo: la chica se junta con la SIGUIENTE y se emite en la
+        fecha de la PRIMERA** (nada llega tarde); la última chica del rubro se
+        suma a la anterior. Nunca cruza rubros. **Default 0** — el umbral lo
+        fija Gabriel, mismo criterio que el colchón.
+      · **Sin columna nueva para las entregas.** `requisicion_items` no tiene
+        fecha por línea: el cronograma va en `observacion`
+        («Entregas — octubre 2026: 100; noviembre 2026: 20 (bol)») y la orden
+        lo resume en `ordenes_compra.fecha_entrega_ref`, que ya existía (mig
+        179). Escritor y lector viven juntos en `simulador-puente.js`.
+      · **El freno contra escribir dos veces pasó a ser por línea.** El de la
+        tanda 4 miraba solo `origen_ref`, y con la consolidación se comía
+        entregas NUEVAS (octubre escrito a medias + noviembre juntado con
+        octubre = mismo `origen_ref`, noviembre salteado como «ya escrito»).
+        Ahora una línea con código es duplicada solo si ya hay un ítem con el
+        mismo código y la misma cantidad bajo ese `origen_ref`; la que no
+        tiene código (2 de 6.722 en Miraflores) conserva el freno de antes.
+      · `rangoDePeriodo` se mudó a `simulador-ordenes.js` (dotación lo
+        re-exporta): la consolidación lo necesita y desde dotación se armaba
+        un import circular.
+      Medido en Miraflores (desde hoy / auditoría):
+
+      | Parámetros | Mes a mes | Semana a semana |
+      |---|---|---|
+      | antes de la 2.3 | 71 / 149 | 223 / 501 |
+      | default (mensual, sin mínimo) | 71 / 149 | 71 / 149 |
+      | mínimo S/ 3.000 | 57 / 94 | 58 / 95 |
+      | mínimo S/ 5.000 | 51 / 82 | 51 / 81 |
+      | bimestral + mínimo S/ 3.000 | 33 / 63 | 34 / 64 |
+      | una sola por rubro | 20 / 20 | 20 / 20 |
+
+      La plata propuesta es la misma con cualquier combinación (±S/ 0,05 de
+      redondeo) y las entregas de cada línea suman la línea.
 - [ ] Tanda 2.4 — navegación por meses (chips)
 - [ ] Tanda 2.5 — imputar las 62 líneas + stock del almacén
 - [ ] Tanda 2.6 (opcional) — escenarios con IA, solo si Gabriel la pide

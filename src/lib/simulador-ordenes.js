@@ -60,6 +60,7 @@ import {
 } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
 import { resolverCompra, cantidadesDeCompra } from './simulador-compra.js';
+import { consolidarOrdenes, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
 
 /**
  * La clasificación IUPC de un sobre. Se pasa por `clasificarConIUPC` con el
@@ -211,6 +212,38 @@ export function periodosEntre(desde, hasta, granularidad = 'mes') {
     if (m > 11) { m = 0; y += 1; }
   }
   return out;
+}
+
+/** Primer y último día de un período 'YYYY-MM' o 'YYYY-Www'. */
+export function rangoDePeriodo(periodo) {
+  const p = String(periodo || '');
+  const mes = /^(\d{4})-(\d{2})$/.exec(p);
+  if (mes) {
+    const y = +mes[1], m = +mes[2];
+    if (m < 1 || m > 12) return null;
+    return { inicio: `${y}-${p2(m)}-01`, fin: deUTC(Date.UTC(y, m, 1) - DIA_MS) };
+  }
+  const sem = /^(\d{4})-W(\d{2})$/.exec(p);
+  if (sem) {
+    const anio = +sem[1], n = +sem[2];
+    const ene4 = Date.UTC(anio, 0, 4);
+    const lunesS1 = ene4 - ((new Date(ene4).getUTCDay() + 6) % 7) * DIA_MS;
+    const lunes = lunesS1 + (n - 1) * 7 * DIA_MS;
+    return { inicio: deUTC(lunes), fin: deUTC(lunes + 6 * DIA_MS) };
+  }
+  return null;
+}
+
+/**
+ * El mes calendario al que pertenece un período. Una semana cae en el mes de
+ * su JUEVES, igual que el año de la semana ISO: la semana del lunes 28-set al
+ * domingo 4-oct tiene cuatro días en octubre y es de octubre.
+ */
+export function mesDePeriodo(periodo) {
+  const p = String(periodo || '');
+  if (/^\d{4}-\d{2}$/.test(p)) return p;
+  const r = rangoDePeriodo(p);
+  return r ? sumarDias(r.inicio, 3).slice(0, 7) : '';
 }
 
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
@@ -449,6 +482,11 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  insumo `{unidadCompra, factor, lote, colchonPct}` (tanda 2.2,
  *                  ver `simulador-compra.js`). Lo que no venga se deduce del
  *                  nombre o queda en la unidad del expediente, sin colchón.
+ * @param {string}  [o.frecuencia='mensual'] cada cuánto se emite una orden
+ *                  (tanda 2.3, ver `simulador-consolidacion.js`).
+ * @param {Object}  [o.frecuenciaPorRubro]   rubro → frecuencia, pisa la general.
+ * @param {number}  [o.montoMinimoOrden=0]   una orden por debajo se junta con
+ *                  la siguiente del mismo rubro. 0 = no se junta.
  *
  * @returns {{propuestas:Array, sobres:Array, manoObra:Array, pendientes:Array, resumen:Object}}
  */
@@ -471,6 +509,9 @@ export function simularOrdenes({
   consumoSobres = null,
   terminosCustom = null,
   compras = null,
+  frecuencia = FRECUENCIA_DEFAULT,
+  frecuenciaPorRubro = null,
+  montoMinimoOrden = 0,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -516,6 +557,10 @@ export function simularOrdenes({
     ocSinImputar: { lineas: 0, monto: 0 },
     reqSinImputar: { lineas: 0, monto: 0 },
     consumoSobresInformado: consumoSobres != null,
+    // Consolidación (tanda 2.3): cuántas órdenes habría sin juntar, cuántas
+    // se juntaron por monto y cuántas quedan chicas igual.
+    frecuencia, montoMinimoOrden: num(montoMinimoOrden),
+    ordenesSinConsolidar: 0, ordenesJuntadasPorMonto: 0, ordenesBajoMinimo: 0,
   };
 
   // ── 1) repartir cada línea del presupuesto en sus períodos ────────
@@ -790,79 +835,89 @@ export function simularOrdenes({
   // orden agrupa lo que UN proveedor vende: el cemento con sus aditivos y sus
   // agregados, las señales con los cachacos y los EPPs, los cuatro monitoreos
   // juntos. Salen MÁS órdenes por mes y cada una se puede mandar.
-  const grupos = new Map();
+  //
+  // ── DESDE LA TANDA 2.3: «PERÍODO × RUBRO» ES UNA ENTREGA, NO UNA ORDEN ──
+  // Lo que hasta acá era la orden ahora es un ÁTOMO: lo que un rubro necesita
+  // en un período. `consolidarOrdenes()` junta los átomos en órdenes según la
+  // frecuencia del rubro y el monto mínimo, y cada línea de la orden lleva la
+  // tabla de ENTREGAS por período. El id del átomo es el mismo que tenía la
+  // orden antes (`2026-10|concreto`), y es contra él que el escenario guarda
+  // las decisiones: reagrupar no borra nada de lo ya decidido.
+  const atomos = new Map();
   for (const c of celdas.values()) {
     if (c.cantidad <= 0.0001 && c.monto <= 0.004) continue;   // quedó cubierto
-    // Sin pasar por 3b (celda sin cantidad) se muestra tal cual vino.
-    const compra = c.compra || compraDe(c);
-    const cantidadLinea = c.cantidadCompra != null ? c.cantidadCompra : c.cantidad;
-    const unidadLinea = c.cantidadCompra != null ? compra.unidadCompra : c.unidad;
     const k = `${c.periodo}|${c.rubro}`;
-    let g = grupos.get(k);
-    if (!g) {
-      g = {
-        id: k, periodo: c.periodo, etiquetaPeriodo: etiquetaPeriodo(c.periodo),
-        categoria: c.categoria, subcategoria: c.subcategoria,
-        rubro: c.rubro, rubroNombre: RUBRO_COMPRA_POR_ID.get(c.rubro)?.nombre || c.rubro,
-        rubroIcono: RUBRO_COMPRA_POR_ID.get(c.rubro)?.icono || '',
-        titulo: '', lineas: [], monto: 0, tieneMontoIncompleto: false,
-      };
-      grupos.set(k, g);
+    let a = atomos.get(k);
+    if (!a) {
+      a = { id: k, periodo: c.periodo, rubro: c.rubro, mes: mesDePeriodo(c.periodo), monto: 0, celdas: [] };
+      atomos.set(k, a);
     }
-    g.lineas.push({
-      // Aditivo para la tanda 3: la clave con la que la pantalla guarda la
-      // decisión y la corrección de ESTA línea. Tiene que salir de acá y no
-      // recalcularse allá — el código de insumo falta en buena parte del
-      // expediente y el reemplazo (nombre+unidad) depende de `normUnidad`,
-      // que es de este módulo. Dos derivaciones paralelas se desincronizan y
-      // el día que lo hagan, una decisión aceptada se pierde sin aviso.
-      clave: c.clave,
-      insumo_codigo: c.insumo_codigo, nombre: c.nombre,
-      // Desde la tanda 2.2 la cantidad está en la unidad de COMPRA (28 tubos,
-      // no 164 m) y el precio es el de esa unidad. Lo del expediente viaja al
-      // lado para que siempre se pueda ver contra qué se compara.
-      unidad: unidadLinea,
-      cantidad: r4(cantidadLinea), monto: r2(c.monto),
-      precio_unitario: cantidadLinea > 0 ? r4(c.monto / cantidadLinea) : null,
-      unidadExpediente: c.unidad,
-      factor: c.cantidadCompra != null ? compra.factor : 1,
-      // Lo que de verdad hace falta en este período, en unidades del
-      // expediente y con el colchón ya puesto. La diferencia con
-      // `cantidad × factor` es el redondeo.
-      necesidad: r4(c.necesidad != null ? c.necesidad : c.cantidad),
-      lote: compra.lote, colchonPct: compra.colchonPct,
-      compraOrigen: compra.origen, compraMotivo: compra.motivo,
-      // Lo pedido acá cubre también los períodos siguientes hasta éste: sus
-      // líneas no aparecen porque el redondeo ya las pidió.
-      alcanzaHasta: c.alcanzaHasta || null,
-      etiquetaAlcanzaHasta: c.alcanzaHasta ? etiquetaPeriodo(c.alcanzaHasta) : null,
-      montoConocido: c.montoConocido, tramoLargo: c.tramoLargo,
-      arrastrado: c.arrastrado, partidas: [...c.partidas],
-      categoria: c.categoria, subcategoria: c.subcategoria,
-      // QUÉ ES esta línea, para que se vea por qué está en esta orden y se
-      // pueda discutir. Sin esto, el rubro es una caja negra.
-      iupc: c.iupc, rubro: c.rubro,
-    });
-    g.monto += c.monto;
-    if (!c.montoConocido) g.tieneMontoIncompleto = true;
+    a.celdas.push(c);
+    a.monto += c.monto;
   }
+
+  const consolidadas = consolidarOrdenes([...atomos.values()], {
+    frecuencia, frecuenciaPorRubro, montoMinimo: montoMinimoOrden,
+  });
+  resumen.ordenesSinConsolidar = atomos.size;
+  resumen.ordenesJuntadasPorMonto = consolidadas.filter(g => g.juntadaPorMonto).length;
+  resumen.ordenesBajoMinimo = consolidadas.filter(g => g.bajoMinimo).length;
+
+  const propuestas = consolidadas.map(g => {
+    const primera = atomos.get(g.atomos[0]).celdas[0];
+    const rubroInfo = RUBRO_COMPRA_POR_ID.get(g.rubro);
+    const p = {
+      id: g.id, periodo: g.periodo, etiquetaPeriodo: etiquetaPeriodo(g.periodo),
+      // Los períodos que ENTREGA esta orden, y cómo se nombra la ventana:
+      // «octubre a diciembre 2026». Con una sola entrega es el período.
+      periodos: g.periodos,
+      etiquetaVentana: etiquetaVentana(g.periodos),
+      // De qué átomos está hecha: es contra esto que se decide (ver arriba).
+      atomos: g.atomos.map((id, i) => ({ id, periodo: g.periodos[i] })),
+      frecuencia: g.frecuencia,
+      juntadaPorMonto: g.juntadaPorMonto, bajoMinimo: g.bajoMinimo,
+      categoria: primera.categoria, subcategoria: primera.subcategoria,
+      rubro: g.rubro, rubroNombre: rubroInfo?.nombre || g.rubro,
+      rubroIcono: rubroInfo?.icono || '',
+      titulo: '', lineas: [], monto: 0, tieneMontoIncompleto: false,
+    };
+
+    // Las celdas de un mismo insumo, de todos los períodos de la orden, en
+    // orden cronológico: se vuelven UNA línea con sus entregas.
+    const porClave = new Map();
+    for (const atomoId of g.atomos) {
+      for (const c of atomos.get(atomoId).celdas) {
+        const arr = porClave.get(c.clave) || [];
+        arr.push({ c, atomoId });
+        porClave.set(c.clave, arr);
+      }
+    }
+    for (const arr of porClave.values()) {
+      p.lineas.push(lineaDePropuesta(arr, compraDe));
+      for (const { c } of arr) {
+        p.monto += c.monto;
+        if (!c.montoConocido) p.tieneMontoIncompleto = true;
+      }
+    }
+    return p;
+  });
 
   // Dentro de un mismo período las órdenes salen en el orden de los rubros
   // (los de obra antes que los de gasto), no por monto: así la lista de un mes
   // se lee siempre igual y se encuentra la orden que uno busca.
-  const propuestas = [...grupos.values()].sort((a, b) =>
+  propuestas.sort((a, b) =>
     (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0)
     || (ordenDeRubro(a.rubro) - ordenDeRubro(b.rubro))
     || (b.monto - a.monto));
 
   // El título: «Seguridad y señalización — primera dotación» para la PRIMERA
   // tanda del rubro de seguridad (el ejemplo del §1 del plan, que hablaba de
-  // EPPs), y «Rubro — período» para el resto.
+  // EPPs), y «Rubro — ventana» para el resto.
   const primerPeriodoSeguridad = propuestas.find(p => p.rubro === 'seguridad')?.periodo;
   for (const g of propuestas) {
-    g.titulo = (g.rubro === 'seguridad' && g.periodo === primerPeriodoSeguridad)
+    g.titulo = (g.rubro === 'seguridad' && g.periodo === primerPeriodoSeguridad && g.periodos.length === 1)
       ? `${g.rubroNombre} — primera dotación`
-      : `${g.rubroNombre} — ${g.etiquetaPeriodo}`;
+      : `${g.rubroNombre} — ${g.etiquetaVentana}`;
     g.monto = r2(g.monto);
     g.lineas.sort((a, b) => b.monto - a.monto);
     resumen.montoPropuesto += g.monto;
@@ -947,6 +1002,97 @@ export function simularOrdenes({
     : 0;
 
   return { propuestas, sobres: sobresOut, manoObra: manoObraOut, pendientes, resumen };
+}
+
+/**
+ * Cómo se nombra la ventana de una orden: «octubre 2026» si entrega en un solo
+ * mes (aunque sean cuatro semanas), «octubre a diciembre 2026» si cruza meses.
+ */
+export function etiquetaVentana(periodos = []) {
+  const ps = [...(periodos || [])].filter(Boolean).sort();
+  if (!ps.length) return '';
+  if (ps.length === 1) return etiquetaPeriodo(ps[0]);
+  const primero = mesDePeriodo(ps[0]), ultimo = mesDePeriodo(ps[ps.length - 1]);
+  if (!primero || !ultimo) return `${etiquetaPeriodo(ps[0])} a ${etiquetaPeriodo(ps[ps.length - 1])}`;
+  if (primero === ultimo) return etiquetaPeriodo(primero);
+  const [a1, m1] = primero.split('-'), [a2, m2] = ultimo.split('-');
+  const mes = (m) => MESES[+m - 1] || m;
+  return a1 === a2 ? `${mes(m1)} a ${mes(m2)} ${a2}` : `${mes(m1)} ${a1} a ${mes(m2)} ${a2}`;
+}
+
+/**
+ * UNA línea de una orden a partir de las celdas de un mismo insumo en los
+ * períodos que entrega esa orden (tanda 2.3).
+ *
+ * Con una sola entrega la línea sale idéntica a la de antes: los campos de
+ * siempre más `entregas` con un solo elemento. Con varias, la cantidad y el
+ * monto son la suma y `entregas` dice cuánto va en cada período — que es lo
+ * que tiene que figurar en la orden para que el proveedor sepa cuándo llevar
+ * qué.
+ */
+function lineaDePropuesta(arr, compraDe) {
+  const { c } = arr[0];
+  const compra = c.compra || compraDe(c);
+  // Sin pasar por 3b (celda sin cantidad) se muestra tal cual vino.
+  const cantidadDe = (x) => (x.cantidadCompra != null ? x.cantidadCompra : x.cantidad);
+  const conCompra = c.cantidadCompra != null;
+  let cantidad = 0, monto = 0, necesidad = 0;
+  let montoConocido = true, tramoLargo = false, arrastrado = false;
+  const partidas = new Set();
+  const entregas = arr.map(({ c: x, atomoId }) => {
+    const q = cantidadDe(x);
+    cantidad += q; monto += x.monto;
+    necesidad += x.necesidad != null ? x.necesidad : x.cantidad;
+    if (!x.montoConocido) montoConocido = false;
+    if (x.tramoLargo) tramoLargo = true;
+    if (x.arrastrado) arrastrado = true;
+    for (const pid of x.partidas) partidas.add(pid);
+    return {
+      periodo: x.periodo, etiquetaPeriodo: etiquetaPeriodo(x.periodo),
+      // La orden de antes, ahora átomo: la decisión de esta entrega se guarda
+      // contra `${propuestaId}::${clave}`.
+      propuestaId: atomoId,
+      cantidad: r4(q), monto: r2(x.monto),
+      necesidad: r4(x.necesidad != null ? x.necesidad : x.cantidad),
+      alcanzaHasta: x.alcanzaHasta || null,
+      etiquetaAlcanzaHasta: x.alcanzaHasta ? etiquetaPeriodo(x.alcanzaHasta) : null,
+    };
+  });
+  const ultima = entregas[entregas.length - 1];
+  return {
+    // Aditivo para la tanda 3: la clave con la que la pantalla guarda la
+    // decisión y la corrección de ESTA línea. Tiene que salir de acá y no
+    // recalcularse allá — el código de insumo falta en buena parte del
+    // expediente y el reemplazo (nombre+unidad) depende de `normUnidad`,
+    // que es de este módulo. Dos derivaciones paralelas se desincronizan y
+    // el día que lo hagan, una decisión aceptada se pierde sin aviso.
+    clave: c.clave,
+    insumo_codigo: c.insumo_codigo, nombre: c.nombre,
+    // Desde la tanda 2.2 la cantidad está en la unidad de COMPRA (28 tubos,
+    // no 164 m) y el precio es el de esa unidad. Lo del expediente viaja al
+    // lado para que siempre se pueda ver contra qué se compara.
+    unidad: conCompra ? compra.unidadCompra : c.unidad,
+    cantidad: r4(cantidad), monto: r2(monto),
+    precio_unitario: cantidad > 0 ? r4(monto / cantidad) : null,
+    unidadExpediente: c.unidad,
+    factor: conCompra ? compra.factor : 1,
+    // Lo que de verdad hace falta en los períodos de esta orden, en unidades
+    // del expediente y con el colchón ya puesto. La diferencia con
+    // `cantidad × factor` es el redondeo.
+    necesidad: r4(necesidad),
+    lote: compra.lote, colchonPct: compra.colchonPct,
+    compraOrigen: compra.origen, compraMotivo: compra.motivo,
+    // Lo pedido en la última entrega cubre también los períodos siguientes
+    // hasta éste: sus líneas no aparecen porque el redondeo ya las pidió.
+    alcanzaHasta: ultima.alcanzaHasta,
+    etiquetaAlcanzaHasta: ultima.etiquetaAlcanzaHasta,
+    entregas,
+    montoConocido, tramoLargo, arrastrado, partidas: [...partidas],
+    categoria: c.categoria, subcategoria: c.subcategoria,
+    // QUÉ ES esta línea, para que se vea por qué está en esta orden y se
+    // pueda discutir. Sin esto, el rubro es una caja negra.
+    iupc: c.iupc, rubro: c.rubro,
+  };
 }
 
 /**

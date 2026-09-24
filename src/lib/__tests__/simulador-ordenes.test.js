@@ -215,12 +215,25 @@ describe('reparto por cronograma', () => {
   });
 
   it('en semanas parte el tramo largo semana a semana', () => {
+    // Una orden por semana solo si se pide así (frecuencia «periodo»).
+    const { propuestas } = simularOrdenes({
+      insumosPartida: [insumos[1]], partidas, hoy: '2026-05-01', anclaje: 'cero',
+      granularidad: 'semana', reparto: 'parejo', frecuencia: 'periodo',
+    });
+    expect(propuestas[0].periodo).toBe('2026-W23');
+    expect(propuestas).toHaveLength(11);            // 01-jun → 13-ago
+    expect(propuestas.reduce((s, p) => s + p.monto, 0)).toBeCloseTo(450000, 1);
+  });
+
+  it('en semanas, por defecto, se emite una orden por mes con las entregas semanales adentro (tanda 2.3)', () => {
     const { propuestas } = simularOrdenes({
       insumosPartida: [insumos[1]], partidas, hoy: '2026-05-01', anclaje: 'cero',
       granularidad: 'semana', reparto: 'parejo',
     });
-    expect(propuestas[0].periodo).toBe('2026-W23');
-    expect(propuestas).toHaveLength(11);            // 01-jun → 13-ago
+    // junio, julio, agosto — y las 11 semanas siguen estando, como entregas.
+    expect(propuestas.map(p => p.etiquetaVentana)).toEqual(['junio 2026', 'julio 2026', 'agosto 2026']);
+    expect(propuestas.flatMap(p => p.lineas[0].entregas)).toHaveLength(11);
+    expect(propuestas[0].periodo).toBe('2026-W23');   // se emite con la primera necesidad
     expect(propuestas.reduce((s, p) => s + p.monto, 0)).toBeCloseTo(450000, 1);
   });
 });

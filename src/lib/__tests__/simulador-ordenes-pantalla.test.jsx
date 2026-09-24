@@ -104,6 +104,14 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(typeof globalThis.SimuladorOrdenesPage).toBe('function');
   });
 
+  it('ofrece cómo se juntan las órdenes, con el monto mínimo en 0 (tanda 2.3)', () => {
+    const html = render();
+    expect(html).toContain('Cada cuánto se emite una orden');
+    expect(html).toContain('Monto mínimo por orden');
+    expect(html).toContain('0 = sin mínimo');
+    expect(html).toContain('Frecuencia distinta por rubro');
+  });
+
   it('nombra a la ejecutora: es la única que puede emitir la orden (§7)', () => {
     expect(render()).toContain('CONSORCIO EL INCA');
   });

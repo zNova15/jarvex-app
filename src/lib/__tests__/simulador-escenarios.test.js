@@ -108,7 +108,9 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
   it('paramsDeMotor no le manda al motor lo que el motor no entiende', () => {
     expect(Object.keys(paramsDeMotor(PARAMS_DEFAULT)).sort()).toEqual([
       'anclaje', 'anticipacionDias', 'categorias', 'cronograma',
-      'granularidad', 'reparto', 'umbralTramoLargoDias',
+      // tanda 2.3: cómo se juntan las órdenes
+      'frecuencia', 'frecuenciaPorRubro',
+      'granularidad', 'montoMinimoOrden', 'reparto', 'umbralTramoLargoDias',
     ]);
   });
 
@@ -601,7 +603,8 @@ describe('cómo se compra cada insumo (tanda 2.2)', () => {
     const l = p.lineas[0];
     expect(l.unidad).toBe('tubo de 6 m');
     const e = editarLinea(nuevoEscenario({}), p.id, l, { cantidad: 25 });
-    expect(e.ediciones[refLinea(p.id, l.clave)]).toEqual({ cantidad: 25, unidad_edicion: 'tubo de 6 m' });
+    // Desde la 2.3 también guarda sobre qué entregas se corrigió.
+    expect(e.ediciones[refLinea(p.id, l.clave)]).toEqual({ cantidad: 25, unidad_edicion: 'tubo de 6 m', periodos_edicion: p.periodo });
     const d = aplicarEscenario(c, e).propuestas[0].lineas[0];
     expect(d.cantidad).toBe(25);
     expect(d.edicionOtraUnidad).toBe(null);

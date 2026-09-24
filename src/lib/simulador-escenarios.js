@@ -43,6 +43,8 @@ import {
 } from './simulador-ordenes.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
 import { normalizarCompra } from './simulador-compra.js';
+import { FRECUENCIAS, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
+import { RUBRO_COMPRA_POR_ID } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -72,6 +74,11 @@ export const STORAGE_PREFIX = 'jx_sim_ordenes_v1';
  * `reparto: 'parejo'` y no `'inicio'` por lo que midió la tanda 1: el tramo
  * largo son 397 líneas por S/ 5,6 M, no un detalle de EPPs. Poner todo eso en
  * el mes de arranque desfigura el flujo de caja de la obra entera.
+ *
+ * Consolidación (tanda 2.3): `frecuencia: 'mensual'` deja el plan mes a mes
+ * como estaba y junta el semanal en órdenes mensuales con entregas semanales.
+ * `montoMinimoOrden: 0` no junta nada por monto: el umbral lo fija Gabriel —
+ * mismo criterio que el colchón, ningún número de oficio.
  */
 export const PARAMS_DEFAULT = {
   granularidad: 'mes',
@@ -83,6 +90,9 @@ export const PARAMS_DEFAULT = {
   umbralTramoLargoDias: UMBRAL_TRAMO_LARGO_DIAS,
   jornada: { ...JORNADA_DEFAULT },
   contarSubcontratos: false,
+  frecuencia: FRECUENCIA_DEFAULT,
+  frecuenciaPorRubro: {},
+  montoMinimoOrden: 0,
 };
 
 const enLista = (v, lista, def) => (lista.includes(v) ? v : def);
@@ -125,6 +135,14 @@ export function normalizarParams(p = {}) {
       factorEfectivo: Math.min(1, Math.max(0.1, num(jor.factorEfectivo) || 1)),
     },
     contarSubcontratos: !!p.contarSubcontratos,
+    frecuencia: enLista(p.frecuencia, FRECUENCIAS, FRECUENCIA_DEFAULT),
+    // Solo rubros que existen y frecuencias válidas. Las claves van ordenadas
+    // para que `mismosParams` no vea dos escenarios distintos por el orden en
+    // que se tocaron los rubros.
+    frecuenciaPorRubro: Object.fromEntries(Object.entries(p.frecuenciaPorRubro || {})
+      .filter(([r, f]) => RUBRO_COMPRA_POR_ID.has(r) && FRECUENCIAS.includes(f))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+    montoMinimoOrden: entre(p.montoMinimoOrden, 0, 10000000, 0),
   };
 }
 
@@ -139,6 +157,9 @@ export function paramsDeMotor(params) {
     categorias: p.categorias,
     anticipacionDias: p.anticipacionDias,
     umbralTramoLargoDias: p.umbralTramoLargoDias,
+    frecuencia: p.frecuencia,
+    frecuenciaPorRubro: p.frecuenciaPorRubro,
+    montoMinimoOrden: p.montoMinimoOrden,
   };
 }
 
@@ -173,6 +194,37 @@ export function claveLinea(linea = {}) {
 
 /** Dónde se guarda la decisión/edición de una línea. */
 export const refLinea = (propuestaId, clave) => `${propuestaId}::${clave}`;
+
+// ── ÁTOMOS (tanda 2.3) ────────────────────────────────────────────
+// Desde la consolidación, una orden puede juntar varios períodos de un rubro
+// («Concreto — octubre a diciembre»). Lo que antes era la orden —período ×
+// rubro, con el mismo id `2026-10|concreto`— ahora es un ÁTOMO, y las
+// decisiones se guardan contra los átomos: juntar o separar órdenes cambiando
+// la frecuencia o el monto mínimo no borra nada de lo decidido, y los
+// escenarios guardados antes de la 2.3 se leen tal cual.
+//
+// Las funciones de acá aceptan la propuesta ENTERA o solo su id: con el id
+// suelto se comportan como antes (un átomo = la orden).
+
+const idDe = (p) => (p && typeof p === 'object' ? p.id : p);
+
+/** Los átomos de una propuesta: los suyos si los trae, si no ella misma. */
+const atomosDe = (p) => (p && typeof p === 'object' && Array.isArray(p.atomos) && p.atomos.length
+  ? p.atomos.map(a => a.id)
+  : [idDe(p)]);
+
+/** Los átomos en los que entrega una línea (uno por entrega). */
+const atomosDeLinea = (propuestaId, linea) => {
+  const ids = Array.isArray(linea?.entregas) && linea.entregas.length
+    ? linea.entregas.map(e => e.propuestaId || propuestaId)
+    : [propuestaId];
+  return [...new Set(ids)];
+};
+
+/** La firma de las entregas de una línea: contra qué se corrigió la cantidad. */
+const firmaEntregas = (linea) => (Array.isArray(linea?.entregas) && linea.entregas.length
+  ? linea.entregas.map(e => e.periodo).join(',')
+  : null);
 
 // ═══════════════════════════════════════════════════════════════════
 // EL ESCENARIO
@@ -264,38 +316,49 @@ export function conParams(esc, params) {
 }
 
 /**
- * Decide una orden entera (período × subcategoría).
+ * Decide una orden entera: todos sus átomos (tanda 2.3).
  *
  * Al decidir la orden se limpian las decisiones de SUS líneas: si no, «acepto
  * todo» dejaría adentro una línea rechazada hace diez minutos y el total de
  * arriba no cerraría contra lo que se ve abajo.
+ *
+ * @param {Object|string} propuesta  la propuesta (con `atomos`) o su id.
  */
-export function decidirPropuesta(esc, propuestaId, decision) {
+export function decidirPropuesta(esc, propuesta, decision) {
   const d = DECISIONES.includes(decision) ? decision : 'pendiente';
   const props = { ...esc.decisiones.propuestas };
-  if (d === 'pendiente') delete props[propuestaId];
-  else props[propuestaId] = d;
   const lin = { ...esc.decisiones.lineas };
-  for (const k of Object.keys(lin)) if (k.startsWith(`${propuestaId}::`)) delete lin[k];
+  for (const id of atomosDe(propuesta)) {
+    if (d === 'pendiente') delete props[id];
+    else props[id] = d;
+    for (const k of Object.keys(lin)) if (k.startsWith(`${id}::`)) delete lin[k];
+  }
   return tocado({ ...esc, decisiones: { propuestas: props, lineas: lin } });
 }
 
-/** Decide UNA línea. Gana sobre la decisión de su orden. */
-export function decidirLinea(esc, propuestaId, linea, decision) {
+/**
+ * Decide UNA línea, en todas sus entregas. Gana sobre la decisión de su orden.
+ *
+ * @param {Object|string} propuesta  la propuesta o su id.
+ */
+export function decidirLinea(esc, propuesta, linea, decision) {
   const d = DECISIONES.includes(decision) ? decision : 'pendiente';
   const lin = { ...esc.decisiones.lineas };
-  const k = refLinea(propuestaId, claveLinea(linea));
-  if (d === 'pendiente') delete lin[k];
-  else lin[k] = d;
+  const clave = claveLinea(linea);
+  for (const id of atomosDeLinea(idDe(propuesta), linea)) {
+    const k = refLinea(id, clave);
+    if (d === 'pendiente') delete lin[k];
+    else lin[k] = d;
+  }
   return tocado({ ...esc, decisiones: { ...esc.decisiones, lineas: lin } });
 }
 
-/** Decide TODAS las órdenes de un período: el «tramo» del §10. */
+/** Decide TODAS las órdenes que se emiten en un período: el «tramo» del §10. */
 export function decidirPeriodo(esc, periodo, decision, propuestas = []) {
   let out = esc;
   for (const p of propuestas) {
     if (p.periodo !== periodo) continue;
-    out = decidirPropuesta(out, p.id, decision);
+    out = decidirPropuesta(out, p, decision);
   }
   return out;
 }
@@ -307,7 +370,8 @@ export function decidirPeriodo(esc, periodo, decision, propuestas = []) {
  * cero. Borrar una corrección y ponerla en cero son cosas distintas y la
  * segunda sería una orden de S/ 0.
  */
-export function editarLinea(esc, propuestaId, linea, patch = {}) {
+export function editarLinea(esc, propuesta, linea, patch = {}) {
+  const propuestaId = idDe(propuesta);
   const k = refLinea(propuestaId, claveLinea(linea));
   const ed = { ...(esc.ediciones[k] || {}) };
   for (const [campo, valor] of Object.entries(patch)) {
@@ -324,6 +388,13 @@ export function editarLinea(esc, propuestaId, linea, patch = {}) {
   // la corrección vieja en vez de pedir 164 tubos.
   if (ed.cantidad != null || ed.precio_unitario != null) ed.unidad_edicion = String(linea.unidad || '');
   else delete ed.unidad_edicion;
+  // Y una cantidad corregida vale para UNAS entregas (tanda 2.3): «20» sobre
+  // la línea de octubre no son 20 cuando la orden pasa a juntar octubre y
+  // noviembre. Se guarda contra cuáles se hizo, y `aplicarEscenario` no la
+  // aplica si la orden se reagrupó. El precio no depende de eso.
+  const firma = firmaEntregas(linea);
+  if (ed.cantidad != null && firma) ed.periodos_edicion = firma;
+  else delete ed.periodos_edicion;
   const eds = { ...esc.ediciones };
   if (Object.keys(ed).length) eds[k] = ed;
   else delete eds[k];
@@ -340,11 +411,11 @@ export function editarLinea(esc, propuestaId, linea, patch = {}) {
  * `soloAceptadas` deja pisar únicamente lo que se va a emitir: asignarle
  * proveedor a una línea rechazada no cambia nada y ensucia la comparación.
  */
-export function proveedorDePropuesta(esc, propuestaId, lineas = [], { id = null, nombre = '' } = {}, { soloAceptadas = false } = {}) {
+export function proveedorDePropuesta(esc, propuesta, lineas = [], { id = null, nombre = '' } = {}, { soloAceptadas = false } = {}) {
   let out = esc;
   for (const l of lineas) {
     if (soloAceptadas && l.decision !== 'aceptada') continue;
-    out = editarLinea(out, propuestaId, l, {
+    out = editarLinea(out, propuesta, l, {
       proveedor_id: id || null,
       proveedor_nombre: nombre || null,
     });
@@ -352,10 +423,17 @@ export function proveedorDePropuesta(esc, propuestaId, lineas = [], { id = null,
   return out;
 }
 
-/** Deshace todas las correcciones de una línea. */
-export function limpiarEdicion(esc, propuestaId, linea) {
+/**
+ * Deshace todas las correcciones de una línea — también las que se hicieron
+ * cuando sus entregas eran órdenes sueltas: si quedaran, `aplicarEscenario`
+ * las volvería a encontrar y el botón «volver al expediente» no haría nada.
+ */
+export function limpiarEdicion(esc, propuesta, linea) {
   const eds = { ...esc.ediciones };
-  delete eds[refLinea(propuestaId, claveLinea(linea))];
+  const propuestaId = idDe(propuesta);
+  const clave = claveLinea(linea);
+  delete eds[refLinea(propuestaId, clave)];
+  for (const id of atomosDeLinea(propuestaId, linea)) delete eds[refLinea(id, clave)];
   return tocado({ ...esc, ediciones: eds });
 }
 
@@ -426,7 +504,7 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
     ordenes: propuestas.length,
     ordenesAceptadas: 0, ordenesRechazadas: 0, ordenesParciales: 0, ordenesPendientes: 0,
     lineas: 0, lineasAceptadas: 0, lineasRechazadas: 0, lineasPendientes: 0,
-    lineasEditadas: 0, lineasSinPrecio: 0, lineasSinProveedor: 0,
+    lineasEditadas: 0, lineasSinPrecio: 0, lineasSinProveedor: 0, lineasMixtas: 0,
     montoAceptado: 0, montoRechazado: 0, montoPendiente: 0,
     montoOriginalAceptado: 0, desvio: 0,
     sobres: sobres.length, sobresAceptados: 0,
@@ -436,8 +514,14 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
 
   const periodosConAceptado = new Set();
 
+  const decAtomo = (id) => esc.decisiones.propuestas[id] || 'pendiente';
+
   const propuestasOut = propuestas.map(p => {
-    const decProp = esc.decisiones.propuestas[p.id] || 'pendiente';
+    // La decisión de la orden es la de sus átomos, si todos dicen lo mismo.
+    // Si no (se decidieron por separado y después la orden los juntó), la
+    // orden queda sin decidir arriba y cada línea dice lo suyo abajo.
+    const decsProp = atomosDe(p).map(decAtomo);
+    const decProp = decsProp.every(d => d === decsProp[0]) ? decsProp[0] : 'pendiente';
     let nAcept = 0, nRech = 0, nPend = 0;
     let montoAcept = 0, montoOrigAcept = 0, montoRech = 0, montoPend = 0;
     let sinPrecioAcept = 0;
@@ -445,8 +529,21 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
     const lineas = (p.lineas || []).map(l => {
       const clave = claveLinea(l);
       const ref = refLinea(p.id, clave);
-      const ed = esc.ediciones[ref] || null;
-      const decision = esc.decisiones.lineas[ref] || decProp;
+      const atomosL = atomosDeLinea(p.id, l);
+      // La corrección se busca primero en la orden y después en las órdenes
+      // sueltas que eran sus entregas antes de juntarse: el proveedor, el
+      // nombre o el precio que se le puso a noviembre siguen valiendo cuando
+      // noviembre pasa a ser una entrega de la orden de octubre.
+      let ed = esc.ediciones[ref] || null;
+      if (!ed) for (const id of atomosL) { if (esc.ediciones[refLinea(id, clave)]) { ed = esc.ediciones[refLinea(id, clave)]; break; } }
+
+      // La decisión, entrega por entrega. Si difieren, la línea NO se da por
+      // aceptada: se entrega entera o no se entrega, y pedir la mitad de algo
+      // porque dos decisiones viejas se juntaron es inventar una cantidad.
+      const decsL = atomosL.map(id => esc.decisiones.lineas[refLinea(id, clave)] || decAtomo(id));
+      const decisionMixta = !decsL.every(d => d === decsL[0]);
+      const decision = decisionMixta ? 'pendiente' : decsL[0];
+      const decisionPropia = atomosL.some(id => esc.decisiones.lineas[refLinea(id, clave)]);
 
       const cantidadOriginal = num(l.cantidad);
       const precioOriginal = l.precio_unitario == null ? null : num(l.precio_unitario);
@@ -461,9 +558,19 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
       const edicionOtraUnidad = tieneNumeros && String(unidadEd || '') !== String(l.unidad || '');
       const edNum = edicionOtraUnidad ? null : ed;
 
-      const cantidad = edNum && edNum.cantidad != null ? num(edNum.cantidad) : cantidadOriginal;
+      // ¿Y sobre las mismas entregas? (tanda 2.3). Una cantidad corregida
+      // antes de la consolidación no trae la firma: se hizo sobre una sola
+      // entrega, así que vale solo si la línea sigue teniendo una.
+      const firma = firmaEntregas(l);
+      const firmaEd = edNum && edNum.periodos_edicion != null
+        ? String(edNum.periodos_edicion)
+        : (Array.isArray(l.entregas) && l.entregas.length > 1 ? '(una sola entrega)' : firma);
+      const edicionOtroAgrupamiento = !!(edNum && edNum.cantidad != null && firma && firmaEd !== firma);
+      const cantEd = edNum && edNum.cantidad != null && !edicionOtroAgrupamiento ? num(edNum.cantidad) : null;
+
+      const cantidad = cantEd != null ? cantEd : cantidadOriginal;
       const precio = edNum && edNum.precio_unitario != null ? num(edNum.precio_unitario) : precioOriginal;
-      const editadaCant = !!(edNum && edNum.cantidad != null && edNum.cantidad !== cantidadOriginal);
+      const editadaCant = cantEd != null && cantEd !== cantidadOriginal;
       const editadaPrec = !!(edNum && edNum.precio_unitario != null && edNum.precio_unitario !== precioOriginal);
 
       // El monto solo se recalcula si alguien tocó cantidad o precio. Si no,
@@ -491,12 +598,19 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
         editada: !!ed,
         // La unidad en que se había corregido, si ya no es la de la línea.
         edicionOtraUnidad: edicionOtraUnidad ? String(unidadEd || '') : null,
+        // La cantidad corregida era para otras entregas: no se aplicó.
+        edicionOtroAgrupamiento,
+        // Con la cantidad tocada a mano, la tabla de entregas del plan ya no
+        // suma lo que se pide: se sigue mostrando, pero no se entrega así.
+        cantidadEditada: editadaCant,
         decision,
-        decisionHeredada: !esc.decisiones.lineas[ref],
+        decisionMixta,
+        decisionHeredada: !decisionPropia,
       };
 
       resumen.lineas += 1;
       if (ed) resumen.lineasEditadas += 1;
+      if (decisionMixta) resumen.lineasMixtas += 1;
       if (decision === 'aceptada') {
         nAcept += 1; montoAcept += monto; montoOrigAcept += montoOriginal;
         if (!montoConocido) { sinPrecioAcept += 1; resumen.lineasSinPrecio += 1; }
@@ -604,6 +718,14 @@ export function lineasAceptadas({ propuestas = [], sobres = [] } = {}) {
         unidadExpediente: l.unidadExpediente || l.unidad,
         proveedor_id: l.proveedor_id || null, proveedor_nombre: l.proveedor_nombre || '',
         partidas: l.partidas || [], nota: l.nota || '',
+        // Cuándo se entrega cada parte (tanda 2.3). Con la cantidad corregida
+        // a mano la tabla del plan ya no suma lo pedido: va `null` y la
+        // requisición dice que las entregas se coordinan, en vez de escribir
+        // un cronograma que no cierra con la cantidad.
+        entregas: (l.cantidadEditada || !Array.isArray(l.entregas)) ? null
+          : l.entregas.map(e => ({ periodo: e.periodo, etiquetaPeriodo: e.etiquetaPeriodo, cantidad: e.cantidad })),
+        periodos: p.periodos || [p.periodo],
+        etiquetaVentana: p.etiquetaVentana || p.etiquetaPeriodo,
         origen: 'simulador',
       };
       if (!l.montoConocido) sinPrecio.push(fila); else listas.push(fila);

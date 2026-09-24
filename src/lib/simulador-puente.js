@@ -157,6 +157,8 @@ export function fechaNecesidadDePeriodo(periodo) {
  * @param {Array}    [o.yaEscritas]  requisiciones vivas de la obra: las que
  *                                   ya tengan el mismo `origen_ref` NO se
  *                                   vuelven a escribir (salen por `duplicadas`).
+ * @param {Array}    [o.yaEscritasItems] sus ítems. Con ellos el freno es por
+ *                                   LÍNEA y no por propuesta (tanda 2.3).
  * @param {Function} [o.nuevoId]
  *
  * @returns {{requisiciones:Array<{requisicion:Object, items:Array}>,
@@ -169,18 +171,50 @@ export function armarRequisiciones({
   escenario = null,
   solicitante = null,
   yaEscritas = [],
+  yaEscritasItems = null,
   nuevoId = idPorDefecto,
 } = {}) {
   const fecha = hoy || hoyLocal();
   const omitidas = [], duplicadas = [];
 
-  const refsEscritas = new Set(
-    vivos(yaEscritas)
-      .filter(r => !REQUISICION_MUERTA.has(String(r.estado || '')))
-      .map(r => r.origen_ref)
-      .filter(Boolean)
-      .map(String)
-  );
+  const reqsEscritas = vivos(yaEscritas)
+    .filter(r => !REQUISICION_MUERTA.has(String(r.estado || '')) && r.origen_ref);
+  const refsEscritas = new Set(reqsEscritas.map(r => String(r.origen_ref)));
+
+  // ── EL FRENO POR LÍNEA (tanda 2.3) ────────────────────────────────
+  // Hasta la 2.2 bastaba con mirar el `origen_ref`: si la propuesta
+  // «2026-10|concreto» ya tenía requisición, nada de ella se volvía a
+  // escribir. Con la consolidación eso se come líneas NUEVAS: si octubre se
+  // escribió a medias y después la orden de octubre pasa a juntar noviembre,
+  // el cemento de noviembre lleva el mismo `origen_ref` y se salteaba en
+  // silencio, contado como «ya escrito».
+  //
+  // Con los ítems a la vista la pregunta es la correcta: ¿ESTA línea ya está
+  // escrita? Una línea con código lo está si bajo ese mismo `origen_ref` hay
+  // un ítem con el mismo código y la misma cantidad — el caso del segundo
+  // click antes de que la corrida se recalcule. Si la cantidad cambió, lo
+  // escrito ya se descontó en `coberturaPrevia()` y lo que queda es nuevo.
+  // Una línea SIN código no se puede descontar de nada (sale por
+  // `reqSinImputar`), así que para ella el freno sigue siendo el de antes: si
+  // su propuesta ya se escribió, no se vuelve a escribir.
+  const itemsPorRef = yaEscritasItems ? new Map() : null;
+  if (itemsPorRef) {
+    const refDeReq = new Map(reqsEscritas.map(r => [r.id, String(r.origen_ref)]));
+    for (const it of vivos(yaEscritasItems)) {
+      const ref = refDeReq.get(it.requisicion_id);
+      const cod = it.insumo_codigo && String(it.insumo_codigo).trim();
+      if (!ref || !cod) continue;
+      const set = itemsPorRef.get(ref) || new Set();
+      set.add(`${cod}|${r4(it.cantidad)}`);
+      itemsPorRef.set(ref, set);
+    }
+  }
+  const yaEscrita = (ref, l) => {
+    if (!refsEscritas.has(ref)) return false;
+    const cod = l.insumo_codigo && String(l.insumo_codigo).trim();
+    if (!itemsPorRef || !cod) return true;
+    return !!itemsPorRef.get(ref)?.has(`${cod}|${r4(l.cantidad)}`);
+  };
 
   // ── agrupar por propuesta, conservando el orden en que vinieron ──
   const grupos = new Map();
@@ -200,8 +234,14 @@ export function armarRequisiciones({
     }
     const ref = String(l.propuesta_id || '');
     if (!ref) { omitidas.push({ linea: l, motivo: 'sin_propuesta' }); continue; }
-    if (refsEscritas.has(ref)) { duplicadas.push(l); continue; }
-    const g = grupos.get(ref) || { ref, lineas: [], periodo: l.periodo || null, etiquetaPeriodo: l.etiquetaPeriodo || '' };
+    if (yaEscrita(ref, l)) { duplicadas.push(l); continue; }
+    const g = grupos.get(ref) || {
+      ref, lineas: [], periodo: l.periodo || null,
+      // Desde la 2.3 una orden puede entregar en varios períodos: el título
+      // nombra la ventana entera («octubre a diciembre 2026»), no solo el
+      // mes en que se emite.
+      etiquetaPeriodo: l.etiquetaVentana || l.etiquetaPeriodo || '',
+    };
     g.lineas.push({ ...l, tipoInsumo });
     grupos.set(ref, g);
   }
@@ -257,7 +297,11 @@ export function armarRequisiciones({
       unidad: l.unidad || null,
       cantidad: r4(l.cantidad),
       precio_estimado: l.precio_unitario != null ? r4(l.precio_unitario) : null,
-      observacion: l.nota || null,
+      // `requisicion_items` no tiene una fecha por línea, y agregar una tabla
+      // de entregas para esto sería el esquema nuevo que el §7 pide no crear.
+      // El cronograma viaja en la observación, con un formato que este mismo
+      // archivo sabe volver a leer (`periodosDeEntregas`).
+      observacion: [textoDeEntregas(l), l.nota].filter(Boolean).join(' · ') || null,
       notas: l.proveedor_nombre ? `Proveedor sugerido: ${l.proveedor_nombre}` : null,
       ...conFactor(l.factor),
     }));
@@ -277,6 +321,54 @@ export function armarRequisiciones({
       duplicadas: duplicadas.length,
     },
   };
+}
+
+// ── LAS ENTREGAS (tanda 2.3) ──────────────────────────────────────
+// Una orden consolidada se emite una vez y se entrega por partes. La
+// requisición dice cuánto va en cada período en la observación de cada línea;
+// la orden lo resume en `fecha_entrega_ref`, que ya existe para eso («Según
+// necesidad en campo», mig 179). Escritor y lector viven acá, juntos, para
+// que el formato no se desincronice.
+
+export const PREFIJO_ENTREGAS = 'Entregas —';
+export const ENTREGAS_A_COORDINAR = 'Entregas a coordinar: la cantidad se corrigió a mano';
+
+/**
+ * «Entregas — octubre 2026: 10; noviembre 2026: 12 (bol)». Null con una sola
+ * entrega: una línea que llega toda junta no necesita cronograma.
+ */
+export function textoDeEntregas(l) {
+  if (l?.entregas === null && (l?.periodos || []).length > 1) return ENTREGAS_A_COORDINAR;
+  const es = Array.isArray(l?.entregas) ? l.entregas.filter(e => num(e.cantidad) > 0) : [];
+  if (es.length <= 1) return null;
+  const partes = es.map(e => `${e.etiquetaPeriodo || e.periodo}: ${r4(e.cantidad)}`);
+  return `${PREFIJO_ENTREGAS} ${partes.join('; ')}${l.unidad ? ` (${l.unidad})` : ''}`;
+}
+
+/** Los períodos que nombra una observación escrita por `textoDeEntregas`. */
+export function periodosDeEntregas(observacion) {
+  const t = String(observacion || '');
+  const i = t.indexOf(PREFIJO_ENTREGAS);
+  if (i < 0) return [];
+  const cuerpo = t.slice(i + PREFIJO_ENTREGAS.length).split(' · ')[0].replace(/\s*\([^)]*\)\s*$/, '');
+  return cuerpo.split(';').map(s => s.split(':')[0].trim()).filter(Boolean);
+}
+
+/**
+ * Cómo se entrega la orden entera, para `ordenes_compra.fecha_entrega_ref`.
+ * Null si todo llega de una vez: la fecha de entrega de la cabecera ya lo dice.
+ */
+export function referenciaDeEntregas(items = []) {
+  const periodos = [];
+  let aCoordinar = false;
+  for (const it of vivos(items)) {
+    const obs = String(it.observacion || '');
+    if (obs.includes(ENTREGAS_A_COORDINAR)) aCoordinar = true;
+    for (const p of periodosDeEntregas(obs)) if (!periodos.includes(p)) periodos.push(p);
+  }
+  if (periodos.length > 1) return `Entregas parciales: ${periodos.join(', ')} (cantidades por línea en la requisición)`;
+  if (aCoordinar) return 'Entregas parciales a coordinar con obra';
+  return null;
 }
 
 function tituloDeGrupo(g, esSobre) {
@@ -457,6 +549,9 @@ export function borradorDeOrdenDesdeRequisicion({
     proveedor_direccion: proveedor.direccion || null,
     fecha,
     fecha_entrega: requisicion.fecha_necesidad || null,
+    // Una orden consolidada (tanda 2.3) se entrega por partes: la cabecera
+    // lo dice, y el detalle por línea queda en la requisición.
+    ...(referenciaDeEntregas(usables) ? { fecha_entrega_ref: referenciaDeEntregas(usables) } : {}),
     moneda: 'PEN',
     // Nace en BORRADOR, no en 'recibida': lo que se pide todavía no llegó.
     // Las órdenes retroactivas de `jx-ordenes` nacen recibidas porque

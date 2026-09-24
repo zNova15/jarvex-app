@@ -55,7 +55,7 @@
 // Testeado en __tests__/simulador-dotacion.test.js
 // ═══════════════════════════════════════════════════════════════════
 
-import { etiquetaPeriodo, periodoDe, sumarDias } from './simulador-ordenes.js';
+import { etiquetaPeriodo, periodoDe, sumarDias, rangoDePeriodo } from './simulador-ordenes.js';
 import { hoyLocal } from './fecha.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
@@ -173,25 +173,11 @@ const deUTC = (ms) => {
   return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
 };
 
-/** Primer y último día de un período 'YYYY-MM' o 'YYYY-Www'. */
-export function rangoDePeriodo(periodo) {
-  const p = String(periodo || '');
-  const mes = /^(\d{4})-(\d{2})$/.exec(p);
-  if (mes) {
-    const y = +mes[1], m = +mes[2];
-    if (m < 1 || m > 12) return null;
-    return { inicio: `${y}-${p2(m)}-01`, fin: deUTC(Date.UTC(y, m, 1) - DIA_MS) };
-  }
-  const sem = /^(\d{4})-W(\d{2})$/.exec(p);
-  if (sem) {
-    const anio = +sem[1], n = +sem[2];
-    const ene4 = Date.UTC(anio, 0, 4);
-    const lunesS1 = ene4 - ((new Date(ene4).getUTCDay() + 6) % 7) * DIA_MS;
-    const lunes = lunesS1 + (n - 1) * 7 * DIA_MS;
-    return { inicio: deUTC(lunes), fin: deUTC(lunes + 6 * DIA_MS) };
-  }
-  return null;
-}
+// `rangoDePeriodo` vive en `simulador-ordenes.js`, con el resto de las
+// funciones de período, desde la tanda 2.3: la consolidación de órdenes lo
+// necesita y desde acá se habría armado un import circular. Se re-exporta
+// para que nadie que lo importe de acá se rompa.
+export { rangoDePeriodo };
 
 /** Días laborables entre dos fechas, según la jornada y los feriados. */
 export function diasLaborables(desde, hasta, jornada = JORNADA_DEFAULT, feriados = []) {

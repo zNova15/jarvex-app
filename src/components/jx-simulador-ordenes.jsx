@@ -40,7 +40,8 @@ import {
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
 } from "../lib/simulador-ordenes.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
-import { bandaConfianza } from "../lib/indices-unificados-iupc.js";
+import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro } from "../lib/indices-unificados-iupc.js";
+import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js";
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
   PARAMS_DEFAULT, paramsDeMotor,
@@ -320,6 +321,17 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     [corrida, escenario]
   );
 
+  // Los rubros que tiene el plan, para fijarles una frecuencia propia. Los
+  // que ya tienen una fijada se ofrecen aunque esta corrida no los traiga:
+  // si no, quedaría una frecuencia puesta que no se puede sacar.
+  const rubrosDelPlan = uM(() => {
+    const ids = new Set((corrida?.propuestas || []).map(p => p.rubro));
+    for (const r of Object.keys(params.frecuenciaPorRubro || {})) ids.add(r);
+    return [...ids]
+      .map(r => ({ rubro: r, nombre: RUBRO_COMPRA_POR_ID.get(r)?.nombre || r, icono: RUBRO_COMPRA_POR_ID.get(r)?.icono || '' }))
+      .sort((a, b) => ordenDeRubro(a.rubro) - ordenDeRubro(b.rubro));
+  }, [corrida, params.frecuenciaPorRubro]);
+
   const entregable = uM(() => lineasAceptadas(decorado), [decorado]);
 
   // Los proveedores candidatos: las empresas del grupo primero (son las que
@@ -504,12 +516,14 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     exportRef.current = true;
     try {
       const cab = ['periodo', 'orden', 'categoria', 'codigo', 'descripcion', 'unidad', 'cantidad', 'precio_unitario', 'monto',
-        'equivale_en_expediente', 'unidad_expediente', 'proveedor', 'nota'];
+        'equivale_en_expediente', 'unidad_expediente', 'entregas', 'proveedor', 'nota'];
       const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const filas = entregable.lineas.map(l => [
-        l.etiquetaPeriodo, l.propuesta_id, SUBCATEGORIA_LABEL[l.subcategoria] || l.subcategoria,
+        l.etiquetaVentana || l.etiquetaPeriodo, l.propuesta_id, SUBCATEGORIA_LABEL[l.subcategoria] || l.subcategoria,
         l.insumo_codigo || '', l.descripcion, l.unidad, l.cantidad, l.precio_unitario, l.monto,
         r4ui(num(l.cantidad) * (num(l.factor) || 1)), l.unidadExpediente || l.unidad,
+        (l.entregas || []).length > 1 ? l.entregas.map(e => `${e.etiquetaPeriodo}: ${e.cantidad}`).join(' | ')
+          : (l.entregas === null && (l.periodos || []).length > 1 ? 'a coordinar (cantidad corregida)' : ''),
         l.proveedor_nombre || '', l.nota || '',
       ].map(esc).join(';'));
       const csv = `﻿${cab.join(';')}\n${filas.join('\n')}`;
@@ -549,6 +563,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       escenario,
       solicitante: { id: auth?.profile?.id || null, nombre: userNombre },
       yaEscritas: requisicionesObra,
+      // Con los ítems, el freno contra escribir dos veces es por línea: una
+      // entrega nueva que cayó en una orden ya escrita a medias no se saltea.
+      yaEscritasItems: reqItemsObra,
       nuevoId: () => window.__newId(),
     });
 
@@ -775,6 +792,52 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
             </div>
           </div>
 
+          {/* ── CÓMO SE JUNTAN LAS ÓRDENES (tanda 2.3) ─────────────────
+              Emitir no es entregar: una orden puede juntar varios meses de un
+              rubro y entregar por partes. Las decisiones ya tomadas no se
+              pierden al cambiar esto: se guardan por mes y rubro. */}
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+            <label style={{ display: 'block' }}>
+              <span className="flabel">Cada cuánto se emite una orden</span>
+              <select className="fi" value={params.frecuencia} onChange={e => cambiarParam({ frecuencia: e.target.value })}>
+                {FRECUENCIAS.map(f => <option key={f} value={f}>{FRECUENCIA_LABEL[f]}</option>)}
+              </select>
+            </label>
+            <label style={{ display: 'block' }}
+              title="Una orden por debajo de este monto se junta con la siguiente del mismo rubro, y se emite en la fecha de la primera: nada llega tarde. 0 = no se junta por monto.">
+              <span className="flabel">Monto mínimo por orden (S/)</span>
+              <input className="fi" type="number" min="0" step="100" value={params.montoMinimoOrden || ''} placeholder="0 = sin mínimo"
+                onChange={e => cambiarParam({ montoMinimoOrden: e.target.value })} />
+            </label>
+          </div>
+          {rubrosDelPlan.length > 0 && (
+            <details>
+              <summary style={{ fontSize: 12, cursor: 'pointer' }}>
+                Frecuencia distinta por rubro
+                {Object.keys(params.frecuenciaPorRubro || {}).length > 0 && (
+                  <span style={{ color: 'var(--tm)' }}> · {Object.keys(params.frecuenciaPorRubro).length} con frecuencia propia</span>
+                )}
+              </summary>
+              <div style={{ display: 'grid', gap: 6, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', marginTop: 8 }}>
+                {rubrosDelPlan.map(r => (
+                  <label key={r.rubro} style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                    <span style={{ flex: 1 }}>{r.icono} {r.nombre}</span>
+                    <select className="fi" style={{ maxWidth: 170, fontSize: 11.5, padding: '3px 6px' }}
+                      value={params.frecuenciaPorRubro?.[r.rubro] || ''}
+                      onChange={e => {
+                        const nuevo = { ...(params.frecuenciaPorRubro || {}) };
+                        if (e.target.value) nuevo[r.rubro] = e.target.value; else delete nuevo[r.rubro];
+                        cambiarParam({ frecuenciaPorRubro: nuevo });
+                      }}>
+                      <option value="">Como el resto</option>
+                      {FRECUENCIAS.map(f => <option key={f} value={f}>{FRECUENCIA_LABEL[f]}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </details>
+          )}
+
           {/* El reparto por cuadrilla y el manual necesitan un dato que hoy no
               existe en ningún lado. El motor devuelve esas líneas por
               «Sin planificar» con su motivo — nunca un «parejo» de consuelo. */}
@@ -802,7 +865,20 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
             <div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Planificado por el simulador</div>
               <b style={{ fontSize: 16 }}>{solesK(resumen.montoPlanificado)}</b>
-              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>{resumen.propuestas} órdenes · {resumen.sobres} sobres</div>
+              <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                {resumen.propuestas} órdenes · {resumen.sobres} sobres
+                {resumen.ordenesSinConsolidar > resumen.propuestas && (
+                  <span title="Una orden se emite una vez y se entrega por partes: los meses (o semanas) que junta van como entregas adentro.">
+                    {' '}· juntadas de {resumen.ordenesSinConsolidar} entregas
+                  </span>
+                )}
+              </div>
+              {resumen.ordenesBajoMinimo > 0 && (
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}
+                  title="Ni juntando todo lo de su rubro llegan al monto mínimo. Se proponen igual: la obra las necesita.">
+                  {resumen.ordenesBajoMinimo} quedan por debajo del mínimo
+                </div>
+              )}
               {/* Plata por ENCIMA del expediente: se dice aparte y no cuenta
                   para la cobertura, o un colchón se leería como avance. */}
               {(resumen.montoRedondeo > 0.5 || resumen.montoColchon > 0.5) && (
@@ -959,14 +1035,17 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                   key={p.id} p={p}
                   abierta={abiertos.has(p.id)}
                   onToggle={() => toggleAbierto(p.id)}
-                  onDecidir={(d) => mutar(e => decidirPropuesta(e, p.id, d))}
-                  onDecidirLinea={(l, d) => mutar(e => decidirLinea(e, p.id, l, d))}
-                  onEditar={(l, patch) => mutar(e => editarLinea(e, p.id, l, patch))}
-                  onLimpiar={(l) => mutar(e => limpiarEdicion(e, p.id, l))}
+                  // Se pasa la propuesta ENTERA y no su id: desde la 2.3 una
+                  // orden puede juntar varios períodos y la decisión se guarda
+                  // contra cada uno (sus `atomos`), para que reagrupar no la borre.
+                  onDecidir={(d) => mutar(e => decidirPropuesta(e, p, d))}
+                  onDecidirLinea={(l, d) => mutar(e => decidirLinea(e, p, l, d))}
+                  onEditar={(l, patch) => mutar(e => editarLinea(e, p, l, patch))}
+                  onLimpiar={(l) => mutar(e => limpiarEdicion(e, p, l))}
                   onCompra={cambiarCompra}
                   onProveedorOrden={(texto) => {
                     const prov = resolverProveedor(texto);
-                    mutar(e => proveedorDePropuesta(e, p.id, p.lineas, prov));
+                    mutar(e => proveedorDePropuesta(e, p, p.lineas, prov));
                   }}
                   resolverProveedor={resolverProveedor}
                   yaEscrita={yaEscrito.get(p.id) || null}
@@ -1079,6 +1158,25 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
           <b>{p.rubroIcono ? `${p.rubroIcono} ` : ''}{p.titulo}</b>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
             {p.lineas.length} línea(s)
+            {/* Emitir no es entregar (tanda 2.3): la orden sale una vez, con
+                la primera necesidad, y trae adentro cuándo va cada parte. */}
+            {(p.periodos || []).length > 1 && (
+              <span title={`Se emite en ${p.etiquetaPeriodo} y se entrega por partes: ${p.periodos.map(etiquetaCorta).join(', ')}`}>
+                {' · '}se emite en {p.etiquetaPeriodo} · {p.periodos.length} entregas
+              </span>
+            )}
+            {p.juntadaPorMonto && (
+              <span title="Alguna de sus entregas, sola, no llegaba al monto mínimo por orden: se juntó con la del período siguiente (o con la anterior, si era la última del rubro).">
+                {' · '}juntada por monto mínimo
+              </span>
+            )}
+            {p.bajoMinimo && <span style={{ color: 'var(--amber)' }}> · por debajo del mínimo aun juntando todo su rubro</span>}
+            {p.lineas.some(l => l.decisionMixta) && (
+              <span style={{ color: 'var(--amber)' }}
+                title="Estas entregas se decidieron por separado cuando eran órdenes sueltas, y no dicen lo mismo. Hasta que se vuelvan a decidir no se entregan.">
+                {' · '}{p.lineas.filter(l => l.decisionMixta).length} línea(s) con decisiones distintas por entrega
+              </span>
+            )}
             {p.lineas.some(l => l.tramoLargo) && ' · con tramo largo repartido'}
             {p.lineas.some(l => l.arrastrado) && ' · incluye atrasado arrastrado'}
             {p.tieneMontoIncompleto && ' · hay líneas sin precio'}
@@ -1258,6 +1356,21 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
         {num(l.colchonPct) > 0 && (
           <div style={{ fontSize: 10, color: 'var(--blue)' }}>con {cant(l.colchonPct)}% de colchón</div>
         )}
+        {/* Cuándo se entrega cada parte (tanda 2.3). Con la cantidad tocada a
+            mano la tabla es la del plan y ya no suma lo pedido: se dice. */}
+        {(l.entregas || []).length > 1 && (
+          <div style={{ fontSize: 10, color: 'var(--tm)', textAlign: 'right' }}
+            title={l.cantidadEditada ? 'Es el cronograma del plan: la cantidad se corrigió a mano y las entregas se coordinan aparte.' : 'Cuánto se entrega en cada período'}>
+            {l.entregas.map(e => `${etiquetaCorta(e.periodo)} ${cant(e.cantidad)}`).join(' · ')}
+            {l.cantidadEditada && <span style={{ color: 'var(--amber)' }}> (del plan)</span>}
+          </div>
+        )}
+        {l.edicionOtroAgrupamiento && (
+          <div style={{ fontSize: 10, color: 'var(--amber)' }}
+            title="La cantidad se corrigió cuando esta línea tenía otras entregas (la orden se juntó o se separó después). No se aplica: el número ya no significa lo mismo.">
+            tu cantidad era para otras entregas: volvé a corregirla
+          </div>
+        )}
         {l.etiquetaAlcanzaHasta && (
           <div style={{ fontSize: 10, color: 'var(--green)' }}
             title="Lo que se pide acá, redondeado, también cubre los meses siguientes: por eso ese insumo no aparece en sus órdenes.">
@@ -1319,8 +1432,10 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
             </button>
           )}
         </div>
-        <div style={{ fontSize: 10, color, marginTop: 2 }}>
-          {ESTADO_LABEL[l.decision]}{l.decisionHeredada && l.decision !== 'pendiente' ? ' (de la orden)' : ''}
+        <div style={{ fontSize: 10, color: l.decisionMixta ? 'var(--amber)' : color, marginTop: 2 }}>
+          {l.decisionMixta
+            ? 'Decidida distinto por entrega'
+            : <>{ESTADO_LABEL[l.decision]}{l.decisionHeredada && l.decision !== 'pendiente' ? ' (de la orden)' : ''}</>}
         </div>
       </td>
     </tr>
@@ -1336,6 +1451,18 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
 }
 
 const r4ui = (n) => Math.round(num(n) * 10000) / 10000;
+
+// «oct», «sem 41»: la tabla de entregas va en una línea, y «octubre 2026 ·
+// noviembre 2026 · diciembre 2026» no entra en la columna de cantidad.
+const MES_CORTO = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'set', 'oct', 'nov', 'dic'];
+function etiquetaCorta(periodo) {
+  const p = String(periodo || '');
+  const sem = /^\d{4}-W(\d{2})$/.exec(p);
+  if (sem) return `sem ${+sem[1]}`;
+  const mes = /^\d{4}-(\d{2})$/.exec(p);
+  if (mes) return MES_CORTO[+mes[1] - 1] || p;
+  return p;
+}
 
 /**
  * Cómo se compra ESTE insumo (tanda 2.2): unidad de compra, lote y colchón.
