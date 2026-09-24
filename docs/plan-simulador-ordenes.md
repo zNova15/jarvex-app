@@ -477,3 +477,169 @@ va anotando acá abajo a medida que se completan.*
   Mandárselas hace que el push rechace la fila entera. El autor se marca solo
   en las cabeceras, y va `null` —no el literal `'offline'`— cuando no hay
   sesión, porque la columna es `uuid`.
+
+---
+
+## 12. Ronda 2 — primer uso real, qué corregir (24-set-2026)
+
+Gabriel usó la pantalla contra Miraflores (§2) y encontró tres problemas de
+fondo, más lo que salió de auditar el diccionario propio contra el motor.
+**Este bloque (§12-§14) es el INPUT de la ronda 2 de tandas, igual que §1-§11
+lo fueron de la ronda 1** — leer esto entero antes de tocar código.
+
+### 12.1 — Lo que está mal, medido
+
+1. **Las cantidades salen con decimales que nadie pide así**
+   («CEMENTO PORTLAND: 3,37 bol»). Dos causas, no una:
+   - El reparto `parejo` divide la cantidad del tramo entre sus períodos sin
+     redondear — es correcto en plata, ilegible en unidades.
+   - El presupuesto está en la **unidad del expediente**, no en la de
+     compra: `m` de tubería (se compra por tubo de 5-6 m), `kg` de acero (por
+     varilla según diámetro), `m³` de agregado, `p²` de madera (por pieza),
+     `gal`/`rll` (por balde/rollo). Medido en Miraflores (sin mano de obra):
+
+     | Unidad | Monto | Se compra por |
+     |---|---|---|
+     | `m` | S/ 1,10 M | tubo |
+     | `p²` | S/ 498 k | pieza |
+     | `m³` | S/ 408 k | nadie pide 0,39 m³ |
+     | `kg` | S/ 141 k | varilla según diámetro |
+     | `gal`, `rll` | S/ 111 k | balde / rollo |
+
+2. **La clasificación del diccionario propio se equivoca por palabras
+   genéricas.** No es un bug del simulador: es del clasificador que usa toda
+   la app (`clasificarConIUPC`, `indices-unificados-iupc.js`). Medido contra
+   los 348 términos reales de `clasificacion_terminos`: el término
+   `MATERIAL SARANDEADO → [04] Agregado fino` (agregado el 23-set, origen
+   `manual`) le da a la palabra **«material»** —genérica, aparece en cientos
+   de nombres— el mismo peso que a una palabra distintiva. Resultado:
+   `MATERIAL DE OFICINA Y CAMPO` → **04, confianza alta (80%)** y
+   `MATERIAL ELÉCTRICO` → **04, confianza alta (85%)**. Sin ese término,
+   `clasificarConIUPC` sola (capa oficial, sin diccionario propio) clasifica
+   bien: `MATERIAL DE OFICINA Y CAMPO` → `93` (complementaria/administrativo)
+   y `MATERIAL PARA CAPACITACIÓN A PERSONAL` → `S04` (Capacitación y
+   simulacros). **Decisión de Gabriel: el término se queda (es una decisión
+   suya, válida), se corrige el algoritmo** — que una palabra genérica no
+   pueda cargar sola la coincidencia de un término propio.
+
+3. **La unidad `mes` no es un insumo, es un sobre.** 3 líneas, S/ 30.800,
+   `tipo_insumo='material'`, unidad `mes` — el expediente reserva una plata
+   mensual (impresiones, cintas, insumos de oficina) sin decir qué se compra.
+   Hoy `UNIDADES_SOBRE` en `insumo-clasificador.js` solo reconoce `%mo` y
+   `glb` (§4.1) — `mes` le falta.
+
+4. **175 órdenes propuestas es demasiado.** Hay tarjetas de S/ 787 con 5
+   líneas fraccionadas por el reparto parejo. El diseño original (§10, tanda
+   1) ya resolvió el agrupamiento «por rubro de proveedor» en vez de
+   «por subcategoría» — el problema de ahora es otro: falta consolidar por
+   **frecuencia** (no todo insumo necesita una orden nueva cada mes) y por
+   **monto mínimo** (una orden chica se suma a la próxima del mismo rubro).
+
+5. **Las 62 líneas ya ordenadas siguen sin `insumo_codigo`** (§11, nota de
+   la tanda 1) — sin imputarlas, el modo «desde hoy» puede volver a proponer
+   algo ya comprado. Sigue pendiente, ahora con más prioridad porque es lo
+   que de verdad protege contra duplicar un gasto.
+
+6. **No hay forma de ir directo a un mes.** La pantalla es un scroll largo;
+   ver noviembre implica bajar por todos los meses anteriores.
+
+### 12.2 — Decisiones de Gabriel (24-set-2026)
+
+- **Colchón por robo/rotura/merma: 0% por defecto, SIN una tabla de
+  porcentajes por rubro inventada por el motor.** Gabriel va a decidir él
+  mismo, insumo por insumo, cuáles necesitan colchón (dijo «cemento,
+  agregados, etc.» como ejemplo, pero son pocos) y en cuánto. El motor debe
+  ofrecer el campo **por insumo, editable, vacío/0% por defecto** — no una
+  perilla global ni una tabla de valores sugeridos por categoría. Nada de
+  proponer un 5%/10% de oficio.
+- **El término `MATERIAL SARANDEADO` se queda tal cual está en la base.** Se
+  corrige el algoritmo de coincidencia, no el diccionario.
+- **Orden de tandas: priorizar terminar bien y barato, no seguir el orden
+  que se me ocurrió primero en el análisis.** Ver §13 — reordenado para que
+  cada tanda deje una base sólida a la siguiente y la tanda más cara en
+  tokens/IA (la de escenarios con IA) vaya al final, opcional como fue la
+  tanda 5 de la ronda 1.
+
+### 12.3 — Qué corregir en cada punto (para que la tanda no lo tenga que redescubrir)
+
+- **Corrección del clasificador (punto 2):** en `evidenciaDiccionario()` /
+  `indexarCustom()` (`indices-unificados-iupc.js`), el score de un término
+  propio no puede depender de una sola palabra si esa palabra aparece en
+  muchos otros términos/insumos del vocabulario (alta frecuencia = poco
+  distintiva, como ya se trata en TF-IDF). Palabras como «material»,
+  «suministro», «servicio de» deben pesar menos que «sarandeado»,
+  «capacitación», «oficina». No es una lista negra a mano: es un cálculo de
+  frecuencia sobre el propio vocabulario oficial + el diccionario propio.
+- **Unidad de compra (punto 1):** nueva tabla `UNIDAD_COMPRA_POR_INSUMO` o
+  columna calculada — de unidad de expediente (`m`, `kg`, `m³`, `p²`, `gal`,
+  `rll`) a unidad de pedido (tubo, varilla, saco/lote, pieza, balde, rollo)
+  con un factor de conversión. Por defecto 1:1 donde no aplica (`und`, `pza`,
+  `bol`, `kg` de insumos que sí se compran por kg). Editable por insumo,
+  recordado (localStorage, como el resto del escenario — no justifica tabla
+  sincronizada, mismo criterio que §11 de la ronda 1).
+- **Redondeo acumulado (punto 1):** en vez de redondear cada período
+  suelto, acumular el real y pedir lo que falta para llegar al entero de
+  arriba — así el total nunca se pasa por más de una unidad del presupuesto
+  y los períodos alternan (4, 3, 4, 3…) en vez de redondear siempre hacia
+  arriba y sobrepedir sistemáticamente.
+- **Lote mínimo:** si un período no llega al lote de compra del insumo
+  (0,39 m³ de arena), se junta con el período vecino — mismo mecanismo que
+  ya existe para el tramo largo, aplicado también a tramos cortos que caen
+  bajo el lote.
+- **`mes` como sobre (punto 3):** agregar `'mes'` a `UNIDADES_SOBRE` en
+  `insumo-clasificador.js` — una línea, con test.
+- **Consolidación de órdenes (punto 4):** frecuencia por rubro (cada cuánto
+  se emite una orden de ese rubro — no siempre mensual) y monto mínimo de
+  orden (una orden por debajo de un umbral se acumula a la siguiente del
+  mismo rubro). Separar cuándo se EMITE una orden de cuándo se ENTREGA lo
+  pedido: una orden mensual con una tabla de entregas semanales adentro
+  resuelve el caso semanal sin proponer 36 órdenes.
+- **Navegación por meses (punto 6):** una tira de chips fija (mes → monto →
+  n° de órdenes → avance de decisión) que hace scroll horizontal y saltа al
+  bloque del mes al click. En modo semanal, las semanas van como sub-chips
+  dentro de su mes.
+
+## 13. Plan de tandas — ronda 2 (orden pensado para no rehacer trabajo)
+
+Cada corrección de abajo se apoya en la anterior: clasificar mal contamina
+el agrupamiento por rubro; cantidades en decimales contaminan cualquier
+consolidación que se arme sobre ellas; y la navegación es una capa de UI que
+conviene construir sobre datos ya estables, no antes. La tanda de IA queda
+última y **opcional** — es la más cara en tokens y la que menos protege
+contra un error de plata; las tandas 1-4 son las que de verdad arreglan lo
+que Gabriel usó y no le sirvió.
+
+| Tanda | Qué hace | Alcance / archivos | Modelo | Effort | Sesión |
+|---|---|---|---|---|---|
+| 2.1 | Clasificador: el score de un término propio no depende de una palabra genérica de alta frecuencia en el vocabulario. `mes` entra a `UNIDADES_SOBRE`. Con tests contra los 348 términos reales (o un fixture representativo) para no repetir el falso positivo de «material». | `src/lib/indices-unificados-iupc.js`, `src/lib/insumo-clasificador.js` | Opus 5.5 | Medio-alto (toca el clasificador que usa toda la app, no solo el simulador) | Nueva |
+| 2.2 | Cantidades comprables: unidad de compra por insumo (editable, con default sensato por unidad de expediente), redondeo acumulado en vez de por período, lote mínimo que junta períodos cortos, colchón por insumo (campo editable, 0% por defecto, SIN tabla de sugeridos). | `src/lib/simulador-ordenes.js` (motor) + `jx-simulador-ordenes.jsx` (campos editables) + `simulador-escenarios.js` (persistir unidad de compra y colchón por insumo) | Opus 5.5 | Alto (toca montos y cantidades pedidas) | Nueva |
+| 2.3 | Consolidación de órdenes: frecuencia configurable por rubro, monto mínimo de orden, separar emisión de entrega (tabla de entregas dentro de una orden). | `src/lib/simulador-ordenes.js` + `jx-simulador-ordenes.jsx` | Opus 5.5 | Alto (cambia qué es una «orden», afecta el puente a requisición de la tanda 4 original) | Nueva |
+| 2.4 | Navegación: tira de chips por período (mes, y semanas como sub-chips), scroll al bloque, resumen por chip (monto, n° órdenes, % decidido). | `jx-simulador-ordenes.jsx` | Sonnet 5 | Medio (es UI sobre datos ya estables) | Nueva |
+| 2.5 | Imputar las 62 líneas sin `insumo_codigo` + restar stock del almacén de la obra (reusar el match de `86bce80`, hoy solo en staging). Cierra el hueco real de doble pedido. | `src/lib/simulador-ordenes.js` (`coberturaPrevia`) + bandeja de imputación (puede reusar patrón de `jx-catalogo-canonico.jsx`) | Opus 5.5 | Alto (toca la regla de «nada se pide dos veces») | Nueva |
+| 2.6 (opcional) | Escenarios con IA: 3 enfoques sorteados (caja ajustada / cero desabastecimiento / pocas órdenes / etc.) sobre las perillas ya existentes (reparto, anticipación, colchón, frecuencia, monto mínimo) — la IA elige combinaciones de parámetros y explica el «por qué», NUNCA inventa cantidades. Motor determinístico de sorteo primero (sin IA, gratis, siempre disponible); la llamada a OpenRouter (`lib/openrouter.js`, familia `ling-3.0-flash-*:free`, política ZDR) se suma encima solo para elegir enfoques según contexto de la obra. Solo si Gabriel lo pide explícitamente después de ver 2.1-2.5 en uso. | `api/asistente-solicitud.js` (nuevo modo por `body.tipo`, no crear endpoint) + `jx-simulador-ordenes.jsx` | Opus 5.5 (el sorteo determinístico puede ir en Sonnet 5 si se separa) | Alto | Nueva, y solo si Gabriel la pide |
+
+**Por qué 2.1 antes que todo:** una clasificación mal hecha decide en qué
+orden cae cada línea (agrupamiento por rubro, §10 de la ronda 1) — arreglar
+cantidades o consolidar órdenes sobre rubros mal armados es trabajo que hay
+que rehacer después.
+
+**Por qué 2.5 antes que 2.6:** imputar las 62 líneas es lo único de esta
+ronda que evita un doble gasto real medible hoy; la IA de escenarios es una
+comodidad. Se prioriza lo que protege plata sobre lo que ahorra clics.
+
+**Por qué 2.6 es la única con IA y la única opcional:** el resto de la ronda
+2 son correcciones determinísticas sobre un motor que ya existe — no
+necesitan modelo de lenguaje, y meter IA donde no hace falta es plata y
+superficie de falla de más. La IA entra solo donde agrega algo que un cálculo
+no puede: explicar un enfoque y variarlo con criterio.
+
+## 14. Avance — ronda 2
+
+- [ ] Tanda 2.1 — clasificador: palabra genérica no decide sola
+- [ ] Tanda 2.2 — cantidades comprables (unidad de compra, redondeo, lote
+      mínimo, colchón por insumo)
+- [ ] Tanda 2.3 — consolidación de órdenes (frecuencia, monto mínimo,
+      emisión vs entrega)
+- [ ] Tanda 2.4 — navegación por meses (chips)
+- [ ] Tanda 2.5 — imputar las 62 líneas + stock del almacén
+- [ ] Tanda 2.6 (opcional) — escenarios con IA, solo si Gabriel la pide
