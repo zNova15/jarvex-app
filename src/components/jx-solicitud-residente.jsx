@@ -2,7 +2,8 @@ import React from "react";
 import { SearchableSelect } from "./jx-searchable-select.jsx";
 import { TIPOS_INSUMO, TIPO_INSUMO_KEYS, recomendacionesInsumo, matchInsumoReal, registrarInsumoPendiente, normNombre, leerInventarioReal } from "../lib/insumos-catalogo.js";
 import { repartirStock, coberturaDeLinea, claveInsumo } from "../lib/stock-comprometido.js";
-import { interpretarTexto, armarCatalogo, armarPersonal, volcarEnItems, armarRazon } from "../lib/asistente-solicitud-ai.js";
+import { interpretarTexto, armarCatalogo, armarPersonal, volcarEnItems, armarRazon, notaPedidoComo } from "../lib/asistente-solicitud-ai.js";
+import { mismaUnidad } from "../lib/match-solicitud.js";
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
 
 // ═══════════════════════════════════════════════════════════════════
@@ -30,7 +31,20 @@ const JxIcon = (props) => {
   return I ? <I {...props}/> : null;
 };
 
-const nuevoItem = () => ({ id: (window.crypto?.randomUUID?.() || `${Date.now()}_${Math.round(performance.now())}`), tipo: 'material', insumo_id: '', nombre: '', unidad: '', cantidad: '', cantidad_minima: '', notas: '' });
+// texto_pedido / sugerencia / alternativas solo los llena el asistente (ver
+// `volcarEnItems`): lo que escribió la obra, si el vínculo al almacén lo
+// propuso la máquina, y los otros parecidos para cambiarlo de un clic.
+const nuevoItem = () => ({ id: (window.crypto?.randomUUID?.() || `${Date.now()}_${Math.round(performance.now())}`), tipo: 'material', insumo_id: '', nombre: '', unidad: '', cantidad: '', cantidad_minima: '', notas: '', texto_pedido: '', sugerencia: null, alternativas: [] });
+
+// Regla 7 del CLAUDE.md: la fecha de HOY en Lima, no en UTC (después de las
+// 19:00 el toISOString ya es mañana).
+const hoyLocal = () => window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
+const sumarDias = (ymd, n) => {
+  const d = new Date(`${ymd}T12:00:00`);
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const pct = (s) => `${Math.round(Number(s || 0) * 100)} %`;
 
 function SolicitudResidentePage({ showToast }) {
   const auth = window.__useAuth?.();
@@ -38,11 +52,8 @@ function SolicitudResidentePage({ showToast }) {
   const userName = `${auth?.profile?.nombres || ''} ${auth?.profile?.apellidos || ''}`.trim() || auth?.profile?.email || 'Usuario';
 
   const [obraId, setObraId] = uS(null);
-  const [fechaCreacion, setFechaCreacion] = uS(() => new Date().toISOString().slice(0, 10));
-  const [fechaNecesidad, setFechaNecesidad] = uS(() => {
-    const d = new Date(); d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
-  });
+  const [fechaCreacion, setFechaCreacion] = uS(() => hoyLocal());
+  const [fechaNecesidad, setFechaNecesidad] = uS(() => sumarDias(hoyLocal(), 7));
   const [fechaUrgente, setFechaUrgente] = uS('');      // opcional
   // Responsable del pedido: personal registrado (id) o, si no está, nombre libre.
   const [responsableId, setResponsableId] = uS('');
@@ -198,9 +209,36 @@ function SolicitudResidentePage({ showToast }) {
   const onNombreChange = (id, tipo, value) => {
     const lista = recos.get(tipo) || [];
     const match = lista.find(r => r.real && normNombre(r.nombre) === normNombre(value));
-    if (match) updateItem(id, { nombre: match.nombre, insumo_id: match.id, unidad: match.unidad || '' });
-    else updateItem(id, { nombre: value, insumo_id: '' });
+    // Elegido o escrito a mano: ya no es una sugerencia de la máquina.
+    if (match) updateItem(id, { nombre: match.nombre, insumo_id: match.id, unidad: match.unidad || '', sugerencia: null });
+    else updateItem(id, { nombre: value, insumo_id: '', sugerencia: null });
   };
+
+  // ── Vínculo con el almacén: confirmar, cambiar o soltar ──────────
+  // La máquina RECOMIENDA; la almacenera decide. Cambiar el vínculo cambia
+  // también el tipo (el id es de ESA tabla) y la unidad si es la misma con
+  // otras letras («und» / «UNIDAD»).
+  const elegirDelAlmacen = (id, altId) => setItems(prev => prev.map(it => {
+    if (it.id !== id) return it;
+    if (!altId) {
+      // «Ninguno»: es un insumo nuevo. Vuelve el nombre que escribió la obra,
+      // y el que se soltó queda entre las alternativas por si fue un error.
+      const soltado = it.insumo_id ? [{ id: it.insumo_id, tipo: it.tipo, nombre: it.nombre, unidad: it.unidad }] : [];
+      return { ...it, insumo_id: '', nombre: it.texto_pedido || it.nombre, sugerencia: null,
+        alternativas: [...soltado, ...(it.alternativas || []).filter(a => String(a.id) !== String(it.insumo_id))] };
+    }
+    const alt = (it.alternativas || []).find(a => String(a.id) === String(altId));
+    if (!alt) return it;
+    // El que se deja pasa a la lista de alternativas, para poder volver.
+    const actual = it.insumo_id ? { id: it.insumo_id, tipo: it.tipo, nombre: it.nombre, unidad: it.unidad } : null;
+    const alternativas = [
+      ...(actual && String(actual.id) !== String(alt.id) ? [actual] : []),
+      ...(it.alternativas || []).filter(a => String(a.id) !== String(alt.id)),
+    ];
+    const unidad = !it.unidad || mismaUnidad(it.unidad, alt.unidad) ? (alt.unidad || it.unidad) : it.unidad;
+    return { ...it, tipo: alt.tipo || it.tipo, insumo_id: alt.id, nombre: alt.nombre, unidad, sugerencia: null, alternativas };
+  }));
+  const confirmarSugerencia = (id) => updateItem(id, { sugerencia: null });
 
   const cambiarTipo = (id, tipo) => updateItem(id, { tipo, insumo_id: '', nombre: '', unidad: '' });
 
@@ -228,7 +266,7 @@ function SolicitudResidentePage({ showToast }) {
         texto,
         catalogo: catalogoIA,
         personal: armarPersonal(personal || []),
-        fechaActual: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
+        fechaActual: hoyLocal(),
         nombreObra: obra?.nombre_obra || obra?.nombre || '',
       });
 
@@ -243,9 +281,10 @@ function SolicitudResidentePage({ showToast }) {
       if (result.prioridad) setPrioridad(result.prioridad);
 
       setIaInfo({ confianza: result.confianza, advertencias: result.advertencias || [], model });
-      const sinVincular = (result.items || []).filter(i => !i.insumo_id).length;
+      const total = result.items?.length || 0;
+      const sugeridos = (result.items || []).filter(i => i.insumo_id).length;
       showToast(
-        `Se armó la solicitud: ${result.items?.length || 0} ítem(s)${sinVincular ? ` · ${sinVincular} sin inventario` : ''}. Revisá antes de enviar.`,
+        `Se armó la solicitud: ${total} ítem(s) · ${sugeridos} con un insumo del almacén sugerido · ${total - sugeridos} que no están en el almacén. Revisá los sugeridos antes de enviar.`,
         'green');
     } catch (e) {
       showToast(e.message || String(e), 'red');
@@ -331,8 +370,10 @@ function SolicitudResidentePage({ showToast }) {
           cantidad: Number(it.cantidad),
           cantidad_minima: Number(it.cantidad_minima) > 0 ? Number(it.cantidad_minima) : null,
           precio_estimado: it.tipo === 'material' ? Number(matsArr.find(m => m.id === insumoId)?.precio_unitario_estimado || 0) : 0,
-          notas: it.notas || null,
-          observacion: it.notas || null,
+          // Si se tomó un insumo del almacén con otro nombre, el revisor ve
+          // qué pidió la obra de verdad («Pedido como «codo pvc hilo 1/2»»).
+          notas: [it.notas, notaPedidoComo(it)].filter(Boolean).join(' · ') || null,
+          observacion: [it.notas, notaPedidoComo(it)].filter(Boolean).join(' · ') || null,
           created_at: now, updated_at: now,
           version: 1, sync_status: 'pending_create', last_synced_at: null,
           idempotency_key: `${userId}_req_items_${itemId}`,
@@ -391,6 +432,9 @@ function SolicitudResidentePage({ showToast }) {
           placeholder={'Ej:\nRequerimiento: 9 unidades de Triplay de 30 cm x 55 cm, Cinta de embalaje (1 Und).\nResponsable: ING. ROXANA VÁSQUEZ\nFecha del requerimiento: 22/09/2026\nFrente: Todos los frentes de trabajo para señalización SST\nMínimo Necesario: 23/09/2026.'}/>
         {iaInfo && (
           <div style={{ marginTop: 8, fontSize: 11, color: 'var(--ts)' }}>
+            {iaInfo.model === 'lector-local' && (
+              <div style={{ color: 'var(--tm)' }}>Leído sin IA, con el formato habitual del mensaje (cantidad al inicio de cada renglón).</div>
+            )}
             {iaInfo.confianza != null && (
               <div style={{ color: iaInfo.confianza >= 0.85 ? 'var(--green)' : iaInfo.confianza >= 0.6 ? 'var(--amber)' : 'var(--red)' }}>
                 Confianza de la lectura: <strong>{Math.round(iaInfo.confianza * 100)}%</strong>
@@ -441,7 +485,7 @@ function SolicitudResidentePage({ showToast }) {
           </div>
           <div>
             <label className="flabel">Fecha de creación</label>
-            <input className="fi" type="date" value={fechaCreacion} max={new Date().toISOString().slice(0, 10)} onChange={e => setFechaCreacion(e.target.value)}/>
+            <input className="fi" type="date" value={fechaCreacion} max={hoyLocal()} onChange={e => setFechaCreacion(e.target.value)}/>
           </div>
           <div>
             <label className="flabel">Fecha deseada del pedido *</label>
@@ -492,6 +536,32 @@ function SolicitudResidentePage({ showToast }) {
                         {lista.map(r => <option key={r.id} value={r.nombre}>{r.real ? '' : '(sugerido)'}</option>)}
                       </datalist>
                       {esNuevo && <div style={{ fontSize: 10, color: 'var(--amber)', marginTop: 2 }}>⚠ No está en inventario — se guarda como pendiente (recomendación)</div>}
+                      {/* Recomendación del almacén: la máquina propone, la almacenera decide. */}
+                      {it.insumo_id && it.sugerencia && (
+                        <div style={{ fontSize: 10, marginTop: 3, padding: '3px 6px', borderRadius: 4, background: 'rgba(245,166,35,0.10)', border: '1px solid rgba(245,166,35,0.35)', color: 'var(--ts)', lineHeight: 1.4 }}
+                          title="Lo eligió el asistente comparando con el almacén. Si no es el mismo insumo, cambialo o marcá «Ninguno»">
+                          🔎 <strong>Sugerido del almacén</strong> · {pct(it.sugerencia.score)} parecido{it.sugerencia.fuente === 'ia' ? ' · lo eligió la IA' : ''}
+                          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, padding: '0 6px', fontSize: 10 }} onClick={() => confirmarSugerencia(it.id)}>✓ Es este</button>
+                        </div>
+                      )}
+                      {it.texto_pedido && it.insumo_id && normNombre(it.texto_pedido) !== normNombre(it.nombre) && (
+                        <div style={{ fontSize: 10, color: 'var(--tm)', marginTop: 2 }}>Pidieron: «{it.texto_pedido}»</div>
+                      )}
+                      {(it.alternativas || []).length > 0 && (
+                        <select className="fi" value="" onChange={e => { const v = e.target.value; if (v === '__ninguno') elegirDelAlmacen(it.id, ''); else if (v) elegirDelAlmacen(it.id, v); }}
+                          style={{ fontSize: 10.5, marginTop: 3, padding: '2px 4px', height: 'auto', color: 'var(--ts)' }}>
+                          <option value="">{it.insumo_id ? '↔ Cambiar por otro del almacén…' : `¿Es alguno de estos? (${it.alternativas.length} parecidos en el almacén)`}</option>
+                          {it.alternativas.map(a => (
+                            <option key={a.id} value={a.id}>
+                              {a.nombre}{a.unidad ? ` [${a.unidad}]` : ''}{a.stock_actual != null ? ` · stock ${fmtN(a.stock_actual)}` : ''}{a.score != null ? ` · ${pct(a.score)}` : ''}{a.tipo && a.tipo !== it.tipo ? ` · ${TIPOS_INSUMO[a.tipo]?.label || a.tipo}` : ''}
+                            </option>
+                          ))}
+                          {it.insumo_id && <option value="__ninguno">✗ Ninguno — es un insumo nuevo</option>}
+                        </select>
+                      )}
+                      {!(it.alternativas || []).length && it.insumo_id && it.sugerencia && (
+                        <button className="btn btn-ghost btn-xs" style={{ marginTop: 3, fontSize: 10 }} onClick={() => elegirDelAlmacen(it.id, '')}>✗ No es este — es un insumo nuevo</button>
+                      )}
                     </td>
                     <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad} onChange={e => updateItem(it.id, { cantidad: e.target.value })} style={{ textAlign: 'right' }}/></td>
                     <td><input className="fi" type="number" min="0" step="0.01" value={it.cantidad_minima} onChange={e => updateItem(it.id, { cantidad_minima: e.target.value })} placeholder="—" style={{ textAlign: 'right' }} title="Mínimo que necesitan de forma urgente (opcional)"/></td>
