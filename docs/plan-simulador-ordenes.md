@@ -635,7 +635,26 @@ no puede: explicar un enfoque y variarlo con criterio.
 
 ## 14. Avance — ronda 2
 
-- [ ] Tanda 2.1 — clasificador: palabra genérica no decide sola
+- [x] Tanda 2.1 — clasificador: palabra genérica no decide sola (24-set).
+      **Lo que cambió respecto de §12.3:** la frecuencia sobre el vocabulario
+      NO alcanzaba como peso — «material» aparece en solo 2 entradas del
+      Anexo 2 + servicios y en 2 del diccionario propio, así que un TF-IDF
+      apenas lo castigaba. La regla que sí funciona es binaria: un parecido
+      con un término propio (manual o aprendido) solo cuenta si comparte la
+      palabra MÁS distintiva del término (mínima frecuencia en Anexo 2 +
+      servicios + diccionario propio; números y palabras <4 letras no
+      califican; un término sin palabras, «2 x 6 x 3», vale solo exacto). Se
+      aplica en `mejorDePropio` (pasos 2b y 5b) y en la bolsa `propios` de
+      `evidenciaDiccionario`. Medido contra los 348 términos reales y 1.055
+      nombres (catálogo + presupuestos + muestras de la bandeja): cambian 11
+      respuestas. 9 son correcciones (oficina → 93, capacitación → S04,
+      brochas → 37, bisagra → 26, unión galvanizada → 65…). Hay dos para
+      mirar: «ADAPTADOR UPR PVC 1 1/2"» antes acertaba de casualidad (72, por
+      «pvc 1/2» de una abrazadera) y ahora cae en el Anexo 2 como 65 con 36 %
+      (banda baja); «S. PUNTO AZUL…» (electrodo) ya no hereda el 51 de
+      «S. FACILITO» y queda `sin_clasificar`. `mes` entró a `UNIDADES_SOBRE`
+      (3 líneas en toda la base, todas Miraflores, S/ 30.800). Tests en
+      `palabra-generica.test.js` y `simulador-ordenes.test.js`.
 - [ ] Tanda 2.2 — cantidades comprables (unidad de compra, redondeo, lote
       mínimo, colchón por insumo)
 - [ ] Tanda 2.3 — consolidación de órdenes (frecuencia, monto mínimo,

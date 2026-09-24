@@ -97,8 +97,14 @@ export const TIPO_INSUMO_TABLA = {
 /** Unidades que solo existen alquilando: hora-máquina y día de equipo. */
 export const UNIDADES_ALQUILER = new Set(['hm', 'dia', 'día', 'hd']);
 
-/** Unidades de «sobre»: un monto reservado sin lista de insumos detrás. */
-export const UNIDADES_SOBRE = new Set(['%mo', 'glb']);
+/**
+ * Unidades de «sobre»: un monto reservado sin lista de insumos detrás.
+ * `mes` (ronda 2, 24-set-2026): el expediente de Miraflores reserva plata
+ * mensual —GASTOS OPERATIVOS, MATERIAL PARA CAPACITACIÓN, TRANSPORTE DE
+ * RESIDUOS— sin decir qué se compra. S/ 30.800 que salían como «3 mes» de
+ * un material.
+ */
+export const UNIDADES_SOBRE = new Set(['%mo', 'glb', 'mes']);
 
 // EPPs que la regex de `epp-utils` no ve porque nació del catálogo de SSOMA
 // (casco/chaleco/guantes/…) y el expediente los nombra de otra manera.

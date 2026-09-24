@@ -120,6 +120,14 @@ describe('clasificación de la línea de presupuesto (§4)', () => {
     expect(tijeral.categoria).toBe('materiales');
   });
 
+  it('`mes` también es un sobre: plata mensual reservada sin decir qué se compra (ronda 2)', () => {
+    // Las tres líneas reales de Miraflores (S/ 30.800), todas `material`.
+    for (const nombre of ['GASTOS OPERATIVOS', 'MATERIAL PARA CAPACITACIÓN A PERSONAL', 'TRANSPORTE DE RESIDUOS DE OBRA DURANTE LA EJECUCIÓN']) {
+      expect(clasificarInsumoDePresupuesto({ tipo_insumo: 'material', unidad: 'mes', nombre_insumo: nombre }).esSobre).toBe(true);
+    }
+    expect(clasificarInsumoDePresupuesto({ tipo_insumo: 'material', unidad: 'MES ', nombre_insumo: 'GASTOS OPERATIVOS' }).esSobre).toBe(true);
+  });
+
   it('la mano de obra la decide la columna, no el nombre', () => {
     expect(clasificarInsumoDePresupuesto({ tipo_insumo: 'mano_obra', unidad: 'hh', nombre_insumo: 'PEON' }).categoria).toBe('mano_obra');
   });

@@ -1637,6 +1637,17 @@ function recIUPC({ codigo, nombre, score, motivos, inclinacion = null, iupcRelac
  * descripción sin ninguna relación terminaba clasificada como EPP. 0,6 deja
  * pasar plurales y variantes («tuberia»/«tuberias») y corta el resto.
  */
+function prefijoEquivalente(t, u) {
+  const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
+  return corto.length >= 4 && largo.startsWith(corto)
+    && (corto.length / largo.length) >= 0.6;
+}
+
+/** ¿Son la misma palabra para el clasificador? (igual, plural o variante). */
+function tokensEquivalentes(t, u) {
+  return t === u || prefijoEquivalente(t, u);
+}
+
 function simTokens(toks, itoks) {
   if (!itoks.length || !toks.length) return 0;
   let comun = 0;
@@ -1644,11 +1655,7 @@ function simTokens(toks, itoks) {
     if (itoks.includes(t)) {
       comun += (t === toks[0] && t === itoks[0]) ? 2 : 1;
     } else {
-      const pref = itoks.some(u => {
-        const [corto, largo] = t.length <= u.length ? [t, u] : [u, t];
-        return corto.length >= 4 && largo.startsWith(corto)
-          && (corto.length / largo.length) >= 0.6;
-      });
+      const pref = itoks.some(u => prefijoEquivalente(t, u));
       if (pref) comun += 0.8;
     }
   }
@@ -1714,6 +1721,10 @@ export function evidenciaDiccionario(texto, { terminosCustom = null, maxCodigos 
     if (!codigo) return;
     // Al menos una palabra larga en común: si no, no es evidencia de nada.
     if (!item.tokens.some(t => fuertes.has(t))) return;
+    // Un término propio, además, tiene que compartir SU palabra distintiva
+    // (ver `compartePalabraDistintiva`): «MATERIAL SARANDEADO» no es
+    // evidencia de nada para «MATERIAL DE OFICINA».
+    if (capa === 'propio' && !compartePalabraDistintiva(toks, item)) return;
     const score = simTokens(toks, item.tokens);
     if (score <= 0) return;
     const prev = porCodigo.get(codigo) || { codigo, score: 0, norma: [], propios: [] };
@@ -1857,8 +1868,95 @@ function indexarCustom(terminos) {
     if (!bolsa.exacto.has(norm)) bolsa.exacto.set(norm, item);
     idx.lista.push(item);
   }
+  marcarDistintivas(idx.lista);
   _cacheCustom.set(terminos, idx);
   return idx;
+}
+
+// ── UNA PALABRA GENÉRICA NO DECIDE SOLA (ronda 2 del simulador, tanda 2.1) ──
+//
+// EL DEFECTO, MEDIDO EL 24-SET-2026: Gabriel cargó a mano «MATERIAL SARANDEADO
+// → [04] Agregado fino», que es correcto. Pero `simTokens` le daba a la
+// palabra «material» —la primera del término y la primera de cientos de
+// descripciones— el doble de peso, y con eso sola alcanzaba: «MATERIAL DE
+// OFICINA Y CAMPO» salía [04] con 80 % y «MATERIAL ELÉCTRICO» también. El
+// término está bien; lo que estaba mal es que se pudiera ganar un parecido
+// sin tocar la palabra que lo hace ser ese término.
+//
+// LA REGLA: un parecido (no exacto) con un término PROPIO —manual o
+// aprendido— solo cuenta si la descripción comparte la palabra MÁS
+// DISTINTIVA del término. «Distintiva» no es una lista a mano: es la de menor
+// frecuencia en todo el vocabulario (Anexo 2 + árbol de servicios + el propio
+// diccionario de la empresa), contando plurales y variantes como la misma
+// palabra. «sarandeado» aparece una vez; «material» aparece en el Anexo 2, en
+// los servicios y en el diccionario propio. Si hay empate en la mínima, vale
+// cualquiera de las empatadas.
+//
+// Los números y las palabras de menos de 4 letras no pueden ser la
+// distintiva («ALAMBRE NEGRO # 16»: un calibre distinto sigue siendo alambre).
+// Un término que no tiene otra cosa solo vale como coincidencia exacta.
+//
+// Lo que NO cambia: los exactos (manual, Anexo 2, aprendido) y la búsqueda
+// contra el Anexo 2, que no pasa por acá. Es una restricción solo sobre el
+// diccionario de la empresa.
+
+/** Frecuencia de cada palabra en el vocabulario oficial (se calcula una vez). */
+let _dfOficial = null;
+function dfOficial() {
+  if (_dfOficial) return _dfOficial;
+  _dfOficial = new Map();
+  for (const it of [...DICCIONARIO_INDEXADO, ...DICCIONARIO_SERVICIOS_INDEXADO]) {
+    for (const t of new Set(it.tokens)) _dfOficial.set(t, (_dfOficial.get(t) || 0) + 1);
+  }
+  return _dfOficial;
+}
+
+/** En cuántas entradas aparece la palabra (o una variante suya). */
+function frecuenciaEn(df, t) {
+  let n = df.get(t) || 0;
+  if (t.length < 4) return n;
+  for (const [u, c] of df) if (u !== t && prefijoEquivalente(t, u)) n += c;
+  return n;
+}
+
+const puedeSerDistintiva = (t) => t.length >= 4 && !/\d/.test(t);
+
+/** Le pone a cada término propio sus palabras distintivas (`item.distintivas`). */
+function marcarDistintivas(lista) {
+  const dfPropio = new Map();
+  for (const it of lista) for (const t of new Set(it.tokens)) dfPropio.set(t, (dfPropio.get(t) || 0) + 1);
+  const oficial = dfOficial();
+  const memo = new Map();
+  const frecuencia = (t) => {
+    if (!memo.has(t)) memo.set(t, frecuenciaEn(oficial, t) + frecuenciaEn(dfPropio, t));
+    return memo.get(t);
+  };
+  for (const it of lista) {
+    const candidatas = it.tokens.filter(puedeSerDistintiva);
+    // Sin ninguna palabra («2 x 6 x 3», «TIPO 1») el término no tiene nada
+    // que lo distinga: vale solo como coincidencia exacta. Medido: «2 x 6 x 3»
+    // → [51] se llevaba «BISAGRA HECHIZA 3/8 X 2' X 2 ALAS» por el «2».
+    if (!candidatas.length) { it.distintivas = []; continue; }
+    const min = Math.min(...candidatas.map(frecuencia));
+    it.distintivas = candidatas.filter(t => frecuencia(t) === min);
+  }
+}
+
+/** ¿La descripción comparte la palabra que hace ser a este término ese término? */
+function compartePalabraDistintiva(toks, item) {
+  if (!item.distintivas) return true;
+  return item.distintivas.some(d => toks.some(t => tokensEquivalentes(t, d)));
+}
+
+/** `mejorDe` para el diccionario propio: descarta los parecidos por palabra genérica. */
+function mejorDePropio(toks, lista) {
+  let mejor = null, max = 0;
+  for (const item of lista) {
+    if (!compartePalabraDistintiva(toks, item)) continue;
+    const sim = simTokens(toks, item.tokens);
+    if (sim > max) { max = sim; mejor = item; }
+  }
+  return { item: mejor, score: max };
 }
 
 /**
@@ -1956,7 +2054,7 @@ function clasificarBaseIUPC(texto, { terminosCustom = null } = {}) {
   //     El parecido a un término APRENDIDO no entra acá: compite contra la
   //     norma más abajo (paso 5b), no antes que ella.
   if (custom.manual.lista.length) {
-    const mc = mejorDe(toks, custom.manual.lista);
+    const mc = mejorDePropio(toks, custom.manual.lista);
     if (mc.item && mc.score >= 0.55) {
       return recIUPC({
         codigo: mc.item.cod,
@@ -2026,7 +2124,7 @@ function clasificarBaseIUPC(texto, { terminosCustom = null } = {}) {
   //     parecido flojo con un término mal aprendido tapaba una coincidencia
   //     buena de la R.J. 016-2026.
   if (custom.aprendido.lista.length) {
-    const ma = mejorDe(toks, custom.aprendido.lista);
+    const ma = mejorDePropio(toks, custom.aprendido.lista);
     if (ma.item && ma.score >= 0.55 && (maxScore < 0.35 || ma.score >= maxScore + VENTAJA_APRENDIDO)) {
       return recIUPC({
         codigo: ma.item.cod,
