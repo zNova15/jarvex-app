@@ -45,6 +45,10 @@ import {
   catalogoDelPresupuesto, existenciasDelAlmacen, bandejaImputacion, parcheImputacion,
   insumosCubiertosPorAlmacen, factorPropuesto, IMPUTACION_LABEL, TABLAS_ALMACEN,
 } from "../lib/simulador-imputacion.js";
+import {
+  sortearEnfoques, ENFOQUES_SORTEO, ENFOQUE_LABEL, ENFOQUE_ICONO,
+} from "../lib/simulador-sorteo.js";
+import { recomendarEnfoque } from "../lib/simulador-sorteo-ai.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
 import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro } from "../lib/indices-unificados-iupc.js";
 import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js";
@@ -163,6 +167,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [almacenCrudo, setAlmacenCrudo] = uS(null);
   const imputarRef = uR(false);
   const [imputando, setImputando] = uS(null);
+  // Tanda 2.6 (opcional): la recomendación de la IA sobre los 3 enfoques ya
+  // calculados. Vive en un state aparte del motor porque es la ÚNICA parte
+  // de esta pantalla que pega a la red por decisión explícita de un click —
+  // nunca se pide sola.
+  const [recoIA, setRecoIA] = uS(null);
+  const [pidiendoIA, setPidiendoIA] = uS(false);
 
   // ── Escenarios (localStorage, por obra) ───────────────────────────
   const [escenarios, setEscenarios] = uS([]);
@@ -386,6 +396,49 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     () => aplicarEscenario(corrida || { propuestas: [], sobres: [] }, escenario),
     [corrida, escenario]
   );
+
+  // ── LOS TRES ENFOQUES (tanda 2.6, opcional) ───────────────────────
+  // Determinístico y gratis: corre el motor real 3 veces con las perillas
+  // de reparto/anticipación/frecuencia/monto mínimo ya existentes. Solo se
+  // calcula con la pestaña abierta — son 4 corridas del motor (la de
+  // `montoMinimoSugerido` + una por enfoque) y Miraflores no las necesita
+  // hasta que alguien mira esta pestaña.
+  const enfoques = uM(() => {
+    if (!obraId || vista !== 'enfoques') return null;
+    const motor = paramsDeMotor(params);
+    return sortearEnfoques({
+      insumosPartida: ipHook.data || [], partidas: partidasHook.data || [],
+      ...motor, plazo,
+      ordenes: ordenesObra, ocItems,
+      requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
+      consumoSobres, terminosCustom, compras, almacen: almacenFilas,
+    });
+  }, [obraId, vista, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
+    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, almacenFilas]);
+
+  // Se limpia al recalcular: una recomendación vieja sobre números que ya
+  // cambiaron (otra obra, otro escenario) no se puede seguir mostrando como
+  // si fuera de esta corrida.
+  uE(() => { setRecoIA(null); }, [enfoques]);
+
+  const pedirRecomendacionIA = async () => {
+    if (!enfoques?.length || pidiendoIA) return;
+    setPidiendoIA(true);
+    try {
+      const contexto = {
+        obra_nombre: obra?.nombre_obra || '',
+        plazo_fin: plazo?.fin || null,
+        montoComprable: resumen?.montoComprable ?? null,
+        categoriasActivas: params.categorias,
+        lineasTramoLargo: resumen?.lineasTramoLargo ?? null,
+        almacenModo: params.almacenModo || 'entradas',
+      };
+      const r = await recomendarEnfoque(enfoques, contexto);
+      setRecoIA(r);
+    } finally {
+      setPidiendoIA(false);
+    }
+  };
 
   // Los rubros que tiene el plan, para fijarles una frecuencia propia. Los
   // que ya tienen una fijada se ofrecen aunque esta corrida no los traiga:
@@ -1177,6 +1230,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           ['pendientes', `⚠ Sin planificar (${corrida?.pendientes.length || 0})`],
           ['documentos', `📄 Ya pedido (${yaEscrito.size})`],
           ['imputar', `🧾 Imputar lo ya comprado (${(resumen?.ocSinImputar?.lineas || 0) + (resumen?.almacen?.sinImputar?.items || 0)})`],
+          ['enfoques', '💡 Escenarios sugeridos'],
         ].map(([id, lbl]) => (
           <button key={id} className={`btn btn-sm ${vista === id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVista(id)}>{lbl}</button>
         ))}
@@ -1313,6 +1367,18 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           permiso={permiso}
           emitiendo={emitiendo}
           onEmitir={emitirOrden}
+        />
+      )}
+
+      {/* ═══ ESCENARIOS SUGERIDOS (tanda 2.6, opcional) ═════════════ */}
+      {!cargando && vista === 'enfoques' && (
+        <EnfoquesVista
+          enfoques={enfoques}
+          params={params}
+          onUsar={(overrides) => { cambiarParam(overrides); setVista('ordenes'); toast('Enfoque aplicado — mirá «Órdenes propuestas»', 'green'); }}
+          recoIA={recoIA}
+          pidiendoIA={pidiendoIA}
+          onPedirIA={pedirRecomendacionIA}
         />
       )}
 
@@ -2698,6 +2764,87 @@ function PersonalizadoAlmacen({ cubiertos, porInsumo, onParam }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ESCENARIOS SUGERIDOS (tanda 2.6, OPCIONAL)
+//
+// Tres combinaciones de las perillas que ya existen (reparto, anticipación,
+// frecuencia, monto mínimo), corridas con el motor REAL. Elegir un enfoque es
+// lo mismo que cambiar esas perillas a mano en el panel de arriba — no hay
+// nada que este archivo calcule distinto. La IA es un botón aparte: opina
+// sobre los tres números ya calculados, nunca inventa uno nuevo.
+// ═══════════════════════════════════════════════════════════════════
+
+function EnfoquesVista({ enfoques, params, onUsar, recoIA, pidiendoIA, onPedirIA }) {
+  if (!enfoques) {
+    return <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Corriendo los tres enfoques…</div>;
+  }
+  const actuales = { reparto: params.reparto, anticipacionDias: params.anticipacionDias, frecuencia: params.frecuencia, montoMinimoOrden: params.montoMinimoOrden };
+  const yaAplicado = (c) => Object.entries(c.overrides).every(([k, v]) => actuales[k] === v);
+
+  return (
+    <div>
+      <div className="card card-p" style={{ marginBottom: 12 }}>
+        Tres combinaciones de reparto, anticipación, frecuencia y monto mínimo —las perillas que ya tenés en el panel
+        de arriba—, corridas con el motor real. Elegir uno cambia esas perillas; no hay ninguna cantidad ni precio que
+        salga distinto de lo que el motor ya calcula. El colchón por insumo no lo toca ningún enfoque: eso lo seguís
+        decidiendo vos, insumo por insumo.
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+        <button className="btn btn-sm btn-amber" disabled={pidiendoIA} onClick={onPedirIA}>
+          {pidiendoIA ? 'Pidiendo…' : '🤖 Pedir recomendación a la IA'}
+        </button>
+        {recoIA && !recoIA.recomendado && (
+          <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+            No se consiguió opinión de la IA{recoIA.motivo ? ` (${recoIA.motivo})` : ''} — los tres enfoques de abajo
+            son igual de reales sin ella.
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+        {enfoques.map(c => (
+          <EnfoqueCard key={c.id} c={c} destacado={recoIA?.recomendado === c.id} recoIA={recoIA?.recomendado === c.id ? recoIA : null}
+            aplicado={yaAplicado(c)} onUsar={() => onUsar(c.overrides)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EnfoqueCard({ c, destacado, recoIA, aplicado, onUsar }) {
+  const r = c.corrida.resumen;
+  return (
+    <div className="card card-p" style={{ borderLeft: `3px solid ${destacado ? 'var(--amber)' : 'var(--border)'}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <span style={{ fontSize: 18 }}>{c.icono}</span>
+        <b style={{ fontSize: 13.5 }}>{c.nombre}</b>
+        {destacado && <span style={{ fontSize: 10.5, color: 'var(--amber)', fontWeight: 600, marginLeft: 'auto' }}>🤖 recomendado</span>}
+      </div>
+      <p style={{ fontSize: 12, color: 'var(--tm)', margin: '0 0 8px' }}>{c.resumenTexto}</p>
+
+      <div style={{ display: 'flex', gap: 12, fontSize: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div><b>{c.corrida.propuestas.length}</b> orden(es)</div>
+        <div><b>{pct(r.cobertura)}</b> cobertura</div>
+        <div><b>{solesK(r.montoPropuesto)}</b></div>
+      </div>
+
+      <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 10px' }}>{c.porQue}</p>
+
+      {recoIA && (
+        <div style={{ fontSize: 11.5, background: 'var(--bg-p)', border: '1px solid var(--amber)', borderRadius: 6, padding: 8, marginBottom: 10 }}>
+          <b>Por qué la IA eligió éste:</b> {recoIA.explicacion}
+          {recoIA.riesgo && <div style={{ marginTop: 4, color: 'var(--tm)' }}>⚠ {recoIA.riesgo}</div>}
+        </div>
+      )}
+
+      <button className="btn btn-sm btn-ghost" disabled={aplicado} onClick={onUsar} style={{ width: '100%' }}>
+        {aplicado ? '✓ Ya aplicado' : 'Usar este enfoque'}
+      </button>
     </div>
   );
 }

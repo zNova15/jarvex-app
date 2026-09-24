@@ -95,6 +95,84 @@ const ROLES = [
   'residente', 'ingeniero', 'jefe_compras', 'asistente_admin', 'prevencionista',
 ];
 
+// ═══════════════════════════════════════════════════════════════════
+// ACCIÓN 2: RECOMENDAR UN ENFOQUE DEL SIMULADOR DE ÓRDENES (ronda 2, tanda
+// 2.6 — OPCIONAL, solo porque Gabriel la pidió el 24-set-2026 después de usar
+// las tandas 2.1-2.5. docs/plan-simulador-ordenes.md §13).
+//
+// `body.action === 'recomendar_enfoque_simulador'`. Multiplexado en este
+// mismo endpoint (regla de CLAUDE.md: preferir multiplexar antes que crear),
+// igual que sugerir-cuenta-pcge lo hace por `body.action`.
+//
+// ── LO QUE LA IA VE, Y LO QUE NO PUEDE HACER ───────────────────────
+// El motor determinístico (`src/lib/simulador-sorteo.js`) YA corrió los tres
+// enfoques con el motor real y ya tiene sus números (cobertura, órdenes,
+// plata). A la IA le llegan esos TRES RESÚMENES YA CALCULADOS, nunca el
+// presupuesto ni el cronograma — no hay con qué inventar una cantidad porque
+// no ve ninguna línea suelta. Su único trabajo es señalar CUÁL de los tres
+// (un id de una lista cerrada) conviene más para ESTA obra y explicar por qué
+// en un párrafo corto, citando los números que ya se le dieron. Si el id que
+// devuelve no es uno de los que se le pasaron, se descarta — misma regla que
+// un insumo_id inventado en la solicitud de arriba.
+//
+// Distinta allowlist de roles: el simulador de órdenes lo usan Gabriel y la
+// contadora en jefe (§8 del plan), no el personal de almacén/obra de arriba.
+const ROLES_ENFOQUES = ['admin', 'gerente', 'contador', 'ayudante_contador'];
+
+export function systemPromptEnfoques() {
+  return `Sos un asesor de compras de una constructora peruana. Te paso TRES enfoques ya calculados por un motor determinístico para planificar las órdenes de compra de una obra — cada uno con su número real de órdenes, su cobertura y su plata. Vos NO calculás nada nuevo: elegís cuál de los tres conviene más para ESTA obra y explicás por qué, en un párrafo corto y concreto, citando SOLO los números que te paso.
+
+🔴 NUNCA inventes una cantidad, un monto o un plazo que no esté en lo que te doy. Si necesitás un número para tu explicación, usá uno de los que ya vienen en los resúmenes.
+🔴 "recomendado" tiene que ser EXACTAMENTE uno de los "id" de la lista de enfoques. No inventes un id nuevo ni dejes el campo vacío si hay al menos un enfoque.
+
+DEVOLVÉ SOLO JSON VÁLIDO, sin markdown y sin texto antes ni después:
+{
+  "recomendado": "caja_ajustada",
+  "explicacion": "Con 100% de cobertura en los tres, éste es el que menos plata compromete de una vez: 9 órdenes chicas en vez de 4 grandes, cada una del tamaño de lo que se necesita ese mes.",
+  "riesgo": "Si el flujo de caja no es el problema, junta más trabajo administrativo que los otros dos."
+}
+"riesgo" es opcional (contracara del que elegiste); si no aplica, cadena vacía.`;
+}
+
+export function userPromptEnfoques(candidatos = [], contexto = {}) {
+  const p = [];
+  p.push(`OBRA: ${sanitizeForPrompt(contexto.obra_nombre || '(sin nombre)', 120)}`);
+  if (contexto.plazo_fin) p.push(`PLAZO: hasta ${contexto.plazo_fin}`);
+  if (contexto.mesesRestantes != null) p.push(`MESES RESTANTES: ${contexto.mesesRestantes}`);
+  if (contexto.montoComprable != null) p.push(`PRESUPUESTO COMPRABLE: S/ ${Number(contexto.montoComprable).toLocaleString('es-PE')}`);
+  if (Array.isArray(contexto.categoriasActivas) && contexto.categoriasActivas.length) {
+    p.push(`CATEGORÍAS INCLUIDAS: ${contexto.categoriasActivas.join(', ')}`);
+  }
+  if (contexto.lineasTramoLargo != null) p.push(`LÍNEAS DE TRAMO LARGO (más de 30 días): ${contexto.lineasTramoLargo}`);
+  if (contexto.almacenModo) p.push(`DEL ALMACÉN SE RESTA: ${contexto.almacenModo}`);
+  p.push('');
+  p.push(`═══ LOS TRES ENFOQUES YA CALCULADOS (${candidatos.length}) ═══`);
+  for (const c of (candidatos || [])) {
+    p.push(`- id: ${c.id} | ${sanitizeForPrompt(c.nombre || '', 60)}`);
+    p.push(`  ${sanitizeForPrompt(c.resumenTexto || '', 200)}`);
+    const r = c.resumen || {};
+    p.push(`  órdenes: ${r.ordenes ?? '—'} · cobertura: ${r.cobertura != null ? Math.round(r.cobertura * 100) + '%' : '—'}`
+      + ` · plata propuesta: S/ ${r.montoPropuesto != null ? Number(r.montoPropuesto).toLocaleString('es-PE') : '—'}`);
+  }
+  return p.join('\n');
+}
+
+/**
+ * Saneo de la recomendación. `recomendado` fuera de la lista cerrada de
+ * candidatos se descarta entero — un enfoque inventado no se puede aplicar,
+ * y aplicar el equivocado es peor que no recomendar nada.
+ */
+export function sanearEnfoque(crudo, idsValidos = []) {
+  const ids = new Set(idsValidos);
+  const recomendado = crudo?.recomendado && ids.has(String(crudo.recomendado)) ? String(crudo.recomendado) : null;
+  if (!recomendado) return { recomendado: null, explicacion: '', riesgo: '' };
+  return {
+    recomendado,
+    explicacion: String(crudo?.explicacion || '').trim().slice(0, 500),
+    riesgo: String(crudo?.riesgo || '').trim().slice(0, 300),
+  };
+}
+
 export function systemPrompt() {
   return `Eres el asistente de Solicitud de Insumos de una constructora peruana. Recibís el mensaje CRUDO que el personal de obra mandó por WhatsApp y lo convertís en una solicitud estructurada.
 
@@ -334,6 +412,75 @@ export function armarRespuesta(crudo, body, { prep = null, motivoLocal = null } 
   return out;
 }
 
+// Los `id` que puede devolver la IA: la lista cerrada de enfoques del motor
+// determinístico. Se re-declara acá (no importa simulador-sorteo.js) porque
+// este archivo vive en /api — un import que arrastre React/Dexie por
+// transitividad lo rompería; ambas listas las cubre un test que las compara.
+const IDS_ENFOQUE = ['caja_ajustada', 'cero_desabastecimiento', 'pocas_ordenes'];
+
+/**
+ * Rama de `handler` para `action:'recomendar_enfoque_simulador'` (tanda 2.6).
+ * Nunca bloquea: si la IA no está configurada, falla o tarda, responde 200
+ * con `recomendado:null` — la pantalla ya tiene los tres enfoques calculados
+ * por el motor determinístico y sigue mostrándolos igual, solo sin la
+ * opinión de la IA encima. Exportada para poder testear el camino entero.
+ */
+export async function handleRecomendarEnfoque(req, res, body) {
+  const candidatos = (Array.isArray(body?.candidatos) ? body.candidatos : [])
+    .filter(c => c && IDS_ENFOQUE.includes(String(c.id)))
+    .slice(0, 3);
+  if (!candidatos.length) {
+    return res.status(422).json({ error: 'Faltan los enfoques ya calculados.' });
+  }
+  const idsValidos = candidatos.map(c => String(c.id));
+  const contexto = (body?.contexto && typeof body.contexto === 'object') ? body.contexto : {};
+
+  const sinIA = (motivo) => res.status(200).json({
+    result: { recomendado: null, explicacion: '', riesgo: '' },
+    motivo,
+    model: null,
+    costo: 0,
+  });
+
+  const cfg = leerConfig();
+  if (!cfg.activo) return sinIA('la IA no está configurada en el servidor');
+
+  const deadline = Date.now() + 20_000;
+  const cadena = armarCadenaOpenRouter('auto', cfg);
+  try {
+    const data = await openrouterChat(cfg.apiKey, construirCuerpo({
+      modelo: cadena.modelo,
+      respaldos: cadena.respaldos,
+      politica: cfg.politica,
+      system: systemPromptEnfoques(),
+      user: userPromptEnfoques(candidatos, contexto),
+      // La respuesta es un párrafo corto (recomendado + explicación + riesgo),
+      // no una lista de ítems: 1.500 alcanza de sobra incluido el razonamiento.
+      maxTokens: 1500,
+      razonamiento: 'bajo',
+    }), deadline);
+
+    const r = normalizarRespuesta(data);
+    if (r.stop_reason === 'max_tokens') return sinIA('la respuesta de la IA se cortó');
+    const crudo = jsonDeTexto(r.content?.[0]?.text || '');
+    if (!crudo) return sinIA('la IA no devolvió un resultado legible');
+
+    return res.status(200).json({
+      result: sanearEnfoque(crudo, idsValidos),
+      model: r.model || cadena.modelo,
+      costo: r.costo,
+    });
+  } catch (e) {
+    console.warn('[asistente-solicitud] enfoques: IA falló:', e?.upstreamStatus || e?.name || e?.message);
+    try {
+      return sinIA('la IA no respondió');
+    } catch (e2) {
+      const s = sanitizeError(e2, 'No se pudo pedir la recomendación');
+      return res.status(s.status).json(s.body);
+    }
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método no permitido' });
 
@@ -352,11 +499,23 @@ export default async function handler(req, res) {
     // REINTENTABLE: 503, no un 403 que diagnostica mal un problema pasajero.
     return res.status(503).json({ error: 'No se pudo verificar tu rol en este momento — reintentá en unos segundos.', code: 'rol_no_verificable' });
   }
+
+  const body = req.body || {};
+
+  // ── ACCIÓN 2 (tanda 2.6, opcional): recomendar un enfoque del simulador ──
+  // Distinta allowlist (§8 del plan: Gabriel y la contadora, no almacén/obra)
+  // y distinto cuerpo de request — se separa ANTES de leer `texto`.
+  if (body.action === 'recomendar_enfoque_simulador') {
+    if (!ROLES_ENFOQUES.includes(rol)) {
+      return res.status(403).json({ error: 'Tu rol no puede pedir recomendaciones del simulador de órdenes.' });
+    }
+    return handleRecomendarEnfoque(req, res, body);
+  }
+
   if (!ROLES.includes(rol)) {
     return res.status(403).json({ error: 'Tu rol no puede usar el asistente de solicitudes. Pedile al admin que lo revise.' });
   }
 
-  const body = req.body || {};
   const texto = typeof body.texto === 'string' ? body.texto.trim() : '';
   if (!texto) return res.status(422).json({ error: 'Pegá el texto del requerimiento.' });
   if (texto.length > MAX_TEXTO) {

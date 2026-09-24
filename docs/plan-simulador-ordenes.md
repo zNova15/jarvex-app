@@ -803,4 +803,49 @@ no puede: explicar un enfoque y variarlo con criterio.
         almacén (rls033: admin, gerente, jefe_compras, …). El SyncEngine no
         sube `stock_actual` ni totales (TRIGGER_MANAGED_FIELDS), así que
         imputar un material no pisa su stock.
-- [ ] Tanda 2.6 (opcional) — escenarios con IA, solo si Gabriel la pide
+- [x] Tanda 2.6 (opcional) — escenarios con IA (24-set). Pedida por Gabriel
+      después de usar 2.1-2.5. `src/lib/simulador-sorteo.js` (nuevo, puro,
+      14 tests) + `src/lib/simulador-sorteo-ai.js` (cliente) + acción
+      `recomendar_enfoque_simulador` multiplexada en
+      `api/asistente-solicitud.js` (10 tests nuevos) + pestaña
+      «💡 Escenarios sugeridos» en `jx-simulador-ordenes.jsx`.
+      **Lo que cambió respecto de §13:**
+      · **El colchón se sacó de la lista de perillas que un enfoque toca.**
+        El texto original de esta tabla lo incluía junto a reparto,
+        anticipación, frecuencia y monto mínimo — pero CLAUDE.md §8 (decisión
+        de Gabriel, tanda 2.2) prohíbe explícitamente una tabla de colchones
+        sugerida por el motor. Un enfoque que le subiera el colchón a
+        «cemento, agregados, etc.» sería exactamente esa tabla. Cada enfoque
+        toca solo reparto, anticipación, frecuencia y monto mínimo — las
+        cuatro perillas que la persona ya puede tocar a mano.
+      · **El motor determinístico corre PRIMERO y es autosuficiente**, tal
+        como pedía el diseño: `sortearEnfoques()` corre `simularOrdenes()`
+        tres veces (una por enfoque) con el motor REAL, sin IA, gratis. La
+        pestaña muestra los tres con sus números reales aunque la IA nunca
+        se llame.
+      · **«Pocas órdenes» no usa un monto mínimo de oficio.** Se mide contra
+        la propia obra: se corre primero un baseline (mensual, sin mínimo) y
+        se toma 1,5× la mediana de sus montos, redondeada a la centena — si
+        hay menos de 4 propuestas para medir, el mínimo queda en 0 (no
+        inventa un umbral sin datos).
+      · **Ningún enfoque elige `reparto:'cuadrilla'` ni `'manual'`**, herede
+        lo que herede la base: la tanda 1 ya dejó escrito que esas dos
+        estrategias pueden quedar sin datos con qué contestar, y un enfoque
+        automático no puede caer ahí.
+      · **Respeta el anclaje, el cronograma, las categorías, `almacenModo` y
+        `frecuenciaPorRubro` de la base** — son la PREGUNTA que la persona ya
+        eligió, no algo que un enfoque decida por ella.
+      · **La IA ve solo los TRES resúmenes ya calculados** (id, cobertura,
+        n° de órdenes, plata), nunca el presupuesto ni el cronograma: no hay
+        con qué inventar una cantidad. Devuelve cuál de los tres `id`
+        recomienda + una explicación corta; un id fuera de la lista cerrada
+        se descarta entero (misma regla que el `insumo_id` inventado del
+        asistente de solicitudes). Es un botón aparte («🤖 Pedir
+        recomendación a la IA»): nunca se llama sola al abrir la pestaña.
+      · Distinta allowlist de roles que el resto del endpoint: admin,
+        gerente, contador, ayudante_contador — los mismos que ven el
+        simulador (§8 del plan), no el personal de almacén/obra que usa
+        Solicitud de Insumos.
+      · Sin migración, sin tabla nueva. `simulador-sorteo.js` no se separó en
+        un chunk aparte del build: solo lo importa `jx-simulador-ordenes.jsx`,
+        así que Rollup lo deja adentro de ese mismo chunk lazy.

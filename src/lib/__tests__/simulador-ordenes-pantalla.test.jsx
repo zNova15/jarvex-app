@@ -243,6 +243,17 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).not.toMatch(/Aceptar todas<\/button>|Imputar todas/);
   });
 
+  it('ofrece la pestaña de escenarios sugeridos, con los tres corridos por el motor real (tanda 2.6, opcional)', () => {
+    const html = render({ vistaInicial: 'enfoques' });
+    expect(html).toContain('Pedir recomendación a la IA');
+    expect(html).toContain('Caja ajustada');
+    expect(html).toContain('Cero desabastecimiento');
+    expect(html).toContain('Pocas órdenes');
+    // Ninguna cantidad ni precio nuevo: solo las perillas que ya existen.
+    expect(html).toContain('El colchón por insumo no lo toca ningún enfoque');
+    expect(html).toContain('Usar este enfoque');
+  });
+
   it('sin obra activa no revienta: muestra el vacío', () => {
     const antes = globalThis.__getObraActivaId;
     const antesHooks = globalThis.__hooks.useObras;
