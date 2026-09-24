@@ -338,6 +338,7 @@ const AYUDA = {
       'LA PROPUESTA QUE YA ES DOCUMENTO LO DICE EN SU TARJETA («ya escrita como requisición», «ya emitida como EI-OC-004-2026») y no se vuelve a escribir aunque la aceptes de nuevo: aceptar dos veces la misma propuesta es exactamente el doble pedido que todo esto viene a evitar. Una requisición cancelada o rechazada libera su propuesta y se puede volver a pedir.',
       'A QUIÉN PEDIRLE: al abrir una orden aparece quién ya te vendió cosas parecidas, con la evidencia al lado (qué pedís y qué te vendió). Sale de las facturas del grupo, no de un rubro declarado —el rubro lo tienen 28 de 577 candidatos—. Y NO trae precio a propósito: emparejar por nombre acierta el proveedor pero no el diámetro, y un «último precio» de otra válvula es un número que alguien copia. El precio que ves sigue siendo el del expediente.',
       'MIENTRAS NO LO CONVIERTAS, el escenario vive en ESTE navegador: no se sincroniza, no lo ve nadie más y no viaja a otra computadora. «Descargar el plan aceptado» baja las líneas en un CSV.',
+      'PARA IR DIRECTO A UN MES (24-set) hay una tira de chips arriba de la lista, con cada mes, su monto, cuántas órdenes trae y qué porcentaje ya decidiste; un clic salta al bloque sin bajar por todos los meses anteriores. En semana a semana, las semanas cuelgan como chips chicos dentro de su mes.',
     ],
     dueno: ['gerente', 'contador'],
   },

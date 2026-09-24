@@ -747,6 +747,19 @@ no puede: explicar un enfoque y variarlo con criterio.
 
       La plata propuesta es la misma con cualquier combinación (±S/ 0,05 de
       redondeo) y las entregas de cada línea suman la línea.
-- [ ] Tanda 2.4 — navegación por meses (chips)
+- [x] Tanda 2.4 — navegación por meses (chips) (24-set). Solo
+      `jx-simulador-ordenes.jsx` — sin motor, sin migración. Tira de chips
+      sticky arriba de la lista de órdenes (pestaña «Órdenes propuestas»,
+      solo si hay más de un período): un chip por mes con monto, n° de
+      órdenes y % decidido (`propuestas.filter(estado !== 'pendiente')`), que
+      hace `scrollIntoView` al bloque del mes (`id="jx-sim-periodo-<periodo>"`,
+      con `scrollMarginTop` para no quedar tapado por la tira sticky ni por el
+      header). En semana a semana las semanas se agrupan por mes con
+      `mesDePeriodo` (la misma función que ya usa la 2.3 para la consolidación,
+      re-exportada de `simulador-ordenes.js`) y cuelgan como sub-chips chicos
+      dentro del chip de su mes — la tira sigue teniendo ~9 paradas en vez de
+      36. No hay resaltado del chip activo por scroll-spy: no lo pidió
+      Gabriel y sumaba un IntersectionObserver para un dato que el propio
+      click ya deja claro.
 - [ ] Tanda 2.5 — imputar las 62 líneas + stock del almacén
 - [ ] Tanda 2.6 (opcional) — escenarios con IA, solo si Gabriel la pide

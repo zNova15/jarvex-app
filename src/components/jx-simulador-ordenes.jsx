@@ -38,6 +38,7 @@ import {
   ANCLAJES, ANCLAJE_LABEL, CRONOGRAMAS, CRONOGRAMA_LABEL,
   REPARTOS, REPARTO_LABEL, GRANULARIDADES,
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
+  mesDePeriodo, etiquetaPeriodo,
 } from "../lib/simulador-ordenes.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
 import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro } from "../lib/indices-unificados-iupc.js";
@@ -410,6 +411,44 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     }
     return [...m.values()].sort((a, b) => (a.periodo < b.periodo ? -1 : 1));
   }, [propuestasVisibles]);
+
+  // ── TIRA DE CHIPS POR PERÍODO (tanda 2.4) ─────────────────────────
+  // Ver noviembre hoy es bajar por todos los meses anteriores. La tira
+  // resume cada mes (monto, n° de órdenes, cuánto ya se decidió) y saltа al
+  // bloque con un click. En semana a semana las semanas cuelgan como
+  // sub-chips DE su mes (mismo `mesDePeriodo` que ya usa la consolidación,
+  // §12.3): así «octubre» sigue siendo una sola parada aunque tenga 4-5
+  // semanas adentro, en vez de una tira de 36 chips sueltos.
+  const chipsPorMes = uM(() => {
+    if (params.granularidad !== 'semana') {
+      return porPeriodo.map(g => ({
+        clave: g.periodo, etiqueta: g.etiqueta, monto: g.monto,
+        ordenes: g.propuestas.length,
+        decididas: g.propuestas.filter(p => p.estado !== 'pendiente').length,
+        semanas: null,
+      }));
+    }
+    const m = new Map();
+    for (const g of porPeriodo) {
+      const mes = mesDePeriodo(g.periodo) || g.periodo;
+      const acc = m.get(mes) || { clave: mes, etiqueta: etiquetaPeriodo(mes), monto: 0, ordenes: 0, decididas: 0, semanas: [] };
+      acc.monto += g.monto;
+      acc.ordenes += g.propuestas.length;
+      acc.decididas += g.propuestas.filter(p => p.estado !== 'pendiente').length;
+      acc.semanas.push({
+        clave: g.periodo, etiqueta: g.etiqueta, monto: g.monto,
+        ordenes: g.propuestas.length,
+        decididas: g.propuestas.filter(p => p.estado !== 'pendiente').length,
+        semanas: null,
+      });
+      m.set(mes, acc);
+    }
+    return [...m.values()].sort((a, b) => (a.clave < b.clave ? -1 : 1));
+  }, [porPeriodo, params.granularidad]);
+
+  const irAlPeriodo = (periodo) => {
+    document.getElementById(`jx-sim-periodo-${periodo}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   // ── Mutaciones del escenario (se autoguardan) ─────────────────────
   // Autosave y no un botón «Guardar»: lo que se pierde acá son decisiones de
@@ -1000,6 +1039,25 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
             </span>
           </div>
 
+          {porPeriodo.length > 1 && (
+            <div style={{
+              position: 'sticky', top: 'var(--header-h)', zIndex: 4, background: 'var(--bg-p)',
+              marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid var(--border)',
+            }}>
+              <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingTop: 2 }}>
+                {chipsPorMes.map(c => (
+                  <div key={c.clave} style={{
+                    display: 'flex', gap: 4, alignItems: 'flex-start', flexShrink: 0,
+                    ...(c.semanas ? { border: '1px solid var(--border)', borderRadius: 8, padding: 4 } : {}),
+                  }}>
+                    <ChipPeriodo c={c} principal onClick={() => irAlPeriodo(c.semanas ? c.semanas[0].clave : c.clave)} />
+                    {c.semanas?.map(s => <ChipPeriodo key={s.clave} c={s} chico onClick={() => irAlPeriodo(s.clave)} />)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {porPeriodo.length === 0 ? (
             <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
               {(corrida?.propuestas.length || 0) === 0
@@ -1007,7 +1065,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                 : 'Ninguna orden coincide con el filtro.'}
             </div>
           ) : porPeriodo.map(g => (
-            <div key={g.periodo} style={{ marginBottom: 16 }}>
+            <div key={g.periodo} id={`jx-sim-periodo-${g.periodo}`} style={{ marginBottom: 16, scrollMarginTop: 'calc(var(--header-h) + 100px)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <b style={{ fontSize: 14 }}>{g.etiqueta}</b>
                 <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
@@ -1136,6 +1194,29 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
         )}
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UN CHIP DE LA TIRA DE NAVEGACIÓN (tanda 2.4)
+// ═══════════════════════════════════════════════════════════════════
+
+function ChipPeriodo({ c, onClick, chico, principal }) {
+  const pctDecidido = c.ordenes > 0 ? Math.round((c.decididas / c.ordenes) * 100) : 0;
+  const colorPct = pctDecidido === 100 ? 'var(--green)' : pctDecidido > 0 ? 'var(--blue)' : 'var(--tm)';
+  const etiqueta = chico ? c.etiqueta.replace(/^semana (\d+) de \d{4}$/, 'sem. $1') : c.etiqueta;
+  return (
+    <button className="btn btn-sm btn-ghost" onClick={onClick}
+      title={`${c.etiqueta} · ${solesK(c.monto)} · ${c.ordenes} orden(es) · ${pctDecidido}% decidido`}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1, textAlign: 'left',
+        padding: chico ? '3px 7px' : '5px 10px', fontSize: chico ? 10 : 11.5, lineHeight: 1.3,
+        minWidth: chico ? 58 : 82,
+      }}>
+      <b style={{ fontWeight: principal ? 700 : 500 }}>{etiqueta}</b>
+      <span style={{ color: 'var(--tm)' }}>{solesK(c.monto)} · {c.ordenes} ord.</span>
+      <span style={{ color: colorPct }}>{pctDecidido}% decidido</span>
+    </button>
   );
 }
 
