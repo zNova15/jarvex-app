@@ -944,7 +944,19 @@ alquileres · Mano de obra (referencia) · Sin planificar · Ya pedido.
 al modo elegido. «Imputar lo ya comprado» se muda a su propia sección de
 Logística.
 
-### 15.3 — Decisiones pendientes de Gabriel
+### 15.3 — Decisiones de Gabriel (24-set-2026, noche)
+
+- **Fin de obra: se RESPETA.** Lo que un escenario frena se recupera
+  acelerando al final; el plazo contractual no se mueve. Solo una historia
+  explícita del catálogo («pagos atrasados todo el plazo») lo estira, y la
+  pantalla lo dice.
+- **Arranque en modo Simulación: selector, Gantt por defecto.** Además de las
+  fechas del expediente se puede elegir «como si empezara hoy» o una fecha;
+  se corre el cronograma entero.
+- **Promover a main lo de staging ya** (almacén + registros + ronda 2 tal
+  cual); la ronda 3 lo reordena después.
+
+Preguntas originales:
 
 1. En el escenario aleatorio, ¿se respeta la fecha de fin de obra (lo que se
    frena se recupera acelerando) o se permite que se estire?
