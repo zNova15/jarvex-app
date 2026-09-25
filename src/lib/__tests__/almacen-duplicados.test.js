@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   claveNombre, distanciaEdicion, buscarNombresParecidos,
   buscarMovimientosParecidos, haceCuanto, armarAvisoMovimientos,
-  ordenarMovimientos, cargadoDespues,
 } from '../almacen-duplicados.js';
 
 const mat = (id, nombre, extra = {}) => ({ id, nombre_material: nombre, ...extra });
@@ -181,32 +180,6 @@ describe('armarAvisoMovimientos', () => {
     const [g] = armarAvisoMovimientos([{ nombre: 'X', cantidad: 1, fecha: '2026-09-24', parecidos: [p, p, p, p, p] }], { ahoraMs: AHORA });
     expect(g.filas).toHaveLength(4);
     expect(g.filas[3]).toBe('… y 2 más');
-  });
-});
-
-describe('registro: ordenarMovimientos / cargadoDespues (caso COLLARINES)', () => {
-  const movs = [
-    { id: 'viejo-cargado-hoy', fecha: '2026-09-11', hora: '12:21', created_at: '2026-09-24T17:21:33Z' },
-    { id: 'reciente', fecha: '2026-09-23', hora: '09:00', created_at: '2026-09-23T14:00:00Z' },
-    { id: 'hoy', fecha: '2026-09-24', hora: '08:00', created_at: '2026-09-24T13:00:00Z' },
-  ];
-  it('por fecha, lo cargado hoy con fecha 11/09 queda ÚLTIMO (enterrado)', () => {
-    expect(ordenarMovimientos(movs, 'fecha').map(m => m.id)).toEqual(['hoy', 'reciente', 'viejo-cargado-hoy']);
-  });
-  it('por "cargado", queda PRIMERO', () => {
-    expect(ordenarMovimientos(movs, 'cargado').map(m => m.id)).toEqual(['viejo-cargado-hoy', 'hoy', 'reciente']);
-  });
-  it('no muta el arreglo original', () => {
-    const copia = movs.slice();
-    ordenarMovimientos(movs, 'cargado');
-    expect(movs).toEqual(copia);
-  });
-  it('cargadoDespues marca solo lo cargado 2+ días después de su fecha', () => {
-    const local = (iso) => iso.slice(0, 10); // TZ inyectado
-    expect(cargadoDespues(movs[0], local)).toBe('2026-09-24');
-    expect(cargadoDespues(movs[1], local)).toBeNull();
-    expect(cargadoDespues({ fecha: '2026-09-23', created_at: '2026-09-24T10:00:00Z' }, local)).toBeNull();
-    expect(cargadoDespues({ fecha: '2026-09-24' }, local)).toBeNull();
   });
 });
 

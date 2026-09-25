@@ -6,7 +6,8 @@ import { revertirEstadoMovHerr, ESTADOS_COND } from "../lib/stock-estados.js";
 import { eliminarMovimiento } from "../lib/eliminar-movimiento.js";
 import { stockTrasEditar, dejaNegativo } from "../lib/stock-guard.js";
 import { hoyLocal, horaLocal, fechaLocalDe } from "../lib/fecha.js";
-import { ordenarMovimientos, cargadoDespues } from "../lib/almacen-duplicados.js";
+import { cargadoDespues } from "../lib/registro-movimientos.js";
+import { FiltrosRegistro, useFiltrosRegistro } from "./jx-filtros-registro.jsx";
 import { exportarDataset } from "../lib/export-historico.js";
 // Extraídas de acá a una lib compartida (8-set-2026): el Excel de estos
 // mismos movimientos exportaba una sola columna «Almacén» y perdía la mitad
@@ -1213,10 +1214,6 @@ function MovMaterialesPage({ showToast }) {
   const [q, setQ] = uSM(() => { try { const v = window.__movMatBuscar; if (v) { delete window.__movMatBuscar; return v; } } catch {} return ''; });
   const [tipo, setTipo] = uSM('todos');
   const [soloSinFrente, setSoloSinFrente] = uSM(false);   // filtro del banner "salidas sin frente"
-  // Orden del registro (24-set): 'fecha' = fecha del movimiento (lo de siempre);
-  // 'cargado' = lo último que se REGISTRÓ arriba. Lo cargado hoy con fecha
-  // atrasada quedaba enterrado ("lo subí pero no sale en el registro").
-  const [orden, setOrden] = uSM('fecha');
   // Auto-reset: al asignar el último frente pendiente, el banner (con el
   // toggle) desaparece — sin esto el filtro quedaba atascado en tabla vacía.
   uEM(() => {
@@ -1239,11 +1236,13 @@ function MovMaterialesPage({ showToast }) {
   const subNameMov = uMM(() => { const m = new Map(); (subcontratistas || []).forEach(sc => m.set(sc.id, sc.razon_social)); return m; }, [subcontratistas]);
   const almacenesDe = (m) => almacenesDeMov(m, ubicNombre);
 
-  const sorted = uMM(() => {
-    if (!movs) return [];
-    // Excluir movimientos eliminados (soft delete)
-    return ordenarMovimientos(movs.filter(m => !m.deleted_at), orden);
-  }, [movs, orden]);
+  // Orden y rango de fechas (24-set, jx-filtros-registro.jsx): más reciente /
+  // más antiguo / últimos CARGADOS primero, y acotar por fecha del movimiento.
+  // `vivos` = todo lo no eliminado (para las tarjetas); `sorted` = ya filtrado
+  // por fechas y ordenado.
+  const vivos = uMM(() => (movs || []).filter(m => !m.deleted_at), [movs]);
+  const fr = useFiltrosRegistro(movs);
+  const sorted = fr.lista;
 
   const filtered = uMM(() => {
     return sorted.filter(m => {
@@ -1265,16 +1264,16 @@ function MovMaterialesPage({ showToast }) {
   const monthStart = today.slice(0, 7);
 
   const stats = uMM(() => ({
-    total: sorted.length,
-    entradasHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'entrada').length,
-    salidasHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'salida').length,
+    total: vivos.length,
+    entradasHoy: vivos.filter(m => m.fecha === today && m.tipo_movimiento === 'entrada').length,
+    salidasHoy: vivos.filter(m => m.fecha === today && m.tipo_movimiento === 'salida').length,
     // Lo CARGADO hoy, sea cual sea su fecha: si registró algo con fecha
     // atrasada, acá lo ve contar (los "Hoy" de arriba cuentan por fecha).
-    cargadosHoy: sorted.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
-    valorMes: sorted
+    cargadosHoy: vivos.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
+    valorMes: vivos
       .filter(m => (m.fecha || '').startsWith(monthStart) && m.tipo_movimiento === 'entrada')
       .reduce((s, m) => s + (Number(m.precio_unitario_real || 0) * Number(m.cantidad || 0)), 0),
-  }), [sorted]);
+  }), [vivos]);
 
   // ── Avisar a contabilidad: marcar un ingreso como "pendiente de sustento"
   // El mov queda visible en la cola de la contadora (Dashboard Contable →
@@ -1508,7 +1507,7 @@ function MovMaterialesPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {sorted.length} movimientos registrados</div></div>
+        <div><div className="pg-title">Movimiento de Materiales</div><div className="pg-sub">Historial completo · {vivos.length} movimientos registrados</div></div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={()=>setShowConsultas(true)} title="Consultas con contabilidad — preguntar/responder de qué factura es un insumo">
             💬 Consultas{consResumen.pendientes ? <span className="badge b-amber" style={{ marginLeft:4 }}>{consResumen.pendientes}</span> : ''}
@@ -1616,7 +1615,7 @@ function MovMaterialesPage({ showToast }) {
           { label:'Total Movimientos', val:stats.total.toLocaleString('es-PE'), color:'var(--blue)' },
           { label:'Entradas Hoy',      val:stats.entradasHoy.toLocaleString('es-PE'), color:'var(--green)' },
           { label:'Salidas Hoy',       val:stats.salidasHoy.toLocaleString('es-PE'),  color:'var(--orange)' },
-          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>setOrden('cargado') },
+          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>fr.setOrden('cargado') },
           { label:'Valor Entradas Mes', val:fmtS(stats.valorMes), color:'var(--amber)' },
         ].map((s,i)=>(
           <div key={i} className="card card-p" title={s.title} onClick={s.onClick} style={s.onClick ? { cursor:'pointer' } : undefined}><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:24, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
@@ -1630,11 +1629,8 @@ function MovMaterialesPage({ showToast }) {
             {t==='todos' ? 'Todos' : MOV_MAT_TIPO[t]?.lbl || t}
           </button>
         ))}
-        <button onClick={()=>setOrden(o => o === 'fecha' ? 'cargado' : 'fecha')} className={`btn btn-sm ${orden==='cargado'?'btn-amber':'btn-ghost'}`}
-          title="Por defecto se ordena por la FECHA del movimiento. Un movimiento cargado hoy con fecha de hace días queda abajo, junto a los de esa fecha. Con este botón, lo último que se cargó va primero.">
-          {orden === 'cargado' ? '⏱ Orden: últimos cargados' : '📅 Orden: por fecha'}
-        </button>
       </div>
+      <FiltrosRegistro f={fr} total={vivos.length} visibles={filtered.length}/>
 
       {filtered.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="arrowIn" size={40} color="var(--tm)"/><p>No hay movimientos {tipo!=='todos' || q ? 'que coincidan con el filtro' : 'registrados aún'}.</p></div>
@@ -1836,7 +1832,7 @@ function MovMaterialesPage({ showToast }) {
           </table>
         </div>
         <div style={{ padding:'10px 16px', borderTop:'1px solid var(--border)', fontSize:11.5, color:'var(--tm)' }}>
-          Mostrando {filtered.length} de {sorted.length} movimientos
+          Mostrando {filtered.length} de {vivos.length} movimientos
         </div>
       </div>
       )}
@@ -2124,10 +2120,6 @@ function MovHerramientasPage({ showToast }) {
   // igual que el 📜 de materiales y de EPPs.
   const [q, setQ] = uSM(() => { try { const v = window.__movHerrBuscar; if (v) { delete window.__movHerrBuscar; return v; } } catch {} return ''; });
   const [accion, setAccion] = uSM('todas');
-  // Orden del registro (24-set): 'fecha' = fecha del movimiento (lo de siempre);
-  // 'cargado' = lo último que se REGISTRÓ arriba. Lo cargado hoy con fecha
-  // atrasada quedaba enterrado ("lo subí pero no sale en el registro").
-  const [orden, setOrden] = uSM('fecha');
   const [regFisicoOpen, setRegFisicoOpen] = uSM(false);
   const [regDiarioOpen, setRegDiarioOpen] = uSM(false);
   const [regAtrasadoOpen, setRegAtrasadoOpen] = uSM(false);
@@ -2136,11 +2128,13 @@ function MovHerramientasPage({ showToast }) {
   const lookupHerr = (id) => herramientas?.find(h => h.id === id);
   const lookupPers = (id) => personal?.find(p => p.id === id);
 
-  const sorted = uMM(() => {
-    if (!movs) return [];
-    // Excluir movimientos eliminados (soft delete)
-    return ordenarMovimientos(movs.filter(m => !m.deleted_at), orden);
-  }, [movs, orden]);
+  // Orden y rango de fechas (24-set, jx-filtros-registro.jsx): más reciente /
+  // más antiguo / últimos CARGADOS primero, y acotar por fecha del movimiento.
+  // `vivos` = todo lo no eliminado (para las tarjetas); `sorted` = ya filtrado
+  // por fechas y ordenado.
+  const vivos = uMM(() => (movs || []).filter(m => !m.deleted_at), [movs]);
+  const fr = useFiltrosRegistro(movs);
+  const sorted = fr.lista;
 
   // Resumen de sync (mismo patrón que Materiales): la almacenera reportó
   // movimientos de herramientas que "no se subían" SIN ningún aviso — el
@@ -2175,23 +2169,23 @@ function MovHerramientasPage({ showToast }) {
   const sevenDaysAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0, 10);
 
   const stats = uMM(() => ({
-    total: sorted.length,
+    total: vivos.length,
     // Los reversos (reverses_id) no se cuentan como movimientos del día — son
     // correcciones, no ingresos/salidas/devoluciones reales.
-    salidasHoy: sorted.filter(m => m.fecha === today && m.accion === 'salida' && !m.reverses_id).length,
+    salidasHoy: vivos.filter(m => m.fecha === today && m.accion === 'salida' && !m.reverses_id).length,
     // Devolución ≠ ingreso: una herramienta NUEVA que entra es un INGRESO, no
     // una devolución. Sólo cuentan como devolución los retornos (tipo_movimiento).
-    devolHoy: sorted.filter(m => m.fecha === today && m.tipo_movimiento === 'devolucion' && !m.reverses_id).length,
-    ingresosHoy: sorted.filter(m => m.fecha === today && m.accion === 'entrada' && m.tipo_movimiento !== 'devolucion' && m.tipo_movimiento !== 'reverso' && !m.reverses_id).length,
-    danadas: sorted.filter(m => m.estado_devolucion === 'malo').length,
+    devolHoy: vivos.filter(m => m.fecha === today && m.tipo_movimiento === 'devolucion' && !m.reverses_id).length,
+    ingresosHoy: vivos.filter(m => m.fecha === today && m.accion === 'entrada' && m.tipo_movimiento !== 'devolucion' && m.tipo_movimiento !== 'reverso' && !m.reverses_id).length,
+    danadas: vivos.filter(m => m.estado_devolucion === 'malo').length,
     // Lo CARGADO hoy, sea cual sea su fecha: si registró algo con fecha
     // atrasada, acá lo ve contar (los "Hoy" de arriba cuentan por fecha).
-    cargadosHoy: sorted.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
-  }), [sorted]);
+    cargadosHoy: vivos.filter(m => m.created_at && fechaLocalDe(m.created_at) === today).length,
+  }), [vivos]);
 
   const danadasRecientes = uMM(() =>
-    sorted.filter(m => m.estado_devolucion === 'malo' && (m.fecha || '') >= sevenDaysAgo)
-  , [sorted]);
+    vivos.filter(m => m.estado_devolucion === 'malo' && (m.fecha || '') >= sevenDaysAgo)
+  , [vivos]);
 
   // ── Reversar movimiento de herramientas ──────────────────
   const reversedSet = uMM(() => {
@@ -2305,7 +2299,7 @@ function MovHerramientasPage({ showToast }) {
   return (
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
-        <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {sorted.length} registros</div></div>
+        <div><div className="pg-title">Movimiento de Herramientas</div><div className="pg-sub">Historial de salidas, devoluciones y mantenimientos · {vivos.length} registros</div></div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <BotonExportarMovs datasetId="mov_herramientas" obraId={obraId} showToast={showToast}/>
           <button className="btn btn-ghost btn-sm" onClick={()=>setRegFisicoOpen(true)} title="Ver registros físicos diarios subidos">
@@ -2400,7 +2394,7 @@ function MovHerramientasPage({ showToast }) {
           { label:'Ingresos Hoy',          val:stats.ingresosHoy.toLocaleString('es-PE'),  color:'var(--green)' },
           { label:'Salidas Hoy',           val:stats.salidasHoy.toLocaleString('es-PE'),   color:'var(--amber)' },
           { label:'Devoluciones Hoy',      val:stats.devolHoy.toLocaleString('es-PE'),     color:'var(--blue)' },
-          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>setOrden('cargado') },
+          { label:'Cargados Hoy', val:stats.cargadosHoy.toLocaleString('es-PE'), color:'var(--tp)', title:'Registrados hoy en el sistema, con cualquier fecha. Tocá para verlos primero.', onClick:()=>fr.setOrden('cargado') },
         ].map((s,i)=>(
           <div key={i} className="card card-p" title={s.title} onClick={s.onClick} style={s.onClick ? { cursor:'pointer' } : undefined}><div style={{ fontSize:11, color:'var(--tm)' }}>{s.label}</div><div style={{ fontSize:26, fontWeight:800, color:s.color, margin:'4px 0' }}>{s.val}</div></div>
         ))}
@@ -2413,11 +2407,8 @@ function MovHerramientasPage({ showToast }) {
             {a==='todas' ? 'Todas' : a==='entrada' ? 'Ingreso' : a==='devolucion' ? 'Devolución' : MOV_HER_ACCION[a]?.lbl || a}
           </button>
         ))}
-        <button onClick={()=>setOrden(o => o === 'fecha' ? 'cargado' : 'fecha')} className={`btn btn-sm ${orden==='cargado'?'btn-amber':'btn-ghost'}`}
-          title="Por defecto se ordena por la FECHA del movimiento. Un movimiento cargado hoy con fecha de hace días queda abajo, junto a los de esa fecha. Con este botón, lo último que se cargó va primero.">
-          {orden === 'cargado' ? '⏱ Orden: últimos cargados' : '📅 Orden: por fecha'}
-        </button>
       </div>
+      <FiltrosRegistro f={fr} total={vivos.length} visibles={filtered.length}/>
 
       {filtered.length === 0 ? (
         <div className="card card-p empty-state"><JxIcon name="tool" size={40} color="var(--tm)"/><p>No hay movimientos {accion!=='todas' || q ? 'que coincidan con el filtro' : 'registrados aún'}.</p></div>
@@ -2519,7 +2510,7 @@ function MovHerramientasPage({ showToast }) {
           </table>
         </div>
         <div style={{ padding:'10px 16px', borderTop:'1px solid var(--border)', fontSize:11.5, color:'var(--tm)' }}>
-          Mostrando {filtered.length} de {sorted.length} movimientos
+          Mostrando {filtered.length} de {vivos.length} movimientos
         </div>
       </div>
       )}

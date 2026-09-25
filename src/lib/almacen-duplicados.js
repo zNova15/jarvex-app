@@ -253,42 +253,6 @@ export function armarAvisoMovimientos(filas, { ahoraMs = Date.now(), nombreDe = 
     }));
 }
 
-// ── Registro: encontrar lo cargado con fecha atrasada ───────────────
-//
-// Caso COLLARINES (24-set): la salida de 2 jgo se cargó hoy con fecha 11/09.
-// El registro ordena por FECHA DEL MOVIMIENTO, así que quedó 13 días abajo,
-// enterrada bajo todo lo posterior — "lo subí pero no salía en el registro".
-// No se había perdido. Estas dos funciones dan la otra vista.
-
-/**
- * Ordena movimientos. 'fecha' = por fecha+hora del movimiento (lo de siempre);
- * 'cargado' = por cuándo se REGISTRÓ en el sistema (created_at), lo último
- * cargado arriba sin importar la fecha que se le puso.
- */
-export function ordenarMovimientos(movs, orden = 'fecha') {
-  const arr = (movs || []).slice();
-  if (orden === 'cargado') {
-    return arr.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-  }
-  return arr.sort((a, b) => {
-    const fa = (a.fecha || '') + ' ' + (a.hora || '');
-    const fb = (b.fecha || '') + ' ' + (b.hora || '');
-    return fb.localeCompare(fa);
-  });
-}
-
-/**
- * Si el movimiento se cargó 2+ días DESPUÉS de su fecha, devuelve la fecha
- * local (YYYY-MM-DD) en que se cargó; si no, null. `fechaLocalDe` convierte el
- * created_at (UTC) a la fecha de la obra — se inyecta para no depender del TZ.
- */
-export function cargadoDespues(m, fechaLocalDe) {
-  if (!m?.created_at || !m?.fecha) return null;
-  const cargado = fechaLocalDe(m.created_at);
-  if (!cargado) return null;
-  return diasEntre(cargado, m.fecha) >= 2 && cargado > m.fecha ? cargado : null;
-}
-
 /**
  * "hace 5 min", "hace 3 h", "hace 2 días" — para que el aviso diga CUÁNDO se
  * cargó el movimiento anterior (es lo que la persona reconoce).

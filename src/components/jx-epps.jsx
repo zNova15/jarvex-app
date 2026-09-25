@@ -28,6 +28,8 @@ import { PrecioHistorialModal } from "./jx-precio-historial.jsx";
 import { registrarSoloHistorial, registrarCambioPrecio } from "../lib/precio-historial.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { coincideTokens } from "../lib/buscar-tokens.js";
+import { FiltrosRegistro, useFiltrosRegistro } from "./jx-filtros-registro.jsx";
+import { cargadoDespues } from "../lib/registro-movimientos.js";
 
 const { useState: uS, useEffect: uE, useMemo: uM, useRef: uR } = React;
 
@@ -1944,9 +1946,11 @@ function MovEppPage({ showToast }) {
     return '';
   };
 
-  const sorted = uM(() => (movs || []).filter(m => !m.deleted_at).sort((a, b) =>
-    (`${b.fecha || ''} ${b.hora || ''}`).localeCompare(`${a.fecha || ''} ${a.hora || ''}`)
-  ), [movs]);
+  // Orden y rango de fechas (24-set, jx-filtros-registro.jsx). `vivos` para
+  // las tarjetas; `sorted` ya acotado por fechas y ordenado.
+  const vivos = uM(() => (movs || []).filter(m => !m.deleted_at), [movs]);
+  const fr = useFiltrosRegistro(movs);
+  const sorted = fr.lista;
 
   const filtered = uM(() => sorted.filter(m => {
     if (filtroTipo !== 'todos' && m.tipo_movimiento !== filtroTipo) return false;
@@ -1958,10 +1962,10 @@ function MovEppPage({ showToast }) {
 
   const hoy = window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
   const stats = uM(() => ({
-    total: sorted.length,
-    entregasHoy: sorted.filter(m => m.fecha === hoy && m.tipo_movimiento === 'salida').length,
-    entradasHoy: sorted.filter(m => m.fecha === hoy && m.tipo_movimiento === 'entrada').length,
-  }), [sorted, hoy]);
+    total: vivos.length,
+    entregasHoy: vivos.filter(m => m.fecha === hoy && m.tipo_movimiento === 'salida').length,
+    entradasHoy: vivos.filter(m => m.fecha === hoy && m.tipo_movimiento === 'entrada').length,
+  }), [vivos, hoy]);
 
   const movPg = usePagination(filtered, 100);
 
@@ -1979,7 +1983,7 @@ function MovEppPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Movimientos y Entregas de EPPs</div>
-          <div className="pg-sub">Historial completo · {sorted.length} movimientos registrados · las entregas a trabajadores están en la segunda pestaña</div>
+          <div className="pg-sub">Historial completo · {vivos.length} movimientos registrados · las entregas a trabajadores están en la segunda pestaña</div>
         </div>
         <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
           <button className="btn btn-ghost btn-sm" onClick={() => window.__navTo?.('epps-inventario')} title="Volver al inventario de EPPs">
@@ -2007,7 +2011,7 @@ function MovEppPage({ showToast }) {
       <div style={{ display:'flex', gap:6, marginBottom:14, borderBottom:'1px solid var(--border)' }}>
         <button className={seccion === 'movimientos' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
           style={{ borderRadius:'6px 6px 0 0' }} onClick={() => setSeccion('movimientos')}>
-          Movimientos del inventario ({sorted.length})
+          Movimientos del inventario ({vivos.length})
         </button>
         <button className={seccion === 'entregas' ? 'btn btn-amber btn-sm' : 'btn btn-ghost btn-sm'}
           style={{ borderRadius:'6px 6px 0 0' }} onClick={() => setSeccion('entregas')}>
@@ -2030,6 +2034,7 @@ function MovEppPage({ showToast }) {
           <button key={v} className={`btn btn-sm ${filtroTipo === v ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setFiltroTipo(v)}>{lbl}</button>
         ))}
       </div>
+      <FiltrosRegistro f={fr} total={vivos.length} visibles={filtered.length}/>
 
       {filtered.length === 0 ? (
         <div className="card card-p empty-state">
@@ -2052,7 +2057,9 @@ function MovEppPage({ showToast }) {
                   const tb = TIPO_BADGE[m.tipo_movimiento] || { cls: 'b-gray', lbl: m.tipo_movimiento || '—' };
                   return (
                     <tr key={m.id}>
-                      <td className="col-m">{m.fecha || '—'}{m.hora ? <div style={{ fontSize:10, color:'var(--tm)' }}>{String(m.hora).slice(0,5)}</div> : null}</td>
+                      <td className="col-m">{m.fecha || '—'}{m.hora ? <div style={{ fontSize:10, color:'var(--tm)' }}>{String(m.hora).slice(0,5)}</div> : null}
+                        {(() => { const c = window.__fecha?.fechaLocalDe ? cargadoDespues(m, window.__fecha.fechaLocalDe) : null; return c ? <div style={{ fontSize:10.5, color:'var(--amber)', marginTop:2 }} title={`La fecha del movimiento es ${m.fecha}, pero se registró en el sistema el ${c}.`}>cargado el {c.slice(8,10)}/{c.slice(5,7)}</div> : null; })()}
+                      </td>
                       <td><span className={`badge ${tb.cls}`} style={{ fontSize:10 }}>{tb.lbl}</span></td>
                       <td style={{ fontWeight:600, color:'var(--tp)' }}>{epp?.nombre_epp || '—'}{epp?.talla ? <span style={{ color:'var(--tm)', fontWeight:400 }}> · {epp.talla}</span> : null}</td>
                       <td style={{ textAlign:'right' }} className="col-num">{Number(m.cantidad) || 0} <span style={{ color:'var(--tm)', fontSize:10.5 }}>{m.unidad || epp?.unidad || ''}</span></td>
@@ -2080,7 +2087,7 @@ function MovEppPage({ showToast }) {
           </div>
           <TablePagination {...movPg} />
           <div style={{ padding:'8px 14px', fontSize:11, color:'var(--tm)', borderTop:'1px solid var(--border)' }}>
-            Mostrando {filtered.length} de {sorted.length} movimientos
+            Mostrando {filtered.length} de {vivos.length} movimientos
           </div>
         </div>
       )}

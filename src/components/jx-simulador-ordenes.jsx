@@ -1261,8 +1261,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 
           {porPeriodo.length > 1 && (
             <div style={{
-              position: 'sticky', top: 'var(--header-h)', zIndex: 4, background: 'var(--bg-p)',
-              marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid var(--border)',
+              // top:0, no var(--header-h): el que scrollea es .page-wrap y el
+              // header queda AFUERA. Con 58 px quedaba una franja arriba de la
+              // tira por donde pasaban las tarjetas por encima (24-set, captura
+              // de Gabriel: «Acero y metalmecánica» montada sobre los chips).
+              position: 'sticky', top: 0, zIndex: 6, background: 'var(--bg-p)',
+              marginBottom: 12, paddingTop: 6, paddingBottom: 8, borderBottom: '1px solid var(--border)',
             }}>
               <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingTop: 2 }}>
                 {chipsPorMes.map(c => (
@@ -1285,7 +1289,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                 : 'Ninguna orden coincide con el filtro.'}
             </div>
           ) : porPeriodo.map(g => (
-            <div key={g.periodo} id={`jx-sim-periodo-${g.periodo}`} style={{ marginBottom: 16, scrollMarginTop: 'calc(var(--header-h) + 100px)' }}>
+            <div key={g.periodo} id={`jx-sim-periodo-${g.periodo}`} style={{ marginBottom: 16, scrollMarginTop: 110 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                 <b style={{ fontSize: 14 }}>{g.etiqueta}</b>
                 <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>

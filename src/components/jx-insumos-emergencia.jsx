@@ -20,6 +20,8 @@ import { registrarSoloHistorial } from "../lib/precio-historial.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { hoyLocal } from "../lib/fecha.js";
 import { validarSalidaCronologica } from "../lib/stock-cronologia.js";
+import { coincideTokens } from "../lib/buscar-tokens.js";
+import { FiltrosRegistro, useFiltrosRegistro } from "./jx-filtros-registro.jsx";
 
 const ITEM_TIPO = 'emergencia'; // item_tipo en stock_ubicaciones (mig 074)
 
@@ -102,13 +104,18 @@ function InsumosEmergenciaPage({ showToast }) {
   const subsById = uM(() => { const m = new Map(); (subcontratistas || []).forEach(s => m.set(s.id, s)); return m; }, [subcontratistas]);
   const destinoOpts = uM(() => opcionesDestinoFlat((personal || []).filter(p => p.estado === 'activo'), subcontratistas), [personal, subcontratistas]);
 
-  // Movimientos de entrada/salida (más reciente primero) para la pestaña.
-  const movimientos = uM(() => {
-    return (movHook.data || [])
-      .filter(mv => !mv.deleted_at)
-      .slice()
-      .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
-  }, [movHook.data]);
+  // Movimientos de entrada/salida para la pestaña. Desde el 24-set con orden,
+  // rango de fechas, tipo y buscador (antes no había ningún filtro).
+  const movsVivos = uM(() => (movHook.data || []).filter(mv => !mv.deleted_at), [movHook.data]);
+  const frMov = useFiltrosRegistro(movHook.data);
+  const [qMov, setQMov] = uS('');
+  const [tipoMov, setTipoMov] = uS('todos');
+  const movimientos = uM(() => frMov.lista.filter(mv => {
+    if (tipoMov !== 'todos' && mv.tipo_movimiento !== tipoMov) return false;
+    if (!qMov.trim()) return true;
+    const ins = (insumos || []).find(i => i.id === mv.insumo_emergencia_id);
+    return coincideTokens(`${ins?.nombre || ''} ${mv.observaciones || ''} ${mv.documento_asociado || ''}`, qMov);
+  }), [frMov.lista, tipoMov, qMov, insumos]);
 
   // Eliminar un movimiento (soft-delete) y revertir su efecto en el stock.
   const eliminarMov = async (mv) => {
@@ -452,7 +459,7 @@ function InsumosEmergenciaPage({ showToast }) {
           <JxIcon name="package" size={13} />Inventario ({stats.total})
         </button>
         <button className={`btn btn-sm ${vista === 'movimientos' ? 'btn-amber' : 'btn-ghost'}`} style={{ border: 'none' }} onClick={() => setVista('movimientos')}>
-          <JxIcon name="compare" size={13} />Movimientos ({movimientos.length})
+          <JxIcon name="compare" size={13} />Movimientos ({movsVivos.length})
         </button>
       </div>
 
@@ -594,9 +601,20 @@ function InsumosEmergenciaPage({ showToast }) {
       )}
 
       {/* Pestaña Movimientos */}
+      {vista === 'movimientos' && movsVivos.length > 0 && (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div className="search-bar"><JxIcon name="search" size={14} color="var(--tm)" /><input placeholder="Buscar insumo, documento u observación…" value={qMov} onChange={e => setQMov(e.target.value)} /></div>
+            {[['todos', 'Todos'], ['entrada', 'Ingresos'], ['salida', 'Salidas']].map(([v, lbl]) => (
+              <button key={v} className={`btn btn-sm ${tipoMov === v ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setTipoMov(v)}>{lbl}</button>
+            ))}
+          </div>
+          <FiltrosRegistro f={frMov} total={movsVivos.length} visibles={movimientos.length} />
+        </>
+      )}
       {vista === 'movimientos' && (
         movimientos.length === 0 ? (
-          <div className="card card-p empty-state"><JxIcon name="compare" size={40} color="var(--tm)" /><p>Sin movimientos todavía. Registrá un Ingreso o una Salida.</p></div>
+          <div className="card card-p empty-state"><JxIcon name="compare" size={40} color="var(--tm)" /><p>{movsVivos.length === 0 ? 'Sin movimientos todavía. Registrá un Ingreso o una Salida.' : 'Ningún movimiento coincide con los filtros.'}</p></div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>
             <div className="tbl-sticky">
