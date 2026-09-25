@@ -166,6 +166,11 @@ export const PARAMS_DEFAULT = {
   // pregunta que se compara contra «todo lo que entró».
   almacenModo: 'entradas',
   almacenPorInsumo: {},
+  // Tanda 3.5 — en modo real, sacar del plan lo ya ejecutado según el avance
+  // de cada partida. Apagado por defecto: es un ajuste fino (§15.2 A, «en
+  // avanzado») y el avance de las partidas lo reporta el frente, que puede
+  // venir atrasado. Cuando hay avance sin usar, los avisos lo dicen.
+  restarAvance: false,
 };
 
 const enLista = (v, lista, def) => (lista.includes(v) ? v : def);
@@ -229,6 +234,7 @@ export function normalizarParams(p = {}) {
     montoMinimoOrden: entre(p.montoMinimoOrden, 0, 10000000, 0),
     almacenModo: enLista(p.almacenModo, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModo),
     almacenPorInsumo: normalizarAlmacenPorInsumo(p.almacenPorInsumo),
+    restarAvance: !!p.restarAvance,
   };
 }
 
@@ -276,6 +282,9 @@ export function paramsDeMotor(params) {
     montoMinimoOrden: p.montoMinimoOrden,
     almacenModo: p.almacenModo,
     almacenPorInsumo: p.almacenPorInsumo,
+    // Lo ejecutado es un dato real: en Simulación no se resta aunque el
+    // escenario lo tenga prendido (el motor tampoco lo haría con 'cero').
+    restarAvance: p.modo === 'real' && p.restarAvance,
   };
 }
 

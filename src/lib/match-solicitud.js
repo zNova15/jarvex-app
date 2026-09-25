@@ -123,8 +123,9 @@ export function tokensInsumo(nombre) {
 
 // Una palabra «coincide» si es igual, o si una es prefijo de la otra con 4+
 // letras (codo ≈ codos, niple ≈ niples, termomag ≈ termomagnetica). Mismo
-// criterio que `tokenMatch` de insumo-correlacion.js.
-const coincide = (a, b) => {
+// criterio que `tokenMatch` de insumo-correlacion.js. Exportada para
+// `simulador-stock.js` (tanda 3.5), que compara la palabra principal.
+export const coincide = (a, b) => {
   if (a === b) return true;
   const [c, l] = a.length <= b.length ? [a, b] : [b, a];
   return c.length >= 4 && l.startsWith(c);

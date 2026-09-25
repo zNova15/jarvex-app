@@ -1162,3 +1162,93 @@ tuvo que decidir:
 OpenRouter. La primera prueba en el preview dice si el modelo gratuito
 respeta el formato; si no, el botón responde «no se consiguió una historia»
 y queda la del sorteo.
+
+**Tanda 3.5 HECHA el 24-set** (en staging; las «25-set» de arriba son la
+misma noche en hora UTC: los commits de la 3.2 a la 3.4 son del 24-set hora
+de Lima). «📍 Según lo real» completo: lo ya ejecutado y las herramientas
+contra el stock. Tests en `simulador-ordenes.test.js` (12 nuevos),
+`simulador-stock.test.js` (8, lib nueva), `simulador-escenarios` (3) y la
+pantalla (4). Sin migración. Lo que se hizo y lo que la tanda tuvo que decidir:
+
+- **Lo ejecutado sale de los períodos MÁS VIEJOS de cada partida**
+  (`quitarEjecutado`), no parejo: en una partida de cuatro meses al 50%,
+  proporcional dejaría la mitad de los dos primeros meses —ya hechos—
+  arrastrada al mes actual. Así lo hecho deja de volver como «atrasado», y lo
+  adelantado sale de meses que todavía no llegaron. El dato es
+  `partidas.porcentaje_avance` (0–100), el mismo que usan Mi frente y control
+  de consumo. `avance_obra` (128 reportes) no se lee: su resultado ya vive en
+  la partida.
+- **Nada se resta dos veces** (`coberturaConAvance`). Sin avance, el plan
+  restaba de la necesidad total lo cubierto K (entradas del almacén, órdenes,
+  requisiciones). Con avance, sale lo ejecutado E por partida, y de lo
+  cubierto se resta solo `max(A, K − E)`, donde A es lo que sigue sin usarse
+  (stock de hoy, lo ordenado que no llegó, lo requisado). Es lo mismo que
+  decir «lo cubierto de verdad es max(E + A, K)»: o lo ejecutado se hizo con
+  lo que entró (y K ya lo incluye), o con algo que nadie registró (y lo
+  disponible igual está). Sumar E y K contaría dos veces el cemento que entró
+  y ya está en la losa. Con E = 0 da K: el que no prende la perilla no ve
+  ningún cambio (hay test). El colchón de un insumo también se aplica a su
+  parte ejecutada.
+- **Viene APAGADA** (`params.restarAvance`, en ⚙, solo modo real). El §15.2
+  la ponía «en avanzado», y el avance lo reporta el frente y puede venir
+  atrasado. Para que no quede escondida: con avance reportado y la perilla
+  apagada, «⚠ Avisos» lo dice con un botón que abre ⚙. **A confirmar con
+  Gabriel si la quiere prendida por defecto.**
+- **Se mide aunque no se reste** (`resumen.avance`): partidas y plata
+  ejecutada, líneas hechas enteras, partidas adelantadas, lo que lo ejecutado
+  «absorbió» de lo comprado, y las partidas que el cronograma ya da por
+  terminadas SIN avance reportado. Con la perilla prendida estas últimas son
+  un aviso ámbar: lo suyo se sigue pidiendo en el mes actual, y si ya se
+  hicieron lo que falta es reportarlas. En Simulación (`anclaje 'cero'`)
+  nada de esto existe: ni se resta ni se mide.
+- **Sobres:** lo ejecutado es un PISO de lo gastado. Si nadie informó nada, o
+  informó menos, «queda» se mide contra lo ejecutado y la tarjeta dice que es
+  una estimación (`consumoPorAvance`); si informaron más, manda lo informado.
+  La parte ejecutada sale de lo planificado del sobre.
+- **La mano de obra de lo ejecutado tampoco pide gente**: la corrida de
+  dotación hereda la perilla.
+- **Herramientas y EPP contra el stock** (lib nueva `simulador-stock.js`,
+  §15.2 E). Tres cajones y solo uno resta: lo IMPUTADO (ya lo restaba el
+  motor; acá se muestra en verde), lo PARECIDO por nombre (azul, NO resta:
+  «ZAPATOS 41 (2 par)» junto a «ZAPATOS PUNTA DE ACERO», con el camino a
+  imputarlo) y lo SUELTO (herramientas del almacén sin línea propia, que se
+  listan dentro del sobre «HERRAMIENTAS MANUALES» como «En el almacén ya
+  hay…»; los EPPs sueltos van en un resumen arriba de la pestaña). Cuenta el
+  STOCK de hoy, no las entradas: «ya hay» es lo que se puede usar.
+- **El parecido reusa `match-solicitud.js`** con el piso de sus alternativas
+  (0,30) más una condición: la PRIMERA palabra tiene que coincidir (se
+  exportó `coincide`). Sin ella, «PUNTA» (de barreta) salía a 0,80 contra
+  «ZAPATOS PUNTA DE ACERO». El piso de sugerir (0,60) o uno de 0,40 no
+  servían: la talla es una medida que la línea genérica no tiene y baja el
+  puntaje (0,37 a 0,43 según el catálogo). Con empate no elige: el ítem sale
+  en todas las líneas que empatan («GUANTES» en las tres de guantes).
+
+Medido en Miraflores (24-set, modo real, «todo lo que entró», sin nada
+imputado todavía):
+
+| | Sin restar lo ejecutado | Restando lo ejecutado |
+|---|---|---|
+| Propuesto en órdenes | S/ 4,60 M | S/ 4,21 M |
+| Sobres | S/ 525 k | S/ 367 k |
+| Arrastrado al mes actual | S/ 786 k | S/ 565 k |
+| Setiembre (mes actual) | S/ 1,25 M | S/ 1,01 M |
+| «HERRAMIENTAS MANUALES»: queda | sin dato (nadie informó) | S/ 122.140 (ejecutado S/ 10.353) |
+
+93 partidas con avance y líneas de presupuesto (S/ 548 k del comprable
+ejecutado), 63 líneas hechas enteras, 25 partidas adelantadas, y **321
+partidas que el Gantt da por terminadas sin avance reportado (S/ 293 k)**.
+Stock: de 135 herramientas y EPPs, 57 con stock; 9 líneas del plan con algo
+parecido (14 ítems), 43 sueltos. `absorbido` no se pudo medir con datos
+reales: nada del almacén está imputado todavía. Lo cubren los tests.
+
+**Decisiones tomadas en la tanda, a revisar con Gabriel:**
+
+1. La perilla viene apagada (ver arriba). Prenderla por defecto es un cambio
+   de una línea (`PARAMS_DEFAULT.restarAvance`).
+2. Lo parecido por nombre NO resta, ni con un clic. Si Gabriel quiere que
+   «ya hay 16 guantes» baje la línea, el camino es imputar esos ítems (la
+   página de la 3.2), no un atajo desde acá: una imputación por parecido es
+   el error que la bandeja evita.
+3. El stock de herramientas no descuenta plata del sobre: el almacén no tiene
+   precio de esas herramientas (valor de inventario S/ 0), así que se muestra
+   como lista, no como monto.

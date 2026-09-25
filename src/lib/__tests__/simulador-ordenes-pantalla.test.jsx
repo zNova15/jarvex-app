@@ -264,6 +264,61 @@ describe('la pantalla del Simulador de Órdenes', () => {
     });
   });
 
+  // Tanda 3.5: el modo real completo. La partida de los muros va al 50%.
+  describe('lo ya ejecutado (tanda 3.5)', () => {
+    const CON_AVANCE = PARTIDAS.map(p => (p.id === 'pa1' ? { ...p, porcentaje_avance: 50 } : p));
+    const escenario = (params) => [{ id: 'e1', nombre: 'Real', obra_id: OBRA, params, actualizado: '2026-10-01' }];
+    let antesLS, antesPartidas;
+    const conEscenario = (params) => {
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(escenario(params)) : null);
+    };
+    beforeAll(() => {
+      antesLS = globalThis.localStorage.getItem;
+      antesPartidas = globalThis.__hooks.usePartidas;
+      globalThis.__hooks.usePartidas = () => ({ data: CON_AVANCE, loading: false });
+    });
+    afterAll(() => {
+      globalThis.localStorage.getItem = antesLS;
+      globalThis.__hooks.usePartidas = antesPartidas;
+    });
+
+    // React separa los textos contiguos con <!-- -->: se sacan para leer la frase.
+    const texto = (html) => html.replace(/<!-- -->/g, '');
+
+    it('en ⚙ ofrece restarlo, apagado, y dice cuánto hay reportado', () => {
+      conEscenario({ modo: 'real' });
+      const html = texto(render({ ajustesAbiertos: true }));
+      expect(html).toContain('Lo ya ejecutado (avance de las partidas)');
+      expect(html).toMatch(/<option value="no" selected="">No restar<\/option>/);
+      expect(html).toContain('1 partida(s) con avance');
+      expect(html).toContain('Hoy el plan lo vuelve a pedir');
+    });
+
+    it('apagado, hay un aviso que lo dice (el avance sin usar no es silencioso)', () => {
+      conEscenario({ modo: 'real' });
+      expect(texto(render())).toContain('Avisos (1)');
+    });
+
+    it('prendido, lo ejecutado se muestra aparte y el sobre lo toma como gastado', () => {
+      conEscenario({ modo: 'real', restarAvance: true });
+      const html = render();
+      expect(html).toContain('saca lo ya ejecutado');
+      expect(html).toContain('Ya ejecutado (avance)');
+      const herr = render({ vistaInicial: 'herramientas' });
+      expect(herr).toContain('se estimó con el avance de sus partidas');
+      // Ya no es «nadie informó lo gastado»: hay un piso, y se dice qué es.
+      expect(herr).not.toContain('cuánto de este sobre ya se gastó');
+    });
+
+    it('en Simulación no existe: ni la perilla ni el aviso', () => {
+      conEscenario({ modo: 'simulacion', restarAvance: true });
+      const html = render({ ajustesAbiertos: true });
+      expect(html).not.toContain('Lo ya ejecutado (avance de las partidas)');
+      expect(html).not.toContain('Ya ejecutado (avance)');
+      expect(html).not.toContain('Avisos (');
+    });
+  });
+
   it('los escenarios sugeridos son PUNTOS DE PARTIDA dentro de ⚙, corridos por el motor real (2.6 → 3.1)', () => {
     expect(render()).not.toContain('Pedir recomendación a la IA');
     const html = render({ ajustesAbiertos: true });

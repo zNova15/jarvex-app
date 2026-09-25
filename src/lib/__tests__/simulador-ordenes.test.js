@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  simularOrdenes, coberturaPrevia,
+  simularOrdenes, coberturaPrevia, avanceDePartida, quitarEjecutado, coberturaConAvance,
   periodoDe, periodosEntre, semanaISO, etiquetaPeriodo, sumarDias, diasEntre,
   ANCLAJES, CRONOGRAMAS, REPARTOS, UMBRAL_TRAMO_LARGO_DIAS, MOTIVO_PENDIENTE_LABEL,
 } from '../simulador-ordenes.js';
@@ -1122,5 +1122,154 @@ describe('el almacén resta (tanda 2.5)', () => {
     });
     expect(sobres[0].consumoInformado).toBe(true);
     expect(sobres[0].disponible).toBe(380);
+  });
+});
+
+describe('lo ya ejecutado (ronda 3, tanda 3.5)', () => {
+  // La partida larga (jun→13-ago, 73 días) al 50%, mirada el 15-jul: con el
+  // Gantt, junio y la mitad de julio ya se hicieron.
+  const conAvance = (pct, p = P_LARGA) => ({ ...p, porcentaje_avance: pct });
+  const cemento = (cant) => ip('p-larga', 'material', 'CEMENTO PORTLAND TIPO I (42.5 kg)', 'bol', cant, 30, CEMENTO);
+  const base = (pct, extra = {}) => ({
+    insumosPartida: [cemento(600)], partidas: [P_CORTA, conAvance(pct)],
+    hoy: '2026-07-15', anclaje: 'hoy', reparto: 'parejo', ...extra,
+  });
+  const necesidad = (r, cod = CEMENTO) => r.propuestas.flatMap(p => p.lineas)
+    .filter(l => l.insumo_codigo === cod).reduce((s, l) => s + l.necesidad, 0);
+  const porPeriodo = (r) => Object.fromEntries(r.propuestas.flatMap(p => p.lineas)
+    .flatMap(l => l.entregas.map(e => [e.periodo, e.necesidad])));
+
+  it('avanceDePartida lee el % (0–100) y lo acota', () => {
+    expect(avanceDePartida({ porcentaje_avance: 50 })).toBe(0.5);
+    expect(avanceDePartida({ porcentaje_avance: 130 })).toBe(1);
+    expect(avanceDePartida({ porcentaje_avance: -5 })).toBe(0);
+    expect(avanceDePartida({ porcentaje_avance: null })).toBe(0);
+    expect(avanceDePartida(null)).toBe(0);
+  });
+
+  it('quitarEjecutado saca de los períodos MÁS VIEJOS, no parejo', () => {
+    const tercios = [
+      { periodo: '2026-08', fraccion: 1 / 3 },
+      { periodo: '2026-06', fraccion: 1 / 3 },
+      { periodo: '2026-07', fraccion: 1 / 3 },
+    ];
+    const r = quitarEjecutado(tercios, 0.5);
+    expect(r.map(x => x.periodo)).toEqual(['2026-07', '2026-08']);
+    expect(r[0].fraccion).toBeCloseTo(1 / 6, 9);
+    expect(r[1].fraccion).toBeCloseTo(1 / 3, 9);
+    expect(quitarEjecutado(tercios, 1)).toEqual([]);
+    expect(quitarEjecutado(tercios, 0)).toHaveLength(3);
+  });
+
+  it('coberturaConAvance: lo ejecutado y lo comprado no se suman dos veces', () => {
+    // Todo lo ejecutado se hizo con lo que entró: no queda nada más por restar.
+    expect(coberturaConAvance({ cubierto: 60, disponible: 0, ejecutado: 60 })).toBe(0);
+    // Entró más de lo que se usó: lo de más se resta.
+    expect(coberturaConAvance({ cubierto: 80, disponible: 20, ejecutado: 60 })).toBe(20);
+    // Se ejecutó más de lo que se registró: igual se resta lo que hay en stock.
+    expect(coberturaConAvance({ cubierto: 30, disponible: 10, ejecutado: 60 })).toBe(10);
+    // Sin avance es lo de siempre.
+    expect(coberturaConAvance({ cubierto: 80, disponible: 20, ejecutado: 0 })).toBe(80);
+  });
+
+  it('sin la perilla, el plan no cambia: lo hecho vuelve al mes actual como atrasado', () => {
+    const r = simularOrdenes(base(50));
+    expect(necesidad(r)).toBeCloseTo(600, 4);
+    expect(r.resumen.montoArrastrado).toBeCloseTo(6000, 2);   // junio, 200 bol × 30
+    // Pero se mide, para poder avisar.
+    expect(r.resumen.avance.activo).toBe(false);
+    expect(r.resumen.avance.partidas).toBe(1);
+    expect(r.resumen.avance.monto).toBe(9000);
+  });
+
+  it('con la perilla, lo ejecutado sale de junio y de la mitad de julio', () => {
+    const r = simularOrdenes(base(50, { restarAvance: true }));
+    expect(necesidad(r)).toBeCloseTo(300, 4);
+    expect(r.resumen.montoArrastrado).toBe(0);
+    const pp = porPeriodo(r);
+    expect(pp['2026-07']).toBeCloseTo(100, 4);
+    expect(pp['2026-08']).toBeCloseTo(200, 4);
+    expect(r.resumen.avance.activo).toBe(true);
+  });
+
+  it('una partida hecha entera no llega a ninguna orden', () => {
+    const r = simularOrdenes(base(100, { restarAvance: true }));
+    expect(necesidad(r)).toBe(0);
+    expect(r.resumen.avance.lineasCompletas).toBe(1);
+  });
+
+  it('en una simulación (anclaje cero) lo ejecutado ni se resta ni se mide', () => {
+    const r = simularOrdenes(base(50, { anclaje: 'cero', restarAvance: true }));
+    expect(necesidad(r)).toBeCloseTo(600, 4);
+    expect(r.resumen.avance).toBeNull();
+  });
+
+  it('NO RESTA DOS VECES: lo que entró al almacén y se usó en lo ejecutado', () => {
+    const alm = (entradas, stock) => [{
+      tabla: 'materiales', id: 'm1', nombre: 'CEMENTO', unidad: 'Bolsas', entradas, stock,
+      imputacion: 'insumo', insumo_codigo: CEMENTO, factor_presupuesto: null,
+    }];
+    // Entraron 300, quedan 0, se ejecutó la mitad (300): faltan 300, no 0.
+    const a = simularOrdenes(base(50, { restarAvance: true, almacen: alm(300, 0) }));
+    expect(necesidad(a)).toBeCloseTo(300, 4);
+    expect(a.resumen.avance.absorbido.insumos).toBe(1);
+    expect(a.resumen.avance.absorbido.monto).toBe(9000);
+    // Entraron 400, quedan 100: faltan 300 − 100 = 200 (lo mismo que sin avance).
+    const b = simularOrdenes(base(50, { restarAvance: true, almacen: alm(400, 100) }));
+    const sinAvance = simularOrdenes(base(50, { almacen: alm(400, 100) }));
+    expect(necesidad(b)).toBeCloseTo(200, 4);
+    expect(necesidad(sinAvance)).toBeCloseTo(200, 4);
+    // Entraron 100 y quedan 40, pero se ejecutó 300 (se compró sin registrar):
+    // faltan 300 − 40 en stock = 260. Sin avance pediría 500.
+    const c = simularOrdenes(base(50, { restarAvance: true, almacen: alm(100, 40) }));
+    expect(necesidad(c)).toBeCloseTo(260, 4);
+  });
+
+  it('lo ordenado que todavía no llegó sigue restando encima de lo ejecutado', () => {
+    const r = simularOrdenes(base(50, {
+      restarAvance: true,
+      ordenes: [{ id: 'oc1', estado: 'enviada' }],
+      ocItems: [{ id: 'i1', orden_compra_id: 'oc1', insumo_codigo: CEMENTO, cantidad: 120 }],
+    }));
+    expect(necesidad(r)).toBeCloseTo(180, 4);
+  });
+
+  it('cuenta lo que el cronograma da por terminado sin avance, y lo adelantado', () => {
+    const r = simularOrdenes({
+      insumosPartida: [cemento(600), ip('p-corta', 'material', 'ARENA GRUESA', 'm3', 10, 50, '040001')],
+      partidas: [P_CORTA, conAvance(10, { ...P_LARGA, fecha_inicio_planificada: '2026-08-01', fecha_fin_planificada: '2026-09-30' })],
+      hoy: '2026-07-15', anclaje: 'hoy', restarAvance: true,
+    });
+    // La corta terminó el 7-jun y no reportó nada; la larga empieza en agosto y ya va al 10%.
+    expect(r.resumen.avance.vencidasSinAvance).toEqual({ partidas: 1, monto: 500 });
+    expect(r.resumen.avance.adelantadas).toBe(1);
+  });
+
+  it('en un sobre, lo ejecutado es un piso de lo gastado y sale de lo planificado', () => {
+    const HERR = '370020009';
+    const insumos = [ip('p-larga', 'equipo', 'HERRAMIENTAS MANUALES', '%mo', 1, 900, HERR)];
+    const sin = simularOrdenes({ ...base(50), insumosPartida: insumos });
+    const con = simularOrdenes({ ...base(50, { restarAvance: true }), insumosPartida: insumos });
+    expect(sin.sobres[0].consumoInformado).toBe(false);
+    expect(sin.sobres[0].disponible).toBeNull();
+    expect(con.sobres[0].techo).toBe(900);
+    expect(con.sobres[0].ejecutado).toBe(450);
+    expect(con.sobres[0].consumoPorAvance).toBe(true);
+    expect(con.sobres[0].disponible).toBe(450);
+    expect(con.resumen.montoSobres).toBe(450);
+    // Si alguien informó MÁS de lo ejecutado, manda lo informado.
+    const informado = simularOrdenes({
+      ...base(50, { restarAvance: true }), insumosPartida: insumos,
+      consumoSobres: { 'herramientas manuales|%mo': 600 },
+    });
+    expect(informado.sobres[0].consumoPorAvance).toBe(false);
+    expect(informado.sobres[0].disponible).toBe(300);
+  });
+
+  it('la mano de obra de lo ejecutado tampoco pide gente', () => {
+    const insumos = [ip('p-larga', 'mano_obra', 'PEON', 'hh', 300, 20)];
+    const r = simularOrdenes({ ...base(50, { restarAvance: true }), insumosPartida: insumos, categorias: ['mano_obra'] });
+    expect(r.manoObra.reduce((s, m) => s + m.cantidad, 0)).toBeCloseTo(150, 4);
+    expect(r.resumen.avance.montoManoObra).toBe(3000);
   });
 });

@@ -113,7 +113,10 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
       'anclaje', 'anticipacionDias', 'categorias', 'cronograma',
       // tanda 2.3: cómo se juntan las órdenes
       'frecuencia', 'frecuenciaPorRubro',
-      'granularidad', 'montoMinimoOrden', 'reparto', 'umbralTramoLargoDias',
+      'granularidad', 'montoMinimoOrden', 'reparto',
+      // tanda 3.5: lo ya ejecutado
+      'restarAvance',
+      'umbralTramoLargoDias',
     ]);
   });
 
@@ -183,6 +186,23 @@ describe('ronda 3 — los dos modos y la migración de los escenarios guardados 
     e = conParams(e, { modo: 'simulacion' });
     const c2 = corrida(paramsDeMotor(e.params));
     expect(aplicarEscenario(c2, e).propuestas.find(p => p.id === p0.id)?.estado).toBe('aceptada');
+  });
+});
+
+describe('lo ya ejecutado es un ajuste del modo real (tanda 3.5)', () => {
+  it('viene apagado, y un escenario viejo (sin el campo) se abre apagado', () => {
+    expect(PARAMS_DEFAULT.restarAvance).toBe(false);
+    expect(normalizarParams({}).restarAvance).toBe(false);
+    expect(normalizarParams({ restarAvance: 1 }).restarAvance).toBe(true);
+  });
+
+  it('en Simulación no llega al motor aunque el escenario lo tenga prendido', () => {
+    expect(paramsDeMotor({ modo: 'real', restarAvance: true }).restarAvance).toBe(true);
+    expect(paramsDeMotor({ modo: 'simulacion', restarAvance: true }).restarAvance).toBe(false);
+  });
+
+  it('prenderlo es otra pregunta: otro escenario', () => {
+    expect(mismosParams(PARAMS_DEFAULT, { ...PARAMS_DEFAULT, restarAvance: true })).toBe(false);
   });
 });
 

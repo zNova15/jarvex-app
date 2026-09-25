@@ -18,6 +18,12 @@
 // queda a la vista y lo fino detrás de ⚙; los avisos van a un botón y los
 // resultados a una pestaña por categoría.
 //
+// ── DESDE LA TANDA 3.5 («según lo real» completo) ─────────────────
+// En modo real, ⚙ deja sacar del plan lo YA EJECUTADO (el avance de cada
+// partida) sin volver a restar lo que entró al almacén y se usó en eso, y las
+// herramientas y los EPPs se comparan contra lo que HAY en el almacén («ya
+// hay 16 guantes»). La comparación no resta: lo que resta es lo imputado.
+//
 // ── LO QUE ESTA PANTALLA NO HACE, A PROPÓSITO ─────────────────────
 //  1. ACEPTAR NO EMITE. Aceptar una orden acá sigue sin escribir una fila:
 //     deja la decisión guardada en el navegador. Desde la tanda 4 hay DOS
@@ -54,6 +60,7 @@ import { elegirHistoriaConIA } from "../lib/simulador-historia-ai.js";
 import {
   catalogoDelPresupuesto, existenciasDelAlmacen, insumosCubiertosPorAlmacen,
 } from "../lib/simulador-imputacion.js";
+import { stockContraPlan } from "../lib/simulador-stock.js";
 import {
   sortearEnfoques, ENFOQUES_SORTEO, ENFOQUE_LABEL, ENFOQUE_ICONO,
 } from "../lib/simulador-sorteo.js";
@@ -471,6 +478,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       repartoManual: baseMotor.repartoManual,
       umbralTramoLargoDias: baseMotor.umbralTramoLargoDias,
       anticipacionDias: baseMotor.anticipacionDias,
+      // Lo ya ejecutado tampoco necesita gente (tanda 3.5).
+      restarAvance: baseMotor.restarAvance,
       categorias: ['mano_obra'],
     });
   }, [obraId, baseMotor, vista]);
@@ -490,6 +499,19 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     () => aplicarEscenario(corrida || { propuestas: [], sobres: [] }, escenario),
     [corrida, escenario]
   );
+
+  // ── HERRAMIENTAS Y EPP CONTRA EL STOCK (tanda 3.5, §15.2 E) ──────
+  // Solo en modo real: en Simulación la obra arranca de cero y el almacén no
+  // tiene nada que decir. Mira la corrida y no el escenario decorado: lo que
+  // se compara es el insumo, no cómo se decidió cada línea.
+  const stockPlan = uM(() => {
+    if (simulacion || !corrida) return null;
+    return stockContraPlan({
+      almacen: almacenFilas,
+      lineas: corrida.propuestas.flatMap(p => p.lineas),
+      sobres: corrida.sobres,
+    });
+  }, [simulacion, corrida, almacenFilas]);
 
   // ── LOS TRES ENFOQUES (tanda 2.6, opcional) ───────────────────────
   // Determinístico y gratis: corre el motor real 3 veces con las perillas
@@ -1098,6 +1120,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   {a.boton || 'Imputar'} →
                 </button>
               )}
+              {a.accion === 'ajustes' && (
+                <button className="btn btn-sm btn-ghost" onClick={() => setAjustes(true)}>
+                  ⚙ {a.boton || 'Ajustes finos'}
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1116,7 +1143,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           <span style={{ fontSize: 11.5, color: 'var(--tm)', flex: '1 1 280px' }}>
             {simulacion
               ? <>¿Cómo compraría esta obra? Sale solo del presupuesto y del cronograma: <b>no resta nada</b> de lo comprado ni del almacén. Sirve para mirar, no para emitir.</>
-              : <>¿Qué me falta pedir? Desde hoy: resta las órdenes, las requisiciones y el almacén, y trae al mes actual lo que quedó atrasado.</>}
+              : <>¿Qué me falta pedir? Desde hoy: resta las órdenes, las requisiciones y el almacén{params.restarAvance ? ', saca lo ya ejecutado' : ''}, y trae al mes actual lo que quedó atrasado.</>}
           </span>
           <button className={`btn btn-sm ${ajustes ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setAjustes(v => !v)}
             title="Anticipación, tramo largo, reparto, monto mínimo, frecuencia por rubro, almacén y puntos de partida">
@@ -1294,6 +1321,27 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   <PersonalizadoAlmacen cubiertos={cubiertosAlmacen} porInsumo={params.almacenPorInsumo || {}} onParam={cambiarParam} />
                 </div>
               )}
+              {/* ── LO YA EJECUTADO (tanda 3.5) ─────────────────────────
+                  Se prende a mano: el avance lo reporta el frente y puede
+                  venir atrasado. Lo que ya entró al almacén y se usó en lo
+                  ejecutado no se resta dos veces (`coberturaConAvance`). */}
+              <label style={{ display: 'block' }}
+                title="Saca del plan la parte de cada partida que ya se hizo, según su % de avance. Lo que entró al almacén y se usó en eso no se vuelve a restar.">
+                <span className="flabel">Lo ya ejecutado (avance de las partidas)</span>
+                <select className="fi" value={params.restarAvance ? 'si' : 'no'} onChange={e => cambiarParam({ restarAvance: e.target.value === 'si' })}>
+                  <option value="no">No restar</option>
+                  <option value="si">Restar lo ejecutado</option>
+                </select>
+              </label>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
+                {!resumen?.avance?.partidas
+                  ? 'Ninguna partida de este trabajo tiene avance reportado todavía.'
+                  : <>
+                    {resumen.avance.partidas} partida(s) con avance · <b>{solesK(resumen.avance.monto)}</b> del presupuesto comprable ya ejecutado
+                    {resumen.avance.adelantadas > 0 && <> · {resumen.avance.adelantadas} van adelantadas respecto del cronograma</>}.
+                    {!params.restarAvance && ' Hoy el plan lo vuelve a pedir.'}
+                  </>}
+              </div>
             </div>
           )}
 
@@ -1370,6 +1418,15 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                 </div>
               )}
             </div>
+            {resumen.avance?.activo && resumen.avance.monto > 0 && (
+              <div title="La parte de cada partida que ya se hizo, según su % de avance. Sale del plan: no se vuelve a pedir.">
+                <div style={{ fontSize: 11, color: 'var(--tm)' }}>Ya ejecutado (avance)</div>
+                <b style={{ fontSize: 16 }}>{solesK(resumen.avance.monto)}</b>
+                <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+                  {resumen.avance.partidas} partida(s){resumen.avance.lineasCompletas > 0 && <> · {resumen.avance.lineasCompletas} línea(s) hechas enteras</>}
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ fontSize: 11, color: 'var(--tm)' }}>Aceptado en este escenario</div>
               <b style={{ fontSize: 16, color: dec.montoAceptadoTotal > 0 ? 'var(--green)' : 'var(--tm)' }}>
@@ -1444,6 +1501,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
               Solo lo que falta decidir ({grupoCat.pendientes})
             </label>
           </div>
+
+          {vistaCat === 'herramientas' && stockPlan && (
+            <StockAlmacenResumen stock={stockPlan} onImputar={irAImputar} />
+          )}
 
           {porPeriodo.length > 1 && (
             <div style={{
@@ -1524,6 +1585,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   resolverProveedor={resolverProveedor}
                   yaEscrita={yaEscrito.get(p.id) || null}
                   sugeridos={sugerencias[p.id] || null}
+                  stock={stockPlan?.porClave || null}
                   editando={editando} setEditando={setEditando}
                   tope={verMas[p.id] || LINEAS_POR_TANDA}
                   onVerMas={() => setVerMas(v => ({ ...v, [p.id]: (v[p.id] || LINEAS_POR_TANDA) + LINEAS_POR_TANDA }))}
@@ -1541,6 +1603,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
               <SobresVista
                 sobres={grupoCat.sobres}
                 simulacion={simulacion}
+                stockSobre={stockPlan?.sobreHerramientas ? { clave: stockPlan.sobreHerramientas, items: stockPlan.sueltas.herramientas } : null}
                 resolverProveedor={resolverProveedor}
                 onDecidir={(clave, d) => mutar(e => decidirSobre(e, clave, d))}
                 onAgregar={(clave) => mutar(e => agregarLineaSobre(e, clave, { descripcion: '', unidad: 'und', cantidad: 1, precio: 0 }))}
@@ -1681,6 +1744,34 @@ function avisosDelPlan(resumen, { simulacion }) {
       detalle: 'Lo que llegó ya está en las entradas del almacén: sumar las dos contaría lo mismo dos veces.',
     });
   }
+  // ── Lo ya ejecutado (tanda 3.5) ─────────────────────────────────
+  const av = resumen.avance;
+  if (av && !av.activo && av.partidas > 0 && av.monto > 0) {
+    out.push({
+      id: 'avance-sin-usar', nivel: 'info', accion: 'ajustes', boton: 'Restar lo ejecutado',
+      titulo: `${av.partidas} partida(s) tienen avance reportado (${solesK(av.monto)} del comprable ya ejecutado) y el plan no lo resta.`,
+      detalle: 'Si el avance está al día, prendé «Lo ya ejecutado» en ⚙ Ajustes finos: sale del plan, y lo que entró al almacén y se usó en eso no se descuenta dos veces.',
+    });
+  }
+  if (av?.activo && av.monto > 0) {
+    const partes = [
+      av.lineasCompletas > 0 ? `${av.lineasCompletas} línea(s) estaban hechas enteras y no se piden` : '',
+      av.adelantadas > 0 ? `${av.adelantadas} partida(s) van adelantadas y lo hecho sale de meses que todavía no llegaron` : '',
+      av.absorbido?.monto > 0 ? `${solesK(av.absorbido.monto)} de lo ya comprado lo explica lo ejecutado y no se resta otra vez (${av.absorbido.insumos} insumo(s))` : '',
+    ].filter(Boolean);
+    out.push({
+      id: 'avance', nivel: 'info',
+      titulo: `Se sacó lo ya ejecutado de ${av.partidas} partida(s): ${solesK(av.monto)}.`,
+      detalle: partes.length ? `${partes.join('. ')}.` : 'Sale de los meses más viejos de cada partida: lo que la obra hizo primero.',
+    });
+  }
+  if (av?.activo && av.vencidasSinAvance?.partidas > 0) {
+    out.push({
+      id: 'vencidas-sin-avance', nivel: 'ambar',
+      titulo: `${av.vencidasSinAvance.partidas} partida(s) que el cronograma ya da por terminadas no tienen avance reportado (${solesK(av.vencidasSinAvance.monto)}).`,
+      detalle: 'Lo suyo se trae al mes actual como atrasado. Si ya se hicieron, lo que falta es reportar su avance; si no, está bien que se pidan.',
+    });
+  }
   return out;
 }
 
@@ -1711,7 +1802,7 @@ function ChipPeriodo({ c, onClick, chico, principal }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
+function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, stock, editando, setEditando, tope, onVerMas }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
   // El proveedor de la orden es el que tienen TODAS sus líneas. Si hay más de
   // uno (porque alguien pisó una línea suelta) el campo queda vacío y se dice
@@ -1853,6 +1944,7 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
                   onLimpiar={() => onLimpiar(l)}
                   onCompra={(patch) => onCompra?.(l.clave, patch)}
                   resolverProveedor={resolverProveedor}
+                  stock={stock?.get(l.clave) || null}
                 />
               ))}
             </tbody>
@@ -1871,7 +1963,7 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
   );
 }
 
-function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, onCompra, resolverProveedor }) {
+function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, onCompra, resolverProveedor, stock = null }) {
   const color = COLOR_DECISION[l.decision];
   const factor = num(l.factor) > 0 ? num(l.factor) : 1;
   const unidadExp = l.unidadExpediente || l.unidad;
@@ -1909,6 +2001,7 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
           {!l.montoConocido && <span style={{ color: 'var(--amber)' }}> · sin precio en el expediente</span>}
           {l.nombre !== l.nombreOriginal && <span style={{ color: 'var(--blue)' }}> · era «{l.nombreOriginal}»</span>}
         </div>
+        {stock && <StockDeLinea s={stock} />}
       </td>
       <td style={{ textAlign: 'right' }}>
         {enEdicion ? (
@@ -2167,7 +2260,7 @@ function GruposIUPC({ sobres }) {
   );
 }
 
-function SobresVista({ sobres, simulacion = false, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor, onIrAPartida }) {
+function SobresVista({ sobres, simulacion = false, stockSobre = null, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor, onIrAPartida }) {
   if (!sobres.length) {
     return (
       <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
@@ -2227,6 +2320,19 @@ function SobresVista({ sobres, simulacion = false, resolverProveedor, onDecidir,
 
           {/* En Simulación la obra arranca de cero: el sobre está entero por
               definición, y el aviso de «nadie informó lo gastado» no aplica. */}
+          {/* Tanda 3.5: con «lo ya ejecutado» prendido, lo gastado se estima
+              con el avance de sus partidas cuando nadie informó más. Es un
+              piso, no un dato: se dice. */}
+          {s.consumoPorAvance && !simulacion && (
+            <p style={{ fontSize: 11.5, color: 'var(--blue)', margin: '0 12px 10px' }}>
+              ℹ Lo gastado ({soles(s.ejecutado)}) se estimó con el avance de sus partidas
+              {s.consumido != null ? `: es más que lo informado por órdenes y requisiciones (${soles(s.consumido)})` : ': nadie informó compras contra este sobre'}.
+              «Queda» se mide contra eso.
+            </p>
+          )}
+          {stockSobre && stockSobre.clave === s.clave && stockSobre.items.length > 0 && (
+            <StockDelSobre items={stockSobre.items} />
+          )}
           {!s.techoFirme && !simulacion && (
             <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '0 12px 10px' }}>
               ⚠ Nadie informó todavía cuánto de este sobre ya se gastó, así que «queda» se calcula contra el techo
@@ -2286,6 +2392,90 @@ function SobresVista({ sobres, simulacion = false, resolverProveedor, onDecidir,
         </div>
       ))}
     </>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LO QUE YA HAY EN EL ALMACÉN (tanda 3.5, §15.2 E)
+//
+// Tres niveles: debajo de cada línea de herramienta o EPP, en el sobre de
+// herramientas (lo que no tiene línea propia) y un resumen arriba de la
+// pestaña. NADA de esto resta: resta lo imputado, y eso ya lo hizo el motor.
+// ═══════════════════════════════════════════════════════════════════
+
+const TOPE_ITEMS_STOCK = 4;
+const itemStock = (i) => `${i.nombre} (${cant(i.stock)}${i.unidad ? ` ${String(i.unidad).trim().toLowerCase()}` : ''})`;
+
+/** Debajo de una línea: lo imputado (ya restado) y lo parecido (sin restar). */
+function StockDeLinea({ s }) {
+  const imp = s.imputados.filter(i => num(i.stock) > 0);
+  if (!imp.length && !s.parecidos.length) return null;
+  const lista = (arr) => {
+    const vis = arr.slice(0, TOPE_ITEMS_STOCK).map(itemStock).join(', ');
+    return arr.length > TOPE_ITEMS_STOCK ? `${vis} y ${arr.length - TOPE_ITEMS_STOCK} más` : vis;
+  };
+  return (
+    <div style={{ fontSize: 10.5, marginTop: 2 }}>
+      {imp.length > 0 && (
+        <div style={{ color: 'var(--green)' }}
+          title="Estos ítems del almacén están imputados a este insumo: el plan los resta según lo que diga «Del almacén, restar» en ⚙ (con «Nada», no).">
+          🏬 En el almacén: {lista(imp)} · imputado: lo resta «Del almacén, restar»
+        </div>
+      )}
+      {s.parecidos.length > 0 && (
+        <div style={{ color: 'var(--blue)' }}
+          title={`Se parecen por nombre y no están imputados, así que el plan NO los resta.\n${s.parecidos.map(i => `${itemStock(i)} · ${Math.round(num(i.score) * 100)}%`).join('\n')}\n\nSi son lo mismo, imputalos en «Imputar lo ya comprado» (Logística) o rechazá la línea.`}>
+          🏬 Parecido en el almacén: {lista(s.parecidos)} · sin imputar, no se restó
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Arriba de la pestaña de herramientas y EPPs, en modo real. */
+function StockAlmacenResumen({ stock, onImputar }) {
+  const r = stock.resumen;
+  if (!r.conStock && !r.imputados) return null;
+  const epps = stock.sueltas.epps;
+  return (
+    <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)', fontSize: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+        <b>🏬 Lo que ya hay en el almacén de la obra</b>
+        <span style={{ color: 'var(--tm)' }}>
+          {r.conStock} herramienta(s) y EPP(s) con stock
+          {r.lineasConStock > 0 && <> · {r.lineasConStock} línea(s) del plan tienen algo igual o parecido (se ve debajo de cada una)</>}
+          {stock.sueltas.herramientas.length > 0 && stock.sobreHerramientas && <> · {stock.sueltas.herramientas.length} herramienta(s) sin línea propia, en el sobre de herramientas</>}
+        </span>
+        <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={onImputar}>Imputar el almacén →</button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 4 }}>
+        Es una comparación, no un descuento: el plan solo resta lo IMPUTADO a un insumo. Lo parecido por nombre se muestra
+        para que decidas si rechazar la línea o imputarlo.
+      </div>
+      {epps.length > 0 && (
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 11.5 }}>{epps.length} EPP(s) con stock que no se parecen a ninguna línea del plan</summary>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 4 }}>{epps.map(itemStock).join(' · ')}</div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** Dentro del sobre de herramientas: lo que ya está en obra y no tiene línea propia. */
+function StockDelSobre({ items }) {
+  const vis = items.slice(0, 12);
+  return (
+    <div style={{ fontSize: 11.5, margin: '0 12px 10px', color: 'var(--tm)' }}
+      title="Herramientas del almacén con stock que no son una línea del presupuesto: salen de este sobre. No tienen precio en el almacén, así que no se descuentan del techo.">
+      🏬 <b style={{ color: 'var(--tp)' }}>En el almacén ya hay:</b> {vis.map(itemStock).join(' · ')}
+      {items.length > vis.length && (
+        <details style={{ display: 'inline' }}>
+          <summary style={{ display: 'inline', cursor: 'pointer' }}> · y {items.length - vis.length} más</summary>
+          {' '}{items.slice(vis.length).map(itemStock).join(' · ')}
+        </details>
+      )}
+    </div>
   );
 }
 

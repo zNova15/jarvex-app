@@ -47,6 +47,13 @@
 // `factor`) y el descuento de lo ya pedido sigue siendo en la unidad del
 // expediente, gracias a `factor_presupuesto` (mig 228).
 //
+// ── DESDE LA RONDA 3 (tanda 3.5): LO YA EJECUTADO ────────────────
+// En modo real, con `restarAvance`, la parte de cada partida que ya se hizo
+// (`porcentaje_avance`) sale del plan: de sus períodos MÁS VIEJOS hacia
+// adelante, que es lo que el frente de obra hizo primero. Y lo ya comprado
+// NO se resta encima de lo ejecutado: lo que entró al almacén y ya se usó es
+// justamente lo que se ejecutó. Ver `coberturaConAvance`.
+//
 // Testeado en __tests__/simulador-ordenes.test.js
 // ═══════════════════════════════════════════════════════════════════
 
@@ -346,6 +353,69 @@ function repartirTramo(tramo, periodos, { reparto, cuadrillas, repartoManual, pa
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// LO YA EJECUTADO (ronda 3, tanda 3.5)
+//
+// «Según lo real» restaba lo comprado y lo pedido, pero no lo HECHO: una
+// partida al 100% que se compró sin orden ni entrada al almacén volvía al mes
+// actual como atrasada. En Miraflores (24-set) hay 96 partidas con avance
+// reportado, S/ 895 k del presupuesto ejecutado, y 25 de ellas van
+// ADELANTADAS respecto del Gantt.
+// ═══════════════════════════════════════════════════════════════════
+
+/** Qué fracción de la partida ya se ejecutó (0 a 1), de su `porcentaje_avance` (0–100). */
+export function avanceDePartida(partida) {
+  const v = Number(partida?.porcentaje_avance);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  return Math.min(1, v / 100);
+}
+
+/**
+ * Saca la parte ejecutada del reparto de una línea, desde el período MÁS
+ * VIEJO hacia adelante: lo que la obra hizo primero es lo que el cronograma
+ * ponía primero. Proporcional no sirve: en una partida de cuatro meses al 50%,
+ * dejaría la mitad de los dos primeros meses —ya hechos— arrastrada al mes
+ * actual como si faltara.
+ *
+ * @param {Array<{periodo:string, fraccion:number}>} periodos
+ * @param {number} ejecutado  fracción de la línea ya hecha (0 a 1)
+ * @returns {Array<{periodo:string, fraccion:number}>} lo que falta; vacío si está toda hecha
+ */
+export function quitarEjecutado(periodos = [], ejecutado = 0) {
+  let resta = Math.min(1, Math.max(0, num(ejecutado)));
+  const orden = [...(periodos || [])].sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0));
+  const out = [];
+  for (const { periodo, fraccion } of orden) {
+    const baja = Math.min(num(fraccion), resta);
+    resta -= baja;
+    const queda = num(fraccion) - baja;
+    if (queda > 1e-9) out.push({ periodo, fraccion: queda });
+  }
+  return out;
+}
+
+/**
+ * Cuánto de lo ya cubierto (órdenes, requisiciones, almacén) se resta TODAVÍA
+ * después de sacar lo ejecutado, para un insumo. En unidades del expediente.
+ *
+ *   cubierto   K = todo lo que el plan ya restaba (lo que entró, lo ordenado…)
+ *   disponible A = lo que sigue sin usarse: el stock de hoy, lo ordenado que no
+ *                  llegó, lo requisado
+ *   ejecutado  E = lo que la obra ya consumió según el avance
+ *
+ * Lo cubierto de verdad es `max(E + A, K)`: o lo ejecutado se hizo con lo que
+ * entró (y entonces K ya lo incluye), o se hizo con algo que nadie registró
+ * (y entonces lo que queda disponible igual está). Sumar E y K contaría dos
+ * veces el cemento que entró y ya está en la losa. Como E sale del plan antes
+ * (por partida), acá se devuelve lo que falta restar: `max(A, K − E)`.
+ *
+ * Sin avance (E = 0) da K, lo de siempre: la regla no cambia nada para quien
+ * no la usa.
+ */
+export function coberturaConAvance({ cubierto = 0, disponible = 0, ejecutado = 0 } = {}) {
+  return Math.max(0, num(disponible), num(cubierto) - num(ejecutado));
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // LO YA CUBIERTO (§7 — nada se pide dos veces)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -420,6 +490,7 @@ export const factorDeItem = (it) => {
  * corresponde», y la pantalla lo dice distinto.
  *
  * @returns {{cubierto:Map<string,number>,
+ *            disponible:Map<string,number>,
  *            sinImputar:{lineas:number, monto:number},
  *            reqSinImputar:{lineas:number, monto:number},
  *            consumoSobre:Map<string,number>,
@@ -433,6 +504,11 @@ export function coberturaPrevia({
 } = {}) {
   const cubierto = new Map();
   const suma = (cod, cant) => cubierto.set(cod, (cubierto.get(cod) || 0) + num(cant));
+  // Tanda 3.5: la parte de lo cubierto que sigue SIN USARSE (stock, lo
+  // ordenado que no llegó, lo requisado). Solo la lee `coberturaConAvance`:
+  // sin avance, el plan resta `cubierto` como siempre.
+  const disponible = new Map();
+  const sumaDisp = (cod, cant) => disponible.set(cod, (disponible.get(cod) || 0) + num(cant));
 
   const previas = yaComprado instanceof Map ? [...yaComprado] : Object.entries(yaComprado || {});
   for (const [cod, cant] of previas) if (cod) suma(String(cod), cant);
@@ -440,6 +516,7 @@ export function coberturaPrevia({
   // ── lo que entró al almacén (tanda 2.5) ──────────────────────────
   const alm = aporteDelAlmacen(almacen, { modo: almacenModo, porInsumo: almacenPorInsumo });
   for (const [cod, cant] of alm.porCodigo) suma(cod, cant);
+  for (const [cod, cant] of alm.disponiblePorCodigo) sumaDisp(cod, cant);
 
   const vivas = new Map();
   for (const o of vivos(ordenes)) {
@@ -476,6 +553,11 @@ export function coberturaPrevia({
       consumoSobre.set(cod, (consumoSobre.get(cod) || 0) + monto);
       continue;
     }
+    // Lo que todavía no llegó sigue disponible: no pudo gastarse en obra.
+    const porLlegar = orden.estado === 'recibida' ? 0
+      : orden.estado === 'recibida_parcial' ? Math.max(0, num(it.cantidad) - num(it.cantidad_recibida))
+        : num(it.cantidad);
+    sumaDisp(cod, porLlegar * factorDeItem(it));
     // Manda el almacén: lo que ya llegó está en sus entradas.
     let cantidad = num(it.cantidad);
     if (alm.gobierna.has(cod)) {
@@ -484,7 +566,7 @@ export function coberturaPrevia({
         cubiertasPorAlmacen.monto += monto;
         continue;
       }
-      if (orden.estado === 'recibida_parcial') cantidad = Math.max(0, cantidad - num(it.cantidad_recibida));
+      if (orden.estado === 'recibida_parcial') cantidad = porLlegar;
     }
     suma(cod, cantidad * factorDeItem(it));
   }
@@ -514,11 +596,12 @@ export function coberturaPrevia({
       continue;
     }
     suma(cod, cantidad * factorDeItem(it));
+    sumaDisp(cod, cantidad * factorDeItem(it));
   }
   reqSinImputar.monto = r2(reqSinImputar.monto);
 
   return {
-    cubierto, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto,
+    cubierto, disponible, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto,
     almacen: { ...alm.resumen, ordenesCubiertas: cubiertasPorAlmacen },
   };
 }
@@ -548,6 +631,9 @@ export const ALMACEN_MODOS_INSUMO = ['entradas', 'stock', 'nada', 'cantidad'];
 export function aporteDelAlmacen(filas = [], { modo = 'entradas', porInsumo = null } = {}) {
   const m = ALMACEN_MODOS.includes(modo) ? modo : 'entradas';
   const porCodigo = new Map();
+  // Lo que HAY hoy, sea cual sea el modo: es lo único del almacén que sigue
+  // sin usarse (tanda 3.5, `coberturaConAvance`).
+  const disponiblePorCodigo = new Map();
   const gobierna = new Set();
   const resumen = {
     modo: m, items: 0, itemsImputados: 0, itemsFuera: 0, insumos: 0,
@@ -578,13 +664,17 @@ export function aporteDelAlmacen(filas = [], { modo = 'entradas', porInsumo = nu
     if (mi === 'cantidad') continue;       // se suma una vez por código, abajo
     const cant = (mi === 'stock' ? stock : entradas) * factorDeItem(f);
     porCodigo.set(cod, (porCodigo.get(cod) || 0) + cant);
+    disponiblePorCodigo.set(cod, (disponiblePorCodigo.get(cod) || 0) + stock * factorDeItem(f));
   }
   for (const [cod, cant] of fijos) {
     if (!gobierna.has(cod)) continue;
     porCodigo.set(cod, cant);
+    // Una cantidad fijada a mano no dice qué parte ya se usó: se toma entera
+    // como disponible, que es lo que la persona quiso restar.
+    disponiblePorCodigo.set(cod, cant);
   }
   resumen.insumos = gobierna.size;
-  return { porCodigo, gobierna, resumen };
+  return { porCodigo, disponiblePorCodigo, gobierna, resumen };
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -643,6 +733,10 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  `coberturaPrevia`.
  * @param {Object}  [o.almacenPorInsumo]     código → {modo, cantidad}, solo en
  *                  el modo 'personalizado'.
+ * @param {boolean} [o.restarAvance=false]   saca del plan lo ya ejecutado según
+ *                  el `porcentaje_avance` de cada partida (tanda 3.5). Con el
+ *                  anclaje 'cero' no se aplica: una simulación no resta nada
+ *                  real.
  *
  * @returns {{propuestas:Array, sobres:Array, manoObra:Array, pendientes:Array, resumen:Object}}
  */
@@ -671,6 +765,7 @@ export function simularOrdenes({
   almacen = [],
   almacenModo = 'entradas',
   almacenPorInsumo = null,
+  restarAvance = false,
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -679,6 +774,10 @@ export function simularOrdenes({
   const filtro = Array.isArray(categorias) && categorias.length ? new Set(categorias) : null;
   const hoyYmd = hoy || hoyLocal();
   const periodoActual = periodoDe(hoyYmd, gran);
+  // Lo ejecutado es un dato REAL: en una simulación (anclaje 'cero') no se
+  // resta ni se mide, igual que las órdenes y el almacén.
+  const midoAvance = anc !== 'cero';
+  const usarAvance = midoAvance && !!restarAvance;
 
   const porId = new Map(vivos(partidas).map(p => [p.id, p]));
 
@@ -722,7 +821,26 @@ export function simularOrdenes({
     // se juntaron por monto y cuántas quedan chicas igual.
     frecuencia, montoMinimoOrden: num(montoMinimoOrden),
     ordenesSinConsolidar: 0, ordenesJuntadasPorMonto: 0, ordenesBajoMinimo: 0,
+    // Lo ya ejecutado (tanda 3.5). Se mide aunque no se reste, para que la
+    // pantalla pueda decir «hay avance reportado que el plan no está
+    // usando». Null en una simulación. Los montos son del expediente.
+    avance: null,
   };
+  const av = midoAvance ? {
+    activo: usarAvance,
+    partidas: new Set(), lineas: 0, lineasCompletas: 0,
+    monto: 0, montoManoObra: 0,
+    // Lo que el cronograma ya da por terminado y nadie reportó: con el
+    // avance puesto, eso sigue viniendo al mes actual como atrasado.
+    vencidasSinAvance: new Set(), montoVencidoSinAvance: 0,
+    // Las que avanzaron antes de lo que decía el cronograma.
+    adelantadas: new Set(),
+    // De lo ya comprado, cuánto lo explica lo ejecutado (y por eso no se
+    // resta otra vez): paso 2.
+    absorbido: { insumos: 0, monto: 0 },
+  } : null;
+  // Lo ejecutado de cada insumo, en unidades del expediente, para el paso 2.
+  const ejecutadoPorCodigo = new Map();
 
   // ── 1) repartir cada línea del presupuesto en sus períodos ────────
   for (const ip of vivos(insumosPartida)) {
@@ -768,7 +886,7 @@ export function simularOrdenes({
     const periodos = periodosEntre(inicio, fin, gran);
     // Un tramo corto no se reparte aunque cruce el borde del mes: se pide
     // para cuando arranca. Repartir 4 días entre dos meses es ruido.
-    const plan = tramoLargo
+    let plan = tramoLargo
       ? repartirTramo({ inicio, fin }, periodos, { reparto: rep, cuadrillas, repartoManual, partidaId: ip.partida_id, granularidad: gran })
       : { periodos: [{ periodo: periodos[0], fraccion: 1 }] };
 
@@ -783,6 +901,41 @@ export function simularOrdenes({
       continue;
     }
 
+    // ── 1a) lo ya ejecutado (tanda 3.5) ────────────────────────────
+    // Sale de los períodos más viejos de la línea (`quitarEjecutado`). Una
+    // línea hecha entera no llega a ninguna orden ni a la dotación.
+    const fEj = midoAvance ? avanceDePartida(partida) : 0;
+    let montoEjecutado = 0;
+    if (av) {
+      const esMO = cls.categoria === 'mano_obra';
+      if (fEj > 0) {
+        av.partidas.add(ip.partida_id);
+        av.lineas += 1;
+        if (esMO) av.montoManoObra += montoCrudo * fEj; else av.monto += montoCrudo * fEj;
+        if (tramo.inicio > hoyYmd) av.adelantadas.add(ip.partida_id);
+      } else if (!esMO && tramo.fin < hoyYmd) {
+        av.vencidasSinAvance.add(ip.partida_id);
+        av.montoVencidoSinAvance += montoCrudo;
+      }
+    }
+    if (usarAvance && fEj > 0) {
+      montoEjecutado = montoCrudo * fEj;
+      if (!cls.esSobre && cls.categoria !== 'mano_obra' && ip.insumo_codigo) {
+        const cod = String(ip.insumo_codigo).trim();
+        const e = ejecutadoPorCodigo.get(cod) || { cantidad: 0, monto: 0 };
+        e.cantidad += cantidad * fEj;
+        e.monto += montoEjecutado;
+        ejecutadoPorCodigo.set(cod, e);
+      }
+      plan = { periodos: quitarEjecutado(plan.periodos, fEj) };
+      if (!plan.periodos.length) {
+        av.lineasCompletas += 1;
+        // Un sobre hecho entero igual se muestra: su techo sigue siendo del
+        // expediente y lo gastado se estima con lo ejecutado.
+        if (!cls.esSobre) continue;
+      }
+    }
+
     resumen.lineasSimuladas += 1;
 
     // Un SOBRE no es una lista de insumos: es un techo de plata. Va por su
@@ -795,11 +948,12 @@ export function simularOrdenes({
           clave, nombre: ip.nombre_insumo || '', unidad: ip.unidad || '',
           categoria: cls.categoria, subcategoria: cls.subcategoria,
           techo: 0, enPartidas: 0, partidaIds: new Set(), porPeriodo: new Map(),
-          codigos: new Set(),
+          codigos: new Set(), ejecutado: 0,
         };
         sobres.set(clave, s);
       }
       s.techo += montoCrudo;
+      s.ejecutado += montoEjecutado;
       s.enPartidas += 1;
       // El código deja imputarle una línea de orden (tanda 2.5): la clave del
       // sobre es por nombre, pero la orden se imputa por código.
@@ -808,7 +962,8 @@ export function simularOrdenes({
       for (const { periodo, fraccion } of plan.periodos) {
         s.porPeriodo.set(periodo, (s.porPeriodo.get(periodo) || 0) + montoCrudo * fraccion);
       }
-      resumen.montoSobres += montoCrudo;
+      // Lo ejecutado del sobre ya no es plata por planificar (tanda 3.5).
+      resumen.montoSobres += montoCrudo - montoEjecutado;
       continue;
     }
 
@@ -876,7 +1031,7 @@ export function simularOrdenes({
   // El descuento se aplica de los períodos MÁS VIEJOS hacia adelante: lo que
   // ya está en obra cubre primero las necesidades más cercanas.
   const {
-    cubierto, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto, almacen: almResumen,
+    cubierto, disponible, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto, almacen: almResumen,
   } = coberturaPrevia({
     ordenes, ocItems, yaComprado, requisiciones, requisicionItems,
     almacen, almacenModo, almacenPorInsumo,
@@ -896,6 +1051,23 @@ export function simularOrdenes({
     }
     for (const [cod, arr] of porClave) {
       let resta = num(cubierto.get(cod));
+      // Tanda 3.5: lo ejecutado ya salió del plan por partida. De lo cubierto
+      // se resta solo lo que lo ejecutado no explica (`coberturaConAvance`).
+      // El colchón vale también para lo ejecutado: la merma de lo que ya se
+      // hizo también se consumió.
+      const ej = usarAvance ? ejecutadoPorCodigo.get(cod) : null;
+      if (ej && resta > 0) {
+        const colchon = num(compraDe(arr[0]).colchonPct) / 100;
+        const nueva = coberturaConAvance({
+          cubierto: resta, disponible: num(disponible.get(cod)), ejecutado: ej.cantidad * (1 + colchon),
+        });
+        if (nueva < resta - 1e-9) {
+          const precio = ej.cantidad > 0 ? ej.monto / ej.cantidad : 0;
+          av.absorbido.insumos += 1;
+          av.absorbido.monto += (resta - nueva) * precio;
+        }
+        resta = nueva;
+      }
       if (resta <= 0) continue;
       let algo = false;
       arr.sort((a, b) => (a.periodo < b.periodo ? -1 : a.periodo > b.periodo ? 1 : 0));
@@ -1116,6 +1288,12 @@ export function simularOrdenes({
     const deReq = consumoSobres != null && consumoSobres[s.clave] != null;
     const informado = deReq || hayDeOrdenes;
     const consumido = informado ? r2((deReq ? num(consumoSobres[s.clave]) : 0) + deOrdenes) : null;
+    // Tanda 3.5: lo ejecutado del sobre es un PISO de lo gastado. Si alguien
+    // informó más, manda lo informado; si nadie informó nada, lo ejecutado es
+    // lo único que se sabe y la pantalla dice que es una estimación.
+    const ejecutado = r2(s.ejecutado);
+    const porAvance = ejecutado > 0 && (!informado || ejecutado > consumido);
+    const gastado = porAvance ? ejecutado : consumido;
     return {
       clave: s.clave, nombre: s.nombre, unidad: s.unidad,
       categoria: s.categoria, subcategoria: s.subcategoria,
@@ -1123,8 +1301,9 @@ export function simularOrdenes({
       techo: r2(s.techo), enPartidas: s.enPartidas, partidaIds: [...s.partidaIds],
       codigos: [...s.codigos],
       consumidoPorOrdenes: hayDeOrdenes ? r2(deOrdenes) : 0,
-      consumido, consumoInformado: informado,
-      disponible: informado ? r2(s.techo - consumido) : null,
+      consumido, ejecutado, consumoPorAvance: porAvance,
+      consumoInformado: informado || porAvance,
+      disponible: (informado || porAvance) ? r2(s.techo - gastado) : null,
       porPeriodo: [...s.porPeriodo]
         .sort((a, b) => (a[0] < b[0] ? -1 : 1))
         .map(([periodo, monto]) => ({ periodo, etiquetaPeriodo: etiquetaPeriodo(periodo), monto: r2(monto) })),
@@ -1169,6 +1348,16 @@ export function simularOrdenes({
   }
   resumen.descontado.cantidad = r4(resumen.descontado.cantidad);
   resumen.descontado.monto = r2(resumen.descontado.monto);
+  if (av) {
+    resumen.avance = {
+      activo: av.activo,
+      partidas: av.partidas.size, lineas: av.lineas, lineasCompletas: av.lineasCompletas,
+      monto: r2(av.monto), montoManoObra: r2(av.montoManoObra),
+      vencidasSinAvance: { partidas: av.vencidasSinAvance.size, monto: r2(av.montoVencidoSinAvance) },
+      adelantadas: av.adelantadas.size,
+      absorbido: { insumos: av.absorbido.insumos, monto: r2(av.absorbido.monto) },
+    };
+  }
 
   // La barra de cobertura de la pantalla apunta a ESTO y no al presupuesto
   // total: el 47% de Miraflores es planilla y nunca va a cubrirse con
