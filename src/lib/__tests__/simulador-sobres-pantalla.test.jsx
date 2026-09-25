@@ -88,9 +88,12 @@ function montarBrowserFalso() {
   g.__hooks = new Proxy(hooks, { get: (t, k) => (k in t ? t[k] : () => vacio) });
 }
 
-const render = () => renderToString(React.createElement(globalThis.SimuladorOrdenesPage, {
-  showToast: () => {}, vistaInicial: 'sobres',
+// Desde la tanda 3.1 no hay pestaña de sobres: cada sobre va en la pestaña
+// de SU categoría (§15.2 E). Se dibujan las tres y se miran juntas.
+const renderTab = (vistaInicial) => renderToString(React.createElement(globalThis.SimuladorOrdenesPage, {
+  showToast: () => {}, vistaInicial,
 }));
+const render = () => ['materiales', 'herramientas', 'servicios'].map(renderTab).join(' ');
 
 let html = '';
 beforeAll(async () => {
@@ -104,7 +107,7 @@ describe('la vista de sobres del simulador', () => {
     // La queja de Gabriel del 22-set. El shell de la app es overflow:hidden,
     // así que sin `.page-wrap` en la raíz la pantalla no scrollea y no hay
     // forma de llegar al sobre número 12.
-    expect(html).toMatch(/^<div class="page-wrap"/);
+    expect(renderTab('herramientas')).toMatch(/^<div class="page-wrap"/);
   });
 
   it('dibuja los sobres del expediente', () => {
@@ -122,7 +125,18 @@ describe('la vista de sobres del simulador', () => {
   });
 
   it('muestra los grupos, que es para lo que sirve clasificar', () => {
-    expect(html).toContain('de acá salen los grupos que se le pueden pedir a un mismo proveedor');
+    // Los grupos son por pestaña (tanda 3.1). En la de servicios conviven el
+    // acarreo y el flete, que son los dos «flete y transporte»: un solo grupo,
+    // y con uno solo no hay nada que resumir.
+    expect(renderTab('servicios')).not.toContain('de acá salen los grupos');
+    // Con el flete reclasificado por el diccionario propio, la pestaña ya
+    // tiene dos grupos y el resumen aparece.
+    globalThis.__TERMINOS = [{ termino: 'FLETE TERRESTRE SANEAMIENTO PM YSC', clasificacion_codigo: '37' }];
+    try {
+      expect(renderTab('servicios')).toContain('de acá salen los grupos que se le pueden pedir a un mismo proveedor');
+    } finally {
+      globalThis.__TERMINOS = [];
+    }
   });
 
   it('ofrece ir a corregir el desglose que le falta a la partida', () => {
@@ -143,9 +157,10 @@ describe('la vista de sobres del simulador', () => {
     globalThis.__TERMINOS = [{ termino: 'FLETE TERRESTRE SANEAMIENTO PM YSC', clasificacion_codigo: '37' }];
     try {
       const conTermino = render();
-      // Ese flete pasa a contarse con las herramientas: ahora son DOS sobres
-      // de herramienta manual y uno solo de flete.
-      expect(conTermino).toContain('title="2 sobre(s) · S/ 192,235.19"');
+      // Ese flete pasa a decir «herramienta manual»: la etiqueta aparece una
+      // vez más que sin el término.
+      const cuenta = (h) => (h.match(/Herramienta manual/g) || []).length;
+      expect(cuenta(conTermino)).toBeGreaterThan(cuenta(html));
     } finally {
       globalThis.__TERMINOS = [];
     }

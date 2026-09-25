@@ -136,7 +136,16 @@ export function montoMinimoSugerido(args) {
  *   corrida:{propuestas, sobres, resumen}, porQue}>}
  */
 export function sortearEnfoques(args = {}) {
-  const base = paramsDeMotor(args);
+  // Los ejes de la PREGUNTA pasan tal cual: llegan ya armados para el motor
+  // (desde la 3.1 la pantalla traduce el modo a un anclaje y el arranque de
+  // la simulación a un cronograma 'reprogramado'). Re-normalizarlos como
+  // parámetros de pantalla perdería el corrimiento y los enfoques correrían
+  // otro cronograma que el plan de al lado.
+  const base = {
+    ...paramsDeMotor(args),
+    ...(args.anclaje ? { anclaje: args.anclaje } : {}),
+    ...(args.cronograma ? { cronograma: args.cronograma } : {}),
+  };
   const minimoSugerido = montoMinimoSugerido({ ...args, ...base });
 
   return ENFOQUES_SORTEO.map(id => {

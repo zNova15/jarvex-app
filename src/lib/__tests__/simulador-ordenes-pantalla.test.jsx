@@ -14,7 +14,7 @@
 //
 // Si alguien los borra refactorizando, este test lo dice.
 // ═══════════════════════════════════════════════════════════════════
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 
@@ -105,8 +105,9 @@ describe('la pantalla del Simulador de Órdenes', () => {
   });
 
   it('ofrece cómo se juntan las órdenes, con el monto mínimo en 0 (tanda 2.3)', () => {
-    const html = render();
-    expect(html).toContain('Cada cuánto se emite una orden');
+    // Desde la 3.1 el monto mínimo y la frecuencia por rubro viven en ⚙.
+    expect(render()).toContain('Cada cuánto se emite una orden');
+    const html = render({ ajustesAbiertos: true });
     expect(html).toContain('Monto mínimo por orden');
     expect(html).toContain('0 = sin mínimo');
     expect(html).toContain('Frecuencia distinta por rubro');
@@ -165,13 +166,21 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('id="jx-sim-proveedores"');
   });
 
-  it('avisa cuando el reparto elegido necesita un dato que no existe', () => {
-    // Por defecto es «parejo», que no lo necesita: el aviso NO debe estar.
-    expect(render()).not.toContain('necesita un dato que todavía no se carga');
+  it('no ofrece las opciones que piden un dato que nadie carga (ronda 3)', () => {
+    // «Reprogramado a mano», «por cuadrilla» y «manual» terminaban en «Sin
+    // planificar» (§15.1 punto 4). La 3.3 trae el cronograma por escenario.
+    const html = render({ ajustesAbiertos: true });
+    expect(html).not.toContain('Reprogramado a mano');
+    expect(html).not.toContain('Por cuadrilla que entra');
+    expect(html).not.toContain('Manual, partida por partida');
+    expect(html).toContain('Todo al inicio del tramo');
   });
 
-  it('la pestaña de sobres explica el techo y NO lo da por firme', () => {
-    const html = render({ vistaInicial: 'sobres' });
+  it('los sobres van en la pestaña de su categoría, explican el techo y NO lo dan por firme', () => {
+    // Desde la 3.1 no hay pestaña de sobres: «HERRAMIENTAS MANUALES» va con
+    // las herramientas.
+    expect(render()).not.toContain('HERRAMIENTAS MANUALES');
+    const html = render({ vistaInicial: 'herramientas' });
     expect(html).toContain('HERRAMIENTAS MANUALES');
     expect(html).toContain('un monto reservado sin decir qué se compra');
     // Nadie informó cuánto del sobre ya se gastó: el aviso tiene que estar.
@@ -225,12 +234,11 @@ describe('la pantalla del Simulador de Órdenes', () => {
   });
 
   it('ofrece qué resta el almacén, con «todo lo que entró» por defecto (tanda 2.5)', () => {
-    const html = render();
+    const html = render({ ajustesAbiertos: true });
     expect(html).toContain('Del almacén, restar');
     expect(html).toMatch(/<option value="entradas" selected="">Todo lo que entró<\/option>/);
     expect(html).toContain('Solo lo que hay hoy');
     expect(html).toContain('Personalizado por insumo');
-    expect(html).toContain('Imputar lo ya comprado');
   });
 
   it('la bandeja de imputación DICE que nada se imputa solo (tanda 2.5)', () => {
@@ -243,8 +251,10 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).not.toMatch(/Aceptar todas<\/button>|Imputar todas/);
   });
 
-  it('ofrece la pestaña de escenarios sugeridos, con los tres corridos por el motor real (tanda 2.6, opcional)', () => {
-    const html = render({ vistaInicial: 'enfoques' });
+  it('los escenarios sugeridos son PUNTOS DE PARTIDA dentro de ⚙, corridos por el motor real (2.6 → 3.1)', () => {
+    expect(render()).not.toContain('Pedir recomendación a la IA');
+    const html = render({ ajustesAbiertos: true });
+    expect(html).toContain('Puntos de partida');
     expect(html).toContain('Pedir recomendación a la IA');
     expect(html).toContain('Caja ajustada');
     expect(html).toContain('Cero desabastecimiento');
@@ -252,6 +262,74 @@ describe('la pantalla del Simulador de Órdenes', () => {
     // Ninguna cantidad ni precio nuevo: solo las perillas que ya existen.
     expect(html).toContain('El colchón por insumo no lo toca ningún enfoque');
     expect(html).toContain('Usar este enfoque');
+  });
+
+  // ── Ronda 3, tanda 3.1: la pantalla contesta UNA pregunta a la vez ──
+  it('el primer selector es el modo: Simulación o Según lo real', () => {
+    const html = render();
+    expect(html).toContain('🧪 Simulación');
+    expect(html).toContain('📍 Según lo real');
+    expect(html.indexOf('📍 Según lo real')).toBeLessThan(html.indexOf('De dónde salen las fechas'));
+    // El anclaje viejo no aparece más.
+    expect(html).not.toContain('Desde cuándo se planifica');
+    expect(html).not.toContain('Solo los períodos que faltan');
+  });
+
+  it('las perillas finas están detrás de ⚙, cerradas por defecto', () => {
+    const html = render();
+    expect(html).toContain('⚙ Ajustes finos');
+    for (const t of ['Pedir con cuántos días de anticipación', 'Monto mínimo por orden', 'Del almacén, restar', 'Cómo se reparte un tramo largo']) {
+      expect(html).not.toContain(t);
+    }
+  });
+
+  it('los resultados salen en una pestaña por categoría, y ya no hay «Imputar» ni «Escenarios sugeridos» como pestañas', () => {
+    const html = render();
+    expect(html).toMatch(/🧱 Materiales \(\d+\)/);
+    expect(html).toMatch(/🦺 Herramientas y EPPs \(\d+\)/);
+    expect(html).toContain('📄 Ya pedido');
+    expect(html).not.toContain('Órdenes propuestas (');
+    expect(html).not.toContain('Sobres sin detalle (');
+    expect(html).not.toContain('💡 Escenarios sugeridos');
+    expect(html).not.toMatch(/<button[^>]*>🧾 Imputar lo ya comprado/);
+    // La pestaña de materiales trae las órdenes de materiales y no el sobre.
+    expect(html).toContain('Concreto, agregados y aditivos — octubre 2026');
+  });
+
+  it('Imputar se sigue abriendo (desde los avisos) con un botón para volver al plan', () => {
+    const html = render({ vistaInicial: 'imputar' });
+    expect(html).toContain('Volver al plan');
+    expect(html).toContain('Nada se imputa solo');
+  });
+
+  describe('en modo Simulación', () => {
+    const ESC = [{ id: 'e1', nombre: 'Hipótesis', obra_id: OBRA, params: { modo: 'simulacion', arranque: 'hoy' }, actualizado: '2026-10-01' }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+
+    it('ofrece cuándo arranca la obra y dice cuánto se corrió el cronograma', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).toContain('La obra arranca');
+      expect(html).toContain('Como si empezara hoy');
+      // Obra del 30-abr, hoy 1-oct: 154 días hacia adelante.
+      expect(html).toContain('154 día(s) hacia adelante');
+      expect(html).toContain('El plazo y el orden de las partidas no cambian');
+    });
+
+    it('no muestra lo que es del modo real: ni la perilla del almacén ni avisos de compras', () => {
+      const html = render({ ajustesAbiertos: true });
+      expect(html).not.toContain('Del almacén, restar');
+      expect(html).not.toContain('Avisos (');
+    });
+
+    it('no deja convertir en requisiciones: el plan no restó lo ya comprado', () => {
+      const html = render();
+      expect(html).toContain('no se convierte en requisiciones');
+    });
   });
 
   it('sin obra activa no revienta: muestra el vacío', () => {

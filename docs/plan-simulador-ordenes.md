@@ -974,3 +974,51 @@ Preguntas originales:
 | 3.3 | Motor de cronograma por escenario + reparto «según escenario» + curva de carga | lib pura nueva + tests | Opus / extra alto / sesión nueva |
 | 3.4 | La IA elige y narra el escenario | acción en `api/asistente-solicitud.js` | Opus / alto / misma sesión que 3.3 |
 | 3.5 | Modo real completo: quitar lo ejecutado (avance) + herramientas contra stock | motor + pantalla | Opus / alto / sesión nueva |
+
+### 15.5 — Avance — ronda 3
+
+**Tanda 3.1 HECHA el 24-set** (en staging). Lo que se hizo y lo que la tanda
+tuvo que decidir:
+
+- **Modo en vez de anclaje.** `params.modo` (`real` | `simulacion`) reemplaza
+  a `params.anclaje`; `paramsDeMotor` lo traduce (`simulacion` → `cero`,
+  `real` → `hoy`), así que el motor no cambió. Los escenarios guardados se
+  migran solos en `normalizarParams`: `cero` → simulación, `hoy` y
+  `restante` → real. También se abren con el default los que tenían
+  `cronograma: 'reprogramado'` o `reparto: 'cuadrilla' | 'manual'`
+  (`CRONOGRAMAS_PANTALLA`, `REPARTOS_PANTALLA`): el motor los sigue
+  aceptando para la 3.3.
+- **En Simulación el motor NO recibe nada real** (órdenes, requisiciones,
+  almacén, lo gastado de los sobres). Por eso no hay avisos de compras ni de
+  almacén en ese modo, y el aviso de «nadie informó lo gastado» de los sobres
+  no sale (el sobre está entero por definición).
+- **Arranque** (§15.3): `arranque` (`gantt` | `hoy` | `fecha`) +
+  `arranqueFecha`. Lo resuelve `desplazarCronograma` en la lib nueva
+  `simulador-cronograma.js`: corrimiento rígido de todas las partidas y del
+  plazo, que el motor recibe como `cronograma: 'reprogramado'` +
+  `reprogramacion`. La 3.3 suma ahí el cronograma aleatorio.
+- **Decisión tomada en la tanda, a revisar con Gabriel:** en Simulación el
+  botón «Convertir en requisiciones» queda APAGADO. El plan no restó lo ya
+  comprado, así que convertirlo pediría dos veces. Lo aceptado se guarda y
+  se vuelve a aplicar al pasar a «Según lo real». (Antes, el anclaje `cero`
+  avisaba «sirve para revisar, no para emitir» pero dejaba convertir.)
+- **Pestañas por categoría:** una orden va ENTERA a la categoría que más
+  plata pesa adentro (`categoriaDePropuesta`); si trae líneas de otra, la
+  tarjeta lo dice. «Aceptar el tramo» decide solo las órdenes de la pestaña
+  abierta (con la lista entera aceptaba también lo de las otras pestañas sin
+  que se viera).
+- **Sobres por categoría:** cada sobre va a la pestaña de su `categoria`. El
+  costo: el resumen por grupo IUPC ahora es por pestaña. En el caso de
+  prueba, «PUBLICACIONES» (IUPC S12, un servicio) cae en Materiales porque su
+  subcategoría del simulador sale `material` — es un desacuerdo previo entre
+  el clasificador del simulador y el IUPC, no de esta tanda.
+- **Avisos a un botón** del encabezado («⚠ Avisos (N)»), solo en modo real.
+  «Imputar lo ya comprado» ya no es pestaña: se abre desde los avisos (y
+  desde «Personalizado por insumo» del almacén), con «← Volver al plan»,
+  hasta que la 3.2 le dé su sección.
+- **Puntos de partida** (los enfoques de la 2.6) dentro de ⚙. Se calculan
+  solo con ⚙ abierto. `sortearEnfoques` ahora respeta el `anclaje` y el
+  `cronograma` que recibe (antes los re-normalizaba y perdía el corrimiento
+  del arranque).
+- El primer render lee el escenario guardado sin esperar al efecto: antes se
+  pintaba un instante con los defaults (modo real, con sus avisos).

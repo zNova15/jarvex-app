@@ -20,6 +20,7 @@ import {
   aplicarEscenario, lineasAceptadas,
   leerEscenarios, guardarEscenario, guardarEscenarios, borrarEscenario, claveStorage,
   leerCompras, guardarCompra, claveStorageCompras,
+  categoriaDePropuesta,
 } from '../simulador-escenarios.js';
 
 // ── Un localStorage de mentira, para no depender del browser ──
@@ -74,8 +75,8 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
   });
 
   it('un valor que ya no existe cae al default en vez de romper', () => {
-    const p = normalizarParams({ anclaje: 'lo_que_sea', cronograma: 'ninguno', reparto: 'xx', granularidad: 'dia' });
-    expect(p.anclaje).toBe('hoy');
+    const p = normalizarParams({ modo: 'lo_que_sea', cronograma: 'ninguno', reparto: 'xx', granularidad: 'dia' });
+    expect(p.modo).toBe('real');
     expect(p.cronograma).toBe('gantt');
     expect(p.reparto).toBe('parejo');
     expect(p.granularidad).toBe('mes');
@@ -118,7 +119,82 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
 
   it('mismosParams compara la pregunta, no el objeto', () => {
     expect(mismosParams(PARAMS_DEFAULT, { ...PARAMS_DEFAULT })).toBe(true);
-    expect(mismosParams(PARAMS_DEFAULT, { ...PARAMS_DEFAULT, anclaje: 'cero' })).toBe(false);
+    expect(mismosParams(PARAMS_DEFAULT, { ...PARAMS_DEFAULT, modo: 'simulacion' })).toBe(false);
+  });
+});
+
+describe('ronda 3 — los dos modos y la migración de los escenarios guardados (tanda 3.1)', () => {
+  it('el modo manda el anclaje del motor: simulación = cero, real = desde hoy', () => {
+    expect(paramsDeMotor({ modo: 'simulacion' }).anclaje).toBe('cero');
+    expect(paramsDeMotor({ modo: 'real' }).anclaje).toBe('hoy');
+    expect(paramsDeMotor(PARAMS_DEFAULT).anclaje).toBe('hoy');
+  });
+
+  it('un escenario de antes de la ronda 3 se abre en el modo que le corresponde', () => {
+    // 'cero' era la auditoría: una simulación. 'hoy' y el retirado
+    // 'restante' preguntaban por lo real.
+    expect(normalizarParams({ anclaje: 'cero' }).modo).toBe('simulacion');
+    expect(normalizarParams({ anclaje: 'hoy' }).modo).toBe('real');
+    expect(normalizarParams({ anclaje: 'restante' }).modo).toBe('real');
+    expect(normalizarParams({ anclaje: 'cero' })).not.toHaveProperty('anclaje');
+  });
+
+  it('las opciones que pedían un dato que nadie carga se abren con el default', () => {
+    // «Reprogramado a mano», «por cuadrilla» y «manual» terminaban en «Sin
+    // planificar» (§15.1 punto 4): la pantalla ya no las ofrece.
+    expect(normalizarParams({ cronograma: 'reprogramado' }).cronograma).toBe('gantt');
+    expect(normalizarParams({ reparto: 'cuadrilla' }).reparto).toBe('parejo');
+    expect(normalizarParams({ reparto: 'manual' }).reparto).toBe('parejo');
+    expect(normalizarParams({ reparto: 'inicio' }).reparto).toBe('inicio');
+    expect(normalizarParams({ cronograma: 'sin_cronograma' }).cronograma).toBe('sin_cronograma');
+  });
+
+  it('el arranque arranca en el Gantt, y «una fecha» sin fecha todavía no se pierde', () => {
+    expect(PARAMS_DEFAULT.arranque).toBe('gantt');
+    const p = normalizarParams({ arranque: 'fecha', arranqueFecha: 'mañana' });
+    expect(p.arranque).toBe('fecha');
+    expect(p.arranqueFecha).toBe(null);
+    expect(normalizarParams({ arranque: 'fecha', arranqueFecha: '2027-01-04' }).arranqueFecha).toBe('2027-01-04');
+    expect(normalizarParams({ arranque: 'ayer' }).arranque).toBe('gantt');
+  });
+
+  it('cambiar de modo NO borra lo decidido', () => {
+    const c = corrida();
+    const p0 = c.propuestas[0];
+    let e = decidirPropuesta(nuevoEscenario({}), p0, 'aceptada');
+    e = conParams(e, { modo: 'simulacion' });
+    const c2 = corrida(paramsDeMotor(e.params));
+    expect(aplicarEscenario(c2, e).propuestas.find(p => p.id === p0.id)?.estado).toBe('aceptada');
+  });
+});
+
+describe('categoriaDePropuesta — en qué pestaña va una orden (tanda 3.1)', () => {
+  it('va entera a la categoría que más plata pesa, y dice qué más trae', () => {
+    const r = categoriaDePropuesta({
+      categoria: 'materiales',
+      lineas: [
+        { categoria: 'materiales', monto: 100 },
+        { categoria: 'herramientas', monto: 900 },
+        { categoria: 'herramientas', monto: 50 },
+      ],
+    });
+    expect(r.categoria).toBe('herramientas');
+    expect(r.mezcla).toEqual({ materiales: 1 });
+  });
+
+  it('empate o sin montos: la de la orden (la de su primera línea)', () => {
+    expect(categoriaDePropuesta({ categoria: 'servicios', lineas: [
+      { categoria: 'servicios', monto: 0 }, { categoria: 'materiales', monto: 0 },
+    ] }).categoria).toBe('servicios');
+  });
+
+  it('una orden pura no trae mezcla', () => {
+    const c = corrida();
+    for (const p of c.propuestas) {
+      const r = categoriaDePropuesta(p);
+      expect(r.categoria).toBe('materiales');
+      expect(r.mezcla).toEqual({});
+    }
   });
 });
 
@@ -549,8 +625,8 @@ describe('persistencia — el borrador de una persona, por obra', () => {
     const c = corrida();
     const p0 = c.propuestas[0];
     let e = decidirPropuesta(nuevoEscenario({}), p0.id, 'aceptada');
-    e = conParams(e, { anclaje: 'cero' });
-    expect(e.params.anclaje).toBe('cero');
+    e = conParams(e, { modo: 'simulacion' });
+    expect(e.params.modo).toBe('simulacion');
     expect(e.decisiones.propuestas[p0.id]).toBe('aceptada');
   });
 });

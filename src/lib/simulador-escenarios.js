@@ -38,10 +38,11 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import {
-  ANCLAJES, CRONOGRAMAS, REPARTOS, GRANULARIDADES,
+  GRANULARIDADES,
   CATEGORIAS_SIMULADOR, UMBRAL_TRAMO_LARGO_DIAS,
   ALMACEN_MODOS, ALMACEN_MODOS_INSUMO,
 } from './simulador-ordenes.js';
+import { CATEGORIA_DE_SUBCATEGORIA } from './insumo-clasificador.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
 import { normalizarCompra } from './simulador-compra.js';
 import { FRECUENCIAS, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
@@ -66,6 +67,49 @@ export const STORAGE_PREFIX = 'jx_sim_ordenes_v1';
 // LOS PARÁMETROS DE UNA CORRIDA
 // ═══════════════════════════════════════════════════════════════════
 
+// ── LOS DOS MODOS (ronda 3, tanda 3.1 — doc §15.2 A) ─────────────
+// La pantalla contestaba dos preguntas con un solo selector de «anclaje»:
+// «¿cómo compraría esta obra si…?» y «¿qué me falta pedir según lo que ya
+// pasó?». Ahora son dos modos, y el anclaje del motor sale de ellos:
+//   · 'simulacion' → anclaje 'cero': presupuesto + cronograma, sin restar
+//     nada real. No sirve para emitir.
+//   · 'real'       → anclaje 'hoy': resta órdenes, requisiciones y almacén,
+//     y arrastra lo atrasado al período actual.
+// El anclaje 'restante' se retiró (nadie lo usaba y confundía): un escenario
+// guardado con él se abre en modo real.
+export const MODOS = ['real', 'simulacion'];
+export const MODO_LABEL = {
+  real: '📍 Según lo real',
+  simulacion: '🧪 Simulación',
+};
+
+/**
+ * En modo Simulación, desde cuándo arranca la obra (decisión de Gabriel del
+ * 24-set, §15.3): las fechas del Gantt por defecto, o el cronograma entero
+ * corrido para que empiece hoy o en una fecha elegida. El corrimiento lo hace
+ * `desplazarCronograma` (simulador-cronograma.js); acá solo se guarda qué se
+ * eligió.
+ */
+export const ARRANQUES = ['gantt', 'hoy', 'fecha'];
+export const ARRANQUE_LABEL = {
+  gantt: 'En las fechas del Gantt',
+  hoy: 'Como si empezara hoy',
+  fecha: 'En una fecha que elijo',
+};
+
+/**
+ * Lo que la pantalla ofrece de los ejes del motor. «Reprogramado a mano» y
+ * los repartos «por cuadrilla» y «manual» pedían un dato que nadie va a
+ * cargar (fechas o reparto de 1.718 partidas) y terminaban en «Sin
+ * planificar» (§15.1 punto 4). Se retiran de la pantalla; el motor los sigue
+ * aceptando porque la tanda 3.3 los alimenta con el cronograma aleatorio por
+ * escenario. Un escenario guardado con ellos se abre con el default.
+ */
+export const CRONOGRAMAS_PANTALLA = ['gantt', 'sin_cronograma'];
+export const REPARTOS_PANTALLA = ['parejo', 'inicio'];
+
+const esYmd = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
 /**
  * El default NO incluye `mano_obra` en las categorías: la mano de obra no se
  * compra (§5 del plan) y tiene su propia pestaña, alimentada por
@@ -83,7 +127,9 @@ export const STORAGE_PREFIX = 'jx_sim_ordenes_v1';
  */
 export const PARAMS_DEFAULT = {
   granularidad: 'mes',
-  anclaje: 'hoy',
+  modo: 'real',
+  arranque: 'gantt',
+  arranqueFecha: null,
   cronograma: 'gantt',
   reparto: 'parejo',
   categorias: ['materiales', 'herramientas', 'servicios'],
@@ -127,9 +173,15 @@ export function normalizarParams(p = {}) {
     : [...JORNADA_DEFAULT.diasSemana];
   return {
     granularidad: enLista(p.granularidad, GRANULARIDADES, PARAMS_DEFAULT.granularidad),
-    anclaje: enLista(p.anclaje, ANCLAJES, PARAMS_DEFAULT.anclaje),
-    cronograma: enLista(p.cronograma, CRONOGRAMAS, PARAMS_DEFAULT.cronograma),
-    reparto: enLista(p.reparto, REPARTOS, PARAMS_DEFAULT.reparto),
+    // Los escenarios de antes de la ronda 3 no traen `modo`: se deduce del
+    // anclaje que tenían. 'cero' era la auditoría, que es una simulación.
+    modo: MODOS.includes(p.modo) ? p.modo : (p.anclaje === 'cero' ? 'simulacion' : 'real'),
+    arranque: enLista(p.arranque, ARRANQUES, PARAMS_DEFAULT.arranque),
+    // «Una fecha» sin fecha todavía es válido (se acaba de elegir y falta
+    // escribirla): el corrimiento no hace nada hasta que llegue una.
+    arranqueFecha: esYmd(p.arranqueFecha) ? p.arranqueFecha : null,
+    cronograma: enLista(p.cronograma, CRONOGRAMAS_PANTALLA, PARAMS_DEFAULT.cronograma),
+    reparto: enLista(p.reparto, REPARTOS_PANTALLA, PARAMS_DEFAULT.reparto),
     // Sin ninguna categoría no hay nada que simular: se vuelve al default en
     // vez de devolver una pantalla vacía que parece un error de datos.
     categorias: cats.length ? cats : [...PARAMS_DEFAULT.categorias],
@@ -180,7 +232,7 @@ export function paramsDeMotor(params) {
   const p = normalizarParams(params);
   return {
     granularidad: p.granularidad,
-    anclaje: p.anclaje,
+    anclaje: p.modo === 'simulacion' ? 'cero' : 'hoy',
     cronograma: p.cronograma,
     reparto: p.reparto,
     categorias: p.categorias,
@@ -197,6 +249,38 @@ export function paramsDeMotor(params) {
 /** ¿Dos corridas son la misma pregunta? Para avisar «ya tenés este escenario». */
 export function mismosParams(a, b) {
   return JSON.stringify(normalizarParams(a)) === JSON.stringify(normalizarParams(b));
+}
+
+/**
+ * En qué pestaña de categoría va una orden (tanda 3.1, §15.2 E).
+ *
+ * La orden se arma por RUBRO de proveedor, y un rubro puede mezclar
+ * categorías: «Seguridad y señalización» trae las señales (materiales) con
+ * los EPPs (herramientas y EPPs). Partir la orden entre dos pestañas la
+ * rompería — se le emite a UN proveedor —, así que va entera a la categoría
+ * que más plata pesa adentro. Empate o sin montos: la de la primera línea,
+ * que es lo que el motor ya ponía en `p.categoria`.
+ *
+ * @returns {{categoria:string, mezcla:Object<string,number>}} `mezcla` cuenta
+ *          las líneas de OTRAS categorías, para que la tarjeta lo diga.
+ */
+export function categoriaDePropuesta(p = {}) {
+  const peso = new Map();
+  const lineasPor = new Map();
+  for (const l of (p.lineas || [])) {
+    const cat = l.categoria || CATEGORIA_DE_SUBCATEGORIA[l.subcategoria] || p.categoria || 'materiales';
+    peso.set(cat, (peso.get(cat) || 0) + num(l.monto));
+    lineasPor.set(cat, (lineasPor.get(cat) || 0) + 1);
+  }
+  let categoria = p.categoria || CATEGORIA_DE_SUBCATEGORIA[p.subcategoria] || null;
+  let mejor = categoria != null && peso.has(categoria) ? peso.get(categoria) : -Infinity;
+  for (const [cat, m] of peso) {
+    if (m > mejor) { categoria = cat; mejor = m; }
+  }
+  if (!categoria) categoria = 'materiales';
+  const mezcla = {};
+  for (const [cat, n] of lineasPor) if (cat !== categoria) mezcla[cat] = n;
+  return { categoria, mezcla };
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -9,9 +9,14 @@
 // ── LA PREGUNTA QUE CONTESTA ──────────────────────────────────────
 // `abastecimiento` dice CUÁNTO falta. Ésta dice CUÁNDO conviene pedirlo y
 // agrupado en qué orden: «Materiales — octubre 2026», «EPPs — primera
-// dotación». Cada corrida se define por cuatro ejes (§3) y se guarda con
-// nombre, para poder comparar «con el Gantt» contra «regularizando desde
-// hoy» sin recalcular a mano.
+// dotación». Cada corrida se guarda con nombre, para poder comparar sin
+// recalcular a mano.
+//
+// ── DESDE LA RONDA 3 (tanda 3.1, §15) ─────────────────────────────
+// La pantalla contesta UNA pregunta a la vez: el primer selector es el modo
+// (🧪 Simulación, que no resta nada real, o 📍 Según lo real). Lo básico
+// queda a la vista y lo fino detrás de ⚙; los avisos van a un botón y los
+// resultados a una pestaña por categoría.
 //
 // ── LO QUE ESTA PANTALLA NO HACE, A PROPÓSITO ─────────────────────
 //  1. ACEPTAR NO EMITE. Aceptar una orden acá sigue sin escribir una fila:
@@ -35,12 +40,12 @@
 import React from "react";
 import {
   simularOrdenes,
-  ANCLAJES, ANCLAJE_LABEL, CRONOGRAMAS, CRONOGRAMA_LABEL,
-  REPARTOS, REPARTO_LABEL, GRANULARIDADES,
+  CRONOGRAMA_LABEL, REPARTO_LABEL, GRANULARIDADES,
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
   mesDePeriodo, etiquetaPeriodo,
   ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
 } from "../lib/simulador-ordenes.js";
+import { desplazarCronograma, MOTIVO_SIN_DESPLAZAR_LABEL } from "../lib/simulador-cronograma.js";
 import {
   catalogoDelPresupuesto, existenciasDelAlmacen, bandejaImputacion, parcheImputacion,
   insumosCubiertosPorAlmacen, factorPropuesto, IMPUTACION_LABEL, TABLAS_ALMACEN,
@@ -55,6 +60,8 @@ import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
   PARAMS_DEFAULT, paramsDeMotor,
+  MODOS, MODO_LABEL, ARRANQUES, ARRANQUE_LABEL, CRONOGRAMAS_PANTALLA, REPARTOS_PANTALLA,
+  categoriaDePropuesta,
   nuevoEscenario, conParams,
   decidirPropuesta, decidirLinea, decidirPeriodo,
   editarLinea, limpiarEdicion, proveedorDePropuesta,
@@ -115,7 +122,17 @@ const DATALIST_PROVEEDORES = 'jx-sim-proveedores';
 // `vistaInicial` existe para poder abrir la pantalla directo en una pestaña
 // (mismo patrón que jx-catalogo-canonico). Lo usa el test de pantalla: sin
 // esto las tres pestañas de abajo no las mira nadie hasta producción.
-function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
+// Las pestañas de resultados, una por categoría (tanda 3.1, §15.2 E). La
+// mano de obra no está: va por la suya, como referencia.
+const CATS_ORDENES = CATEGORIAS_SIMULADOR.filter(c => c !== 'mano_obra');
+const ICONO_CAT = { materiales: '🧱', herramientas: '🦺', servicios: '🚚' };
+
+// Las vistas de antes de la ronda 3 que ya no son pestañas: «Órdenes» y
+// «Sobres» se repartieron en las categorías, y «Escenarios sugeridos» se mudó
+// a ⚙ como «puntos de partida».
+const vistaDeAntes = (v) => (v === 'ordenes' || v === 'sobres' || v === 'enfoques' ? CATS_ORDENES[0] : v);
+
+function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbiertos = false }) {
   const toast = showToast || window.__showToast || (() => {});
 
   // ── Regla de hooks: TODOS antes de cualquier early return (React #310) ──
@@ -138,13 +155,16 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   // El diccionario propio: le gana a la base oficial al clasificar los sobres.
   const terminosCustom = (window.__hooks.useClasificacionTerminos?.() ?? { data: null }).data || null;
 
-  const [vista, setVista] = uS(vistaInicial);
+  const [vista, setVista] = uS(() => vistaDeAntes(vistaInicial));
+  // ⚙: los ajustes finos, cerrados por defecto (§15.2 B). Los tests lo abren
+  // para mirar lo que hay adentro.
+  const [ajustes, setAjustes] = uS(ajustesAbiertos || vistaInicial === 'enfoques');
+  const [verAvisos, setVerAvisos] = uS(false);
   const [abiertos, setAbiertos] = uS(() => new Set());
   const [verMas, setVerMas] = uS({});          // propuesta id → cuántas líneas
   const [busca, setBusca] = uS('');
   const [soloPendientes, setSoloPendientes] = uS(false);
   const [editando, setEditando] = uS(null);    // ref de la línea en edición
-  const [panelParams, setPanelParams] = uS(true);
   const [proveedores, setProveedores] = uS([]);
   const [ordenes, setOrdenes] = uS([]);
   const [ocItems, setOcItems] = uS([]);
@@ -175,9 +195,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const [pidiendoIA, setPidiendoIA] = uS(false);
 
   // ── Escenarios (localStorage, por obra) ───────────────────────────
-  const [escenarios, setEscenarios] = uS([]);
-  const [escenario, setEscenario] = uS(null);
-  const escRef = uR(null);
+  // El primer render ya lee lo guardado (sin esperar al efecto): si no, la
+  // pantalla se pinta un instante con los defaults —modo real, con sus
+  // avisos— y salta al escenario de verdad, que puede ser una simulación.
+  const [escenarios, setEscenarios] = uS(() => (obraId ? leerEscenarios(obraId) : []));
+  const [escenario, setEscenario] = uS(() => escenarios[0] || null);
+  const escRef = uR(escenario);
   const exportRef = uR(false);
   // Cómo se compra cada insumo (unidad, lote, colchón): de la OBRA, no del
   // escenario — ver `leerCompras` en simulador-escenarios.js.
@@ -329,28 +352,59 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     ? { inicio: obra.fecha_inicio, fin: obra.fecha_fin_estimada || obra.fecha_fin || null }
     : null), [obra]);
 
+  const simulacion = params.modo === 'simulacion';
+
+  // ── EL ARRANQUE (modo Simulación, §15.3) ──────────────────────────
+  // «Como si empezara hoy» o una fecha: se corre el cronograma entero, plazo
+  // incluido. El motor lo recibe como una reprogramación de todas las
+  // partidas — no hubo que tocarlo.
+  const desplazado = uM(() => (simulacion
+    ? desplazarCronograma({
+      partidas: partidasHook.data || [], plazo,
+      arranque: params.arranque, arranqueFecha: params.arranqueFecha,
+      hoy: window.__fecha?.hoyLocal?.() || undefined,
+    })
+    : { activo: false, reprogramacion: {}, plazo }), [simulacion, partidasHook.data, plazo, params.arranque, params.arranqueFecha]);
+
+  // ── LO QUE TODAS LAS CORRIDAS COMPARTEN ───────────────────────────
+  // En Simulación NO entra nada real: ni órdenes, ni requisiciones, ni
+  // almacén, ni lo gastado de los sobres. La pregunta es «¿cómo compraría
+  // esta obra?», y restarle lo que ya pasó la mezcla con la otra (§15.1
+  // punto 1). Sin esos datos el motor tampoco arma avisos que no vienen al
+  // caso.
+  const baseMotor = uM(() => {
+    const motor = paramsDeMotor(params);
+    return {
+      insumosPartida: ipHook.data || [],
+      partidas: partidasHook.data || [],
+      ...motor,
+      cronograma: desplazado.activo && motor.cronograma === 'gantt' ? 'reprogramado' : motor.cronograma,
+      reprogramacion: desplazado.reprogramacion,
+      plazo: desplazado.plazo,
+      terminosCustom,
+      compras,
+      ...(simulacion
+        ? { ordenes: [], ocItems: [], requisiciones: [], requisicionItems: [], consumoSobres: null, almacen: [] }
+        : {
+          ordenes: ordenesObra, ocItems,
+          requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
+          consumoSobres, almacen: almacenFilas,
+        }),
+    };
+  }, [params, ipHook.data, partidasHook.data, desplazado, terminosCustom, compras, simulacion,
+    ordenesObra, ocItems, requisicionesObra, reqItemsObra, consumoSobres, almacenFilas]);
+
   // ── LA CORRIDA DE ÓRDENES ─────────────────────────────────────────
   // `mano_obra` se saca del filtro aunque esté tildada: la planilla no se
   // compra, y mezclarla acá la mostraría como algo que se le puede emitir a
   // un proveedor. Va por su propia pestaña (§5).
   const corrida = uM(() => {
     if (!obraId) return null;
-    const motor = paramsDeMotor(params);
     return simularOrdenes({
-      insumosPartida: ipHook.data || [],
-      partidas: partidasHook.data || [],
-      ...motor,
-      categorias: motor.categorias.filter(c => c !== 'mano_obra'),
-      plazo,
-      ordenes: ordenesObra, ocItems,
-      requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
-      consumoSobres,
-      terminosCustom,
-      compras,
-      almacen: almacenFilas,
+      ...baseMotor,
+      categorias: baseMotor.categorias.filter(c => c !== 'mano_obra'),
     });
-  }, [obraId, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, almacenFilas, recalcN]);
+  }, [obraId, baseMotor, recalcN]);
 
   // ── La bandeja de imputación (tanda 2.5) ──────────────────────────
   // Cuesta ~170 ms en Miraflores (529 filas contra 413 insumos): se arma solo
@@ -371,15 +425,17 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
   const corridaMO = uM(() => {
     if (!obraId || vista !== 'dotacion') return null;
-    const motor = paramsDeMotor(params);
     return simularOrdenes({
-      insumosPartida: ipHook.data || [],
-      partidas: partidasHook.data || [],
-      ...motor,
+      insumosPartida: baseMotor.insumosPartida,
+      partidas: baseMotor.partidas,
+      granularidad: baseMotor.granularidad, anclaje: baseMotor.anclaje,
+      cronograma: baseMotor.cronograma, reparto: baseMotor.reparto,
+      reprogramacion: baseMotor.reprogramacion, plazo: baseMotor.plazo,
+      umbralTramoLargoDias: baseMotor.umbralTramoLargoDias,
+      anticipacionDias: baseMotor.anticipacionDias,
       categorias: ['mano_obra'],
-      plazo,
     });
-  }, [obraId, params, ipHook.data, partidasHook.data, plazo, vista]);
+  }, [obraId, baseMotor, vista]);
 
   const dotacion = uM(() => {
     if (!corridaMO) return null;
@@ -399,22 +455,14 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 
   // ── LOS TRES ENFOQUES (tanda 2.6, opcional) ───────────────────────
   // Determinístico y gratis: corre el motor real 3 veces con las perillas
-  // de reparto/anticipación/frecuencia/monto mínimo ya existentes. Solo se
-  // calcula con la pestaña abierta — son 4 corridas del motor (la de
-  // `montoMinimoSugerido` + una por enfoque) y Miraflores no las necesita
-  // hasta que alguien mira esta pestaña.
+  // de reparto/anticipación/frecuencia/monto mínimo ya existentes. Desde la
+  // 3.1 viven en ⚙ como «puntos de partida» y se calculan solo con ⚙ abierto
+  // — son 4 corridas del motor y Miraflores no las necesita hasta que alguien
+  // las mira.
   const enfoques = uM(() => {
-    if (!obraId || vista !== 'enfoques') return null;
-    const motor = paramsDeMotor(params);
-    return sortearEnfoques({
-      insumosPartida: ipHook.data || [], partidas: partidasHook.data || [],
-      ...motor, plazo,
-      ordenes: ordenesObra, ocItems,
-      requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
-      consumoSobres, terminosCustom, compras, almacen: almacenFilas,
-    });
-  }, [obraId, vista, params, ipHook.data, partidasHook.data, plazo, ordenesObra, ocItems,
-    requisicionesObra, reqItemsObra, consumoSobres, terminosCustom, compras, almacenFilas]);
+    if (!obraId || !ajustes) return null;
+    return sortearEnfoques({ ...baseMotor, categorias: baseMotor.categorias.filter(c => c !== 'mano_obra') });
+  }, [obraId, ajustes, baseMotor]);
 
   // Se limpia al recalcular: una recomendación vieja sobre números que ya
   // cambiaron (otra obra, otro escenario) no se puede seguir mostrando como
@@ -508,15 +556,53 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
     return hit ? { id: hit.id, nombre: hit.nombre } : { id: null, nombre: t };
   }, [candidatos]);
 
+  // ── LAS PESTAÑAS POR CATEGORÍA (tanda 3.1, §15.2 E) ──────────────
+  // Cada orden va entera a UNA pestaña (la categoría que más pesa adentro:
+  // `categoriaDePropuesta`). Si la pestaña abierta se destildó en «Qué se
+  // incluye», se cae a la primera que quede.
+  const catsIncluidas = uM(
+    () => CATS_ORDENES.filter(c => params.categorias.includes(c)),
+    [params.categorias]
+  );
+  const vistaCat = CATS_ORDENES.includes(vista)
+    ? (catsIncluidas.includes(vista) ? vista : (catsIncluidas[0] || null))
+    : null;
+  const vistaActual = CATS_ORDENES.includes(vista) ? (vistaCat || 'pendientes') : vista;
+
+  const catDe = uM(() => {
+    const m = new Map();
+    for (const p of (decorado.propuestas || [])) m.set(p.id, categoriaDePropuesta(p));
+    return m;
+  }, [decorado.propuestas]);
+
+  const porCategoria = uM(() => {
+    const out = {};
+    for (const c of CATS_ORDENES) out[c] = { propuestas: [], sobres: [], monto: 0, aceptado: 0, pendientes: 0 };
+    for (const p of (decorado.propuestas || [])) {
+      const g = out[catDe.get(p.id)?.categoria] || out.materiales;
+      g.propuestas.push(p);
+      g.monto += num(p.montoEditado);
+      g.aceptado += num(p.montoAceptado);
+      if (p.estado === 'pendiente' || p.estado === 'parcial') g.pendientes += 1;
+    }
+    for (const s of (decorado.sobres || [])) (out[s.categoria] || out.materiales).sobres.push(s);
+    return out;
+  }, [decorado.propuestas, decorado.sobres, catDe]);
+
+  const propuestasDeCat = uM(
+    () => (vistaCat ? porCategoria[vistaCat].propuestas : []),
+    [vistaCat, porCategoria]
+  );
+
   const propuestasVisibles = uM(() => {
     const q = busca.trim().toLowerCase();
-    return (decorado.propuestas || []).filter(p => {
+    return propuestasDeCat.filter(p => {
       if (soloPendientes && p.estado !== 'pendiente' && p.estado !== 'parcial') return false;
       if (!q) return true;
       if (p.titulo.toLowerCase().includes(q)) return true;
       return p.lineas.some(l => `${l.nombre} ${l.insumo_codigo || ''}`.toLowerCase().includes(q));
     });
-  }, [decorado.propuestas, busca, soloPendientes]);
+  }, [propuestasDeCat, busca, soloPendientes]);
 
   const porPeriodo = uM(() => {
     const m = new Map();
@@ -903,10 +989,16 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
   const cargando = obrasHook.loading || ipHook.loading || partidasHook.loading;
   const resumen = corrida?.resumen || null;
   const dec = decorado.resumen;
+  // Solo los avisos del modo elegido (§15.2 F). En Simulación el motor no
+  // recibe nada real, así que no hay avisos de compras ni de almacén.
+  const avisos = avisosDelPlan(resumen, { simulacion });
+  const avisosAmbar = avisos.filter(a => a.nivel === 'ambar').length;
 
   if (!obraId) {
     return window.SinObraEmpty ? <window.SinObraEmpty icon="calendar" /> : <div className="card card-p">Elegí un trabajo.</div>;
   }
+
+  const grupoCat = vistaCat ? porCategoria[vistaCat] : null;
 
   return (
     <div className="page-wrap">
@@ -925,14 +1017,22 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
           </button>
           <button className="btn btn-sm btn-ghost" onClick={renombrarEscenario}><JxIcon name="edit" size={13} /> Renombrar</button>
           <button className="btn btn-sm btn-ghost" onClick={eliminarEscenario}><JxIcon name="trash" size={13} /> Borrar</button>
-          <button className="btn btn-sm btn-amber" style={{ marginLeft: 'auto' }}
-            onClick={() => { setRecalcN(n => n + 1); toast('Plan recalculado con lo último que hay cargado', 'green'); }}
-            title="Vuelve a leer las órdenes, requisiciones y compras, y corre el plan de nuevo. Tus decisiones se conservan.">
-            <JxIcon name="refresh" size={13} /> Nueva recomendación
-          </button>
-          <button className="btn btn-sm btn-ghost" onClick={() => setPanelParams(v => !v)}>
-            <JxIcon name={panelParams ? 'chevU' : 'chevD'} size={13} /> Parámetros
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {/* Los avisos van a un botón (§15.2 F): antes eran tres tarjetas y
+                hasta cuatro párrafos antes de la primera orden. */}
+            {avisos.length > 0 && (
+              <button className={`btn btn-sm ${verAvisos ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVerAvisos(v => !v)}
+                style={avisosAmbar > 0 && !verAvisos ? { color: 'var(--amber)', borderColor: 'var(--amber)' } : undefined}
+                title="Lo que el plan no pudo saber o no pudo restar, según el modo elegido">
+                {avisosAmbar > 0 ? '⚠' : 'ℹ'} Avisos ({avisos.length})
+              </button>
+            )}
+            <button className="btn btn-sm btn-amber"
+              onClick={() => { setRecalcN(n => n + 1); toast('Plan recalculado con lo último que hay cargado', 'green'); }}
+              title="Vuelve a leer las órdenes, requisiciones y compras, y corre el plan de nuevo. Tus decisiones se conservan.">
+              <JxIcon name="refresh" size={13} /> Nueva recomendación
+            </button>
+          </div>
         </div>
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '10px 0 0' }}>
           {titular
@@ -943,70 +1043,127 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
         </p>
       </div>
 
-      {/* ── LOS CUATRO EJES DE LA CORRIDA (§3) ──────────────────────── */}
-      {panelParams && (
-        <div className="card card-p" style={{ marginBottom: 12, display: 'grid', gap: 12 }}>
-          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
+      {/* ── LOS AVISOS DEL MODO ELEGIDO ─────────────────────────────── */}
+      {verAvisos && avisos.length > 0 && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          {avisos.map((a, i) => (
+            <div key={a.id} className="card-p" style={{
+              display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center',
+              borderLeft: `3px solid ${a.nivel === 'ambar' ? 'var(--amber)' : 'var(--blue)'}`,
+              ...(i > 0 ? { borderTop: '1px solid var(--border)' } : {}),
+            }}>
+              <div style={{ flex: '1 1 320px', fontSize: 12 }}>
+                <b>{a.titulo}</b>
+                {a.detalle && <div style={{ color: 'var(--tm)', marginTop: 2 }}>{a.detalle}</div>}
+              </div>
+              {a.accion === 'imputar' && (
+                <button className="btn btn-sm btn-amber" onClick={() => { setVista('imputar'); setVerAvisos(false); }}>
+                  {a.boton || 'Imputar'} →
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── CONFIGURACIÓN BÁSICA (§15.2 A y B) ──────────────────────── */}
+      <div className="card card-p" style={{ marginBottom: 12, display: 'grid', gap: 12 }}>
+        {/* El modo es la primera pregunta: separa la simulación de lo real. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          {MODOS.map(m => (
+            <button key={m} className={`btn ${params.modo === m ? 'btn-amber' : 'btn-ghost'}`}
+              onClick={() => cambiarParam({ modo: m })}>
+              {MODO_LABEL[m]}
+            </button>
+          ))}
+          <span style={{ fontSize: 11.5, color: 'var(--tm)', flex: '1 1 280px' }}>
+            {simulacion
+              ? <>¿Cómo compraría esta obra? Sale solo del presupuesto y del cronograma: <b>no resta nada</b> de lo comprado ni del almacén. Sirve para mirar, no para emitir.</>
+              : <>¿Qué me falta pedir? Desde hoy: resta las órdenes, las requisiciones y el almacén, y trae al mes actual lo que quedó atrasado.</>}
+          </span>
+          <button className={`btn btn-sm ${ajustes ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setAjustes(v => !v)}
+            title="Anticipación, tramo largo, reparto, monto mínimo, frecuencia por rubro, almacén y puntos de partida">
+            ⚙ Ajustes finos
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+          {simulacion && (
             <label style={{ display: 'block' }}>
-              <span className="flabel">Desde cuándo se planifica</span>
-              <select className="fi" value={params.anclaje} onChange={e => cambiarParam({ anclaje: e.target.value })}>
-                {ANCLAJES.map(a => <option key={a} value={a}>{ANCLAJE_LABEL[a]}</option>)}
+              <span className="flabel">La obra arranca</span>
+              <select className="fi" value={params.arranque} onChange={e => cambiarParam({ arranque: e.target.value })}>
+                {ARRANQUES.map(a => <option key={a} value={a}>{ARRANQUE_LABEL[a]}</option>)}
               </select>
+              {params.arranque === 'fecha' && (
+                <input className="fi" type="date" style={{ marginTop: 4 }} value={params.arranqueFecha || ''}
+                  onChange={e => cambiarParam({ arranqueFecha: e.target.value || null })} />
+              )}
             </label>
-            <label style={{ display: 'block' }}>
-              <span className="flabel">De dónde salen las fechas</span>
-              <select className="fi" value={params.cronograma} onChange={e => cambiarParam({ cronograma: e.target.value })}>
-                {CRONOGRAMAS.map(c => <option key={c} value={c}>{CRONOGRAMA_LABEL[c]}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'block' }}>
-              <span className="flabel">Cómo se reparte un tramo largo</span>
-              <select className="fi" value={params.reparto} onChange={e => cambiarParam({ reparto: e.target.value })}>
-                {REPARTOS.map(r => <option key={r} value={r}>{REPARTO_LABEL[r]}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'block' }}>
-              <span className="flabel">Período</span>
-              <select className="fi" value={params.granularidad} onChange={e => cambiarParam({ granularidad: e.target.value })}>
-                {GRANULARIDADES.map(g => <option key={g} value={g}>{g === 'mes' ? 'Mes a mes' : 'Semana a semana'}</option>)}
-              </select>
-            </label>
+          )}
+          <label style={{ display: 'block' }}>
+            <span className="flabel">De dónde salen las fechas</span>
+            <select className="fi" value={params.cronograma} onChange={e => cambiarParam({ cronograma: e.target.value })}>
+              {CRONOGRAMAS_PANTALLA.map(c => <option key={c} value={c}>{CRONOGRAMA_LABEL[c]}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'block' }}>
+            <span className="flabel">Período</span>
+            <select className="fi" value={params.granularidad} onChange={e => cambiarParam({ granularidad: e.target.value })}>
+              {GRANULARIDADES.map(g => <option key={g} value={g}>{g === 'mes' ? 'Mes a mes' : 'Semana a semana'}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'block' }}>
+            <span className="flabel">Cada cuánto se emite una orden</span>
+            <select className="fi" value={params.frecuencia} onChange={e => cambiarParam({ frecuencia: e.target.value })}>
+              {FRECUENCIAS.map(f => <option key={f} value={f}>{FRECUENCIA_LABEL[f]}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {simulacion && desplazado.activo && (
+          <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: 0 }}>
+            El cronograma entero se corrió {Math.abs(desplazado.deltaDias)} día(s) {desplazado.deltaDias > 0 ? 'hacia adelante' : 'hacia atrás'}:
+            {' '}arranca el <b>{desplazado.inicioNuevo}</b> en vez del {desplazado.inicioOriginal}. El plazo y el orden de las partidas no cambian.
+          </p>
+        )}
+        {simulacion && !desplazado.activo && desplazado.motivo && (
+          <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: 0 }}>⚠ {MOTIVO_SIN_DESPLAZAR_LABEL[desplazado.motivo]}</p>
+        )}
+
+        <div>
+          <span className="flabel">Qué se incluye</span>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+            {CATS_ORDENES.map(c => (
+              <button key={c} className={`btn btn-sm ${params.categorias.includes(c) ? 'btn-amber' : 'btn-ghost'}`}
+                onClick={() => toggleCategoria(c)}>
+                {ICONO_CAT[c]} {CATEGORIA_SIMULADOR_LABEL[c]}
+              </button>
+            ))}
+            <span style={{ fontSize: 11, color: 'var(--tm)', alignSelf: 'center', marginLeft: 6 }}>
+              La mano de obra no se compra: va en su propia pestaña.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── ⚙ AJUSTES FINOS (§15.2 B) ───────────────────────────────── */}
+      {ajustes && (
+        <div className="card card-p" style={{ marginBottom: 12, display: 'grid', gap: 12, borderLeft: '3px solid var(--border)' }}>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
             <label style={{ display: 'block' }}>
               <span className="flabel">Pedir con cuántos días de anticipación</span>
               <input className="fi" type="number" min="0" max="365" value={params.anticipacionDias}
                 onChange={e => cambiarParam({ anticipacionDias: e.target.value })} />
             </label>
             <label style={{ display: 'block' }}>
-              <span className="flabel">Un tramo es «largo» a partir de</span>
+              <span className="flabel">Un tramo es «largo» a partir de (días)</span>
               <input className="fi" type="number" min="1" value={params.umbralTramoLargoDias}
                 onChange={e => cambiarParam({ umbralTramoLargoDias: e.target.value })} />
             </label>
-          </div>
-
-          <div>
-            <span className="flabel">Qué se incluye</span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-              {CATEGORIAS_SIMULADOR.filter(c => c !== 'mano_obra').map(c => (
-                <button key={c} className={`btn btn-sm ${params.categorias.includes(c) ? 'btn-amber' : 'btn-ghost'}`}
-                  onClick={() => toggleCategoria(c)}>
-                  {CATEGORIA_SIMULADOR_LABEL[c]}
-                </button>
-              ))}
-              <span style={{ fontSize: 11, color: 'var(--tm)', alignSelf: 'center', marginLeft: 6 }}>
-                La mano de obra no se compra: va en su propia pestaña.
-              </span>
-            </div>
-          </div>
-
-          {/* ── CÓMO SE JUNTAN LAS ÓRDENES (tanda 2.3) ─────────────────
-              Emitir no es entregar: una orden puede juntar varios meses de un
-              rubro y entregar por partes. Las decisiones ya tomadas no se
-              pierden al cambiar esto: se guardan por mes y rubro. */}
-          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
             <label style={{ display: 'block' }}>
-              <span className="flabel">Cada cuánto se emite una orden</span>
-              <select className="fi" value={params.frecuencia} onChange={e => cambiarParam({ frecuencia: e.target.value })}>
-                {FRECUENCIAS.map(f => <option key={f} value={f}>{FRECUENCIA_LABEL[f]}</option>)}
+              <span className="flabel">Cómo se reparte un tramo largo</span>
+              <select className="fi" value={params.reparto} onChange={e => cambiarParam({ reparto: e.target.value })}>
+                {REPARTOS_PANTALLA.map(r => <option key={r} value={r}>{REPARTO_LABEL[r]}</option>)}
               </select>
             </label>
             <label style={{ display: 'block' }}
@@ -1016,6 +1173,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                 onChange={e => cambiarParam({ montoMinimoOrden: e.target.value })} />
             </label>
           </div>
+
           {rubrosDelPlan.length > 0 && (
             <details>
               <summary style={{ fontSize: 12, cursor: 'pointer' }}>
@@ -1044,38 +1202,44 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
             </details>
           )}
 
-          {/* ── QUÉ RESTA EL ALMACÉN (tanda 2.5) ───────────────────────
-              Decidido por Gabriel el 24-set como perilla del escenario. Solo
+          {/* ── QUÉ RESTA EL ALMACÉN (tanda 2.5) — solo en modo real ─────
+              En Simulación no se resta nada real: la perilla no aplica. Solo
               resta lo IMPUTADO: lo que no dice a qué insumo corresponde no se
-              resta a ojo (pestaña «Imputar lo ya comprado»). */}
-          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))' }}>
-            <label style={{ display: 'block' }}
-              title="Lo que ya entró al almacén de la obra no se vuelve a pedir. Solo cuenta lo imputado a un insumo del presupuesto.">
-              <span className="flabel">Del almacén, restar</span>
-              <select className="fi" value={params.almacenModo || 'entradas'} onChange={e => cambiarParam({ almacenModo: e.target.value })}>
-                {ALMACEN_MODOS.map(m => <option key={m} value={m}>{ALMACEN_MODO_LABEL[m]}</option>)}
-              </select>
-            </label>
-            <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
-              {(params.almacenModo || 'entradas') === 'entradas' && 'Lo que entró y ya se usó cubrió meses pasados: restarlo evita volver a pedirlo.'}
-              {params.almacenModo === 'stock' && <span style={{ color: 'var(--amber)' }}>⚠ Vuelve a pedir lo que ya se usó en obra: el plan mira la necesidad desde el inicio.</span>}
-              {params.almacenModo === 'nada' && 'El almacén no resta: solo cuentan órdenes y requisiciones.'}
-              {params.almacenModo === 'personalizado' && (
-                <>Cada insumo se elige en <button className="btn btn-sm btn-ghost" style={{ padding: '0 6px' }} onClick={() => setVista('imputar')}>Imputar lo ya comprado</button>.</>
-              )}
+              resta a ojo. */}
+          {!simulacion && (
+            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+              <label style={{ display: 'block' }}
+                title="Lo que ya entró al almacén de la obra no se vuelve a pedir. Solo cuenta lo imputado a un insumo del presupuesto.">
+                <span className="flabel">Del almacén, restar</span>
+                <select className="fi" value={params.almacenModo || 'entradas'} onChange={e => cambiarParam({ almacenModo: e.target.value })}>
+                  {ALMACEN_MODOS.map(m => <option key={m} value={m}>{ALMACEN_MODO_LABEL[m]}</option>)}
+                </select>
+              </label>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
+                {(params.almacenModo || 'entradas') === 'entradas' && 'Lo que entró y ya se usó cubrió meses pasados: restarlo evita volver a pedirlo.'}
+                {params.almacenModo === 'stock' && <span style={{ color: 'var(--amber)' }}>⚠ Vuelve a pedir lo que ya se usó en obra: el plan mira la necesidad desde el inicio.</span>}
+                {params.almacenModo === 'nada' && 'El almacén no resta: solo cuentan órdenes y requisiciones.'}
+                {params.almacenModo === 'personalizado' && (
+                  <>Cada insumo se elige en <button className="btn btn-sm btn-ghost" style={{ padding: '0 6px' }} onClick={() => setVista('imputar')}>Imputar lo ya comprado</button>.</>
+                )}
+              </div>
             </div>
-          </div>
-
-          {/* El reparto por cuadrilla y el manual necesitan un dato que hoy no
-              existe en ningún lado. El motor devuelve esas líneas por
-              «Sin planificar» con su motivo — nunca un «parejo» de consuelo. */}
-          {(params.reparto === 'cuadrilla' || params.reparto === 'manual') && (
-            <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: 0 }}>
-              ⚠ «{REPARTO_LABEL[params.reparto]}» necesita un dato que todavía no se carga en la app
-              ({params.reparto === 'cuadrilla' ? 'cuántas personas entran y cuándo' : 'el reparto fijado partida por partida'}).
-              Mientras no esté, esas líneas salen en <b>Sin planificar</b> con el motivo, en vez de repartirse a ojo.
-            </p>
           )}
+
+          {/* ── PUNTOS DE PARTIDA (los tres enfoques de la 2.6) ──────────
+              Son CONFIGURACIÓN —tres combinaciones de perillas—, no un
+              resultado: por eso viven acá y no en una pestaña (§15.1 p. 6). */}
+          <div>
+            <span className="flabel">Puntos de partida</span>
+            <EnfoquesVista
+              enfoques={enfoques}
+              params={params}
+              onUsar={(overrides) => { cambiarParam(overrides); toast('Punto de partida aplicado: las perillas quedaron como las dejó', 'green'); }}
+              recoIA={recoIA}
+              pidiendoIA={pidiendoIA}
+              onPedirIA={pedirRecomendacionIA}
+            />
+          </div>
         </div>
       )}
 
@@ -1153,87 +1317,22 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
         </div>
       )}
 
-      {/* ── LO QUE NO SE PUEDE SABER, DICHO ─────────────────────────── */}
-      {resumen && resumen.ocSinImputar.lineas > 0 && (
-        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
-          <b>{resumen.ocSinImputar.lineas} línea(s) ya ordenadas ({solesK(resumen.ocSinImputar.monto)}) no se pudieron descontar.</b>
-          <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
-            No tienen código de insumo, así que no hay contra qué línea del presupuesto restarlas. El plan de abajo
-            puede estar pidiendo de nuevo algo que ya se pidió. El simulador prefiere decirlo antes que descontar
-            a ojo — en cuanto cada línea diga a qué corresponde, el descuento funciona solo.
-          </p>
-          <button className="btn btn-sm btn-amber" style={{ marginTop: 8 }} onClick={() => setVista('imputar')}>
-            Imputarlas →
-          </button>
-        </div>
-      )}
-      {resumen && resumen.almacen && resumen.almacen.modo !== 'nada' && resumen.almacen.sinImputar.items > 0 && (
-        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
-          <b>{resumen.almacen.sinImputar.items} ítem(s) del almacén con entradas todavía no se restan.</b>
-          <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
-            El almacén no guarda el código del presupuesto: hasta que cada ítem diga a qué insumo corresponde (y
-            cuánto trae cada unidad —un tubo son 5 o 6 m—), lo que entró no se descuenta y el plan lo puede
-            volver a pedir.
-            {resumen.almacen.itemsImputados > 0 && <> Ya se restan {resumen.almacen.itemsImputados} ítem(s) imputados.</>}
-          </p>
-          <button className="btn btn-sm btn-amber" style={{ marginTop: 8 }} onClick={() => setVista('imputar')}>
-            Imputar el almacén →
-          </button>
-        </div>
-      )}
-      {resumen && (resumen.fueraPresupuesto?.lineas > 0 || resumen.almacen?.ordenesCubiertas?.lineas > 0) && (
-        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 12px' }}>
-          {resumen.fueraPresupuesto?.lineas > 0 && (
-            <>{resumen.fueraPresupuesto.lineas} línea(s) de orden ({solesK(resumen.fueraPresupuesto.monto)}) están marcadas
-              fuera del presupuesto: no restan nada, y está bien. </>
-          )}
-          {resumen.almacen?.ordenesCubiertas?.lineas > 0 && (
-            <>{resumen.almacen.ordenesCubiertas.lineas} línea(s) de órdenes recibidas no se suman porque lo que llegó ya
-              está en las entradas del almacén.</>
-          )}
-        </p>
-      )}
-      {resumen && resumen.reqSinImputar?.lineas > 0 && (
-        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)' }}>
-          <b>{resumen.reqSinImputar.lineas} línea(s) ya requisadas ({solesK(resumen.reqSinImputar.monto)}) tampoco se pudieron descontar.</b>
-          <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
-            Son requisiciones sin código de insumo —las cargadas a mano desde el frente, por ejemplo—. Lo que escribe
-            este simulador sí nace con código, así que se descuenta solo desde la primera corrida.
-          </p>
-        </div>
-      )}
-      {resumen && resumen.descontado.insumos > 0 && (
-        <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '0 0 12px' }}>
-          Ya se descontaron {resumen.descontado.insumos} insumo(s) por {solesK(resumen.descontado.monto)} que están en
-          órdenes o requisiciones vivas: eso no se vuelve a pedir.
-        </p>
-      )}
-      {resumen && resumen.anclaje === 'restante' && resumen.montoOmitidoPorPasado > 0 && (
-        <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '0 0 12px' }}>
-          ⚠ Se dejaron afuera {solesK(resumen.montoOmitidoPorPasado)} de períodos ya vencidos. Con «Desde hoy» se
-          arrastran al período actual en vez de desaparecer.
-        </p>
-      )}
-      {resumen && resumen.anclaje === 'cero' && (
-        <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '0 0 12px' }}>
-          ⚠ Estás en modo auditoría: se reconstruye qué DEBIÓ comprarse desde el inicio del expediente, sin restar
-          nada de lo ya comprado. Sirve para revisar, no para emitir.
-        </p>
-      )}
-
-      {/* ── PESTAÑAS ────────────────────────────────────────────────── */}
+      {/* ── PESTAÑAS (§15.2 F) ──────────────────────────────────────── */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
         {[
-          ['ordenes', `📦 Órdenes propuestas (${decorado.propuestas.length})`],
-          ['sobres', `🧧 Sobres sin detalle (${decorado.sobres.length})`],
+          ...catsIncluidas.map(c => [c, `${ICONO_CAT[c]} ${CATEGORIA_SIMULADOR_LABEL[c]} (${porCategoria[c].propuestas.length + porCategoria[c].sobres.length})`]),
           ['dotacion', '👷 Mano de obra (referencia)'],
           ['pendientes', `⚠ Sin planificar (${corrida?.pendientes.length || 0})`],
           ['documentos', `📄 Ya pedido (${yaEscrito.size})`],
-          ['imputar', `🧾 Imputar lo ya comprado (${(resumen?.ocSinImputar?.lineas || 0) + (resumen?.almacen?.sinImputar?.items || 0)})`],
-          ['enfoques', '💡 Escenarios sugeridos'],
         ].map(([id, lbl]) => (
-          <button key={id} className={`btn btn-sm ${vista === id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVista(id)}>{lbl}</button>
+          <button key={id} className={`btn btn-sm ${vistaActual === id ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setVista(id)}>{lbl}</button>
         ))}
+        {/* «Imputar lo ya comprado» ya no es una pestaña del plan: es otra
+            pregunta (lo comprado ↔ el presupuesto) y se muda a su propia
+            sección en la tanda 3.2. Mientras tanto se llega desde los avisos. */}
+        {vistaActual === 'imputar' && (
+          <button className="btn btn-sm btn-amber">🧾 Imputar lo ya comprado</button>
+        )}
       </div>
 
       {cargando && <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)' }}>Cargando el presupuesto…</div>}
@@ -1245,18 +1344,23 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
         ))}
       </datalist>
 
-      {/* ═══ ÓRDENES ═══════════════════════════════════════════════ */}
-      {!cargando && vista === 'ordenes' && (
+      {/* ═══ UNA CATEGORÍA: sus órdenes y sus sobres ═══════════════ */}
+      {!cargando && grupoCat && (
         <>
           <div className="card card-p" style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-            <input className="fi" style={{ maxWidth: 280 }} placeholder="Buscar insumo, código o título…" value={busca} onChange={e => setBusca(e.target.value)} />
+            <div style={{ fontSize: 12 }}>
+              <b>{ICONO_CAT[vistaCat]} {CATEGORIA_SIMULADOR_LABEL[vistaCat]}</b>
+              <span style={{ color: 'var(--tm)' }}>
+                {' '}· {grupoCat.propuestas.length} orden(es) · {solesK(grupoCat.monto)}
+                {grupoCat.aceptado > 0 && <span style={{ color: 'var(--green)' }}> · {solesK(grupoCat.aceptado)} aceptado</span>}
+                {grupoCat.sobres.length > 0 && <> · {grupoCat.sobres.length} sobre(s)</>}
+              </span>
+            </div>
+            <input className="fi" style={{ maxWidth: 260, marginLeft: 'auto' }} placeholder="Buscar insumo, código o título…" value={busca} onChange={e => setBusca(e.target.value)} />
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
               <input type="checkbox" checked={soloPendientes} onChange={e => setSoloPendientes(e.target.checked)} />
-              Solo lo que falta decidir
+              Solo lo que falta decidir ({grupoCat.pendientes})
             </label>
-            <span style={{ fontSize: 11.5, color: 'var(--tm)', marginLeft: 'auto' }}>
-              {dec.ordenesAceptadas} aceptadas · {dec.ordenesParciales} parciales · {dec.ordenesRechazadas} rechazadas · {dec.ordenesPendientes} sin decidir
-            </span>
           </div>
 
           {porPeriodo.length > 1 && (
@@ -1284,8 +1388,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
 
           {porPeriodo.length === 0 ? (
             <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
-              {(corrida?.propuestas.length || 0) === 0
-                ? 'El motor no armó ninguna orden con estos parámetros. Mirá «Sin planificar» para ver por qué.'
+              {grupoCat.propuestas.length === 0
+                ? ((corrida?.propuestas.length || 0) === 0
+                  ? 'El motor no armó ninguna orden con estos parámetros. Mirá «Sin planificar» para ver por qué.'
+                  : `No hay órdenes de ${CATEGORIA_SIMULADOR_LABEL[vistaCat].toLowerCase()} con estos parámetros.`)
                 : 'Ninguna orden coincide con el filtro.'}
             </div>
           ) : porPeriodo.map(g => (
@@ -1296,17 +1402,20 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
                   {g.propuestas.length} orden(es) · {solesK(g.monto)}
                   {g.aceptado > 0 && <span style={{ color: 'var(--green)' }}> · {solesK(g.aceptado)} aceptado</span>}
                 </span>
+                {/* Decidir el tramo toca SOLO las órdenes de esta pestaña: con
+                    la lista entera, aceptar octubre en Materiales aceptaría
+                    también las herramientas de octubre sin que se vean. */}
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
-                  <button className="btn btn-sm btn-ghost" title="Aceptar todas las órdenes de este tramo"
-                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'aceptada', decorado.propuestas))}>
+                  <button className="btn btn-sm btn-ghost" title="Aceptar todas las órdenes de este tramo en esta pestaña"
+                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'aceptada', propuestasDeCat))}>
                     <JxIcon name="check" size={12} /> Aceptar el tramo
                   </button>
                   <button className="btn btn-sm btn-ghost"
-                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'rechazada', decorado.propuestas))}>
+                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'rechazada', propuestasDeCat))}>
                     <JxIcon name="x" size={12} /> Rechazar
                   </button>
                   <button className="btn btn-sm btn-ghost"
-                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'pendiente', decorado.propuestas))}>
+                    onClick={() => mutar(e => decidirPeriodo(e, g.periodo, 'pendiente', propuestasDeCat))}>
                     Limpiar
                   </button>
                 </div>
@@ -1315,6 +1424,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
               {g.propuestas.map(p => (
                 <PropuestaCard
                   key={p.id} p={p}
+                  mezcla={catDe.get(p.id)?.mezcla || null}
                   abierta={abiertos.has(p.id)}
                   onToggle={() => toggleAbierto(p.id)}
                   // Se pasa la propuesta ENTERA y no su id: desde la 2.3 una
@@ -1339,31 +1449,37 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
               ))}
             </div>
           ))}
+
+          {/* Los sobres entran en el bloque de SU categoría (§15.2 E):
+              «HERRAMIENTAS MANUALES» con las herramientas, el flete con los
+              servicios. */}
+          {grupoCat.sobres.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <b style={{ fontSize: 14, display: 'block', marginBottom: 6 }}>🧧 Sobres sin detalle ({grupoCat.sobres.length})</b>
+              <SobresVista
+                sobres={grupoCat.sobres}
+                simulacion={simulacion}
+                resolverProveedor={resolverProveedor}
+                onDecidir={(clave, d) => mutar(e => decidirSobre(e, clave, d))}
+                onAgregar={(clave) => mutar(e => agregarLineaSobre(e, clave, { descripcion: '', unidad: 'und', cantidad: 1, precio: 0 }))}
+                onEditar={(clave, id, patch) => mutar(e => editarLineaSobre(e, clave, id, patch))}
+                onQuitar={(clave, id) => mutar(e => quitarLineaSobre(e, clave, id))}
+                onProveedor={(clave, p) => mutar(e => proveedorDeSobre(e, clave, p))}
+                onIrAPartida={irAInsumosDeSobre}
+              />
+            </div>
+          )}
         </>
       )}
 
-      {/* ═══ SOBRES ════════════════════════════════════════════════ */}
-      {!cargando && vista === 'sobres' && (
-        <SobresVista
-          sobres={decorado.sobres}
-          resolverProveedor={resolverProveedor}
-          onDecidir={(clave, d) => mutar(e => decidirSobre(e, clave, d))}
-          onAgregar={(clave) => mutar(e => agregarLineaSobre(e, clave, { descripcion: '', unidad: 'und', cantidad: 1, precio: 0 }))}
-          onEditar={(clave, id, patch) => mutar(e => editarLineaSobre(e, clave, id, patch))}
-          onQuitar={(clave, id) => mutar(e => quitarLineaSobre(e, clave, id))}
-          onProveedor={(clave, p) => mutar(e => proveedorDeSobre(e, clave, p))}
-          onIrAPartida={irAInsumosDeSobre}
-        />
-      )}
-
       {/* ═══ MANO DE OBRA ══════════════════════════════════════════ */}
-      {!cargando && vista === 'dotacion' && <DotacionVista d={dotacion} params={params} onParam={cambiarParam} />}
+      {!cargando && vistaActual === 'dotacion' && <DotacionVista d={dotacion} params={params} onParam={cambiarParam} />}
 
       {/* ═══ SIN PLANIFICAR ════════════════════════════════════════ */}
-      {!cargando && vista === 'pendientes' && <PendientesVista pendientes={corrida?.pendientes || []} />}
+      {!cargando && vistaActual === 'pendientes' && <PendientesVista pendientes={corrida?.pendientes || []} />}
 
       {/* ═══ YA PEDIDO: lo que el plan escribió (tanda 4) ══════════ */}
-      {!cargando && vista === 'documentos' && (
+      {!cargando && vistaActual === 'documentos' && (
         <DocumentosVista
           yaEscrito={yaEscrito}
           ordenes={ordenes}
@@ -1374,31 +1490,24 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
         />
       )}
 
-      {/* ═══ ESCENARIOS SUGERIDOS (tanda 2.6, opcional) ═════════════ */}
-      {!cargando && vista === 'enfoques' && (
-        <EnfoquesVista
-          enfoques={enfoques}
-          params={params}
-          onUsar={(overrides) => { cambiarParam(overrides); setVista('ordenes'); toast('Enfoque aplicado — mirá «Órdenes propuestas»', 'green'); }}
-          recoIA={recoIA}
-          pidiendoIA={pidiendoIA}
-          onPedirIA={pedirRecomendacionIA}
-        />
-      )}
-
-      {/* ═══ IMPUTAR LO YA COMPRADO (tanda 2.5) ════════════════════ */}
-      {!cargando && vista === 'imputar' && (
-        <ImputarVista
-          bandeja={bandeja}
-          catalogo={catalogoPres}
-          compras={compras}
-          params={params}
-          onParam={cambiarParam}
-          cubiertos={cubiertosAlmacen}
-          imputando={imputando}
-          onImputar={imputar}
-          cargandoAlmacen={!almacenCrudo}
-        />
+      {/* ═══ IMPUTAR LO YA COMPRADO (tanda 2.5; sección propia en la 3.2) ═══ */}
+      {!cargando && vistaActual === 'imputar' && (
+        <>
+          <button className="btn btn-sm btn-ghost" style={{ marginBottom: 8 }} onClick={() => setVista(catsIncluidas[0] || 'pendientes')}>
+            ← Volver al plan
+          </button>
+          <ImputarVista
+            bandeja={bandeja}
+            catalogo={catalogoPres}
+            compras={compras}
+            params={params}
+            onParam={cambiarParam}
+            cubiertos={cubiertosAlmacen}
+            imputando={imputando}
+            onImputar={imputar}
+            cargandoAlmacen={!almacenCrudo}
+          />
+        </>
       )}
 
       {/* ── EL PIE: qué pasa con lo aceptado ────────────────────────── */}
@@ -1424,13 +1533,21 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
               <JxIcon name="download" size={13} /> Descargar el plan aceptado
             </button>
             <button className="btn btn-sm btn-amber"
-              disabled={!entregable.lineas.length}
-              title="Escribe lo aceptado como requisiciones. Todavía no es una orden: se puede editar y borrar."
+              disabled={!entregable.lineas.length || simulacion}
+              title={simulacion
+                ? 'En Simulación no se resta nada de lo ya comprado: convertir ese plan pediría dos veces. Pasá a «Según lo real».'
+                : 'Escribe lo aceptado como requisiciones. Todavía no es una orden: se puede editar y borrar.'}
               onClick={convertirEnRequisiciones}>
               <JxIcon name="check" size={13} /> Convertir en requisiciones
             </button>
           </div>
         </div>
+        {simulacion && (
+          <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '8px 0 0' }}>
+            🧪 Estás en Simulación: el plan no resta nada de lo comprado, así que no se convierte en requisiciones.
+            Lo que aceptes queda guardado; al pasar a <b>Según lo real</b> se vuelve a aplicar sobre lo que falta de verdad.
+          </p>
+        )}
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
           <b>Son dos pasos, y el primero se puede deshacer.</b> «Convertir en requisiciones» escribe el pedido en la
           base —ahí sí lo ve el resto del equipo y viaja entre computadoras—, pero todavía no es una orden: se edita,
@@ -1446,6 +1563,63 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes' }) {
       </div>
     </div>
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOS AVISOS DEL PLAN (tanda 3.1, §15.2 F)
+//
+// Antes eran tarjetas grandes arriba de todo, y salían siempre — también
+// cuando la pregunta era hipotética. Ahora son una lista detrás de un botón,
+// y solo con los que aplican al modo: en Simulación el motor no recibe nada
+// real, así que no hay nada que no se haya podido restar.
+// ═══════════════════════════════════════════════════════════════════
+
+function avisosDelPlan(resumen, { simulacion }) {
+  if (!resumen || simulacion) return [];
+  const out = [];
+  if (resumen.ocSinImputar?.lineas > 0) {
+    out.push({
+      id: 'oc', nivel: 'ambar', accion: 'imputar', boton: 'Imputarlas',
+      titulo: `${resumen.ocSinImputar.lineas} línea(s) ya ordenadas (${solesK(resumen.ocSinImputar.monto)}) no se pudieron descontar.`,
+      detalle: 'No tienen código de insumo: no hay contra qué línea del presupuesto restarlas, y el plan puede estar pidiendo de nuevo algo que ya se pidió.',
+    });
+  }
+  if (resumen.almacen && resumen.almacen.modo !== 'nada' && resumen.almacen.sinImputar?.items > 0) {
+    out.push({
+      id: 'almacen', nivel: 'ambar', accion: 'imputar', boton: 'Imputar el almacén',
+      titulo: `${resumen.almacen.sinImputar.items} ítem(s) del almacén con entradas todavía no se restan.`,
+      detalle: `Hasta que cada ítem diga a qué insumo corresponde (y cuánto trae cada unidad), lo que entró no se descuenta.${resumen.almacen.itemsImputados > 0 ? ` Ya se restan ${resumen.almacen.itemsImputados} ítem(s) imputados.` : ''}`,
+    });
+  }
+  if (resumen.reqSinImputar?.lineas > 0) {
+    out.push({
+      id: 'req', nivel: 'ambar',
+      titulo: `${resumen.reqSinImputar.lineas} línea(s) ya requisadas (${solesK(resumen.reqSinImputar.monto)}) tampoco se pudieron descontar.`,
+      detalle: 'Son requisiciones sin código de insumo —las cargadas a mano desde el frente—. Lo que escribe este simulador sí nace con código.',
+    });
+  }
+  if (resumen.descontado?.insumos > 0) {
+    out.push({
+      id: 'descontado', nivel: 'info',
+      titulo: `Ya se descontaron ${resumen.descontado.insumos} insumo(s) por ${solesK(resumen.descontado.monto)}.`,
+      detalle: 'Están en órdenes, requisiciones o el almacén: eso no se vuelve a pedir.',
+    });
+  }
+  if (resumen.fueraPresupuesto?.lineas > 0) {
+    out.push({
+      id: 'fuera', nivel: 'info',
+      titulo: `${resumen.fueraPresupuesto.lineas} línea(s) de orden (${solesK(resumen.fueraPresupuesto.monto)}) están marcadas fuera del presupuesto.`,
+      detalle: 'No restan nada, y está bien.',
+    });
+  }
+  if (resumen.almacen?.ordenesCubiertas?.lineas > 0) {
+    out.push({
+      id: 'cubiertas', nivel: 'info',
+      titulo: `${resumen.almacen.ordenesCubiertas.lineas} línea(s) de órdenes recibidas no se suman.`,
+      detalle: 'Lo que llegó ya está en las entradas del almacén: sumar las dos contaría lo mismo dos veces.',
+    });
+  }
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1475,7 +1649,7 @@ function ChipPeriodo({ c, onClick, chico, principal }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
+function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, editando, setEditando, tope, onVerMas }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
   // El proveedor de la orden es el que tienen TODAS sus líneas. Si hay más de
   // uno (porque alguien pisó una línea suelta) el campo queda vacío y se dice
@@ -1507,6 +1681,13 @@ function PropuestaCard({ p, abierta, onToggle, onDecidir, onDecidirLinea, onEdit
               <span style={{ color: 'var(--amber)' }}
                 title="Estas entregas se decidieron por separado cuando eran órdenes sueltas, y no dicen lo mismo. Hasta que se vuelvan a decidir no se entregan.">
                 {' · '}{p.lineas.filter(l => l.decisionMixta).length} línea(s) con decisiones distintas por entrega
+              </span>
+            )}
+            {/* La orden va entera a la pestaña de lo que más pesa: si trae
+                líneas de otra categoría, se dice (tanda 3.1). */}
+            {mezcla && Object.keys(mezcla).length > 0 && (
+              <span title="Se le emite a UN proveedor, así que no se parte entre pestañas: va a la categoría que más plata pesa adentro.">
+                {' · incluye '}{Object.entries(mezcla).map(([c, n]) => `${n} de ${(CATEGORIA_SIMULADOR_LABEL[c] || c).toLowerCase()}`).join(', ')}
               </span>
             )}
             {p.lineas.some(l => l.tramoLargo) && ' · con tramo largo repartido'}
@@ -1924,7 +2105,7 @@ function GruposIUPC({ sobres }) {
   );
 }
 
-function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor, onIrAPartida }) {
+function SobresVista({ sobres, simulacion = false, resolverProveedor, onDecidir, onAgregar, onEditar, onQuitar, onProveedor, onIrAPartida }) {
   if (!sobres.length) {
     return (
       <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
@@ -1982,7 +2163,9 @@ function SobresVista({ sobres, resolverProveedor, onDecidir, onAgregar, onEditar
             </div>
           </div>
 
-          {!s.techoFirme && (
+          {/* En Simulación la obra arranca de cero: el sobre está entero por
+              definición, y el aviso de «nadie informó lo gastado» no aplica. */}
+          {!s.techoFirme && !simulacion && (
             <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '0 12px 10px' }}>
               ⚠ Nadie informó todavía cuánto de este sobre ya se gastó, así que «queda» se calcula contra el techo
               entero. Creerlo intacto cuando ya se usó la mitad es exactamente el doble gasto que hay que evitar.
@@ -2791,9 +2974,9 @@ function EnfoquesVista({ enfoques, params, onUsar, recoIA, pidiendoIA, onPedirIA
 
   return (
     <div>
-      <div className="card card-p" style={{ marginBottom: 12 }}>
-        Tres combinaciones de reparto, anticipación, frecuencia y monto mínimo —las perillas que ya tenés en el panel
-        de arriba—, corridas con el motor real. Elegir uno cambia esas perillas; no hay ninguna cantidad ni precio que
+      <div style={{ fontSize: 11.5, color: 'var(--tm)', margin: '4px 0 10px' }}>
+        Tres combinaciones de reparto, anticipación, frecuencia y monto mínimo —las perillas de este mismo panel—,
+        corridas con el motor real. Elegir uno cambia esas perillas; no hay ninguna cantidad ni precio que
         salga distinto de lo que el motor ya calcula. El colchón por insumo no lo toca ningún enfoque: eso lo seguís
         decidiendo vos, insumo por insumo.
       </div>
