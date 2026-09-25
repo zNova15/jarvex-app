@@ -1331,9 +1331,9 @@ en mayo.
 |---|---|---|
 | 4.1 | ~~Aceptar (una y visibles) + Deshacer en «Por revisar»; tira sticky; «Clasificar» por línea y por orden en el simulador (vía `enseñarDiccionario`), aviso distinto para propias sin rubro; ayuda~~ — HECHA (25-set, en staging) | Sonnet 5 / medio / sesión nueva |
 | 4.2 | ~~Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7~~ — HECHA (25-set, en staging) | Opus 5.5 / alto / sesión nueva |
-| 4.3 | «Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5) | Opus 5.5 / extra alto / misma sesión que 4.2 |
-| 4.4 | Pre-órdenes editables (desde los dos modos), fecha y unidad por línea (posible migración chica) | Opus 5.5 / alto / sesión nueva |
-| 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan (emitida / anulada → vuelve) + ayuda | Opus 5.5 / alto / misma sesión que 4.4 |
+| 4.3 | ~~«Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5)~~ — HECHA (25-set, en staging) | Opus 5.5 / extra alto / misma sesión que 4.2 |
+| 4.4 | Pre-órdenes editables, fecha y unidad por línea (posible migración chica). *Ajustado el 25-set:* «desde los dos modos» ya lo resolvió la 4.2 (la Simulación convierte), y el cierre de mes (4.3) ya escribe las pre-órdenes — falta EDITARLAS | Opus 5.5 / alto / sesión nueva |
+| 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan + ayuda. *Ajustado el 25-set:* «anulada → vuelve al plan» ya funciona (4.2 libera la requisición, 4.3 la reprograma si su mes estaba cerrado); falta MOSTRARLO en la lista de pre-órdenes | Opus 5.5 / alto / misma sesión que 4.4 |
 
 Después: probar el preview y promover ronda 3 + ronda 4 a main.
 
@@ -1417,3 +1417,47 @@ en los CHECK.
 - Tests: `simulador-comprado.test.js` (nuevo) + 6 tests viejos reescritos a
   la regla nueva (el anclaje `cero` ya descuenta, la orden nace por
   confirmar, la Simulación muestra el almacén y deja convertir).
+
+### 16.7 — Tanda 4.3, qué quedó (25-set-2026)
+
+- **El motor recibe `mesesCerrados`** ('YYYY-MM', por mes aunque el plan sea
+  semanal) y, después del descuento, reprograma lo que quedó en ellos
+  (`reprogramarCerrados`, paso 2b de `simularOrdenes`). No necesita saber qué
+  se aceptó: lo escrito ya se descontó por código, así que lo que queda en un
+  mes cerrado es exactamente lo no pedido — rechazado, sin decidir, aceptado
+  sin precio, o de una orden anulada después (su requisición pasa a
+  `cancelada`, 4.2). Por eso la decisión 4 del §16.2 sale sola, sin código
+  aparte.
+- **Estrategia** (`pesosDeReprogramacion`): `inicio` → todo al primer mes
+  abierto; `escenario` → proporcional a la plata que el plan pide en cada mes
+  abierto (antes de reprogramar); el resto → parejo. Solo hacia adelante, y en
+  modo real nunca al pasado. Sin mes abierto después → `pendientes` con motivo
+  `sin_mes_abierto` (el plazo del trabajo abre meses después de la última
+  partida). Mano de obra y sobres no se reprograman.
+- **Lo SIN código** no se puede descontar por código: al cerrar se anota
+  `mes|clave` de cada mes en que entrega la línea escrita (`sinCodigo` del
+  cierre → `pedidoSinCodigo` del motor), y el motor lo saca del plan.
+- **Identidad estable (#5):** cada celda sabe si tiene cantidad propia
+  (`propio`), de qué períodos se le ARRASTRÓ algo (`origenes`) y cuánto le
+  llegó REPROGRAMADO. Cada entrega lleva `atomosDecision` y cada propuesta
+  `atomosDecision`; `simulador-escenarios.js` decide contra esos átomos. Sin
+  arrastre ni cierre son los átomos de siempre (test de compatibilidad). Lo
+  reprogramado tiene su propio átomo (`periodo|rubro|reprogramado`), que nace
+  sin decidir: un mes aceptado que recibe cantidad nueva la muestra «lo
+  reprogramado está sin decidir» en vez de aceptarla sola.
+- **El arrastre** va al primer período ABIERTO desde hoy
+  (`primerPeriodoAbierto`): si el mes actual está cerrado, al siguiente.
+- **El escenario** guarda `cierres: {'YYYY-MM': {fecha, requisiciones,
+  lineas, monto, sinCodigo}}` (localStorage, como las decisiones; «Guardar
+  como…» lo copia). Se cierra en orden (`mesPorCerrar`: el primer mes con
+  órdenes) y solo se reabre el último (`reabrirMes`). Reabrir no borra las
+  requisiciones escritas: siguen descontando.
+- **Pantalla:** franja «🔒 Cierre de meses» arriba de las pestañas (sobre la
+  corrida entera), confirmación con lo que se escribe y lo que se reprograma,
+  y escritura compartida con «Convertir» (`escribirRequisiciones`). Las
+  líneas dicen «atrasado de setiembre» y «reprogramado de abril (≈ S/ …)»;
+  avisos para lo reprogramado y lo que quedó sin mes abierto.
+- **Límite conocido, a propósito:** si se cambia el arranque de la
+  Simulación después de cerrar meses, los meses cerrados siguen siendo los
+  mismos del calendario, no «los primeros de la obra».
+- Tests: `simulador-cierre.test.js` (nuevo, 24) + 2 de pantalla.

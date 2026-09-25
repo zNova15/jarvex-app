@@ -41,7 +41,7 @@ import {
   GRANULARIDADES,
   CATEGORIAS_SIMULADOR, UMBRAL_TRAMO_LARGO_DIAS,
   ALMACEN_MODOS, ALMACEN_MODOS_INSUMO,
-  COMPRADO_MODOS, COMPRADO_DEFAULT,
+  COMPRADO_MODOS, COMPRADO_DEFAULT, mesDePeriodo,
 } from './simulador-ordenes.js';
 import { CATEGORIA_DE_SUBCATEGORIA } from './insumo-clasificador.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
@@ -395,18 +395,33 @@ export const refLinea = (propuestaId, clave) => `${propuestaId}::${clave}`;
 
 const idDe = (p) => (p && typeof p === 'object' ? p.id : p);
 
-/** Los átomos de una propuesta: los suyos si los trae, si no ella misma. */
-const atomosDe = (p) => (p && typeof p === 'object' && Array.isArray(p.atomos) && p.atomos.length
-  ? p.atomos.map(a => a.id)
-  : [idDe(p)]);
+// ── IDENTIDAD ESTABLE (tanda 4.3, §16.1 #5) ───────────────────────
+// Desde la 4.3 el motor dice contra qué átomos se decide cada entrega
+// (`atomosDecision`): el suyo si tiene cantidad propia, el del mes del que se
+// ARRASTRÓ (así la decisión de setiembre sigue valiendo el 1 de octubre) y el
+// de lo REPROGRAMADO desde un mes cerrado (nace sin decidir). Sin arrastre ni
+// cierre son los mismos átomos de siempre: los escenarios viejos no cambian.
 
-/** Los átomos en los que entrega una línea (uno por entrega). */
+/** Los átomos de una propuesta: los de decisión si los trae, si no los suyos. */
+const atomosDe = (p) => {
+  if (p && typeof p === 'object') {
+    if (Array.isArray(p.atomosDecision) && p.atomosDecision.length) return p.atomosDecision;
+    if (Array.isArray(p.atomos) && p.atomos.length) return p.atomos.map(a => a.id);
+  }
+  return [idDe(p)];
+};
+
+/** Los átomos en los que entrega (y se decide) una línea. */
 const atomosDeLinea = (propuestaId, linea) => {
   const ids = Array.isArray(linea?.entregas) && linea.entregas.length
-    ? linea.entregas.map(e => e.propuestaId || propuestaId)
+    ? linea.entregas.flatMap(e => (Array.isArray(e.atomosDecision) && e.atomosDecision.length
+      ? e.atomosDecision : [e.propuestaId || propuestaId]))
     : [propuestaId];
   return [...new Set(ids)];
 };
+
+/** ¿Es el átomo de lo reprogramado desde un mes cerrado? */
+export const esAtomoReprogramado = (id) => String(id || '').endsWith('|reprogramado');
 
 /** La firma de las entregas de una línea: contra qué se corrigió la cantidad. */
 const firmaEntregas = (linea) => (Array.isArray(linea?.entregas) && linea.entregas.length
@@ -456,6 +471,8 @@ export function nuevoEscenario({ nombre = '', params = null, obraId = null, hoy 
     // escenario y no en sus params: no es una perilla, es lo que se dijo
     // sobre ellas (y solo se muestra mientras sigan siendo ésas).
     relatoIA: null,
+    // Tanda 4.3: los meses cerrados, 'YYYY-MM' → lo que se hizo al cerrar.
+    cierres: {},
   };
 }
 
@@ -497,7 +514,134 @@ export function normalizarEscenario(e = {}, { obraId = null } = {}) {
     sobres,
     notas: String(e.notas || ''),
     relatoIA: normalizarRelatoIA(e.relatoIA),
+    cierres: normalizarCierres(e.cierres),
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CERRAR MES (ronda 4, tanda 4.3 — doc §16.2 y §16.3)
+//
+// «Cerrar abril»: lo aceptado de las órdenes que se emiten en abril se
+// escribe como requisiciones (pre-órdenes), abril queda congelado y lo que no
+// se pidió ahí —rechazado, sin decidir, o de una orden que después se anuló—
+// el motor lo reprograma en los meses abiertos (`reprogramarCerrados`).
+//
+// Se cierra en orden: solo el primer mes que todavía tiene órdenes, y solo se
+// reabre el último cerrado. Así un mes cerrado nunca queda con un mes abierto
+// antes que le robe o le mande cantidades.
+//
+// Es del ESCENARIO (localStorage), como las decisiones. Lo que viaja a la
+// base son las requisiciones que se escriben al cerrar.
+// ═══════════════════════════════════════════════════════════════════
+
+const esMes = (m) => /^\d{4}-\d{2}$/.test(String(m || ''));
+
+/** Los cierres guardados, saneados. */
+export function normalizarCierres(obj) {
+  const out = {};
+  for (const [mes, c] of Object.entries(obj || {})) {
+    if (!esMes(mes) || !c || typeof c !== 'object') continue;
+    out[mes] = {
+      fecha: typeof c.fecha === 'string' ? c.fecha : null,
+      requisiciones: Math.max(0, Math.round(num(c.requisiciones))),
+      lineas: Math.max(0, Math.round(num(c.lineas))),
+      monto: r2(c.monto),
+      // `mes|clave` de lo SIN código que se escribió: el motor lo saca del
+      // plan porque no lo puede descontar por código.
+      sinCodigo: Array.isArray(c.sinCodigo)
+        ? [...new Set(c.sinCodigo.map(String).filter(x => /^\d{4}-\d{2}\|~/.test(x)))].sort()
+        : [],
+    };
+  }
+  return out;
+}
+
+/** Los meses cerrados de un escenario, en orden. */
+export function mesesCerradosDe(esc) {
+  return Object.keys(esc?.cierres || {}).filter(esMes).sort();
+}
+
+/** Lo que el motor necesita de los cierres. */
+export function motorDeCierres(esc) {
+  const meses = mesesCerradosDe(esc);
+  return {
+    mesesCerrados: meses,
+    pedidoSinCodigo: meses.flatMap(m => esc.cierres[m].sinCodigo || []),
+  };
+}
+
+/**
+ * El mes que toca cerrar: el primero que tiene órdenes y no está cerrado.
+ * Null si no hay ninguno.
+ */
+export function mesPorCerrar(propuestas = [], esc = null) {
+  const cerrados = new Set(mesesCerradosDe(esc));
+  let min = null;
+  for (const p of (propuestas || [])) {
+    const m = mesDePeriodo(p.periodo);
+    if (!m || cerrados.has(m)) continue;
+    if (!min || m < min) min = m;
+  }
+  return min;
+}
+
+/**
+ * Qué pasa si se cierra `mes`: las órdenes que se emiten en ese mes, lo
+ * aceptado (listo para escribir), lo aceptado sin precio y lo que no se
+ * aceptó (va a reprogramarse). No escribe nada.
+ */
+export function resumenDeCierre(decorado = {}, mes) {
+  const propuestas = (decorado.propuestas || []).filter(p => mesDePeriodo(p.periodo) === mes);
+  const { lineas, sinPrecio } = lineasAceptadas({ propuestas, sobres: [] });
+  const noAceptadas = propuestas.flatMap(p => p.lineas || []).filter(l => l.decision !== 'aceptada');
+  return {
+    mes,
+    propuestas,
+    lineas, sinPrecio,
+    rechazadas: noAceptadas.filter(l => l.decision === 'rechazada').length,
+    sinDecidir: noAceptadas.filter(l => l.decision !== 'rechazada').length,
+    montoAceptado: r2(lineas.reduce((t, l) => t + num(l.monto), 0)),
+    montoNoAceptado: r2(noAceptadas.reduce((t, l) => t + num(l.monto), 0)),
+  };
+}
+
+/**
+ * Los `mes|clave` de lo SIN código que queda pedido al cerrar: cada mes en el
+ * que entrega la línea. Con la cantidad corregida a mano no hay entregas
+ * (`entregas: null`): valen todos los meses de la orden.
+ */
+export function sinCodigoDeLineas(lineas = []) {
+  const out = new Set();
+  for (const l of (lineas || [])) {
+    if (l.insumo_codigo || !String(l.clave || '').startsWith('~')) continue;
+    const periodos = Array.isArray(l.entregas) && l.entregas.length
+      ? l.entregas.map(e => e.periodo) : (l.periodos || [l.periodo]);
+    for (const p of periodos) { const m = mesDePeriodo(p); if (m) out.add(`${m}|${l.clave}`); }
+  }
+  return [...out].sort();
+}
+
+/** Cierra un mes. `info` es lo que se escribió (para mostrarlo después). */
+export function cerrarMes(esc, mes, info = {}) {
+  if (!esMes(mes)) return esc;
+  const cierres = normalizarCierres({
+    ...(esc.cierres || {}),
+    [mes]: { ...info, fecha: info.fecha || hoyLocal() },
+  });
+  return tocado({ ...esc, cierres });
+}
+
+/**
+ * Reabre un mes: solo el ÚLTIMO cerrado. Las requisiciones que se escribieron
+ * al cerrarlo siguen en la base (se descuentan igual); lo que vuelve es lo que
+ * se había reprogramado.
+ */
+export function reabrirMes(esc, mes) {
+  const meses = mesesCerradosDe(esc);
+  if (!meses.length || meses[meses.length - 1] !== mes) return esc;
+  const cierres = { ...(esc.cierres || {}) };
+  delete cierres[mes];
+  return tocado({ ...esc, cierres });
 }
 
 /**
@@ -751,6 +895,11 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
       // porque dos decisiones viejas se juntaron es inventar una cantidad.
       const decsL = atomosL.map(id => esc.decisiones.lineas[refLinea(id, clave)] || decAtomo(id));
       const decisionMixta = !decsL.every(d => d === decsL[0]);
+      // Tanda 4.3: lo que llegó reprogramado de un mes cerrado nace sin
+      // decidir, y por eso deja la línea «mixta». La pantalla lo dice distinto
+      // de «decidida distinto por entrega»: acá no hay nada viejo en conflicto,
+      // hay cantidad nueva que mirar.
+      const reprogramadaSinDecidir = decisionMixta && atomosL.some((id, i) => esAtomoReprogramado(id) && decsL[i] === 'pendiente');
       const decision = decisionMixta ? 'pendiente' : decsL[0];
       const decisionPropia = atomosL.some(id => esc.decisiones.lineas[refLinea(id, clave)]);
 
@@ -815,6 +964,7 @@ export function aplicarEscenario({ propuestas = [], sobres = [] } = {}, escenari
         decision,
         decisionMixta,
         decisionHeredada: !decisionPropia,
+        reprogramadaSinDecidir,
       };
 
       resumen.lineas += 1;

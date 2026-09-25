@@ -370,6 +370,36 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('Concreto, agregados y aditivos — octubre 2026');
   });
 
+  // ── Ronda 4, tanda 4.3: cerrar mes ──
+  it('ofrece cerrar el primer mes con órdenes, sobre la corrida entera', () => {
+    const html = render().replace(/<!-- -->/g, '');
+    expect(html).toContain('🔒 Cierre de meses');
+    expect(html).toContain('🔒 Cerrar octubre 2026');
+    expect(html).toContain('Los meses se cierran en orden');
+  });
+
+  describe('con un mes cerrado', () => {
+    const ESC = [{
+      id: 'e1', nombre: 'Con cierre', obra_id: OBRA, params: {}, actualizado: '2026-10-01',
+      cierres: { '2026-10': { fecha: '2026-10-01', requisiciones: 2, lineas: 5, monto: 1000 } },
+    }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+
+    it('lo muestra con candado, deja reabrirlo y ya no lo ofrece para cerrar', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).toContain('🔒 octubre 2026 · 2 req.');
+      expect(html).toContain('Reabrir octubre 2026');
+      expect(html).not.toContain('🔒 Cerrar octubre 2026');
+      // Lo de octubre se reprogramó: ya no hay una orden de octubre.
+      expect(html).not.toContain('Concreto, agregados y aditivos — octubre 2026');
+    });
+  });
+
   // «vistaInicial: 'imputar'» ya no existe como vista: cualquier resto de esa
   // navegación vieja (localStorage, un link guardado) cae en la primera
   // categoría en vez de romper.

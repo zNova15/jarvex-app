@@ -903,6 +903,12 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  `coberturaPrevia`.
  * @param {Object}  [o.almacenPorInsumo]     código → {modo, cantidad}, solo en
  *                  el modo 'personalizado'.
+ * @param {Array<string>} [o.mesesCerrados] meses 'YYYY-MM' cerrados en el
+ *                  escenario (tanda 4.3, `reprogramarCerrados`): lo que queda
+ *                  en ellos se reparte en los meses abiertos siguientes.
+ * @param {Array<string>} [o.pedidoSinCodigo] `'YYYY-MM|clave'` de líneas SIN
+ *                  código que ya se escribieron al cerrar un mes: no se
+ *                  pueden descontar por código, así que se sacan del plan.
  * @param {boolean} [o.restarAvance=false]   saca del plan lo ya ejecutado según
  *                  el `porcentaje_avance` de cada partida (tanda 3.5). Con el
  *                  anclaje 'cero' no se aplica: el avance es de la obra real,
@@ -937,6 +943,8 @@ export function simularOrdenes({
   almacenModo = 'entradas',
   almacenPorInsumo = null,
   restarAvance = false,
+  mesesCerrados = [],
+  pedidoSinCodigo = [],
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
   const anc = ANCLAJES.includes(anclaje) ? anclaje : 'hoy';
@@ -990,6 +998,8 @@ export function simularOrdenes({
     // Qué órdenes descontaron y cuáles quedaron afuera por la perilla
     // (tanda 4.2): borradores y emitidas sin factura.
     comprado: null,
+    // Los meses cerrados y lo que se reprogramó de ellos (tanda 4.3).
+    cierre: null,
     consumoSobresInformado: consumoSobres != null,
     // Consolidación (tanda 2.3): cuántas órdenes habría sin juntar, cuántas
     // se juntaron por monto y cuántas quedan chicas igual.
@@ -1156,6 +1166,11 @@ export function simularOrdenes({
           cantidad: 0, monto: 0, montoConocido: true,
           partidas: new Set(), porPartida: new Map(),
           tramoLargo: false, arrastrado: false,
+          // Identidad de la decisión (tanda 4.3): si la celda tiene cantidad
+          // PROPIA de su período, de qué períodos le llegó lo arrastrado, y
+          // cuánto le llegó reprogramado desde un mes cerrado.
+          propio: true, origenes: new Set(),
+          reprogramado: 0, montoReprogramado: 0, reprogramadoDe: new Set(),
         };
         destino.set(k, c);
       }
@@ -1266,11 +1281,26 @@ export function simularOrdenes({
     }
   }
 
+  // ── 2b) los meses cerrados (ronda 4, tanda 4.3 — doc §16.2/§16.3) ──
+  const cerradosSet = new Set((Array.isArray(mesesCerrados) ? mesesCerrados : [])
+    .filter(m => /^\d{4}-\d{2}$/.test(String(m))));
+  const mesCerrado = (periodo) => cerradosSet.has(mesDePeriodo(periodo));
+  resumen.cierre = reprogramarCerrados(celdas, {
+    mesCerrado, meses: [...cerradosSet].sort(), pedidoSinCodigo,
+    granularidad: gran, reparto: rep, plazo,
+    // En modo real nada se reprograma al pasado: el anclaje lo traería igual.
+    desde: anc === 'cero' ? null : periodoActual,
+    pendientes,
+  });
+
   // ── 3) aplicar el anclaje (§3.1) ──────────────────────────────────
+  // Lo atrasado va al primer período ABIERTO desde hoy: si el mes actual
+  // está cerrado (tanda 4.3), al siguiente.
+  const periodoDestino = primerPeriodoAbierto(periodoActual, gran, mesCerrado);
   const aplicarAnclaje = (mapa) => {
     if (anc === 'cero') return;
     for (const [k, c] of [...mapa]) {
-      if (c.periodo >= periodoActual) continue;
+      if (c.periodo >= periodoDestino) continue;
       mapa.delete(k);
       if (anc === 'restante') {
         // No desaparece en silencio: se informa cuánto se dejó afuera.
@@ -1279,9 +1309,16 @@ export function simularOrdenes({
       }
       // 'hoy': lo atrasado se arrastra al período actual, porque una orden
       // no se puede emitir con fecha del mes pasado.
-      const destino = `${periodoActual}|${c.clave}`;
+      //
+      // Tanda 4.3 (§16.1 #5): la celda arrastrada RECUERDA de qué período
+      // venía (`origenes`). Antes se fundía en la del mes actual bajo OTRO
+      // átomo y la decisión que Gabriel había tomado sobre setiembre se
+      // perdía el 1 de octubre. Ahora esa decisión se sigue buscando en el
+      // átomo de origen (`atomosDeCelda`).
+      const destino = `${periodoDestino}|${c.clave}`;
       const ya = mapa.get(destino);
       resumen.montoArrastrado += c.monto;
+      const origenes = new Set([...(c.propio !== false ? [c.periodo] : []), ...(c.origenes || [])]);
       if (ya) {
         ya.cantidad += c.cantidad; ya.monto += c.monto;
         ya.arrastrado = true;
@@ -1293,8 +1330,14 @@ export function simularOrdenes({
           ya.porPartida.set(pid, acum);
         }
         if (!c.montoConocido) ya.montoConocido = false;
+        if (ya.origenes) for (const o of origenes) ya.origenes.add(o);
+        if (c.reprogramado) {
+          ya.reprogramado = num(ya.reprogramado) + c.reprogramado;
+          ya.montoReprogramado = num(ya.montoReprogramado) + num(c.montoReprogramado);
+          ya.reprogramadoDe = new Set([...(ya.reprogramadoDe || []), ...(c.reprogramadoDe || [])]);
+        }
       } else {
-        mapa.set(destino, { ...c, periodo: periodoActual, arrastrado: true });
+        mapa.set(destino, { ...c, periodo: periodoDestino, arrastrado: true, propio: false, origenes });
       }
     }
   };
@@ -1420,6 +1463,10 @@ export function simularOrdenes({
         if (!c.montoConocido) p.tieneMontoIncompleto = true;
       }
     }
+    // Contra qué se decide la orden entera (tanda 4.3): los átomos de todas
+    // sus entregas. Sin arrastre ni reprogramación son sus `atomos`, igual
+    // que antes — los escenarios viejos se leen tal cual.
+    p.atomosDecision = [...new Set(p.lineas.flatMap(l => l.entregas.flatMap(e => e.atomosDecision)))];
     return p;
   });
 
@@ -1599,6 +1646,10 @@ function lineaDePropuesta(arr, compraDe) {
       // La orden de antes, ahora átomo: la decisión de esta entrega se guarda
       // contra `${propuestaId}::${clave}`.
       propuestaId: atomoId,
+      // Contra qué átomos se busca la decisión de ESTA entrega (tanda 4.3):
+      // el suyo si tiene cantidad propia, el del período del que se arrastró
+      // y el de lo reprogramado desde un mes cerrado. Ver `atomosDeCelda`.
+      atomosDecision: atomosDeCelda(x, atomoId),
       cantidad: r4(q), monto: r2(x.monto),
       necesidad: r4(x.necesidad != null ? x.necesidad : x.cantidad),
       alcanzaHasta: x.alcanzaHasta || null,
@@ -1634,6 +1685,12 @@ function lineaDePropuesta(arr, compraDe) {
     alcanzaHasta: ultima.alcanzaHasta,
     etiquetaAlcanzaHasta: ultima.etiquetaAlcanzaHasta,
     entregas,
+    // Lo que trae de otros meses (tanda 4.3): arrastrado de meses pasados sin
+    // cerrar, y reprogramado desde meses cerrados (en unidades y plata del
+    // expediente, antes del redondeo).
+    arrastradoDe: [...new Set(arr.flatMap(({ c: x }) => [...(x.origenes || [])]))].sort(),
+    reprogramadoDe: [...new Set(arr.flatMap(({ c: x }) => [...(x.reprogramadoDe || [])]))].sort(),
+    montoReprogramado: r2(arr.reduce((t, { c: x }) => t + num(x.montoReprogramado), 0)),
     montoConocido, tramoLargo, arrastrado, partidas: [...partidas],
     categoria: c.categoria, subcategoria: c.subcategoria,
     // QUÉ ES esta línea, para que se vea por qué está en esta orden y se
@@ -1653,4 +1710,182 @@ export const MOTIVO_PENDIENTE_LABEL = {
   falta_cuadrillas: 'Falta cargar cuántas personas entran y cuándo',
   falta_reparto_manual: 'Falta fijar a mano el reparto de esta partida',
   falta_reparto_escenario: 'El escenario no trae cómo avanza esta partida',
+  sin_mes_abierto: 'Quedó en un mes cerrado y no hay ningún mes abierto después para reprogramarlo',
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// CERRAR MES (ronda 4, tanda 4.3 — doc §16.2 decisiones 3 y 4, §16.3)
+// ═══════════════════════════════════════════════════════════════════
+//
+// «Cerrar abril» escribe lo aceptado de abril como requisiciones y congela el
+// mes. El motor no necesita saber qué se aceptó: lo escrito ya se descuenta
+// por código (`coberturaPrevia`, de los meses más viejos hacia adelante), así
+// que lo que TODAVÍA queda en un mes cerrado después del descuento es,
+// exactamente, lo que no se pidió ahí — lo rechazado, lo que quedó sin
+// decidir, lo aceptado sin precio, y lo de una orden que después se anuló
+// (su requisición pasa a `cancelada` y deja de descontar). Todo eso se
+// reprograma en los meses abiertos que siguen, con la estrategia de reparto
+// del escenario:
+//   · 'inicio'    → todo al primer mes abierto: «se corre al mes que viene».
+//   · 'escenario' → en proporción a lo que la obra pide cada mes abierto (la
+//                   plata del propio plan): un mes de frenazo recibe menos.
+//   · el resto    → parejo en los meses abiertos que quedan.
+// Solo hacia ADELANTE: lo de abril no se reprograma a marzo. En modo real,
+// tampoco al pasado (el anclaje lo traería igual al mes actual).
+//
+// Lo SIN código no se puede descontar por código: la línea que se escribió
+// al cerrar el mes sale por `pedidoSinCodigo` (mes|clave) — si no, se
+// reprogramaría y se pediría dos veces.
+//
+// La mano de obra y los sobres no se reprograman: la primera es solo
+// referencia, y un sobre es un techo de plata, no una cantidad por mes.
+
+/** El primer período desde `periodo` (incluido) cuyo mes no está cerrado. */
+export function primerPeriodoAbierto(periodo, granularidad = 'mes', mesCerrado = () => false) {
+  if (!mesCerrado(periodo)) return periodo;
+  const r = rangoDePeriodo(periodo);
+  if (!r) return periodo;
+  // 5 años hacia adelante alcanzan de sobra: nadie cierra 60 meses seguidos.
+  for (const p of periodosEntre(r.inicio, sumarDias(r.inicio, 365 * 5), granularidad)) {
+    if (p > periodo && !mesCerrado(p)) return p;
+  }
+  return periodo;
+}
+
+/** Cómo se dice, en la pantalla, adónde va lo reprogramado con cada reparto. */
+export function reprogramacionLabel(reparto) {
+  if (reparto === 'inicio') return 'todo al primer mes abierto';
+  if (reparto === 'escenario') return 'según lo que pide la obra cada mes que queda';
+  return 'parejo en los meses que quedan';
+}
+
+/** Los pesos de cada destino según la estrategia de reparto. */
+export function pesosDeReprogramacion(destinos = [], reparto = 'parejo', carga = null) {
+  const n = destinos.length;
+  if (!n) return [];
+  if (reparto === 'inicio') return destinos.map((_, i) => (i === 0 ? 1 : 0));
+  if (reparto === 'escenario' && carga) {
+    const ws = destinos.map(d => Math.max(0, num(carga.get(d))));
+    const tot = ws.reduce((a, b) => a + b, 0);
+    if (tot > 0) return ws.map(w => w / tot);
+  }
+  return destinos.map(() => 1 / n);
+}
+
+/**
+ * Los átomos contra los que se busca la decisión de una entrega.
+ *
+ * El suyo solo si la celda tiene cantidad PROPIA de su período: una celda que
+ * es puro arrastre de setiembre no se decide contra octubre. Lo reprogramado
+ * tiene su propio átomo (`periodo|rubro|reprogramado`), que nace sin decidir:
+ * la cantidad que llegó de un mes cerrado es nueva y hay que volver a mirarla,
+ * aunque el mes que la recibe ya estuviera aceptado.
+ */
+export function atomosDeCelda(c, atomoId) {
+  const out = [];
+  if (c.propio !== false) out.push(atomoId);
+  for (const po of (c.origenes || [])) out.push(`${po}|${c.rubro}`);
+  if (num(c.reprogramado) > 1e-9) out.push(`${c.periodo}|${c.rubro}|reprogramado`);
+  return out.length ? [...new Set(out)] : [atomoId];
+}
+
+/**
+ * Saca de `celdas` lo que quedó en los meses cerrados y lo reprograma en los
+ * abiertos. Muta `celdas` y `pendientes` (es un paso del motor, no una
+ * función de afuera). Devuelve el resumen del cierre.
+ */
+export function reprogramarCerrados(celdas, {
+  mesCerrado = () => false, meses = [], pedidoSinCodigo = [],
+  granularidad = 'mes', reparto = 'parejo', plazo = null, desde = null, pendientes = [],
+} = {}) {
+  const resumen = {
+    meses,
+    reprogramado: { lineas: 0, monto: 0, porMes: {} },
+    yaPedidoSinCodigo: { lineas: 0, monto: 0 },
+    sinMesAbierto: { lineas: 0, monto: 0 },
+  };
+  const hechos = new Set((pedidoSinCodigo || []).map(String));
+
+  // Lo SIN código ya escrito al cerrar: fuera, en cualquier mes.
+  if (hechos.size) {
+    for (const [k, c] of [...celdas]) {
+      if (!String(c.clave || '').startsWith('~')) continue;
+      if (!hechos.has(`${mesDePeriodo(c.periodo)}|${c.clave}`)) continue;
+      celdas.delete(k);
+      resumen.yaPedidoSinCodigo.lineas += 1;
+      resumen.yaPedidoSinCodigo.monto += num(c.monto);
+    }
+  }
+  if (!meses.length) { resumen.yaPedidoSinCodigo.monto = r2(resumen.yaPedidoSinCodigo.monto); return resumen; }
+
+  const todas = [...celdas.values()];
+  if (!todas.length) return resumen;
+  let min = todas[0].periodo, max = todas[0].periodo;
+  for (const c of todas) { if (c.periodo < min) min = c.periodo; if (c.periodo > max) max = c.periodo; }
+  if (plazo?.fin) { const pf = periodoDe(plazo.fin, granularidad); if (pf && pf > max) max = pf; }
+  if (desde && desde > max) max = desde;
+  const rMin = rangoDePeriodo(min), rMax = rangoDePeriodo(max);
+  if (!rMin || !rMax) return resumen;
+  const abiertos = periodosEntre(rMin.inicio, rMax.fin, granularidad).filter(p => !mesCerrado(p));
+
+  // La carga de cada período abierto ANTES de reprogramar: es lo que la obra
+  // pide ahí por sí sola (pesos del reparto 'escenario').
+  const carga = new Map();
+  for (const c of todas) if (!mesCerrado(c.periodo)) carga.set(c.periodo, (carga.get(c.periodo) || 0) + num(c.monto));
+
+  for (const [k, c] of [...celdas]) {
+    if (!mesCerrado(c.periodo)) continue;
+    celdas.delete(k);
+    if (!(c.cantidad > 0.0001) && !(c.monto > 0.004)) continue;
+    const mes = mesDePeriodo(c.periodo);
+    const destinos = abiertos.filter(p => p > c.periodo && (!desde || p >= desde));
+    if (!destinos.length) {
+      resumen.sinMesAbierto.lineas += 1;
+      resumen.sinMesAbierto.monto += num(c.monto);
+      pendientes.push({
+        motivo: 'sin_mes_abierto', insumo_codigo: c.insumo_codigo || null,
+        nombre: c.nombre || '', unidad: c.unidad || '', partida_id: [...(c.partidas || [])][0] || null,
+        cantidad: r4(c.cantidad), monto: r2(c.monto), categoria: c.categoria, subcategoria: c.subcategoria,
+      });
+      continue;
+    }
+    resumen.reprogramado.lineas += 1;
+    resumen.reprogramado.monto += num(c.monto);
+    resumen.reprogramado.porMes[mes] = r2((resumen.reprogramado.porMes[mes] || 0) + num(c.monto));
+    const pesos = pesosDeReprogramacion(destinos, reparto, carga);
+    destinos.forEach((dest, i) => {
+      const f = pesos[i];
+      if (!(f > 0)) return;
+      const kd = `${dest}|${c.clave}`;
+      let d = celdas.get(kd);
+      if (!d) {
+        d = {
+          ...c, periodo: dest, cantidad: 0, monto: 0,
+          partidas: new Set(), porPartida: new Map(),
+          arrastrado: false, propio: false, origenes: new Set(),
+          reprogramado: 0, montoReprogramado: 0, reprogramadoDe: new Set(),
+        };
+        celdas.set(kd, d);
+      }
+      d.cantidad += c.cantidad * f;
+      d.monto += c.monto * f;
+      d.reprogramado = num(d.reprogramado) + c.cantidad * f;
+      d.montoReprogramado = num(d.montoReprogramado) + c.monto * f;
+      if (!d.reprogramadoDe) d.reprogramadoDe = new Set();
+      d.reprogramadoDe.add(mes);
+      for (const x of (c.reprogramadoDe || [])) d.reprogramadoDe.add(x);
+      if (!c.montoConocido) d.montoConocido = false;
+      if (c.tramoLargo) d.tramoLargo = true;
+      for (const pid of (c.partidas || [])) d.partidas.add(pid);
+      for (const [pid, pp] of (c.porPartida || [])) {
+        const acum = d.porPartida.get(pid) || { cantidad: 0, monto: 0 };
+        acum.cantidad += pp.cantidad * f; acum.monto += pp.monto * f;
+        d.porPartida.set(pid, acum);
+      }
+    });
+  }
+  resumen.reprogramado.monto = r2(resumen.reprogramado.monto);
+  resumen.yaPedidoSinCodigo.monto = r2(resumen.yaPedidoSinCodigo.monto);
+  resumen.sinMesAbierto.monto = r2(resumen.sinMesAbierto.monto);
+  return resumen;
+}

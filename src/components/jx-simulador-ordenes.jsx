@@ -50,7 +50,7 @@ import {
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
   mesDePeriodo, etiquetaPeriodo,
   ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
-  COMPRADO_MODOS, COMPRADO_MODO_LABEL, aplicarAnulaciones,
+  COMPRADO_MODOS, COMPRADO_MODO_LABEL, aplicarAnulaciones, reprogramacionLabel,
 } from "../lib/simulador-ordenes.js";
 import {
   armarCronograma, curvaDeCarga, fechaCorta, valoresDeHistoria,
@@ -83,6 +83,8 @@ import {
   aplicarEscenario, lineasAceptadas,
   leerEscenarios, guardarEscenario, borrarEscenario,
   leerCompras, guardarCompra,
+  motorDeCierres, mesPorCerrar, resumenDeCierre, sinCodigoDeLineas,
+  cerrarMes, reabrirMes, mesesCerradosDe,
 } from "../lib/simulador-escenarios.js";
 import {
   armarRequisiciones, borradorDeOrdenDesdeRequisicion, cierreDeRequisicion,
@@ -211,6 +213,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // cosas: volver a leer los datos y volver a correr el motor.
   const [recalcN, setRecalcN] = uS(0);
   const convertirRef = uR(false);
+  const cerrarRef = uR(false);
   const emitirRef = uR(false);
   // Tanda 2.5: el almacén de la obra (lo que entró y lo que hay). Imputar
   // sus ítems es la página aparte desde la tanda 3.2 (`ImputarComprasPage`).
@@ -426,6 +429,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // borrador nunca, lo del plan siempre) y el almacén, que en Simulación
   // arranca en «nada». Lo ejecutado sigue siendo solo del modo real.
   const almacenModoActivo = almacenModoDe(params);
+  // Los meses cerrados del escenario (tanda 4.3): lo que queda en ellos el
+  // motor lo reprograma en los abiertos. Se memoiza por los cierres y no por
+  // el escenario entero: aceptar una línea no tiene por qué recalcular el plan.
+  const cierresMotor = uM(() => motorDeCierres(escenario), [escenario?.cierres]);
   const baseMotor = uM(() => {
     const motor = paramsDeMotor(params);
     return {
@@ -441,9 +448,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       // apunta a ella (`orden_compra_id`): la orden fusionada solo tiene ese.
       movimientos: movs,
       consumoSobres, almacen: almacenFilas,
+      ...cierresMotor,
     };
   }, [params, ipHook.data, partidasHook.data, cron.motor, terminosCustom, compras,
-    ordenesObra, ocItems, requisicionesObra, reqItemsObra, movs, consumoSobres, almacenFilas]);
+    ordenesObra, ocItems, requisicionesObra, reqItemsObra, movs, consumoSobres, almacenFilas, cierresMotor]);
 
   // ── LA CORRIDA DE ÓRDENES ─────────────────────────────────────────
   // `mano_obra` se saca del filtro aunque esté tildada: la planilla no se
@@ -863,7 +871,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     if (!base) return;
     const nombre = (window.prompt?.('Nombre del escenario nuevo:', `${base.nombre} (copia)`) || '').trim();
     if (!nombre) return;
-    const copia = { ...nuevoEscenario({ nombre, obraId, params: base.params }), decisiones: base.decisiones, ediciones: base.ediciones, sobres: base.sobres, relatoIA: base.relatoIA || null };
+    const copia = { ...nuevoEscenario({ nombre, obraId, params: base.params }), decisiones: base.decisiones, ediciones: base.ediciones, sobres: base.sobres, relatoIA: base.relatoIA || null, cierres: base.cierres || {} };
     const lista = guardarEscenario(obraId, copia);
     setEscenarios(lista);
     escRef.current = copia;
@@ -977,33 +985,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
 
     convertirRef.current = true;
     try {
-      const now = new Date().toISOString();
-      // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
-      // (mirá el esquema): mandarles esas columnas hace que el push las
-      // rechace entero. Por eso el autor se marca solo en las cabeceras.
-      const marca = (fila, tabla, { conAutor = false } = {}) => ({
-        ...fila,
-        created_at: now, updated_at: now,
-        // Las columnas de autor son uuid: sin sesión van NULL, no el
-        // literal 'offline' (que rebotaría con un 22P02).
-        ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
-        idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
-      });
-      for (const { requisicion, items } of plan.requisiciones) {
-        await window.__db.requisiciones.add(marca(requisicion, 'req', { conAutor: true }));
-        for (const it of items) await window.__db.requisicion_items.add(marca(it, 'req_item'));
-      }
-      try {
-        await window.__logAudit?.({
-          action: 'create', table: 'requisiciones', recordId: null,
-          newData: { ...plan.resumen, obra_id: obraId, escenario: escenario?.nombre || null },
-          reason: `Simulador: ${plan.resumen.requisiciones} requisición(es) por ${soles(plan.resumen.monto)} desde el escenario «${escenario?.nombre || '—'}»`,
-        });
-      } catch {}
-      for (const t of ['requisiciones', 'requisicion_items']) {
-        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
-      }
+      await escribirRequisiciones(plan);
       toast(`✓ ${plan.resumen.requisiciones} requisición(es) creadas · ${plan.resumen.items} línea(s) por ${soles(plan.resumen.monto)}`, 'green');
       setVista('documentos');
     } catch (e) {
@@ -1012,6 +994,112 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     } finally {
       convertirRef.current = false;
     }
+  };
+
+  // La escritura de un plan de requisiciones, compartida por «Convertir en
+  // requisiciones» y «Cerrar mes» (tanda 4.3). Lanza si Dexie falla: quien la
+  // llama decide qué decir.
+  const escribirRequisiciones = async (plan, { motivo = null } = {}) => {
+    const now = new Date().toISOString();
+    // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
+    // (mirá el esquema): mandarles esas columnas hace que el push las
+    // rechace entero. Por eso el autor se marca solo en las cabeceras.
+    const marca = (fila, tabla, { conAutor = false } = {}) => ({
+      ...fila,
+      created_at: now, updated_at: now,
+      // Las columnas de autor son uuid: sin sesión van NULL, no el
+      // literal 'offline' (que rebotaría con un 22P02).
+      ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
+      version: 1, sync_status: 'pending_create', last_synced_at: null,
+      idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
+    });
+    for (const { requisicion, items } of plan.requisiciones) {
+      await window.__db.requisiciones.add(marca(requisicion, 'req', { conAutor: true }));
+      for (const it of items) await window.__db.requisicion_items.add(marca(it, 'req_item'));
+    }
+    try {
+      await window.__logAudit?.({
+        action: 'create', table: 'requisiciones', recordId: null,
+        newData: { ...plan.resumen, obra_id: obraId, escenario: escenario?.nombre || null },
+        reason: `Simulador${motivo ? ` (${motivo})` : ''}: ${plan.resumen.requisiciones} requisición(es) por ${soles(plan.resumen.monto)} desde el escenario «${escenario?.nombre || '—'}»`,
+      });
+    } catch {}
+    for (const t of ['requisiciones', 'requisicion_items']) {
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
+    }
+  };
+
+  // ── CERRAR MES (tanda 4.3, §16.3) ─────────────────────────────────
+  // Se cierra el PRIMER mes que todavía tiene órdenes (en orden, para que un
+  // mes cerrado nunca tenga uno abierto antes). Lo aceptado de las órdenes
+  // que se emiten ese mes se escribe como requisiciones —pre-órdenes, se
+  // editan y se borran—; lo demás el motor lo reprograma en los meses que
+  // quedan con la estrategia de reparto del escenario. Es sobre la corrida
+  // ENTERA (todas las pestañas), no solo la categoría abierta.
+  const mesACerrar = uM(() => mesPorCerrar(corrida?.propuestas || [], escenario), [corrida, escenario]);
+  const mesesCerrados = uM(() => mesesCerradosDe(escenario), [escenario]);
+
+  const cerrarElMes = async () => {
+    if (cerrarRef.current || !mesACerrar) return;
+    const r = resumenDeCierre(decorado, mesACerrar);
+    const plan = r.lineas.length ? armarRequisiciones({
+      lineas: r.lineas, obraId, escenario,
+      solicitante: { id: auth?.profile?.id || null, nombre: userNombre },
+      yaEscritas: requisicionesObra, yaEscritasItems: reqItemsObra,
+      nuevoId: () => window.__newId(),
+    }) : null;
+    const etiqueta = etiquetaPeriodo(mesACerrar);
+    const aviso = [
+      `Cerrar ${etiqueta}:`,
+      '',
+      plan?.requisiciones.length
+        ? `• Se escriben ${plan.resumen.requisiciones} requisición(es) con ${plan.resumen.items} línea(s) aceptada(s) por ${soles(plan.resumen.monto)}.`
+        : '• No hay nada aceptado nuevo para escribir.',
+      plan?.duplicadas.length ? `• ${plan.duplicadas.length} línea(s) aceptada(s) ya estaban escritas.` : '',
+      r.sinPrecio.length ? `• ${r.sinPrecio.length} aceptada(s) SIN precio no se escriben: se reprograman.` : '',
+      (r.rechazadas + r.sinDecidir) > 0
+        ? `• ${r.rechazadas} rechazada(s) y ${r.sinDecidir} sin decidir (${soles(r.montoNoAceptado)}) se reprograman en los meses que quedan (${reprogramacionLabel(baseMotor.reparto)}).`
+        : '',
+      '',
+      `${etiqueta} queda congelado en este escenario. Se puede reabrir; las requisiciones escritas quedan en la base.`,
+      '¿Cerrar?',
+    ].filter(x => x !== '').join('\n');
+    if (!window.confirm?.(aviso)) return;
+
+    cerrarRef.current = true;
+    try {
+      if (plan?.requisiciones.length) await escribirRequisiciones(plan, { motivo: `cierre de ${etiqueta}` });
+      // Lo SIN código escrito ahora o antes: el motor no lo puede descontar
+      // por código, así que lo saca por mes y clave.
+      // Las omitidas (mano de obra, sin cantidad) no se escribieron: no cuentan.
+      const omitidas = new Set((plan?.omitidas || []).map(o => o.linea));
+      const sinCodigo = sinCodigoDeLineas(r.lineas.filter(l => !omitidas.has(l)));
+      mutar(e => cerrarMes(e, mesACerrar, {
+        requisiciones: plan?.resumen.requisiciones || 0,
+        lineas: plan?.resumen.items || 0,
+        monto: plan?.resumen.monto || 0,
+        sinCodigo,
+        fecha: window.__fecha?.hoyLocal?.() || undefined,
+      }));
+      toast(plan?.requisiciones.length
+        ? `🔒 ${etiqueta} cerrado · ${plan.resumen.requisiciones} requisición(es) por ${soles(plan.resumen.monto)}`
+        : `🔒 ${etiqueta} cerrado`, 'green');
+    } catch (e) {
+      console.warn('[simulador] error al cerrar el mes', e);
+      toast(`No se pudo cerrar: ${e?.message || e}`, 'red');
+    } finally {
+      cerrarRef.current = false;
+    }
+  };
+
+  const reabrirElMes = (mes) => {
+    const etiqueta = etiquetaPeriodo(mes);
+    if (!window.confirm?.(
+      `¿Reabrir ${etiqueta}?\n\nLo que se había reprogramado vuelve a ${etiqueta}. Las requisiciones que se escribieron al cerrarlo `
+      + 'siguen en la base y se siguen descontando: si no las querés, borralas desde Compras.'
+    )) return;
+    mutar(e => reabrirMes(e, mes));
+    toast(`${etiqueta} reabierto`, 'amber');
   };
 
   const emitirOrden = async (requisicion, proveedorTexto) => {
@@ -1530,6 +1618,19 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
         </div>
       )}
 
+      {/* ── CIERRE DE MESES (tanda 4.3, §16.3) ───────────────────────── */}
+      {!cargando && (mesACerrar || mesesCerrados.length > 0) && (
+        <CierreMeses
+          mesACerrar={mesACerrar}
+          cerrados={mesesCerrados}
+          cierres={escenario?.cierres || {}}
+          cierre={resumen?.cierre || null}
+          reparto={reprogramacionLabel(baseMotor.reparto)}
+          onCerrar={cerrarElMes}
+          onReabrir={reabrirElMes}
+        />
+      )}
+
       {/* ── PESTAÑAS (§15.2 F) ──────────────────────────────────────── */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
         {[
@@ -1787,6 +1888,22 @@ const COMPRADO_TEXTO = {
 function avisosDelPlan(resumen) {
   if (!resumen) return [];
   const out = [];
+  // ── Los meses cerrados (tanda 4.3) ──────────────────────────────
+  const ci = resumen.cierre;
+  if (ci?.sinMesAbierto?.lineas > 0) {
+    out.push({
+      id: 'sin-mes-abierto', nivel: 'ambar',
+      titulo: `${ci.sinMesAbierto.lineas} línea(s) (${solesK(ci.sinMesAbierto.monto)}) quedaron en un mes cerrado sin ningún mes abierto después.`,
+      detalle: 'No hay dónde reprogramarlas: están en «Sin planificar». Reabrí el último mes cerrado o extendé el plazo del trabajo.',
+    });
+  }
+  if (ci?.reprogramado?.lineas > 0) {
+    out.push({
+      id: 'reprogramado', nivel: 'info',
+      titulo: `Se reprogramaron ${solesK(ci.reprogramado.monto)} de ${Object.keys(ci.reprogramado.porMes).map(etiquetaPeriodo).join(', ')} a los meses que quedan.`,
+      detalle: 'Es lo que no se pidió en los meses cerrados (rechazado, sin decidir o de una orden anulada). Las líneas que lo recibieron lo dicen y hay que volver a decidirlas.',
+    });
+  }
   // ── Lo que la perilla «qué cuenta como ya comprado» dejó afuera (4.2) ──
   const cp = resumen.comprado;
   if (cp?.sinFactura?.ordenes > 0) {
@@ -1880,6 +1997,58 @@ function avisosDelPlan(resumen) {
 // UN CHIP DE LA TIRA DE NAVEGACIÓN (tanda 2.4)
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+// CIERRE DE MESES (tanda 4.3, §16.3)
+//
+// Una franja sola, arriba de las pestañas: qué meses están cerrados (con lo
+// que se escribió al cerrarlos), cuál toca cerrar ahora, y reabrir el último.
+// No va dentro de una pestaña porque cerrar un mes es sobre la corrida
+// entera: materiales, herramientas y servicios a la vez.
+// ═══════════════════════════════════════════════════════════════════
+
+function CierreMeses({ mesACerrar, cerrados = [], cierres = {}, cierre = null, reparto, onCerrar, onReabrir }) {
+  const ultimo = cerrados[cerrados.length - 1] || null;
+  const reprog = cierre?.reprogramado;
+  return (
+    <div className="card card-p" style={{ marginBottom: 12, display: 'grid', gap: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <b style={{ fontSize: 13 }}>🔒 Cierre de meses</b>
+        {cerrados.map(m => {
+          const c = cierres[m] || {};
+          return (
+            <span key={m} className="badge b-gray" style={{ fontSize: 11 }}
+              title={`Cerrado el ${c.fecha || '—'}: ${c.requisiciones || 0} requisición(es), ${c.lineas || 0} línea(s) por ${soles(c.monto)}.`}>
+              🔒 {etiquetaPeriodo(m)}{c.requisiciones ? ` · ${c.requisiciones} req.` : ''}
+            </span>
+          );
+        })}
+        {ultimo && (
+          <button className="btn btn-sm btn-ghost" onClick={() => onReabrir(ultimo)}
+            title="Solo se reabre el último mes cerrado: lo que se había reprogramado vuelve a ese mes.">
+            Reabrir {etiquetaPeriodo(ultimo)}
+          </button>
+        )}
+        {mesACerrar && (
+          <button className="btn btn-sm btn-amber" style={{ marginLeft: 'auto' }} onClick={onCerrar}
+            title="Escribe lo aceptado de las órdenes que se emiten ese mes como requisiciones, congela el mes y reprograma lo que no se pidió.">
+            🔒 Cerrar {etiquetaPeriodo(mesACerrar)}
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+        {mesACerrar
+          ? <>Cerrar <b>{etiquetaPeriodo(mesACerrar)}</b> escribe lo aceptado de sus órdenes (todas las pestañas) como requisiciones
+            y congela el mes. Lo rechazado, lo que quede sin decidir y lo de una orden que después se anule se reprograma {reparto}.
+            Los meses se cierran en orden.</>
+          : 'No quedan meses con órdenes por cerrar.'}
+        {reprog?.lineas > 0 && (
+          <> · Reprogramado de los meses cerrados: <b>{solesK(reprog.monto)}</b> en {reprog.lineas} línea(s).</>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ChipPeriodo({ c, onClick, chico, principal }) {
   const pctDecidido = c.ordenes > 0 ? Math.round((c.decididas / c.ordenes) * 100) : 0;
   const colorPct = pctDecidido === 100 ? 'var(--green)' : pctDecidido > 0 ? 'var(--blue)' : 'var(--tm)';
@@ -1939,10 +2108,21 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
               </span>
             )}
             {p.bajoMinimo && <span style={{ color: 'var(--amber)' }}> · por debajo del mínimo aun juntando todo su rubro</span>}
-            {p.lineas.some(l => l.decisionMixta) && (
+            {p.lineas.some(l => l.reprogramadaSinDecidir) && (
+              <span style={{ color: 'var(--amber)' }}
+                title="Recibió cantidad reprogramada de un mes cerrado. Esa cantidad es nueva y nace sin decidir: hasta que la línea se vuelva a decidir, no se entrega.">
+                {' · '}{p.lineas.filter(l => l.reprogramadaSinDecidir).length} línea(s) con lo reprogramado por decidir
+              </span>
+            )}
+            {p.lineas.some(l => l.decisionMixta && !l.reprogramadaSinDecidir) && (
               <span style={{ color: 'var(--amber)' }}
                 title="Estas entregas se decidieron por separado cuando eran órdenes sueltas, y no dicen lo mismo. Hasta que se vuelvan a decidir no se entregan.">
-                {' · '}{p.lineas.filter(l => l.decisionMixta).length} línea(s) con decisiones distintas por entrega
+                {' · '}{p.lineas.filter(l => l.decisionMixta && !l.reprogramadaSinDecidir).length} línea(s) con decisiones distintas por entrega
+              </span>
+            )}
+            {p.lineas.some(l => (l.reprogramadoDe || []).length) && (
+              <span title="Trae lo que quedó sin pedir en un mes cerrado (rechazado, sin decidir o de una orden anulada).">
+                {' · '}incluye reprogramado de {[...new Set(p.lineas.flatMap(l => l.reprogramadoDe || []))].map(m => etiquetaPeriodo(m)).join(', ')}
               </span>
             )}
             {/* La orden va entera a la pestaña de lo que más pesa: si trae
@@ -2145,7 +2325,17 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
             </button>
           )}
           {l.tramoLargo && <span title="Viene de una partida de tramo largo: esta cantidad es la parte que toca a este período"> · repartido</span>}
-          {l.arrastrado && <span style={{ color: 'var(--amber)' }} title="Venía de un período ya vencido y se arrastró acá"> · atrasado</span>}
+          {l.arrastrado && (
+            <span style={{ color: 'var(--amber)' }}
+              title={`Venía de un período ya vencido y se arrastró acá${(l.arrastradoDe || []).length ? `. La decisión que tenía en ${(l.arrastradoDe || []).map(etiquetaPeriodo).join(', ')} se sigue respetando.` : ''}`}>
+              {' · '}atrasado{(l.arrastradoDe || []).length ? ` de ${(l.arrastradoDe || []).map(etiquetaPeriodo).join(', ')}` : ''}
+            </span>
+          )}
+          {(l.reprogramadoDe || []).length > 0 && (
+            <span style={{ color: 'var(--blue)' }} title="Lo que quedó sin pedir en un mes cerrado, reprogramado acá según la estrategia de reparto del escenario. Monto del expediente, antes del redondeo.">
+              {' · '}reprogramado de {(l.reprogramadoDe || []).map(etiquetaPeriodo).join(', ')} (≈ {solesK(l.montoReprogramado)})
+            </span>
+          )}
           {!l.montoConocido && <span style={{ color: 'var(--amber)' }}> · sin precio en el expediente</span>}
           {l.nombre !== l.nombreOriginal && <span style={{ color: 'var(--blue)' }}> · era «{l.nombreOriginal}»</span>}
         </div>
@@ -2256,7 +2446,9 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
           )}
         </div>
         <div style={{ fontSize: 10, color: l.decisionMixta ? 'var(--amber)' : color, marginTop: 2 }}>
-          {l.decisionMixta
+          {l.reprogramadaSinDecidir
+            ? 'Lo reprogramado está sin decidir'
+            : l.decisionMixta
             ? 'Decidida distinto por entrega'
             : <>{ESTADO_LABEL[l.decision]}{l.decisionHeredada && l.decision !== 'pendiente' ? ' (de la orden)' : ''}</>}
         </div>
