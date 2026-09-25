@@ -1332,7 +1332,7 @@ en mayo.
 | 4.1 | ~~Aceptar (una y visibles) + Deshacer en «Por revisar»; tira sticky; «Clasificar» por línea y por orden en el simulador (vía `enseñarDiccionario`), aviso distinto para propias sin rubro; ayuda~~ — HECHA (25-set, en staging) | Sonnet 5 / medio / sesión nueva |
 | 4.2 | ~~Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7~~ — HECHA (25-set, en staging) | Opus 5.5 / alto / sesión nueva |
 | 4.3 | ~~«Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5)~~ — HECHA (25-set, en staging) | Opus 5.5 / extra alto / misma sesión que 4.2 |
-| 4.4 | Pre-órdenes editables, fecha y unidad por línea (posible migración chica). *Ajustado el 25-set:* «desde los dos modos» ya lo resolvió la 4.2 (la Simulación convierte), y el cierre de mes (4.3) ya escribe las pre-órdenes — falta EDITARLAS | Opus 5.5 / alto / sesión nueva |
+| 4.4 | ~~Pre-órdenes editables, fecha y unidad por línea (posible migración chica). *Ajustado el 25-set:* «desde los dos modos» ya lo resolvió la 4.2 (la Simulación convierte), y el cierre de mes (4.3) ya escribe las pre-órdenes — falta EDITARLAS~~ — HECHA (25-set, en staging, mig 230) | Opus 5.5 / alto / sesión nueva |
 | 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan + ayuda. *Ajustado el 25-set:* «anulada → vuelve al plan» ya funciona (4.2 libera la requisición, 4.3 la reprograma si su mes estaba cerrado); falta MOSTRARLO en la lista de pre-órdenes | Opus 5.5 / alto / misma sesión que 4.4 |
 
 Después: probar el preview y promover ronda 3 + ronda 4 a main.
@@ -1461,3 +1461,49 @@ en los CHECK.
   Simulación después de cerrar meses, los meses cerrados siguen siendo los
   mismos del calendario, no «los primeros de la obra».
 - Tests: `simulador-cierre.test.js` (nuevo, 24) + 2 de pantalla.
+
+### 16.8 — Tanda 4.4, qué quedó (25-set-2026)
+
+Medido antes de tocar nada: en producción hay 4 requisiciones, **ninguna del
+simulador** (todas `origen` NULL). `requisicion_items` no tenía fecha por
+línea y `requisiciones` no tenía proveedor: el elegido para emitir vivía en el
+estado de la tarjeta (se perdía al cambiar de pestaña y nunca viajaba a la
+otra PC) y el sugerido, en `notas` de cada línea.
+
+- **Mig 230 (aplicada y verificada):** `requisicion_items.fecha_entrega`
+  (NULL = la de la cabecera) y `requisiciones.proveedor_id` /
+  `proveedor_nombre` (sin FK: el candidato puede ser un proveedor o una
+  empresa del grupo). Aditiva; la app solo las escribe al editar.
+- **Lib nueva `simulador-preordenes.js`** (pura, 53 tests + 6 de pantalla):
+  `esPreordenEditable` (del plan, viva, sin orden — las del residente siguen
+  en Compras), `edicionInicial`, `validarPreorden` (errores que no dejan
+  guardar / avisos que sí), `cambiosDePreorden` (SOLO los campos que
+  cambiaron, contra lo último de Dexie), `cantidadEquivalente` y
+  `descarteDePreorden` (→ `cancelada`, igual que una orden anulada).
+- **La unidad va con su factor.** Cambiar la unidad sin el factor dejaría al
+  plan contando cada metro como un tubo de 6 m. Al salir del campo, si el
+  factor se sabe (la unidad original, o `factorPropuesto` de la imputación:
+  misma unidad o presentación del nombre) se convierte la cantidad para pedir
+  lo mismo del presupuesto (28 tubos → 168 m; al revés, hacia arriba). Si no
+  se sabe, el factor queda a la vista y cambiar unidad sin factor avisa.
+- **Nada nuevo en el motor.** Bajar/quitar devuelve al plan, subir descuenta
+  más, descartar devuelve todo: sale solo de código × cantidad × factor en
+  `coberturaPrevia()`. Hay tests que lo fijan.
+- **La orden respeta lo editado:** `borradorDeOrdenDesdeRequisicion` usa el
+  proveedor guardado si la pantalla no manda otro; `fecha_entrega` = la
+  primera fecha de las líneas y, si hay varias, `fecha_entrega_ref` las nombra
+  («Entregas por línea: 01/10/2026 (3 líneas), 15/10/2026 (2 líneas)»).
+- **Detalles:** la fecha de línea igual a la de la cabecera se guarda NULL
+  (se mueve con la pre-orden); la descripción va a `nombre`, `nombre_libre` y
+  `descripcion`; cambiar cantidad/unidad de una línea con cronograma por
+  período la pasa a `ENTREGAS_A_COORDINAR`; abrir y guardar sin tocar no
+  escribe el proveedor sugerido.
+- **Pantalla:** «📄 Ya pedido» → cada pre-orden tiene «✎ Editar pre-orden»
+  (cabecera + tabla editable, ✕ para quitar, «Descartar pre-orden»), guardado
+  con ref síncrono (regla 2). Los textos que decían «se editan desde Compras»
+  (donde no se puede) se corrigieron, y la ayuda tiene su entrada.
+- **Límite conocido, a propósito:** lo SIN código escrito al cerrar un mes se
+  saca del plan por `pedidoSinCodigo` del cierre (localStorage), no por la
+  requisición: descartar una pre-orden no lo devuelve al plan mientras el mes
+  siga cerrado. Reabrir el mes sí.
+- Falta la 4.5: emitir en lote + estado de cada pre-orden en el plan.

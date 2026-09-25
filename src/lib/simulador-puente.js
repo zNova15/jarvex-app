@@ -358,7 +358,16 @@ export function periodosDeEntregas(observacion) {
  * Cómo se entrega la orden entera, para `ordenes_compra.fecha_entrega_ref`.
  * Null si todo llega de una vez: la fecha de entrega de la cabecera ya lo dice.
  */
-export function referenciaDeEntregas(items = []) {
+export function referenciaDeEntregas(items = [], { fechaCabecera = null } = {}) {
+  // Tanda 4.4: la pre-orden editada puede traer una fecha POR LÍNEA
+  // (`requisicion_items.fecha_entrega`, mig 230). Si las líneas no llegan
+  // todas el mismo día, eso le gana al cronograma por período: es lo que
+  // alguien corrigió a mano después de que el plan lo escribiera.
+  const fechas = fechasDeEntrega(items, fechaCabecera);
+  if (fechas.length > 1) {
+    const partes = fechas.map(({ fecha, lineas }) => `${fechaCorta(fecha)} (${lineas} línea${lineas === 1 ? '' : 's'})`);
+    return `Entregas por línea: ${partes.join(', ')} — la fecha de cada línea está en la requisición`;
+  }
   const periodos = [];
   let aCoordinar = false;
   for (const it of vivos(items)) {
@@ -370,6 +379,27 @@ export function referenciaDeEntregas(items = []) {
   if (aCoordinar) return 'Entregas parciales a coordinar con obra';
   return null;
 }
+
+/**
+ * Las fechas en que se entregan las líneas, de la más temprana a la más
+ * tardía, con cuántas líneas van en cada una. La línea sin fecha propia va
+ * con la de la cabecera (NULL = «la de la pre-orden», mig 230).
+ */
+export function fechasDeEntrega(items = [], fechaCabecera = null) {
+  const cuenta = new Map();
+  for (const it of vivos(items)) {
+    const f = it.fecha_entrega || fechaCabecera || null;
+    if (!f) continue;
+    cuenta.set(f, (cuenta.get(f) || 0) + 1);
+  }
+  return [...cuenta].sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([fecha, lineas]) => ({ fecha, lineas }));
+}
+
+const fechaCorta = (f) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(f || ''));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(f || '');
+};
 
 function tituloDeGrupo(g, esSobre) {
   const etiqueta = g.etiquetaPeriodo || g.periodo || '';
@@ -517,6 +547,11 @@ export function borradorDeOrdenDesdeRequisicion({
 
   const permiso = puedeEmitirOrden({ obra, consorcios, companyId: company?.id || null });
   if (!permiso.ok) return { ok: false, motivo: permiso.motivo, orden: null, items: [] };
+  // El proveedor elegido al editar la pre-orden (mig 230) es el default: la
+  // pantalla puede pisarlo, pero si no manda ninguno no hay por qué perderlo.
+  if ((!proveedor || (!proveedor.id && !String(proveedor.nombre || '').trim())) && String(requisicion.proveedor_nombre || '').trim()) {
+    proveedor = { id: requisicion.proveedor_id || null, nombre: requisicion.proveedor_nombre };
+  }
   if (!proveedor || (!proveedor.id && !String(proveedor.nombre || '').trim())) {
     return { ok: false, motivo: 'sin_proveedor', orden: null, items: [] };
   }
@@ -541,6 +576,10 @@ export function borradorDeOrdenDesdeRequisicion({
   const totales = totalesDesdeItems(lineas, { igvPct });
 
   const ordenId = nuevoId();
+  // La orden se entrega cuando llega la PRIMERA línea; si las líneas tienen
+  // fechas distintas, `fecha_entrega_ref` dice cuáles (tanda 4.4).
+  const entregas = fechasDeEntrega(usables, requisicion.fecha_necesidad || null);
+  const refEntregas = referenciaDeEntregas(usables, { fechaCabecera: requisicion.fecha_necesidad || null });
   const sinNumero = {
     id: ordenId,
     codigo: null, correlativo: null, anio,
@@ -555,10 +594,10 @@ export function borradorDeOrdenDesdeRequisicion({
     proveedor_ruc: proveedor.ruc || null,
     proveedor_direccion: proveedor.direccion || null,
     fecha,
-    fecha_entrega: requisicion.fecha_necesidad || null,
+    fecha_entrega: entregas[0]?.fecha || requisicion.fecha_necesidad || null,
     // Una orden consolidada (tanda 2.3) se entrega por partes: la cabecera
     // lo dice, y el detalle por línea queda en la requisición.
-    ...(referenciaDeEntregas(usables) ? { fecha_entrega_ref: referenciaDeEntregas(usables) } : {}),
+    ...(refEntregas ? { fecha_entrega_ref: refEntregas } : {}),
     moneda: 'PEN',
     // `numerarOrden` la pasa a 'por_confirmar', no a 'recibida': lo que se
     // pide todavía no llegó. Las órdenes retroactivas de `jx-ordenes` nacen

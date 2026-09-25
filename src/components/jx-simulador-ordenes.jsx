@@ -91,6 +91,11 @@ import {
   consumoDeSobres, estadoDelPlan, puedeEmitirOrden,
   MOTIVO_NO_EMITE_LABEL, MOTIVO_OMITIDA_LABEL,
 } from "../lib/simulador-puente.js";
+import {
+  esPreordenEditable, edicionInicial, cambiosDePreorden, descarteDePreorden,
+  validarPreorden, cantidadEquivalente, proveedorSugeridoDeItems, aNumero,
+} from "../lib/simulador-preordenes.js";
+import { factorPropuesto } from "../lib/simulador-imputacion.js";
 import { perfilarProveedores, sugerirProveedores, porQueEsteProveedor } from "../lib/simulador-proveedor.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { rubroLabel } from "../lib/rubros.js";
@@ -215,6 +220,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   const convertirRef = uR(false);
   const cerrarRef = uR(false);
   const emitirRef = uR(false);
+  // Guardar/descartar una pre-orden (tanda 4.4): ref SÍNCRONO, regla 2 de
+  // CLAUDE.md — el doble click entre el click y el primer await de Dexie
+  // escribiría la misma versión dos veces.
+  const preordenRef = uR(false);
+  const [guardandoPre, setGuardandoPre] = uS(null);   // id de la requisición en curso
   // Tanda 2.5: el almacén de la obra (lo que entró y lo que hay). Imputar
   // sus ítems es la página aparte desde la tanda 3.2 (`ImputarComprasPage`).
   const [almacenCrudo, setAlmacenCrudo] = uS(null);
@@ -1096,7 +1106,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     const etiqueta = etiquetaPeriodo(mes);
     if (!window.confirm?.(
       `¿Reabrir ${etiqueta}?\n\nLo que se había reprogramado vuelve a ${etiqueta}. Las requisiciones que se escribieron al cerrarlo `
-      + 'siguen en la base y se siguen descontando: si no las querés, borralas desde Compras.'
+      + 'siguen en la base y se siguen descontando: si no las querés, descartalas en «📄 Ya pedido».'
     )) return;
     mutar(e => reabrirMes(e, mes));
     toast(`${etiqueta} reabierto`, 'amber');
@@ -1171,6 +1181,112 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     }
   };
 
+
+  // ── EDITAR UNA PRE-ORDEN (tanda 4.4, §16.3) ───────────────────────
+  // Lo que se escribe lo decide `cambiosDePreorden` (solo lo que cambió); acá
+  // solo se pasa a Dexie con su versión y su estado de sync.
+  const marcaUpdate = (fila, now, { conAutor = false } = {}) => ({
+    updated_at: now,
+    // `requisicion_items` NO tiene `updated_by`: mandarlo rechaza la fila.
+    ...(conAutor ? { updated_by: autorId } : {}),
+    version: (fila.version ?? 0) + 1,
+    sync_status: fila.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+  });
+  const avisarCambio = (tablas) => {
+    for (const t of tablas) {
+      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
+    }
+  };
+
+  const guardarPreorden = async (requisicion, edicion) => {
+    if (preordenRef.current) return false;
+    preordenRef.current = true;
+    setGuardandoPre(requisicion.id);
+    try {
+      // Lo último de la base, no lo que tenía la pantalla al abrir el
+      // editor: si otra computadora cambió algo, el parche se arma contra eso.
+      const fresca = (await window.__db.requisiciones.get(requisicion.id)) || requisicion;
+      const items = (await window.__db.requisicion_items.where('requisicion_id').equals(requisicion.id).toArray())
+        .filter(it => !it.deleted_at);
+      // El nombre escrito se resuelve al id del catálogo si está; si no, se
+      // guarda solo el nombre (el catálogo no tiene a todos).
+      const prov = resolverProveedor(edicion.cabecera.proveedor_nombre);
+      const conProv = { ...edicion, cabecera: { ...edicion.cabecera, proveedor_nombre: prov.nombre, proveedor_id: prov.id } };
+      const c = cambiosDePreorden({
+        requisicion: fresca, items, edicion: conProv, hoy: window.__fecha?.hoyLocal?.() || undefined,
+      });
+      if (!c.ok) { toast(c.errores[0]?.texto || 'No se pudo guardar', 'amber'); return false; }
+      if (!c.cambios) { toast('No cambiaste nada', 'amber'); return true; }
+
+      const now = new Date().toISOString();
+      const porId = new Map(items.map(it => [it.id, it]));
+      for (const { id, patch } of c.items) {
+        await window.__db.requisicion_items.update(id, { ...patch, ...marcaUpdate(porId.get(id), now) });
+      }
+      for (const id of c.quitados) {
+        const it = porId.get(id);
+        await window.__db.requisicion_items.update(id, {
+          deleted_at: now, updated_at: now, version: (it.version ?? 0) + 1,
+          sync_status: it.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
+        });
+      }
+      // La cabecera se toca siempre que cambió algo: su `updated_at` es lo
+      // que dice «esta pre-orden se editó» en las demás pantallas.
+      await window.__db.requisiciones.update(requisicion.id, {
+        ...(c.cabecera || {}), ...marcaUpdate(fresca, now, { conAutor: true }),
+      });
+      try {
+        await window.__logAudit?.({
+          action: 'update', table: 'requisiciones', recordId: requisicion.id,
+          newData: { cabecera: c.cabecera, lineas: c.items.length, quitadas: c.quitados.length, monto: c.montoDespues },
+          reason: `Pre-orden del simulador editada (${requisicion.origen_ref || requisicion.id}): ${soles(c.montoAntes)} → ${soles(c.montoDespues)}`,
+        });
+      } catch {}
+      avisarCambio(['requisiciones', 'requisicion_items']);
+      toast(`✓ Pre-orden guardada · ${soles(c.montoAntes)} → ${soles(c.montoDespues)}`, 'green');
+      return true;
+    } catch (e) {
+      console.warn('[simulador] error al guardar la pre-orden', e);
+      toast(`No se pudo guardar: ${e?.message || e}`, 'red');
+      return false;
+    } finally {
+      preordenRef.current = false;
+      setGuardandoPre(null);
+    }
+  };
+
+  const descartarPreorden = async (requisicion, monto) => {
+    if (preordenRef.current) return;
+    const patch = descarteDePreorden(requisicion);
+    if (!patch) { toast('Esta requisición ya no se puede descartar desde acá', 'amber'); return; }
+    if (!window.confirm?.(
+      `¿Descartar «${requisicion.descripcion || requisicion.origen_ref}» (${soles(monto)})?\n\n`
+      + 'Queda cancelada y lo suyo VUELVE AL PLAN: la próxima corrida lo propone de nuevo '
+      + '(si su mes está cerrado, se reparte en los meses abiertos). No toma ningún correlativo.'
+    )) return;
+    preordenRef.current = true;
+    setGuardandoPre(requisicion.id);
+    try {
+      const fresca = (await window.__db.requisiciones.get(requisicion.id)) || requisicion;
+      const now = new Date().toISOString();
+      await window.__db.requisiciones.update(requisicion.id, { ...patch, ...marcaUpdate(fresca, now, { conAutor: true }) });
+      try {
+        await window.__logAudit?.({
+          action: 'update', table: 'requisiciones', recordId: requisicion.id,
+          newData: { estado: patch.estado },
+          reason: `Pre-orden del simulador descartada (${requisicion.origen_ref || requisicion.id}, ${soles(monto)}): vuelve al plan`,
+        });
+      } catch {}
+      avisarCambio(['requisiciones']);
+      toast('Pre-orden descartada: lo suyo vuelve al plan', 'amber');
+    } catch (e) {
+      console.warn('[simulador] error al descartar la pre-orden', e);
+      toast(`No se pudo descartar: ${e?.message || e}`, 'red');
+    } finally {
+      preordenRef.current = false;
+      setGuardandoPre(null);
+    }
+  };
 
   const cargando = obrasHook.loading || ipHook.loading || partidasHook.loading;
   const resumen = corrida?.resumen || null;
@@ -1810,6 +1926,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           permiso={permiso}
           emitiendo={emitiendo}
           onEmitir={emitirOrden}
+          guardando={guardandoPre}
+          onGuardar={guardarPreorden}
+          onDescartar={descartarPreorden}
+          insumoDe={(cod) => (cod ? catalogoPres.porCodigo.get(String(cod)) || null : null)}
+          compras={compras}
+          hoy={window.__fecha?.hoyLocal?.() || null}
         />
       )}
 
@@ -1854,8 +1976,8 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
         )}
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
           <b>Son dos pasos, y el primero se puede deshacer.</b> «Convertir en requisiciones» escribe el pedido en la
-          base —ahí sí lo ve el resto del equipo y viaja entre computadoras—, pero todavía no es una orden: se edita,
-          se borra y se vuelve a hacer. Emitir la orden se hace de a una desde <b>Ya pedido</b>, porque toma un número
+          base —ahí sí lo ve el resto del equipo y viaja entre computadoras—, pero todavía no es una orden: en <b>Ya pedido</b>
+          se corrige (✎ Editar pre-orden) o se descarta y vuelve al plan. Emitir la orden se hace de a una desde <b>Ya pedido</b>, porque toma un número
           correlativo de {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora'} que no se recupera
           aunque después se anule.
         </p>
@@ -3126,7 +3248,7 @@ function PendientesVista({ pendientes }) {
 // gastado no se recupera aunque la orden se anule (ver `ordenes.js`).
 // ═══════════════════════════════════════════════════════════════════
 
-function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEmitir }) {
+function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEmitir, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
   const filas = uM(() => [...yaEscrito.values()]
     .sort((a, b) => String(a.requisicion.fecha_necesidad || '').localeCompare(String(b.requisicion.fecha_necesidad || ''))),
   [yaEscrito]);
@@ -3136,7 +3258,7 @@ function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEm
   if (!filas.length) {
     return (
       <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
-        Todavía no se convirtió ninguna propuesta. Aceptá lo que corresponda arriba y usá «Convertir en requisiciones».
+        Todavía no se convirtió ninguna propuesta. Aceptá lo que corresponda arriba y usá «Convertir en requisiciones» o «Cerrar mes».
       </div>
     );
   }
@@ -3148,9 +3270,11 @@ function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEm
   return (
     <>
       <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)' }}>
-        <b>{pendientes.length} requisición(es) por {soles(montoPend)} esperando orden · {emitidas.length} ya emitida(s).</b>
+        <b>{pendientes.length} pre-orden(es) por {soles(montoPend)} esperando orden · {emitidas.length} ya emitida(s).</b>
         <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
-          Una requisición se puede editar y borrar desde Compras. La <b>orden</b> toma un número correlativo de{' '}
+          Una pre-orden <b>se corrige acá</b> antes de emitirla (✎ Editar pre-orden): descripción, unidad, cantidad, precio,
+          fecha de cada línea y a quién se le emite. Lo que bajes o quites vuelve al plan; «Descartar» la devuelve entera.
+          La <b>orden</b>, en cambio, toma un número correlativo de{' '}
           {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora del trabajo'} que queda gastado aunque
           después se anule — por eso se emite de a una, con el proveedor puesto a mano.
         </p>
@@ -3168,45 +3292,69 @@ function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEm
           puedeEmitir={permiso.ok}
           ocupado={emitiendo === f.requisicion.id}
           onEmitir={(texto) => onEmitir(f.requisicion, texto)}
+          guardando={guardando === f.requisicion.id}
+          onGuardar={onGuardar}
+          onDescartar={onDescartar}
+          insumoDe={insumoDe}
+          compras={compras}
+          hoy={hoy}
         />
       ))}
     </>
   );
 }
 
-function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
+const fechaCortaUI = (f) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(f || ''));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : (f || '—');
+};
+
+function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
   const [abierta, setAbierta] = uS(false);
-  // El proveedor que el escenario dejó anotado en las líneas, como punto de
-  // partida. Se puede pisar: la orden se emite a quien la firma, no a quien
-  // sugirió una pantalla.
-  const sugerido = uM(() => {
-    const m = /Proveedor sugerido:\s*(.+)$/.exec(f.items.find(it => it.notas)?.notas || '');
-    return m ? m[1].trim() : '';
-  }, [f.items]);
-  const [prov, setProv] = uS(sugerido);
+  const [editando, setEditando] = uS(false);
   const r = f.requisicion;
+  // El proveedor ELEGIDO al editar (mig 230) y, si no hay, el que el
+  // escenario dejó anotado en las líneas. Se puede pisar: la orden se emite
+  // a quien la firma, no a quien sugirió una pantalla.
+  const sugerido = uM(() => r.proveedor_nombre || proveedorSugeridoDeItems(f.items), [r.proveedor_nombre, f.items]);
+  const [prov, setProv] = uS(sugerido);
+  uE(() => { setProv(sugerido); }, [sugerido]);
+  const editable = esPreordenEditable(r);
+  const conFecha = f.items.some(it => it.fecha_entrega);
 
   return (
     <div className="card" style={{ marginBottom: 8, borderLeft: `3px solid ${f.ordenada ? 'var(--green)' : 'var(--blue)'}` }}>
       <div className="card-p" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', cursor: 'pointer' }}
         onClick={() => setAbierta(v => !v)}>
         <JxIcon name={abierta ? 'chevD' : 'chevR'} size={14} />
-        <div style={{ minWidth: 200 }}>
+        <div style={{ minWidth: 200, flex: 1 }}>
           <b>{r.descripcion || r.origen_ref}</b>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
             {f.items.length} línea(s) · creada el {String(r.fecha || '').slice(0, 10)}
-            {r.fecha_necesidad && ` · se necesita para el ${r.fecha_necesidad}`}
+            {r.fecha_necesidad && ` · se necesita para el ${fechaCortaUI(r.fecha_necesidad)}`}
+            {r.proveedor_nombre && ` · a ${r.proveedor_nombre}`}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
           <b>{soles(f.monto)}</b>
           <div style={{ fontSize: 10.5, color: f.ordenada ? 'var(--green)' : 'var(--tm)' }}>
-            {f.ordenada ? (r.oc_codigo || 'orden emitida') : 'sin orden'}
+            {f.ordenada ? (r.oc_codigo || 'orden emitida') : 'pre-orden · sin emitir'}
           </div>
         </div>
       </div>
 
-      {abierta && (
+      {abierta && editando && editable && (
+        <div style={{ borderTop: '1px solid var(--border)' }} onClick={e => e.stopPropagation()}>
+          <PreordenEditor
+            f={f} insumoDe={insumoDe} compras={compras} hoy={hoy} ocupado={guardando}
+            onCancelar={() => setEditando(false)}
+            onGuardar={async (ed) => { if (await onGuardar(r, ed)) setEditando(false); }}
+            onDescartar={() => onDescartar(r, f.monto)}
+          />
+        </div>
+      )}
+
+      {abierta && !(editando && editable) && (
         <div style={{ borderTop: '1px solid var(--border)' }}>
           {!f.ordenada && (
             <div style={{ padding: '10px 12px', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
@@ -3215,11 +3363,18 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
               <input className="fi" list={DATALIST_PROVEEDORES} style={{ maxWidth: 300, fontSize: 12, padding: '4px 8px' }}
                 placeholder="Buscá por nombre…" value={prov} onChange={e => setProv(e.target.value)} />
               <button className="btn btn-sm btn-amber"
-                disabled={!puedeEmitir || ocupado || !prov.trim()}
+                disabled={!puedeEmitir || ocupado || guardando || !prov.trim()}
                 title={!puedeEmitir ? 'Solo la entidad ejecutora del trabajo puede emitir' : 'Toma el próximo correlativo de la ejecutora'}
                 onClick={() => onEmitir(prov)}>
                 <JxIcon name="file" size={13} /> {ocupado ? 'Emitiendo…' : 'Emitir la orden'}
               </button>
+              {editable && (
+                <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} disabled={ocupado || guardando}
+                  title="Corregir descripción, unidad, cantidad, precio, fechas y proveedor antes de emitir"
+                  onClick={() => setEditando(true)}>
+                  ✎ Editar pre-orden
+                </button>
+              )}
             </div>
           )}
           {f.ordenada && orden && (
@@ -3234,6 +3389,7 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
               <thead>
                 <tr>
                   <th>Insumo</th>
+                  {conFecha && <th style={{ width: 96 }}>Entrega</th>}
                   <th style={{ textAlign: 'right', width: 110 }}>Cantidad</th>
                   <th style={{ textAlign: 'right', width: 110 }}>Precio</th>
                   <th style={{ textAlign: 'right', width: 120 }}>Monto</th>
@@ -3248,8 +3404,9 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
                         {it.insumo_codigo || 'sin código'} · {it.unidad || '—'} · {SUBCATEGORIA_LABEL[it.tipo_insumo] || it.tipo_insumo}
                       </div>
                     </td>
+                    {conFecha && <td style={{ fontSize: 11.5 }}>{fechaCortaUI(it.fecha_entrega || r.fecha_necesidad)}</td>}
                     <td style={{ textAlign: 'right' }}>{cant(it.cantidad)}</td>
-                    <td style={{ textAlign: 'right' }}>{cant(it.precio_estimado)}</td>
+                    <td style={{ textAlign: 'right' }}>{it.precio_estimado == null ? <span style={{ color: 'var(--amber)' }}>sin precio</span> : cant(it.precio_estimado)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{soles(num(it.cantidad) * num(it.precio_estimado))}</td>
                   </tr>
                 ))}
@@ -3257,12 +3414,207 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir }) {
             </table>
             {f.items.length > LINEAS_POR_TANDA && (
               <div style={{ padding: 8, fontSize: 11.5, color: 'var(--tm)', textAlign: 'center' }}>
-                …y {f.items.length - LINEAS_POR_TANDA} línea(s) más. El detalle completo está en Compras.
+                …y {f.items.length - LINEAS_POR_TANDA} línea(s) más.{editable ? ' Se ven todas en «✎ Editar pre-orden».' : ''}
               </div>
             )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EDITAR UNA PRE-ORDEN (ronda 4, tanda 4.4 — §16.3)
+//
+// Lo que se guarda lo decide `cambiosDePreorden` (simulador-preordenes.js):
+// acá solo se junta lo que se escribe. La unidad nunca cambia sola: al salir
+// del campo se busca el factor (la unidad original, o `factorPropuesto` —
+// el mismo de «Imputar lo ya comprado»—) y, si se sabe, la cantidad se pasa
+// a la unidad nueva pidiendo LO MISMO del presupuesto. Si no se sabe, el
+// factor queda a la vista para escribirlo, y la validación avisa.
+// ═══════════════════════════════════════════════════════════════════
+
+const TOPE_AVISOS_PREORDEN = 5;
+
+function PreordenEditor({ f, insumoDe, compras, hoy, ocupado, onGuardar, onCancelar, onDescartar }) {
+  const [ed, setEd] = uS(() => edicionInicial({ requisicion: f.requisicion, items: f.items }));
+  const [tope, setTope] = uS(LINEAS_POR_TANDA);
+  const [conversion, setConversion] = uS({});   // id de línea → texto de la conversión hecha
+  const v = uM(() => validarPreorden(ed, { hoy }), [ed, hoy]);
+  const errPorLinea = uM(() => {
+    const m = new Map();
+    for (const e of v.errores) if (e.id) m.set(`${e.id}|${e.campo}`, e.texto);
+    return m;
+  }, [v]);
+  const montoAntes = uM(() => f.items.reduce((s, it) => s + num(it.cantidad) * num(it.precio_estimado), 0), [f.items]);
+
+  const setCab = (k, val) => setEd(e => ({
+    ...e,
+    // El id del proveedor lo resuelve quien guarda, a partir del nombre.
+    cabecera: { ...e.cabecera, [k]: val, ...(k === 'proveedor_nombre' ? { proveedor_id: null } : {}) },
+  }));
+  const setLin = (id, patch) => setEd(e => ({ ...e, lineas: e.lineas.map(l => (l.id === id ? { ...l, ...patch } : l)) }));
+
+  const aplicarUnidad = (l) => {
+    const unidad = String(l.unidad || '').trim();
+    if (!unidad) return;
+    let factor = null;
+    if (unidad.toLowerCase() === String(l.unidadOriginal || '').trim().toLowerCase()) factor = l.factorOriginal;
+    else {
+      const ins = insumoDe(l.insumo_codigo);
+      if (ins) factor = factorPropuesto(unidad, ins, { compras }).factor;
+    }
+    if (factor == null || Math.abs(num(aNumero(l.factor)) - factor) < 1e-9) return;
+    const eq = cantidadEquivalente(l.cantidad, l.factor, factor);
+    setLin(l.id, { factor: String(factor), ...(eq ? { cantidad: String(eq.redondeada) } : {}) });
+    if (eq) {
+      setConversion(c => ({
+        ...c,
+        [l.id]: `${cant(aNumero(l.cantidad))} → ${cant(eq.redondeada)} ${unidad}: pide lo mismo del presupuesto${eq.redondeada !== eq.exacta ? ` (${cant(eq.exacta)}, redondeado hacia arriba)` : ''}.`,
+      }));
+    }
+  };
+
+  const montoDespues = ed.lineas.filter(l => !l.quitar)
+    .reduce((s, l) => s + num(aNumero(l.cantidad)) * num(aNumero(l.precio)), 0);
+  const quitadas = ed.lineas.filter(l => l.quitar).length;
+  const inputChico = { fontSize: 12, padding: '3px 6px' };
+  const cab = ed.cabecera;
+
+  return (
+    <div style={{ padding: '10px 12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 10 }}>
+        <label style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          Título
+          <input className="fi" style={inputChico} value={cab.descripcion} onChange={e => setCab('descripcion', e.target.value)} />
+        </label>
+        <label style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          Se necesita para
+          <input className="fi" type="date" style={inputChico} value={cab.fecha_necesidad || ''}
+            onChange={e => setCab('fecha_necesidad', e.target.value)} />
+        </label>
+        <label style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          Se le emite a
+          <input className="fi" list={DATALIST_PROVEEDORES} style={inputChico} placeholder="Buscá por nombre…"
+            value={cab.proveedor_nombre || ''} onChange={e => setCab('proveedor_nombre', e.target.value)} />
+        </label>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th style={{ minWidth: 220 }}>Insumo</th>
+              <th style={{ width: 150 }}>Unidad</th>
+              <th style={{ textAlign: 'right', width: 96 }}>Cantidad</th>
+              <th style={{ textAlign: 'right', width: 96 }}>Precio</th>
+              <th style={{ width: 132 }}>Entrega</th>
+              <th style={{ textAlign: 'right', width: 110 }}>Monto</th>
+              <th style={{ width: 40 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {ed.lineas.slice(0, tope).map(l => {
+              const ins = insumoDe(l.insumo_codigo);
+              const f0 = aNumero(l.factor);
+              const c0 = aNumero(l.cantidad);
+              const eqPres = l.insumo_codigo && f0 > 0 && c0 != null
+                ? `= ${cant(c0 * f0)} ${ins?.unidad || 'u.'} del presupuesto` : null;
+              const borde = (campo) => (errPorLinea.has(`${l.id}|${campo}`) ? { borderColor: 'var(--red)' } : {});
+              return (
+                <tr key={l.id} style={l.quitar ? { opacity: 0.45 } : undefined}>
+                  <td className="col-p">
+                    <input className="fi" style={inputChico} value={l.descripcion} disabled={l.quitar}
+                      onChange={e => setLin(l.id, { descripcion: e.target.value })} />
+                    <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}>
+                      {l.insumo_codigo || 'sin código (no se descuenta del plan)'}
+                    </div>
+                    {conversion[l.id] && <div style={{ fontSize: 10.5, color: 'var(--blue)' }}>{conversion[l.id]}</div>}
+                  </td>
+                  <td>
+                    <input className="fi" style={{ ...inputChico, ...borde('unidad') }} value={l.unidad} disabled={l.quitar}
+                      onChange={e => setLin(l.id, { unidad: e.target.value })} onBlur={() => aplicarUnidad(l)} />
+                    {l.insumo_codigo && (
+                      <div style={{ fontSize: 10.5, color: 'var(--tm)', display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}
+                        title="Cuántas unidades del presupuesto trae cada unidad pedida. Es lo que el plan usa para no pedir dos veces.">
+                        1 = <input className="fi" style={{ ...inputChico, width: 56, padding: '1px 4px', ...borde('factor') }}
+                          value={l.factor} disabled={l.quitar} inputMode="decimal"
+                          onChange={e => setLin(l.id, { factor: e.target.value })} />
+                        {ins?.unidad || 'u.'}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <input className="fi" style={{ ...inputChico, textAlign: 'right', ...borde('cantidad') }} value={l.cantidad}
+                      disabled={l.quitar} inputMode="decimal"
+                      onChange={e => setLin(l.id, { cantidad: e.target.value })} />
+                    {eqPres && !l.quitar && <div style={{ fontSize: 10, color: 'var(--tm)' }}>{eqPres}</div>}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <input className="fi" style={{ ...inputChico, textAlign: 'right', ...borde('precio') }} value={l.precio}
+                      disabled={l.quitar} inputMode="decimal" placeholder="sin precio"
+                      onChange={e => setLin(l.id, { precio: e.target.value })} />
+                  </td>
+                  <td>
+                    <input className="fi" type="date" style={{ ...inputChico, ...borde('fecha_entrega') }}
+                      value={l.fecha_entrega || ''} disabled={l.quitar}
+                      title="Vacío = la fecha de la pre-orden"
+                      onChange={e => setLin(l.id, { fecha_entrega: e.target.value })} />
+                  </td>
+                  <td style={{ textAlign: 'right', fontWeight: 600 }}>
+                    {l.quitar ? '—' : soles(num(c0) * num(aNumero(l.precio)))}
+                  </td>
+                  <td>
+                    <button className="btn btn-xs btn-ghost" onClick={() => setLin(l.id, { quitar: !l.quitar })}
+                      title={l.quitar ? 'Volver a incluirla' : 'Quitarla de la pre-orden: vuelve al plan'}>
+                      {l.quitar ? '↺' : '✕'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {ed.lineas.length > tope && (
+          <div style={{ padding: 8, textAlign: 'center' }}>
+            <button className="btn btn-sm btn-ghost" onClick={() => setTope(t => t + LINEAS_POR_TANDA)}>
+              Ver {Math.min(LINEAS_POR_TANDA, ed.lineas.length - tope)} línea(s) más (quedan {ed.lineas.length - tope})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {(v.errores.length > 0 || v.avisos.length > 0) && (
+        <div style={{ margin: '10px 0', fontSize: 11.5 }}>
+          {v.errores.map((e, i) => <div key={`e${i}`} style={{ color: 'var(--red)' }}>✕ {e.texto}</div>)}
+          {v.avisos.slice(0, TOPE_AVISOS_PREORDEN).map((a, i) => <div key={`a${i}`} style={{ color: 'var(--amber)' }}>⚠ {a.texto}</div>)}
+          {v.avisos.length > TOPE_AVISOS_PREORDEN && (
+            <div style={{ color: 'var(--tm)' }}>…y {v.avisos.length - TOPE_AVISOS_PREORDEN} aviso(s) más.</div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 10 }}>
+        <span style={{ fontSize: 12 }}>
+          {soles(montoAntes)} → <b>{soles(montoDespues)}</b>
+          {quitadas > 0 && <span style={{ color: 'var(--tm)' }}> · {quitadas} línea(s) quitada(s)</span>}
+        </span>
+        <button className="btn btn-sm btn-amber" style={{ marginLeft: 'auto' }} disabled={!v.ok || ocupado}
+          onClick={() => onGuardar(ed)}>
+          <JxIcon name="check" size={13} /> {ocupado ? 'Guardando…' : 'Guardar'}
+        </button>
+        <button className="btn btn-sm btn-ghost" disabled={ocupado} onClick={onCancelar}>Cancelar</button>
+        <button className="btn btn-sm btn-ghost" style={{ color: 'var(--red)' }} disabled={ocupado} onClick={onDescartar}
+          title="La pre-orden queda cancelada y lo suyo vuelve al plan">
+          Descartar pre-orden
+        </button>
+      </div>
+      <p style={{ fontSize: 11, color: 'var(--tm)', margin: '8px 0 0' }}>
+        Si bajás una cantidad o quitás una línea, lo que falta <b>vuelve al plan</b> (si su mes está cerrado, se reparte en los
+        meses abiertos). Si la subís, el plan la descuenta de los meses que vienen. Cambiar la cantidad de una línea que se
+        entregaba por partes deja sus entregas «a coordinar».
+      </p>
     </div>
   );
 }
@@ -3644,4 +3996,7 @@ function EnfoqueCard({ c, destacado, recoIA, aplicado, onUsar }) {
 
 window.SimuladorOrdenesPage = SimuladorOrdenesPage;
 export { SimuladorOrdenesPage };
+// Para los tests de pantalla: la lista de pre-órdenes se carga de Dexie en un
+// efecto, que el render del servidor no corre.
+export { DocumentosVista, PreordenEditor };
 export default SimuladorOrdenesPage;
