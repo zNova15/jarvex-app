@@ -66,7 +66,9 @@ import {
 } from "../lib/simulador-sorteo.js";
 import { recomendarEnfoque } from "../lib/simulador-sorteo-ai.js";
 import { CATEGORIA_SIMULADOR_LABEL, SUBCATEGORIA_LABEL } from "../lib/insumo-clasificador.js";
-import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro } from "../lib/indices-unificados-iupc.js";
+import { bandaConfianza, RUBRO_COMPRA_POR_ID, ordenDeRubro, etiquetaCategoria, categoriasParaElegir } from "../lib/indices-unificados-iupc.js";
+import { enseñarDiccionario } from "../lib/clasificaciones-db.js";
+import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clasificacion.jsx";
 import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js";
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
@@ -128,6 +130,9 @@ const LINEAS_POR_TANDA = 40;
  */
 const DATALIST_PROVEEDORES = 'jx-sim-proveedores';
 
+/** El datalist del selector «Clasificar» (tanda 4.1), compartido por toda la pantalla. */
+const DATALIST_CLASIFICACION = 'jx-sim-clasificacion';
+
 /** Una semilla al azar para «🎲 Otro», distinta de la que ya está. */
 function semillaNueva(actual) {
   let s = actual;
@@ -172,7 +177,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   const partidasHook = window.__hooks.usePartidas(obraId);
   const personalHook = window.__hooks.usePersonal(obraId);
   // El diccionario propio: le gana a la base oficial al clasificar los sobres.
-  const terminosCustom = (window.__hooks.useClasificacionTerminos?.() ?? { data: null }).data || null;
+  const terHook = window.__hooks.useClasificacionTerminos?.() ?? { data: null, refresh: null };
+  const terminosCustom = terHook.data || null;
+  // Clasificaciones propias, para poder ofrecerlas en «Clasificar» (tanda 4.1)
+  // igual que en el panel de «Insumos → Clasificación de los insumos».
+  const clasHook = window.__hooks.useClasificaciones?.() || { data: [] };
+  const opcionesClasificacion = uM(() => categoriasParaElegir(clasHook.data || []), [clasHook.data]);
 
   const [vista, setVista] = uS(() => vistaDeAntes(vistaInicial));
   // ⚙: los ajustes finos, cerrados por defecto (§15.2 B). Los tests lo abren
@@ -801,6 +811,26 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // navegación entre páginas de una obra).
   const irAImputar = () => {
     try { window.dispatchEvent(new CustomEvent('jx_navigate', { detail: { page: 'imputar-compras' } })); } catch {}
+  };
+
+  // «Clasificar» desde el simulador (tanda 4.1, §16.1 #3). Antes esto solo se
+  // podía arreglar yendo a «Clasificación de insumos y servicios»: acá se
+  // enseña al mismo diccionario propio, por línea o por TODAS las líneas «sin
+  // clasificar» de una orden a la vez (mismo código para todas — es lo que
+  // pasa casi siempre: una orden trae el mismo insumo repartido en semanas).
+  // `enseñarDiccionario` no lanza nunca; lo único que puede fallar en serio es
+  // el refresh, y ni eso debería tapar el toast.
+  const ensenarClasificacion = async (nombres, codigo) => {
+    const lista = [...new Set((Array.isArray(nombres) ? nombres : [nombres]).filter(Boolean))];
+    if (!lista.length || !codigo) return;
+    let n = 0;
+    for (const nombre of lista) {
+      const r = await enseñarDiccionario({ descripcion: nombre, clasificacionCodigo: codigo }, { userId: autorId });
+      if (r) n++;
+    }
+    try { await terHook.refresh?.(); } catch {}
+    if (n) toast(`${n === 1 ? '1 insumo clasificado' : `${n} insumos clasificados`} como ${etiquetaCategoria(codigo)}.`, 'green');
+    else toast('Ya estaba clasificado así.', 'amber');
   };
 
   const toggleCategoria = (cat) => {
@@ -1482,6 +1512,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           <option key={c.id} value={c.nombre}>{c.grupo ? `empresa del grupo${c.rubro ? ` · ${rubroLabel(c.rubro)}` : ''}` : (c.ruc || 'proveedor')}</option>
         ))}
       </datalist>
+      <ClasificacionDatalist id={DATALIST_CLASIFICACION} opciones={opcionesClasificacion} />
 
       {/* ═══ UNA CATEGORÍA: sus órdenes y sus sobres ═══════════════ */}
       {!cargando && grupoCat && (
@@ -1507,15 +1538,20 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           )}
 
           {porPeriodo.length > 1 && (
-            <div style={{
+            <div className="jx-sticky-page-top" style={{
               // top:0, no var(--header-h): el que scrollea es .page-wrap y el
               // header queda AFUERA. Con 58 px quedaba una franja arriba de la
               // tira por donde pasaban las tarjetas por encima (24-set, captura
               // de Gabriel: «Acero y metalmecánica» montada sobre los chips).
+              // El margen/padding negativo que la pega al TOPE real del
+              // scrollport (y no al borde de adentro del padding) vive en
+              // `.jx-sticky-page-top` (index.css) — ver su comentario: sin
+              // eso quedaba un hueco de 24px por donde pasaban las tarjetas
+              // (§16.1 #2 del plan, 25-set).
               position: 'sticky', top: 0, zIndex: 6, background: 'var(--bg-p)',
-              marginBottom: 12, paddingTop: 6, paddingBottom: 8, borderBottom: '1px solid var(--border)',
+              marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid var(--border)',
             }}>
-              <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingTop: 2 }}>
+              <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingTop: 8 }}>
                 {chipsPorMes.map(c => (
                   <div key={c.clave} style={{
                     display: 'flex', gap: 4, alignItems: 'flex-start', flexShrink: 0,
@@ -1589,6 +1625,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   editando={editando} setEditando={setEditando}
                   tope={verMas[p.id] || LINEAS_POR_TANDA}
                   onVerMas={() => setVerMas(v => ({ ...v, [p.id]: (v[p.id] || LINEAS_POR_TANDA) + LINEAS_POR_TANDA }))}
+                  onEnsenar={ensenarClasificacion}
+                  listId={DATALIST_CLASIFICACION}
+                  opciones={opcionesClasificacion}
                 />
               ))}
             </div>
@@ -1802,8 +1841,16 @@ function ChipPeriodo({ c, onClick, chico, principal }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, stock, editando, setEditando, tope, onVerMas }) {
+function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, stock, editando, setEditando, tope, onVerMas, onEnsenar, listId, opciones }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
+  // «Clasificar» por ORDEN (tanda 4.1, §16.1 #3): todos los nombres distintos
+  // que el motor no reconoció, para enseñarlos de una sola vez con el mismo
+  // código — es lo más común, porque una orden repite el mismo insumo en
+  // varias entregas.
+  const [clasifOrden, setClasifOrden] = uS(false);
+  const nombresSinClasificar = onEnsenar
+    ? [...new Set(p.lineas.filter(l => l.iupc?.codigo === 'sin_clasificar').map(l => l.nombre))]
+    : [];
   // El proveedor de la orden es el que tienen TODAS sus líneas. Si hay más de
   // uno (porque alguien pisó una línea suelta) el campo queda vacío y se dice
   // abajo: mostrar uno de los dos haría creer que la orden va entera a él.
@@ -1877,8 +1924,27 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
           <button className={`btn btn-sm ${p.decision === 'rechazada' ? 'btn-amber' : 'btn-ghost'}`} onClick={() => onDecidir('rechazada')} title="Rechazar la orden entera">
             <JxIcon name="x" size={12} />
           </button>
+          {nombresSinClasificar.length > 0 && (
+            <button className={`btn btn-sm ${clasifOrden ? 'btn-amber' : 'btn-ghost'}`}
+              title={`${nombresSinClasificar.length} nombre(s) sin clasificar en esta orden`}
+              onClick={() => setClasifOrden(v => !v)}>
+              Clasificar ({nombresSinClasificar.length})
+            </button>
+          )}
         </div>
       </div>
+
+      {clasifOrden && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
+          onClick={e => e.stopPropagation()}>
+          <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+            Qué son los {nombresSinClasificar.length} nombre(s) sin clasificar de esta orden:
+          </span>
+          <SelectorClasificacion listId={listId} opciones={opciones} value="" permitirVacio
+            placeholder="Elegí qué es…" style={{ fontSize: 12, padding: '3px 6px', maxWidth: 260 }}
+            onChange={(cod) => { if (!cod) return; setClasifOrden(false); onEnsenar(nombresSinClasificar, cod); }} />
+        </div>
+      )}
 
       {abierta && (
         <div style={{ borderTop: '1px solid var(--border)' }}>
@@ -1945,6 +2011,9 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
                   onCompra={(patch) => onCompra?.(l.clave, patch)}
                   resolverProveedor={resolverProveedor}
                   stock={stock?.get(l.clave) || null}
+                  onEnsenar={onEnsenar}
+                  listId={listId}
+                  opciones={opciones}
                 />
               ))}
             </tbody>
@@ -1963,7 +2032,15 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
   );
 }
 
-function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, onCompra, resolverProveedor, stock = null }) {
+function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, onCompra, resolverProveedor, stock = null, onEnsenar, listId, opciones }) {
+  const [clasificando, setClasificando] = uS(false);
+  const sinClasificar = l.iupc?.codigo === 'sin_clasificar';
+  // El clasificador SÍ reconoció el nombre, pero es una clasificación PROPIA
+  // sin rubro asignado (§16.1 #3 — `rubroDeCompra` manda ahí a TODO lo
+  // propio): no es «no sé qué es», es «no tiene a qué proveedor mandarla», y
+  // eso no se arregla enseñando al diccionario sino poniéndole rubro en el
+  // Catálogo, así que no ofrece el mismo botón «Clasificar».
+  const rubroSinAsignar = !sinClasificar && !!l.iupc && l.rubro === 'sin_clasificar';
   const color = COLOR_DECISION[l.decision];
   const factor = num(l.factor) > 0 ? num(l.factor) : 1;
   const unidadExp = l.unidadExpediente || l.unidad;
@@ -1989,18 +2066,34 @@ function LineaFila({ l, enEdicion, onEdicion, onDecidir, onEditar, onLimpiar, on
               esto el rubro es una caja negra y una línea mal clasificada no
               se puede discutir: se ve rara y no se sabe por qué entró. */}
           {l.iupc && (
-            <span style={{ color: l.iupc.codigo === 'sin_clasificar' ? 'var(--amber)' : 'var(--tm)' }}
-              title={l.iupc.codigo === 'sin_clasificar'
-                ? 'El clasificador no reconoció este nombre: por eso cayó en «Sin clasificar». Se corrige en «Clasificación de insumos y servicios».'
-                : `Por esto entró en esta orden · ${Math.round((l.iupc.score || 0) * 100)}% de coincidencia`}>
-              {' · '}{l.iupc.codigo === 'sin_clasificar' ? 'sin clasificar' : l.iupc.etiqueta}
+            <span style={{ color: sinClasificar || rubroSinAsignar ? 'var(--amber)' : 'var(--tm)' }}
+              title={sinClasificar
+                ? 'El clasificador no reconoció este nombre: por eso cayó en «Sin clasificar».'
+                : rubroSinAsignar
+                  ? 'Es una clasificación propia sin rubro de proveedor: por eso se agrupa como «Sin clasificar» al armar la orden. Se corrige poniéndole un código oficial en el Catálogo.'
+                  : `Por esto entró en esta orden · ${Math.round((l.iupc.score || 0) * 100)}% de coincidencia`}>
+              {' · '}{sinClasificar ? 'sin clasificar' : l.iupc.etiqueta}
+              {rubroSinAsignar && ' (sin rubro de proveedor)'}
             </span>
+          )}
+          {sinClasificar && onEnsenar && !clasificando && (
+            <button className="btn btn-sm btn-ghost" style={{ fontSize: 9.5, padding: '0 4px', marginLeft: 4 }}
+              onClick={() => setClasificando(true)}>
+              Clasificar
+            </button>
           )}
           {l.tramoLargo && <span title="Viene de una partida de tramo largo: esta cantidad es la parte que toca a este período"> · repartido</span>}
           {l.arrastrado && <span style={{ color: 'var(--amber)' }} title="Venía de un período ya vencido y se arrastró acá"> · atrasado</span>}
           {!l.montoConocido && <span style={{ color: 'var(--amber)' }}> · sin precio en el expediente</span>}
           {l.nombre !== l.nombreOriginal && <span style={{ color: 'var(--blue)' }}> · era «{l.nombreOriginal}»</span>}
         </div>
+        {clasificando && (
+          <div style={{ marginTop: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+            <SelectorClasificacion listId={listId} opciones={opciones} value="" permitirVacio
+              placeholder="Elegí qué es…" style={{ fontSize: 11, padding: '2px 6px', maxWidth: 220 }}
+              onChange={(cod) => { setClasificando(false); if (cod) onEnsenar(l.nombre, cod); }} />
+          </div>
+        )}
         {stock && <StockDeLinea s={stock} />}
       </td>
       <td style={{ textAlign: 'right' }}>

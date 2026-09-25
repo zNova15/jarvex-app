@@ -1252,3 +1252,112 @@ reales: nada del almacén está imputado todavía. Lo cubren los tests.
 3. El stock de herramientas no descuenta plata del sobre: el almacén no tiene
    precio de esas herramientas (valor de inventario S/ 0), así que se muestra
    como lista, no como monto.
+
+---
+
+## 16. Ronda 4 — del plan a la orden real (25-set-2026)
+
+Primer uso de la contadora en jefe + preguntas de Gabriel. Diagnóstico medido
+en el código (sin cambios todavía).
+
+### 16.1 — Lo que se encontró
+
+1. **«Por revisar» no se puede confirmar** (Insumos → Clasificación de los
+   insumos, `jx-gestion.jsx` `ClasificacionPresupuesto`). La fila solo trae el
+   selector, y elegir la MISMA clasificación sugerida se descarta dos veces
+   (`jx-selector-clasificacion.jsx:78` y `clasificar()` en
+   `if (codigo === fila.codigo) return`). Una sugerencia correcta no sale
+   nunca de la lista.
+2. **La tira sticky de meses deja ver las tarjetas por arriba.** `.page-wrap`
+   tiene `padding-top: 24px` (14px en celular) y el sticky con `top:0` se
+   frena DENTRO del padding del scrollport: queda una franja de 24px por
+   donde pasan las tarjetas. 55fcd28 no lo cubrió.
+3. **«Sin clasificar» no se puede clasificar desde el simulador.** El ✎ no
+   toca la clasificación y el badge es solo tooltip. Además `rubroDeCompra`
+   manda a «Sin clasificar» a toda clasificación PROPIA (`custom:…`): no es
+   «no sé qué es», es «no tiene rubro».
+4. **Qué se descuenta como ya comprado:** la orden en `borrador` cuenta; no
+   se distingue emitida de facturada (`yaComprado` existe en el motor pero la
+   pantalla no lo pasa); el vínculo a la factura por
+   `accounting_movements.orden_compra_id` no se mira. En modo Simulación no
+   se descuenta nada real (`ocItems=[]`).
+5. **Aceptar/Rechazar solo pintan.** Lo rechazado no va a ningún lado, no hay
+   cierre de mes, y con anclaje `hoy` los períodos pasados se funden en el
+   actual bajo OTRO atomId → la decisión vieja se pierde.
+6. **Anular una OC no libera su requisición**: queda `ordenada` con `oc_id`
+   (`REQUISICION_MUERTA` no la incluye) → la cantidad vuelve a proponerse
+   pero la pantalla dice «✓ Ya emitida» y `armarRequisiciones` la da por
+   escrita.
+7. **La OC del simulador se guarda `borrador` CON correlativo**
+   (`simulador-puente.js`), contra `esBorrador()` de `ordenes.js`.
+
+### 16.2 — Decisiones de Gabriel (25-set-2026)
+
+1. **Qué cuenta como ya comprado — perilla.** Por defecto: **órdenes
+   emitidas (numeradas, no anuladas/canceladas) CON factura vinculada**.
+   Opción: todas las emitidas, con o sin factura. El borrador nunca cuenta.
+   La factura cuenta una sola vez, venga por la orden o por el movimiento.
+2. **La Simulación también termina en órdenes reales.** Ya no se apaga el
+   paso a orden en modo Simulación. Lo que se quiere: arrancar en la fecha
+   del Gantt (abril), descontar solo las órdenes emitidas con factura (SIN
+   almacén, al menos al arranque), jugar escenarios con IA y, lo que guste,
+   emitirlo de verdad. El almacén queda como perilla aparte (en Simulación,
+   `nada` por defecto; en real, como hoy).
+3. **Lo rechazado al cerrar un mes se reparte en los meses que quedan**
+   según la estrategia de reparto elegida.
+4. **Anular una orden la devuelve al PLAN**: la próxima simulación la ve como
+   no emitida. Si su mes ya estaba cerrado, se reparte en los meses abiertos
+   igual que un rechazo.
+
+**Regla derivada (la fija el diseño, no es opcional):** lo que sale de ESTE
+plan —pre-órdenes y órdenes emitidas desde el simulador— se descuenta
+SIEMPRE, tenga factura o no. La perilla de la decisión 1 solo gobierna las
+órdenes que no vienen del plan. Sin esta regla, con el default «con factura»,
+la orden recién emitida de abril (todavía sin factura) se volvería a proponer
+en mayo.
+
+### 16.3 — Flujo nuevo
+
+| Etapa | Qué se hace | Dónde vive |
+|---|---|---|
+| Plan (escenario) | Aceptar/rechazar por mes. **«Cerrar abril»**: lo aceptado pasa a pre-órdenes, abril queda congelado, lo rechazado se reparte en los meses abiertos y el motor recalcula | localStorage (escenario) |
+| Pre-órdenes | Editar descripción, unidad, cantidad, precio, proveedor y fecha de la orden; guardar | base: `requisiciones` en borrador con `origen` simulador (se ve desde todas las PCs) |
+| Emitir | «Emitir seleccionadas»: OC/OS reales con correlativo de la ejecutora, logo y PDF | `ordenes_compra` |
+| Anular (en Órdenes) | La requisición pasa a `cancelada` → vuelve al plan | fix de 16.1 #6 |
+
+### 16.4 — Tandas
+
+| # | Qué | Modelo |
+|---|---|---|
+| 4.1 | ~~Aceptar (una y visibles) + Deshacer en «Por revisar»; tira sticky; «Clasificar» por línea y por orden en el simulador (vía `enseñarDiccionario`), aviso distinto para propias sin rubro; ayuda~~ — HECHA (25-set, en staging) | Sonnet 5 / medio / sesión nueva |
+| 4.2 | Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7 | Opus 5.5 / alto / sesión nueva |
+| 4.3 | «Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5) | Opus 5.5 / extra alto / misma sesión que 4.2 |
+| 4.4 | Pre-órdenes editables (desde los dos modos), fecha y unidad por línea (posible migración chica) | Opus 5.5 / alto / sesión nueva |
+| 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan (emitida / anulada → vuelve) + ayuda | Opus 5.5 / alto / misma sesión que 4.4 |
+
+Después: probar el preview y promover ronda 3 + ronda 4 a main.
+
+### 16.5 — Tanda 4.1, qué quedó (25-set-2026)
+
+- **Aceptar / Deshacer** en «Insumos → Clasificación de los insumos»
+  (`jx-gestion.jsx`): antes, elegir la MISMA clasificación que ya sugería el
+  motor no hacía nada (ni el selector disparaba `onChange`, ni `clasificar()`
+  escribía si el código no cambiaba) — una fila bien sugerida no salía nunca
+  de «Por revisar». «Aceptar» fuerza el guardado igual; «Aceptar visibles»
+  lo hace para todo lo que el filtro/búsqueda muestra; «Deshacer» baja el
+  término manual y vuelve a la sugerencia del motor.
+- **Tira sticky de meses** (simulador): `.jx-sticky-page-top` (index.css)
+  compensa con margen/padding negativo el `padding-top` de `.page-wrap` —
+  la tira ahora ES la primera franja del scrollport, sin el hueco de 24px
+  (14px en celular) por donde pasaban las tarjetas.
+- **«Clasificar» desde el simulador** (`jx-simulador-ordenes.jsx`), por
+  LÍNEA y por ORDEN (todas las líneas «sin clasificar» de esa orden con un
+  solo código), vía `enseñarDiccionario` — sin salir a otra pantalla. Se
+  distingue «sin clasificar» (el motor no reconoció el nombre, se corrige
+  acá) de «sin rubro de proveedor» (una clasificación PROPIA sin rubro
+  asignado — `rubroDeCompra` la manda igual a «Sin clasificar» al armar la
+  orden, pero eso se corrige en el Catálogo, no enseñando el diccionario).
+- Ayuda actualizada en ambas pantallas (`ayuda-contenido.js`).
+- Pendiente, a propósito, fuera de esta tanda: el mismo trato para los
+  SOBRES (`BadgeIUPC`/`SobresVista`) — el pedido decía «por línea y por
+  orden», no por sobre.

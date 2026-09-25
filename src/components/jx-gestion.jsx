@@ -144,6 +144,76 @@ function ClasificacionPresupuesto({ obraId, showToast }) {
     }
   };
 
+  // «Por revisar» no se podía CONFIRMAR (§16.1 #1 del plan del simulador,
+  // 25-set-2026): el selector ya muestra la sugerencia como valor actual, así
+  // que elegir la MISMA opción no dispara `onChange` (ni en el selector ni en
+  // `clasificar`, que también corta si `codigo === fila.codigo`) — una
+  // sugerencia correcta no salía nunca de la lista de por revisar. `aceptar`
+  // fuerza el guardado aunque el código no cambie.
+  const aceptar = async (fila) => {
+    if (fila.sinClasificar || fila.decidido) return;
+    setGuardando(fila.clave);
+    try {
+      // La sugerencia puede venir de un término YA APRENDIDO (una decisión
+      // de la bandeja, o IA) que apunta a este mismo código: `agregarTermino`
+      // lo rechazaría como duplicado. Sacarlo primero y volver a escribirlo
+      // como manual es lo mismo que hace `clasificar` al cambiar de código.
+      const previo = (terHook.data || []).find(t => !t.deleted_at && t.norm === fila.clave);
+      if (previo) await quitarTermino(previo.id, { userId });
+      const r = await agregarTermino({ termino: fila.nombre, clasificacionCodigo: fila.codigo }, { userId });
+      if (r && r.ok === false) { showToast?.(r.motivo || 'No se pudo guardar', 'amber'); return; }
+      await terHook.refresh?.();
+      showToast?.(`«${fila.nombre.slice(0, 40)}» quedó como ${fila.etiqueta}`, 'green');
+    } catch (e) {
+      showToast?.(`Error: ${e?.message || e}`, 'red');
+    } finally {
+      setGuardando('');
+    }
+  };
+
+  // Deshacer una decisión: vuelve a lo que el motor sugiere solo (baja el
+  // término manual que había puesto `clasificar`/`aceptar`).
+  const deshacer = async (fila) => {
+    if (!fila.decidido) return;
+    setGuardando(fila.clave);
+    try {
+      const previo = (terHook.data || []).find(t => !t.deleted_at && t.norm === fila.clave);
+      if (previo) await quitarTermino(previo.id, { userId });
+      await terHook.refresh?.();
+      showToast?.(`«${fila.nombre.slice(0, 40)}» volvió a la sugerencia del motor`, 'green');
+    } catch (e) {
+      showToast?.(`Error: ${e?.message || e}`, 'red');
+    } finally {
+      setGuardando('');
+    }
+  };
+
+  const [procesandoLote, setProcesandoLote] = uSG(false);
+  // «Aceptar visibles»: todo lo que ESTE filtro/búsqueda muestra y todavía no
+  // está decidido. Uno por uno con 432 nombres es el mismo problema que
+  // resolvió ordenar por plata — acá se resuelve dejando aceptar de a tanda.
+  const aceptarVisibles = async () => {
+    const candidatas = visibles.filter(f => !f.sinClasificar && !f.decidido);
+    if (!candidatas.length) { showToast?.('No hay sugerencias por aceptar con este filtro.', 'amber'); return; }
+    setProcesandoLote(true);
+    try {
+      let n = 0;
+      const terminos = terHook.data || [];
+      for (const f of candidatas) {
+        // Mismo motivo que en `aceptar`: un término aprendido con el mismo
+        // código pisaría el `agregarTermino` de abajo como duplicado.
+        const previo = terminos.find(t => !t.deleted_at && t.norm === f.clave);
+        if (previo) await quitarTermino(previo.id, { userId });
+        const r = await agregarTermino({ termino: f.nombre, clasificacionCodigo: f.codigo }, { userId });
+        if (r?.ok !== false) n++;
+      }
+      await terHook.refresh?.();
+      showToast?.(`${n} sugerencia(s) aceptada(s)`, 'green');
+    } finally {
+      setProcesandoLote(false);
+    }
+  };
+
   const irAComprado = () => {
     try {
       window.__analisisInsumosIntent = { tab: 'catalogo', vista: 'reconocer' };
@@ -198,6 +268,10 @@ function ClasificacionPresupuesto({ obraId, showToast }) {
           <button key={id} className={`btn btn-sm ${filtro === id ? 'btn-amber' : 'btn-ghost'}`}
             onClick={() => setFiltro(id)}>{lbl}</button>
         ))}
+        <button className="btn btn-sm btn-ghost" disabled={procesandoLote} onClick={aceptarVisibles}
+          title="Acepta la sugerencia del motor en todas las filas que se ven ahora mismo, sin tocarlas una por una">
+          <JxIcon name="check" size={12} /> Aceptar visibles
+        </button>
         <span style={{ fontSize: 11, color: 'var(--tm)' }}>
           Ordenado por plata: arriba está lo que más mueve el plan.
         </span>
@@ -213,6 +287,7 @@ function ClasificacionPresupuesto({ obraId, showToast }) {
                 <th style={{ width: 190 }}>Va con</th>
                 <th style={{ width: 80, textAlign: 'right' }}>Partidas</th>
                 <th style={{ width: 110, textAlign: 'right' }}>Monto</th>
+                <th style={{ width: 90 }}></th>
               </tr>
             </thead>
             <tbody>
@@ -249,6 +324,19 @@ function ClasificacionPresupuesto({ obraId, showToast }) {
                     </td>
                     <td style={{ textAlign: 'right' }}>{f.nPartidas}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(f.monto)}</td>
+                    <td>
+                      {f.decidido ? (
+                        <button className="btn btn-sm btn-ghost" disabled={guardando === f.clave}
+                          title="Volver a la sugerencia del motor" onClick={() => deshacer(f)}>
+                          Deshacer
+                        </button>
+                      ) : !sinClas && (
+                        <button className="btn btn-sm btn-ghost" disabled={guardando === f.clave}
+                          title="Confirmar esta sugerencia tal como está" onClick={() => aceptar(f)}>
+                          <JxIcon name="check" size={12} /> Aceptar
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

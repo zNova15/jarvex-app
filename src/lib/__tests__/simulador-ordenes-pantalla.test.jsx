@@ -161,9 +161,15 @@ describe('la pantalla del Simulador de Órdenes', () => {
     // <select> por línea son 577 <option> por fila: con una orden abierta de
     // 167 insumos eso son ~96.000 nodos de DOM. El datalist se dibuja una
     // sola vez y se filtra escribiendo.
+    //
+    // Desde la tanda 4.1 hay un SEGUNDO datalist compartido, el de
+    // «Clasificar» (jx-sim-clasificacion) — misma razón, otro dato: ~95
+    // clasificaciones repetidas en cada línea sin clasificar en vez de una
+    // vez por pantalla.
     const html = render();
-    expect(html.match(/<datalist/g) || []).toHaveLength(1);
+    expect(html.match(/<datalist/g) || []).toHaveLength(2);
     expect(html).toContain('id="jx-sim-proveedores"');
+    expect(html).toContain('id="jx-sim-clasificacion"');
   });
 
   it('no ofrece las opciones que piden un dato que nadie carga (ronda 3)', () => {
