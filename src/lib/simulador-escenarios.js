@@ -41,6 +41,7 @@ import {
   GRANULARIDADES,
   CATEGORIAS_SIMULADOR, UMBRAL_TRAMO_LARGO_DIAS,
   ALMACEN_MODOS, ALMACEN_MODOS_INSUMO,
+  COMPRADO_MODOS, COMPRADO_DEFAULT,
 } from './simulador-ordenes.js';
 import { CATEGORIA_DE_SUBCATEGORIA } from './insumo-clasificador.js';
 import { JORNADA_DEFAULT } from './simulador-dotacion.js';
@@ -74,10 +75,13 @@ export const STORAGE_PREFIX = 'jx_sim_ordenes_v1';
 // La pantalla contestaba dos preguntas con un solo selector de «anclaje»:
 // «¿cómo compraría esta obra si…?» y «¿qué me falta pedir según lo que ya
 // pasó?». Ahora son dos modos, y el anclaje del motor sale de ellos:
-//   · 'simulacion' → anclaje 'cero': presupuesto + cronograma, sin restar
-//     nada real. No sirve para emitir.
-//   · 'real'       → anclaje 'hoy': resta órdenes, requisiciones y almacén,
-//     y arrastra lo atrasado al período actual.
+//   · 'simulacion' → anclaje 'cero': presupuesto + cronograma desde el
+//     arranque elegido, sin arrastrar nada.
+//   · 'real'       → anclaje 'hoy': arrastra lo atrasado al período actual.
+// Desde la tanda 4.2 los DOS modos restan lo comprado de verdad (doc §16.2,
+// decisión 2: la Simulación también termina en órdenes reales). Lo que
+// cambia entre ellos es el almacén —en Simulación no resta por defecto— y lo
+// ejecutado, que es solo del modo real.
 // El anclaje 'restante' se retiró (nadie lo usaba y confundía): un escenario
 // guardado con él se abre en modo real.
 export const MODOS = ['real', 'simulacion'];
@@ -165,7 +169,17 @@ export const PARAMS_DEFAULT = {
   // del ESCENARIO a propósito: «¿y si solo cuento lo que hay?» es una
   // pregunta que se compara contra «todo lo que entró».
   almacenModo: 'entradas',
+  // Tanda 4.2 — el almacén en modo Simulación es una perilla APARTE, con
+  // 'nada' por defecto (decisión 2 del §16.2: arrancar descontando solo las
+  // órdenes). Aparte y no la misma porque la respuesta es distinta en cada
+  // modo: pasar de uno a otro no puede cambiarle al otro lo que eligió.
+  almacenModoSimulacion: 'nada',
   almacenPorInsumo: {},
+  // Tanda 4.2 — qué cuenta como ya comprado (§16.2, decisión 1): las órdenes
+  // emitidas CON factura (default) o todas las emitidas. El borrador no
+  // cuenta nunca, y lo que salió de este plan cuenta siempre
+  // (`ordenesQueCuentan`, simulador-ordenes.js).
+  comprado: COMPRADO_DEFAULT,
   // Tanda 3.5 — en modo real, sacar del plan lo ya ejecutado según el avance
   // de cada partida. Apagado por defecto: es un ajuste fino (§15.2 A, «en
   // avanzado») y el avance de las partidas lo reporta el frente, que puede
@@ -233,6 +247,10 @@ export function normalizarParams(p = {}) {
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
     montoMinimoOrden: entre(p.montoMinimoOrden, 0, 10000000, 0),
     almacenModo: enLista(p.almacenModo, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModo),
+    // Los escenarios de antes de la 4.2 no la traen: se abren en 'nada', que
+    // es exactamente lo que la Simulación restaba del almacén hasta entonces.
+    almacenModoSimulacion: enLista(p.almacenModoSimulacion, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModoSimulacion),
+    comprado: enLista(p.comprado, COMPRADO_MODOS, PARAMS_DEFAULT.comprado),
     almacenPorInsumo: normalizarAlmacenPorInsumo(p.almacenPorInsumo),
     restarAvance: !!p.restarAvance,
   };
@@ -280,13 +298,25 @@ export function paramsDeMotor(params) {
     frecuencia: p.frecuencia,
     frecuenciaPorRubro: p.frecuenciaPorRubro,
     montoMinimoOrden: p.montoMinimoOrden,
-    almacenModo: p.almacenModo,
+    almacenModo: almacenModoDe(p),
     almacenPorInsumo: p.almacenPorInsumo,
+    comprado: p.comprado,
     // Lo ejecutado es un dato real: en Simulación no se resta aunque el
     // escenario lo tenga prendido (el motor tampoco lo haría con 'cero').
     restarAvance: p.modo === 'real' && p.restarAvance,
   };
 }
+
+/** Qué resta el almacén en el modo del escenario (tanda 4.2). */
+export function almacenModoDe(params) {
+  const p = params || {};
+  return p.modo === 'simulacion'
+    ? enLista(p.almacenModoSimulacion, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModoSimulacion)
+    : enLista(p.almacenModo, ALMACEN_MODOS, PARAMS_DEFAULT.almacenModo);
+}
+
+/** El nombre del parámetro de almacén que corresponde al modo. */
+export const claveAlmacenModo = (params) => (params?.modo === 'simulacion' ? 'almacenModoSimulacion' : 'almacenModo');
 
 /** ¿Dos corridas son la misma pregunta? Para avisar «ya tenés este escenario». */
 export function mismosParams(a, b) {

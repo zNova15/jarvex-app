@@ -413,13 +413,19 @@ describe('nada se pide dos veces (§7)', () => {
     expect(resumen.ocSinImputar.monto).toBe(62000);
   });
 
-  it('el anclaje «cero» a propósito NO descuenta: es una auditoría', () => {
-    const { resumen } = simularOrdenes({
+  // Tanda 4.2 (§16.2, decisión 2): la Simulación también termina en órdenes
+  // reales, así que el anclaje 'cero' ya no apaga el descuento. Lo que no se
+  // le pasa al motor no resta — eso lo decide quien llama.
+  it('desde la 4.2 el anclaje «cero» también descuenta lo que se le pasa', () => {
+    const sin = simularOrdenes({ insumosPartida: insumos, partidas, hoy: '2026-05-01', anclaje: 'cero' });
+    expect(sin.resumen.descontado.cantidad).toBe(0);
+    expect(sin.resumen.montoPropuesto).toBe(48000);
+    const con = simularOrdenes({
       insumosPartida: insumos, partidas, hoy: '2026-05-01', anclaje: 'cero',
       yaComprado: { [CEMENTO]: 1200 },
     });
-    expect(resumen.descontado.cantidad).toBe(0);
-    expect(resumen.montoPropuesto).toBe(48000);
+    expect(con.resumen.descontado.cantidad).toBeGreaterThan(0);
+    expect(con.resumen.montoPropuesto).toBeLessThan(48000);
   });
 
   it('con `yaComprado` en mano, la orden ya facturada no se resta dos veces', () => {

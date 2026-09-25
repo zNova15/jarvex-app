@@ -50,6 +50,7 @@ import {
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
   mesDePeriodo, etiquetaPeriodo,
   ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
+  COMPRADO_MODOS, COMPRADO_MODO_LABEL, aplicarAnulaciones,
 } from "../lib/simulador-ordenes.js";
 import {
   armarCronograma, curvaDeCarga, fechaCorta, valoresDeHistoria,
@@ -72,7 +73,7 @@ import { SelectorClasificacion, ClasificacionDatalist } from "./jx-selector-clas
 import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js";
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
-  PARAMS_DEFAULT, paramsDeMotor,
+  PARAMS_DEFAULT, paramsDeMotor, almacenModoDe, claveAlmacenModo,
   MODOS, MODO_LABEL, ARRANQUES, ARRANQUE_LABEL, CRONOGRAMAS_PANTALLA, CRONOGRAMA_PANTALLA_LABEL, REPARTOS_PANTALLA,
   categoriaDePropuesta,
   nuevoEscenario, conParams, conHistoriaIA,
@@ -359,9 +360,17 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // ── Lo que el plan YA escribió (tanda 4) ──────────────────────────
   // Es lo que evita que la corrida de noviembre vuelva a proponer lo que ya
   // se requisó en octubre (§7: nada se pide dos veces).
+  //
+  // Con la anulación aplicada (tanda 4.2): la requisición del plan cuya orden
+  // se anuló sale como `cancelada` — vuelve al plan — aunque la anulación se
+  // haya hecho en otra computadora o antes de que Órdenes supiera liberarla.
+  // Se miran TODAS las órdenes, no solo las de la obra: el `oc_id` manda.
   const requisicionesObra = uM(
-    () => requisiciones.filter(r => !obraId || r.obra_id === obraId),
-    [requisiciones, obraId]
+    () => aplicarAnulaciones({
+      requisiciones: requisiciones.filter(r => !obraId || r.obra_id === obraId),
+      ordenes,
+    }),
+    [requisiciones, obraId, ordenes]
   );
   const reqItemsObra = uM(() => {
     const ids = new Set(requisicionesObra.map(r => r.id));
@@ -410,11 +419,13 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   const historia = cron.escenario;
 
   // ── LO QUE TODAS LAS CORRIDAS COMPARTEN ───────────────────────────
-  // En Simulación NO entra nada real: ni órdenes, ni requisiciones, ni
-  // almacén, ni lo gastado de los sobres. La pregunta es «¿cómo compraría
-  // esta obra?», y restarle lo que ya pasó la mezcla con la otra (§15.1
-  // punto 1). Sin esos datos el motor tampoco arma avisos que no vienen al
-  // caso.
+  // Desde la tanda 4.2 los DOS modos reciben lo real (doc §16.2, decisión 2):
+  // la Simulación también termina en órdenes de verdad, y no puede volver a
+  // proponer lo que ya se emitió. Qué cuenta lo deciden las perillas del
+  // escenario, no el modo: `comprado` (con factura / todas las emitidas; el
+  // borrador nunca, lo del plan siempre) y el almacén, que en Simulación
+  // arranca en «nada». Lo ejecutado sigue siendo solo del modo real.
+  const almacenModoActivo = almacenModoDe(params);
   const baseMotor = uM(() => {
     const motor = paramsDeMotor(params);
     return {
@@ -424,16 +435,15 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       ...cron.motor,
       terminosCustom,
       compras,
-      ...(simulacion
-        ? { ordenes: [], ocItems: [], requisiciones: [], requisicionItems: [], consumoSobres: null, almacen: [] }
-        : {
-          ordenes: ordenesObra, ocItems,
-          requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
-          consumoSobres, almacen: almacenFilas,
-        }),
+      ordenes: ordenesObra, ocItems,
+      requisiciones: requisicionesObra, requisicionItems: reqItemsObra,
+      // La factura de una orden se reconoce también por el comprobante que
+      // apunta a ella (`orden_compra_id`): la orden fusionada solo tiene ese.
+      movimientos: movs,
+      consumoSobres, almacen: almacenFilas,
     };
-  }, [params, ipHook.data, partidasHook.data, cron.motor, terminosCustom, compras, simulacion,
-    ordenesObra, ocItems, requisicionesObra, reqItemsObra, consumoSobres, almacenFilas]);
+  }, [params, ipHook.data, partidasHook.data, cron.motor, terminosCustom, compras,
+    ordenesObra, ocItems, requisicionesObra, reqItemsObra, movs, consumoSobres, almacenFilas]);
 
   // ── LA CORRIDA DE ÓRDENES ─────────────────────────────────────────
   // `mano_obra` se saca del filtro aunque esté tildada: la planilla no se
@@ -471,9 +481,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // (tanda 3.2) — eso no depende de qué escenario esté mirando Gabriel.
   // Se arma solo con ⚙ abierto y en modo personalizado.
   const cubiertosAlmacen = uM(
-    () => (ajustes && params.almacenModo === 'personalizado'
+    () => (ajustes && almacenModoActivo === 'personalizado'
       ? insumosCubiertosPorAlmacen(almacenFilas, catalogoPres) : []),
-    [ajustes, params.almacenModo, almacenFilas, catalogoPres]
+    [ajustes, almacenModoActivo, almacenFilas, catalogoPres]
   );
 
   // ── LA CORRIDA DE MANO DE OBRA (referencia, nunca una orden) ──────
@@ -511,17 +521,18 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   );
 
   // ── HERRAMIENTAS Y EPP CONTRA EL STOCK (tanda 3.5, §15.2 E) ──────
-  // Solo en modo real: en Simulación la obra arranca de cero y el almacén no
-  // tiene nada que decir. Mira la corrida y no el escenario decorado: lo que
-  // se compara es el insumo, no cómo se decidió cada línea.
+  // En modo real, siempre. En Simulación solo si el escenario hace entrar al
+  // almacén (tanda 4.2: ahí arranca en «nada», y entonces el almacén no
+  // tiene nada que decir). Mira la corrida y no el escenario decorado: lo
+  // que se compara es el insumo, no cómo se decidió cada línea.
   const stockPlan = uM(() => {
-    if (simulacion || !corrida) return null;
+    if (!corrida || (simulacion && almacenModoActivo === 'nada')) return null;
     return stockContraPlan({
       almacen: almacenFilas,
       lineas: corrida.propuestas.flatMap(p => p.lineas),
       sobres: corrida.sobres,
     });
-  }, [simulacion, corrida, almacenFilas]);
+  }, [simulacion, almacenModoActivo, corrida, almacenFilas]);
 
   // ── LOS TRES ENFOQUES (tanda 2.6, opcional) ───────────────────────
   // Determinístico y gratis: corre el motor real 3 veces con las perillas
@@ -549,7 +560,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
         montoComprable: resumen?.montoComprable ?? null,
         categoriasActivas: params.categorias,
         lineasTramoLargo: resumen?.lineasTramoLargo ?? null,
-        almacenModo: params.almacenModo || 'entradas',
+        almacenModo: almacenModoActivo,
       };
       const r = await recomendarEnfoque(enfoques, contexto);
       setRecoIA(r);
@@ -1076,9 +1087,10 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   const cargando = obrasHook.loading || ipHook.loading || partidasHook.loading;
   const resumen = corrida?.resumen || null;
   const dec = decorado.resumen;
-  // Solo los avisos del modo elegido (§15.2 F). En Simulación el motor no
-  // recibe nada real, así que no hay avisos de compras ni de almacén.
-  const avisos = avisosDelPlan(resumen, { simulacion });
+  // Solo los avisos del modo elegido (§15.2 F). Desde la 4.2 la Simulación
+  // también resta lo comprado, así que también tiene avisos de compras; los
+  // de lo ejecutado siguen siendo solo del modo real (el motor no los arma).
+  const avisos = avisosDelPlan(resumen);
   const avisosAmbar = avisos.filter(a => a.nivel === 'ambar').length;
 
   if (!obraId) {
@@ -1172,11 +1184,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           ))}
           <span style={{ fontSize: 11.5, color: 'var(--tm)', flex: '1 1 280px' }}>
             {simulacion
-              ? <>¿Cómo compraría esta obra? Sale solo del presupuesto y del cronograma: <b>no resta nada</b> de lo comprado ni del almacén. Sirve para mirar, no para emitir.</>
-              : <>¿Qué me falta pedir? Desde hoy: resta las órdenes, las requisiciones y el almacén{params.restarAvance ? ', saca lo ya ejecutado' : ''}, y trae al mes actual lo que quedó atrasado.</>}
+              ? <>¿Cómo compraría esta obra? Sale del presupuesto y del cronograma desde el arranque elegido, y resta {COMPRADO_TEXTO[params.comprado] || COMPRADO_TEXTO.con_factura}{almacenModoActivo !== 'nada' ? ' y el almacén' : ''}: lo que ya se pidió de verdad no se vuelve a pedir.</>
+              : <>¿Qué me falta pedir? Desde hoy: resta {COMPRADO_TEXTO[params.comprado] || COMPRADO_TEXTO.con_factura}, las requisiciones{almacenModoActivo !== 'nada' ? ' y el almacén' : ''}{params.restarAvance ? ', saca lo ya ejecutado' : ''}, y trae al mes actual lo que quedó atrasado.</>}
           </span>
           <button className={`btn btn-sm ${ajustes ? 'btn-amber' : 'btn-ghost'}`} onClick={() => setAjustes(v => !v)}
-            title="Anticipación, tramo largo, reparto, monto mínimo, frecuencia por rubro, almacén y puntos de partida">
+            title="Anticipación, tramo largo, reparto, monto mínimo, frecuencia por rubro, qué cuenta como comprado, almacén y puntos de partida">
             ⚙ Ajustes finos
           </button>
         </div>
@@ -1321,24 +1333,45 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
             </details>
           )}
 
-          {/* ── QUÉ RESTA EL ALMACÉN (tanda 2.5) — solo en modo real ─────
-              En Simulación no se resta nada real: la perilla no aplica. Solo
+          {/* ── QUÉ CUENTA COMO YA COMPRADO (tanda 4.2, §16.2) Y QUÉ RESTA EL
+              ALMACÉN (tanda 2.5) — en los dos modos desde la 4.2. El almacén
+              tiene una perilla por modo: en Simulación arranca en «nada». Solo
               resta lo IMPUTADO: lo que no dice a qué insumo corresponde no se
               resta a ojo. */}
-          {!simulacion && (
-            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+          <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+              <label style={{ display: 'block' }}
+                title="Qué órdenes que NO salieron de este plan se descuentan. El borrador no cuenta nunca; lo que salió de este plan cuenta siempre, tenga factura o no.">
+                <span className="flabel">Qué cuenta como ya comprado</span>
+                <select className="fi" value={params.comprado || 'con_factura'} onChange={e => cambiarParam({ comprado: e.target.value })}>
+                  {COMPRADO_MODOS.map(m => <option key={m} value={m}>{COMPRADO_MODO_LABEL[m]}</option>)}
+                </select>
+              </label>
+              <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
+                {(params.comprado || 'con_factura') === 'con_factura'
+                  ? 'Una orden emitida sin factura todavía se puede caer: no se descuenta hasta que llegue su comprobante.'
+                  : 'Toda orden con número y no anulada se descuenta, llegue o no su factura.'}
+                {' '}Los borradores no cuentan; lo que salió de este plan (requisiciones y órdenes emitidas desde acá) cuenta siempre.
+                {resumen?.comprado && (resumen.comprado.sinFactura.ordenes > 0 || resumen.comprado.borradores.ordenes > 0) && (
+                  <div style={{ marginTop: 2 }}>
+                    {resumen.comprado.sinFactura.ordenes > 0 && <>Quedan afuera {resumen.comprado.sinFactura.ordenes} orden(es) emitida(s) sin factura ({solesK(resumen.comprado.sinFactura.monto)}). </>}
+                    {resumen.comprado.borradores.ordenes > 0 && <>{resumen.comprado.borradores.ordenes} borrador(es) no cuentan ({solesK(resumen.comprado.borradores.monto)}).</>}
+                  </div>
+                )}
+              </div>
               <label style={{ display: 'block' }}
                 title="Lo que ya entró al almacén de la obra no se vuelve a pedir. Solo cuenta lo imputado a un insumo del presupuesto.">
-                <span className="flabel">Del almacén, restar</span>
-                <select className="fi" value={params.almacenModo || 'entradas'} onChange={e => cambiarParam({ almacenModo: e.target.value })}>
+                <span className="flabel">Del almacén, restar{simulacion ? ' (en Simulación)' : ''}</span>
+                <select className="fi" value={almacenModoActivo} onChange={e => cambiarParam({ [claveAlmacenModo(params)]: e.target.value })}>
                   {ALMACEN_MODOS.map(m => <option key={m} value={m}>{ALMACEN_MODO_LABEL[m]}</option>)}
                 </select>
               </label>
               <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
-                {(params.almacenModo || 'entradas') === 'entradas' && 'Lo que entró y ya se usó cubrió meses pasados: restarlo evita volver a pedirlo.'}
-                {params.almacenModo === 'stock' && <span style={{ color: 'var(--amber)' }}>⚠ Vuelve a pedir lo que ya se usó en obra: el plan mira la necesidad desde el inicio.</span>}
-                {params.almacenModo === 'nada' && 'El almacén no resta: solo cuentan órdenes y requisiciones.'}
-                {params.almacenModo === 'personalizado' && (
+                {almacenModoActivo === 'entradas' && 'Lo que entró y ya se usó cubrió meses pasados: restarlo evita volver a pedirlo.'}
+                {almacenModoActivo === 'stock' && <span style={{ color: 'var(--amber)' }}>⚠ Vuelve a pedir lo que ya se usó en obra: el plan mira la necesidad desde el inicio.</span>}
+                {almacenModoActivo === 'nada' && (simulacion
+                  ? 'En Simulación el almacén no resta por defecto: solo cuentan las órdenes y lo que ya salió del plan. Se elige aparte del modo real.'
+                  : 'El almacén no resta: solo cuentan órdenes y requisiciones.')}
+                {almacenModoActivo === 'personalizado' && (
                   <>Elegí insumo por insumo abajo. Lo que todavía no está imputado se agrega en <button className="btn btn-sm btn-ghost" style={{ padding: '0 6px' }} onClick={irAImputar}>Imputar lo ya comprado</button>.</>
                 )}
               </div>
@@ -1346,7 +1379,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   comprado» (que ahora es otra página, sin escenario): qué
                   resta el almacén es una decisión del ESCENARIO, imputar una
                   fila no lo es. */}
-              {params.almacenModo === 'personalizado' && (
+              {almacenModoActivo === 'personalizado' && (
                 <div style={{ gridColumn: '1 / -1' }}>
                   <PersonalizadoAlmacen cubiertos={cubiertosAlmacen} porInsumo={params.almacenPorInsumo || {}} onParam={cambiarParam} />
                 </div>
@@ -1354,26 +1387,31 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
               {/* ── LO YA EJECUTADO (tanda 3.5) ─────────────────────────
                   Se prende a mano: el avance lo reporta el frente y puede
                   venir atrasado. Lo que ya entró al almacén y se usó en lo
-                  ejecutado no se resta dos veces (`coberturaConAvance`). */}
-              <label style={{ display: 'block' }}
-                title="Saca del plan la parte de cada partida que ya se hizo, según su % de avance. Lo que entró al almacén y se usó en eso no se vuelve a restar.">
-                <span className="flabel">Lo ya ejecutado (avance de las partidas)</span>
-                <select className="fi" value={params.restarAvance ? 'si' : 'no'} onChange={e => cambiarParam({ restarAvance: e.target.value === 'si' })}>
-                  <option value="no">No restar</option>
-                  <option value="si">Restar lo ejecutado</option>
-                </select>
-              </label>
-              <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
-                {!resumen?.avance?.partidas
-                  ? 'Ninguna partida de este trabajo tiene avance reportado todavía.'
-                  : <>
-                    {resumen.avance.partidas} partida(s) con avance · <b>{solesK(resumen.avance.monto)}</b> del presupuesto comprable ya ejecutado
-                    {resumen.avance.adelantadas > 0 && <> · {resumen.avance.adelantadas} van adelantadas respecto del cronograma</>}.
-                    {!params.restarAvance && ' Hoy el plan lo vuelve a pedir.'}
-                  </>}
-              </div>
-            </div>
-          )}
+                  ejecutado no se resta dos veces (`coberturaConAvance`).
+                  Solo en modo real: el avance es de la obra de verdad, no de
+                  una simulación que arranca en otra fecha. */}
+              {!simulacion && (
+                <>
+                  <label style={{ display: 'block' }}
+                    title="Saca del plan la parte de cada partida que ya se hizo, según su % de avance. Lo que entró al almacén y se usó en eso no se vuelve a restar.">
+                    <span className="flabel">Lo ya ejecutado (avance de las partidas)</span>
+                    <select className="fi" value={params.restarAvance ? 'si' : 'no'} onChange={e => cambiarParam({ restarAvance: e.target.value === 'si' })}>
+                      <option value="no">No restar</option>
+                      <option value="si">Restar lo ejecutado</option>
+                    </select>
+                  </label>
+                  <div style={{ fontSize: 11.5, color: 'var(--tm)', alignSelf: 'end' }}>
+                    {!resumen?.avance?.partidas
+                      ? 'Ninguna partida de este trabajo tiene avance reportado todavía.'
+                      : <>
+                        {resumen.avance.partidas} partida(s) con avance · <b>{solesK(resumen.avance.monto)}</b> del presupuesto comprable ya ejecutado
+                        {resumen.avance.adelantadas > 0 && <> · {resumen.avance.adelantadas} van adelantadas respecto del cronograma</>}.
+                        {!params.restarAvance && ' Hoy el plan lo vuelve a pedir.'}
+                      </>}
+                  </div>
+                </>
+              )}
+          </div>
 
           {/* ── PUNTOS DE PARTIDA (los tres enfoques de la 2.6) ──────────
               Son CONFIGURACIÓN —tres combinaciones de perillas—, no un
@@ -1697,19 +1735,20 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
               <JxIcon name="download" size={13} /> Descargar el plan aceptado
             </button>
             <button className="btn btn-sm btn-amber"
-              disabled={!entregable.lineas.length || simulacion}
-              title={simulacion
-                ? 'En Simulación no se resta nada de lo ya comprado: convertir ese plan pediría dos veces. Pasá a «Según lo real».'
-                : 'Escribe lo aceptado como requisiciones. Todavía no es una orden: se puede editar y borrar.'}
+              disabled={!entregable.lineas.length}
+              title="Escribe lo aceptado como requisiciones. Todavía no es una orden: se puede editar y borrar."
               onClick={convertirEnRequisiciones}>
               <JxIcon name="check" size={13} /> Convertir en requisiciones
             </button>
           </div>
         </div>
-        {simulacion && (
-          <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '8px 0 0' }}>
-            🧪 Estás en Simulación: el plan no resta nada de lo comprado, así que no se convierte en requisiciones.
-            Lo que aceptes queda guardado; al pasar a <b>Según lo real</b> se vuelve a aplicar sobre lo que falta de verdad.
+        {/* Desde la 4.2 la Simulación también se convierte (§16.2, decisión
+            2): ya resta lo comprado de verdad, así que no pide dos veces. Lo
+            que sí conviene decir es qué NO está restando. */}
+        {simulacion && almacenModoActivo === 'nada' && (
+          <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
+            🧪 Estás en Simulación: se restan las órdenes ({(COMPRADO_MODO_LABEL[params.comprado] || COMPRADO_MODO_LABEL.con_factura).toLowerCase()}) y lo que ya salió
+            de este plan, pero <b>no el almacén</b>. Si en la obra ya entró algo sin orden, se puede prender en ⚙ Ajustes finos.
           </p>
         )}
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
@@ -1734,13 +1773,36 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
 //
 // Antes eran tarjetas grandes arriba de todo, y salían siempre — también
 // cuando la pregunta era hipotética. Ahora son una lista detrás de un botón,
-// y solo con los que aplican al modo: en Simulación el motor no recibe nada
-// real, así que no hay nada que no se haya podido restar.
+// y solo con los que aplican al modo. Desde la 4.2 la Simulación también
+// resta lo comprado, así que tiene los mismos avisos de compras; los de lo
+// ejecutado no salen porque el motor no mide avance en una simulación.
 // ═══════════════════════════════════════════════════════════════════
 
-function avisosDelPlan(resumen, { simulacion }) {
-  if (!resumen || simulacion) return [];
+// Cómo se nombra, dentro de una oración, lo que la perilla `comprado` resta.
+const COMPRADO_TEXTO = {
+  con_factura: 'las órdenes emitidas con factura',
+  emitidas: 'las órdenes emitidas',
+};
+
+function avisosDelPlan(resumen) {
+  if (!resumen) return [];
   const out = [];
+  // ── Lo que la perilla «qué cuenta como ya comprado» dejó afuera (4.2) ──
+  const cp = resumen.comprado;
+  if (cp?.sinFactura?.ordenes > 0) {
+    out.push({
+      id: 'sin-factura', nivel: 'info', accion: 'ajustes', boton: 'Qué cuenta como comprado',
+      titulo: `${cp.sinFactura.ordenes} orden(es) emitida(s) sin factura (${solesK(cp.sinFactura.monto)}) no se descuentan.`,
+      detalle: 'Así está elegido: hasta que llegue su comprobante, el plan la sigue proponiendo. Si ya es segura, en ⚙ Ajustes finos se puede contar toda orden emitida.',
+    });
+  }
+  if (cp?.borradores?.ordenes > 0) {
+    out.push({
+      id: 'borradores', nivel: 'info',
+      titulo: `${cp.borradores.ordenes} orden(es) en borrador (${solesK(cp.borradores.monto)}) no se descuentan.`,
+      detalle: 'Un borrador todavía no es un pedido: cuenta cuando se emite (con número).',
+    });
+  }
   if (resumen.ocSinImputar?.lineas > 0) {
     out.push({
       id: 'oc', nivel: 'ambar', accion: 'imputar', boton: 'Imputarlas',
@@ -2426,7 +2488,9 @@ function SobresVista({ sobres, simulacion = false, stockSobre = null, resolverPr
           {stockSobre && stockSobre.clave === s.clave && stockSobre.items.length > 0 && (
             <StockDelSobre items={stockSobre.items} />
           )}
-          {!s.techoFirme && !simulacion && (
+          {/* Desde la 4.2 la Simulación también recibe lo gastado de cada
+              sobre: el aviso vale en los dos modos. */}
+          {!s.techoFirme && (
             <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '0 12px 10px' }}>
               ⚠ Nadie informó todavía cuánto de este sobre ya se gastó, así que «queda» se calcula contra el techo
               entero. Creerlo intacto cuando ya se usó la mitad es exactamente el doble gasto que hay que evitar.

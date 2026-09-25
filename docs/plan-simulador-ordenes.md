@@ -1330,7 +1330,7 @@ en mayo.
 | # | Qué | Modelo |
 |---|---|---|
 | 4.1 | ~~Aceptar (una y visibles) + Deshacer en «Por revisar»; tira sticky; «Clasificar» por línea y por orden en el simulador (vía `enseñarDiccionario`), aviso distinto para propias sin rubro; ayuda~~ — HECHA (25-set, en staging) | Sonnet 5 / medio / sesión nueva |
-| 4.2 | Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7 | Opus 5.5 / alto / sesión nueva |
+| 4.2 | ~~Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7~~ — HECHA (25-set, en staging) | Opus 5.5 / alto / sesión nueva |
 | 4.3 | «Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5) | Opus 5.5 / extra alto / misma sesión que 4.2 |
 | 4.4 | Pre-órdenes editables (desde los dos modos), fecha y unidad por línea (posible migración chica) | Opus 5.5 / alto / sesión nueva |
 | 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan (emitida / anulada → vuelve) + ayuda | Opus 5.5 / alto / misma sesión que 4.4 |
@@ -1361,3 +1361,59 @@ Después: probar el preview y promover ronda 3 + ronda 4 a main.
 - Pendiente, a propósito, fuera de esta tanda: el mismo trato para los
   SOBRES (`BadgeIUPC`/`SobresVista`) — el pedido decía «por línea y por
   orden», no por sobre.
+
+### 16.6 — Tanda 4.2, qué quedó (25-set-2026)
+
+Medido antes de tocar nada: en producción hay 14 órdenes `recibida`,
+numeradas y con `accounting_movement_id` (las retroactivas), 16 comprobantes
+con `orden_compra_id`, 1 orden anulada, y **ninguna** requisición ni orden
+escrita todavía por el simulador. No hizo falta migración ni arreglar filas:
+los estados que se usan (`cancelada`, `aprobada`, `por_confirmar`) ya están
+en los CHECK.
+
+- **La perilla `comprado`** (escenario, ⚙, los dos modos): `con_factura`
+  (default) o `emitidas`. Vive en el motor (`ordenesQueCuentan`,
+  `simulador-ordenes.js`). Emitida = `ordenEmitida()`: con correlativo, viva
+  y con estado distinto de `borrador` — el «borrador con número» del puente
+  viejo NO es emitida. `comprado: null` conserva el comportamiento de antes
+  (toda orden no anulada): lo usan los tests viejos del motor; la pantalla
+  siempre pasa el del escenario.
+- **La factura una vez:** `ordenesFacturadas()` mira los dos lados
+  (`ordenes_compra.accounting_movement_id` y
+  `accounting_movements.orden_compra_id`); un comprobante anulado o borrado no
+  cuenta; si la orden apunta a un comprobante que todavía no bajó, se le cree.
+  Es solo la CONDICIÓN para que la orden cuente: lo que resta son sus líneas,
+  una vez.
+- **Regla derivada:** una orden cuyo `requisicion_id` es una requisición del
+  plan (`origen` simulador/simulador_sobre) cuenta siempre, sea borrador o no
+  tenga factura. La requisición del plan con `oc_id` no se suma encima si su
+  orden viva está a la vista; si la orden no bajó todavía, cuenta la
+  requisición (pide lo mismo).
+- **Descuento real también en Simulación:** el motor ya no apaga el descuento
+  con el anclaje `cero` (`if (cubierto.size)`); la pantalla le pasa lo real en
+  los dos modos. Lo ejecutado sigue siendo solo del modo real.
+- **Almacén en Simulación:** perilla aparte, `almacenModoSimulacion`,
+  default `nada` (`almacenModoDe()` / `claveAlmacenModo()` en
+  `simulador-escenarios.js`). Aparte y no la misma para que elegir en un modo
+  no le cambie al otro; un escenario de Simulación guardado antes se abre en
+  `nada`, que es lo que restaba hasta ahora. «Herramientas contra el stock»
+  solo corre en Simulación si el almacén está prendido.
+- **«Convertir en requisiciones» ya no se apaga en Simulación** (§16.2,
+  decisión 2): el motivo del bloqueo —«no restó lo comprado, pediría dos
+  veces»— desapareció. Queda una nota que dice que el almacén no resta.
+- **Fix #6:** `aplicarAnulaciones()` (motor) devuelve la requisición del plan
+  cuya orden está anulada/borrada como `cancelada` — la pantalla la aplica a
+  todo lo que lee requisiciones (motor, `estadoDelPlan`, `consumoDeSobres`,
+  `armarRequisiciones`), así que la anulación hecha en otra PC o antes de
+  esta tanda también vuelve al plan. Y se persiste: `liberacionPorAnulacion()`
+  (en `ordenes.js`, porque la llaman Órdenes y Compras y no tienen por qué
+  cargar el simulador) → del plan `cancelada` (conserva `oc_id` como rastro);
+  cualquier otra `aprobada` sin orden (Compras decía hacerlo y la dejaba
+  `ordenada`).
+- **Fix #7:** `borradorDeOrdenDesdeRequisicion()` pide el número por
+  `numerarOrden()` y la orden nace `por_confirmar`.
+- Avisos: en los dos modos, más dos nuevos (emitidas sin factura, borradores
+  que no cuentan). Ayuda actualizada (simulador, Órdenes, OC internas).
+- Tests: `simulador-comprado.test.js` (nuevo) + 6 tests viejos reescritos a
+  la regla nueva (el anclaje `cero` ya descuenta, la orden nace por
+  confirmar, la Simulación muestra el almacén y deja convertir).

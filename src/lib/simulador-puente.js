@@ -49,7 +49,7 @@ import { hoyLocal } from './fecha.js';
 // lugar desde la tanda 2. Derivarlo de nuevo acá es justo lo que la tanda 3
 // evitó con `clave`: dos derivaciones paralelas se desincronizan en silencio.
 import { rangoDePeriodo } from './simulador-dotacion.js';
-import { textosDeTipo, proximoCodigo, totalesDesdeItems } from './ordenes.js';
+import { textosDeTipo, numerarOrden, totalesDesdeItems, esRequisicionDelPlan } from './ordenes.js';
 import { titularContableDeObra } from './consorcio.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -122,8 +122,8 @@ export function tipoDeOrdenDeSubcategoria(subcategoria) {
   return subcategoria === 'servicio' ? 'servicio' : 'compra';
 }
 
-export const ORIGENES_SIMULADOR = ['simulador', 'simulador_sobre'];
-export const esDelSimulador = (r) => ORIGENES_SIMULADOR.includes(String(r?.origen || ''));
+export { ORIGENES_REQUISICION_PLAN as ORIGENES_SIMULADOR } from './ordenes.js';
+export const esDelSimulador = esRequisicionDelPlan;
 
 // ═══════════════════════════════════════════════════════════════════
 // PLAN ACEPTADO → REQUISICIONES
@@ -480,10 +480,18 @@ export function puedeEmitirOrden({ obra = null, consorcios = [], companyId = nul
 }
 
 /**
- * El borrador de orden que corresponde a una requisición del simulador.
+ * La orden que corresponde a una requisición del simulador, ya numerada.
  *
  * Reusa `ordenes.js` entero: el correlativo por empresa/tipo/año, el prefijo
  * de documento y los totales con IGV salen de ahí. Acá solo se arma el cuerpo.
+ *
+ * ── NACE POR CONFIRMAR, NO «BORRADOR CON NÚMERO» (tanda 4.2) ─────
+ * Hasta la 4.1 se guardaba `estado: 'borrador'` con correlativo (§16.1 #7):
+ * una fila que `esBorrador()` no reconoce como borrador y que tampoco dice
+ * que ya se emitió. El botón de la pantalla es «Emitir» y avisa que el
+ * número queda tomado: es una orden emitida. El número lo pide
+ * `numerarOrden()` —el ÚNICO lugar donde se consume un correlativo— y la deja
+ * `por_confirmar`, igual que una orden nueva de la pantalla de Órdenes.
  *
  * Los totales van por `totalesDesdeItems`: esta orden NACE de un plan, no
  * respalda un comprobante que ya existe, así que el valor de venta se suma de
@@ -524,7 +532,6 @@ export function borradorDeOrdenDesdeRequisicion({
 
   const fecha = hoy || requisicion.fecha || hoyLocal();
   const anio = Number(String(fecha).slice(0, 4)) || new Date().getFullYear();
-  const { correlativo, codigo } = proximoCodigo(ordenes, { company, tipo, anio });
 
   const lineas = usables.map(it => ({
     cantidad: num(it.cantidad),
@@ -534,9 +541,9 @@ export function borradorDeOrdenDesdeRequisicion({
   const totales = totalesDesdeItems(lineas, { igvPct });
 
   const ordenId = nuevoId();
-  const orden = {
+  const sinNumero = {
     id: ordenId,
-    codigo, correlativo, anio,
+    codigo: null, correlativo: null, anio,
     tipo,
     company_id: permiso.ejecutoraId,
     obra_id: requisicion.obra_id || obra?.id || null,
@@ -553,9 +560,9 @@ export function borradorDeOrdenDesdeRequisicion({
     // lo dice, y el detalle por línea queda en la requisición.
     ...(referenciaDeEntregas(usables) ? { fecha_entrega_ref: referenciaDeEntregas(usables) } : {}),
     moneda: 'PEN',
-    // Nace en BORRADOR, no en 'recibida': lo que se pide todavía no llegó.
-    // Las órdenes retroactivas de `jx-ordenes` nacen recibidas porque
-    // respaldan algo que ya pasó; ésta es lo contrario.
+    // `numerarOrden` la pasa a 'por_confirmar', no a 'recibida': lo que se
+    // pide todavía no llegó. Las órdenes retroactivas de `jx-ordenes` nacen
+    // recibidas porque respaldan algo que ya pasó; ésta es lo contrario.
     estado: 'borrador',
     titulo: requisicion.descripcion || T.titulo,
     obra_descripcion: obra?.nombre_obra || obra?.nombre || null,
@@ -566,6 +573,7 @@ export function borradorDeOrdenDesdeRequisicion({
     emitida_retroactiva: false,
     observaciones: `Del plan del simulador · requisición ${requisicion.origen_ref || requisicion.id}. Precios del expediente, sujetos a cotización.`,
   };
+  const orden = numerarOrden(sinNumero, ordenes, { company, anio });
 
   const ocItems = usables.map(it => {
     const cantidad = num(it.cantidad);
@@ -613,6 +621,11 @@ export function cierreDeRequisicion(orden) {
     estado: 'ordenada',
   };
 }
+
+// `liberacionPorAnulacion` (qué le pasa a la requisición cuando se anula su
+// orden) vive en `ordenes.js`: la llaman las pantallas de Órdenes y Compras,
+// que no tienen por qué cargar el simulador entero.
+export { liberacionPorAnulacion } from './ordenes.js';
 
 // ═══════════════════════════════════════════════════════════════════
 // LO QUE EL PLAN YA ESCRIBIÓ, PARA MOSTRARLO

@@ -6,7 +6,8 @@ import {
   esDelSimulador, TIPOS_INSUMO_REQUISICION, TIPO_INSUMO_DE_SUBCATEGORIA,
   MOTIVO_NO_EMITE_LABEL, MOTIVO_OMITIDA_LABEL,
 } from '../simulador-puente.js';
-import { coberturaPrevia, simularOrdenes } from '../simulador-ordenes.js';
+import { coberturaPrevia, simularOrdenes, ordenEmitida } from '../simulador-ordenes.js';
+import { esBorrador } from '../ordenes.js';
 
 // ── LOS DATOS SON LOS REALES ──────────────────────────────────────
 // Medidos contra producción el 22-set-2026 (Plan Miraflores,
@@ -283,10 +284,15 @@ describe('borradorDeOrdenDesdeRequisicion', () => {
     expect(b.orden.emitida_retroactiva).toBe(false);
   });
 
-  it('nace en BORRADOR, no en «recibida»: lo que se pide todavía no llegó', () => {
+  // §16.1 #7 (tanda 4.2): antes nacía `borrador` CON correlativo — una fila
+  // que `esBorrador()` no reconoce y que tampoco dice que se emitió.
+  it('nace numerada y POR CONFIRMAR (vía numerarOrden), no «borrador con número» ni «recibida»', () => {
     const { requisicion, items } = base();
     const b = borradorDeOrdenDesdeRequisicion({ requisicion, items, obra, company, proveedor: { nombre: 'X' }, nuevoId: contador() });
-    expect(b.orden.estado).toBe('borrador');
+    expect(b.orden.estado).toBe('por_confirmar');
+    expect(b.orden.correlativo).toBe(1);
+    expect(esBorrador(b.orden)).toBe(false);
+    expect(ordenEmitida(b.orden)).toBe(true);
   });
 
   it('el código de insumo viaja al oc_item: sin eso la orden no se puede descontar', () => {
@@ -423,7 +429,9 @@ describe('la corrida siguiente descuenta lo ya requisado (§7)', () => {
     expect(despues.resumen.descontado.cantidad).toBe(60);
   });
 
-  it('en modo auditoría («asumiendo cero órdenes previas») no se descuenta nada', () => {
+  // Tanda 4.2: la Simulación (anclaje 'cero') también resta lo que salió del
+  // plan — la regla derivada del §16.2 no depende del modo.
+  it('con el anclaje «cero» (Simulación) lo requisado por el plan TAMBIÉN se descuenta', () => {
     const partidas = [{ id: 'p1', obra_id: OBRA_ID, fecha_inicio_planificada: '2026-10-05', fecha_fin_planificada: '2026-10-10' }];
     const insumosPartida = [{
       id: 'ip1', obra_id: OBRA_ID, partida_id: 'p1', tipo_insumo: 'material',
@@ -434,7 +442,7 @@ describe('la corrida siguiente descuenta lo ya requisado (§7)', () => {
       insumosPartida, partidas, hoy: '2026-09-22', anclaje: 'cero',
       requisiciones: [req('r1')], requisicionItems: [item('r1', 'CEM', 60)],
     });
-    expect(r.propuestas[0].lineas[0].cantidad).toBe(100);
+    expect(r.propuestas[0].lineas[0].cantidad).toBe(40);
   });
 });
 

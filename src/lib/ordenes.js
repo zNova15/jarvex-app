@@ -1064,6 +1064,38 @@ export function numerarOrden(borrador, ordenes, { company, anio = null } = {}) {
   return { ...borrador, correlativo, codigo, anio: year, estado: 'por_confirmar' };
 }
 
+// ── LA REQUISICIÓN DE UNA ORDEN ANULADA (tanda 4.2 del simulador) ──
+/** Lo que escribe el simulador de órdenes en `requisiciones.origen`. */
+export const ORIGENES_REQUISICION_PLAN = ['simulador', 'simulador_sobre'];
+export const esRequisicionDelPlan = (r) => ORIGENES_REQUISICION_PLAN.includes(String(r?.origen || ''));
+
+/**
+ * Qué le pasa a la requisición cuando se anula SU orden
+ * (doc plan-simulador-ordenes §16.1 #6).
+ *
+ * Antes quedaba `ordenada` con `oc_id` apuntando a una orden anulada: el
+ * simulador volvía a proponer la cantidad, pero decía «✓ Ya emitida» y la
+ * daba por escrita — no había forma de volver a pedirla.
+ *
+ *   · Del PLAN del simulador → `cancelada` (decisión de Gabriel del
+ *     25-set-2026: anular devuelve al plan). Se conserva `oc_id` para poder
+ *     rastrear qué orden fue; `cancelada` ya hace que nada la cuente.
+ *   · Cualquier otra → vuelve a `aprobada` sin orden, que es lo que la
+ *     pantalla de Compras siempre dijo que hacía (limpiaba el `oc_id` pero la
+ *     dejaba `ordenada`).
+ *
+ * Null si la requisición no es de esta orden o ya está muerta: no se toca lo
+ * ajeno.
+ *
+ * @returns {Object|null} el parche a aplicar
+ */
+export function liberacionPorAnulacion(requisicion, orden) {
+  if (!requisicion || !orden || requisicion.oc_id !== orden.id) return null;
+  if (['cancelada', 'rechazada'].includes(String(requisicion.estado || ''))) return null;
+  if (esRequisicionDelPlan(requisicion)) return { estado: 'cancelada' };
+  return { oc_id: null, oc_codigo: null, estado: 'aprobada' };
+}
+
 /**
  * Qué le falta a una orden para estar completamente respaldada.
  *

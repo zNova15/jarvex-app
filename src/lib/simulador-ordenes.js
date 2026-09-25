@@ -68,6 +68,7 @@ import {
 import { hoyLocal } from './fecha.js';
 import { resolverCompra, cantidadesDeCompra } from './simulador-compra.js';
 import { consolidarOrdenes, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
+import { ORIGENES_REQUISICION_PLAN, esRequisicionDelPlan } from './ordenes.js';
 
 /**
  * La clasificación IUPC de un sobre. Se pasa por `clasificarConIUPC` con el
@@ -108,9 +109,11 @@ export const ANCLAJE_LABEL = {
   hoy: 'Desde hoy (arrastra lo atrasado al período actual)',
   // Los períodos vencidos se descartan. Se informa cuánto se descartó.
   restante: 'Solo los períodos que faltan',
-  // Reconstruye el plan desde el inicio del expediente, sin restar nada de
-  // lo ya comprado. Sirve para auditar qué DEBIÓ comprarse, no para emitir.
-  cero: 'Asumiendo cero órdenes previas (auditoría)',
+  // Reconstruye el plan desde el inicio del expediente, sin arrastrar nada.
+  // Desde la tanda 4.2 el anclaje ya NO decide qué se descuenta: la
+  // Simulación también resta lo comprado de verdad (doc §16.2, decisión 2).
+  // Qué se le pasa al motor lo decide quien lo llama.
+  cero: 'Desde el inicio del expediente (sin arrastrar lo atrasado)',
 };
 
 /** §3.2 — de dónde salen las fechas. */
@@ -425,8 +428,157 @@ export const factorDeItem = (it) => {
   return Number.isFinite(f) && f > 0 ? f : 1;
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// QUÉ CUENTA COMO YA COMPRADO (ronda 4, tanda 4.2 — doc §16.2)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Hasta la 4.1 contaba toda orden no anulada, incluido el borrador — que es
+// un pedido que alguien armó y quizá nunca se emita. Decisión de Gabriel
+// (25-set-2026), como perilla del escenario:
+//   · 'con_factura' (default) — órdenes EMITIDAS (numeradas, no borrador, no
+//     anuladas) que ya tienen una factura vinculada.
+//   · 'emitidas' — todas las emitidas, con o sin factura.
+// El borrador no cuenta nunca.
+//
+// La factura se reconoce por los DOS lados del vínculo: la orden que apunta
+// a su comprobante (`ordenes_compra.accounting_movement_id`) y el comprobante
+// que apunta a su orden (`accounting_movements.orden_compra_id` — el único
+// que ve una orden fusionada con varias facturas). Es solo la condición para
+// que la orden cuente: lo que se resta son las líneas de la orden, una vez,
+// aunque la factura esté vinculada por los dos lados o sean tres facturas.
+//
+// ── LA REGLA DERIVADA (§16.2, no es opcional) ─────────────────────
+// Lo que sale de ESTE plan —la requisición del simulador y la orden emitida
+// desde ella— se descuenta SIEMPRE, con o sin factura, sea borrador o no. La
+// perilla gobierna solo las órdenes que no vienen del plan. Sin esta regla,
+// con el default «con factura», la orden recién emitida de abril (todavía
+// sin factura) se volvería a proponer en mayo.
+//
+// ── ANULAR DEVUELVE AL PLAN (§16.2, decisión 4) ───────────────────
+// Una requisición del plan cuya orden se anuló ya no reserva nada: la
+// próxima corrida vuelve a proponer lo suyo. La pantalla de Órdenes la pasa a
+// `cancelada` al anular (`liberacionPorAnulacion`, simulador-puente.js), pero
+// la regla también se deduce acá: una anulación hecha en otra computadora, o
+// antes de esta tanda, no puede dejar el plan creyendo que eso ya se pidió.
+
+export const COMPRADO_MODOS = ['con_factura', 'emitidas'];
+export const COMPRADO_DEFAULT = 'con_factura';
+export const COMPRADO_MODO_LABEL = {
+  con_factura: 'Órdenes emitidas con factura',
+  emitidas: 'Todas las órdenes emitidas',
+};
+
+// Qué requisición es del plan: vive en `ordenes.js` porque la usan también
+// las pantallas de Órdenes y Compras al anular (`liberacionPorAnulacion`).
+export { ORIGENES_REQUISICION_PLAN as ORIGENES_PLAN, esRequisicionDelPlan };
+
+const ORDEN_MUERTA = new Set(['anulada', 'cancelada']);
+const REQUISICION_MUERTA = new Set(['cancelada', 'rechazada']);
+
+/** Una orden anulada o borrada no reserva nada. */
+export const ordenMuerta = (o) => !!o && (!!o.deleted_at || ORDEN_MUERTA.has(String(o.estado || '')));
+
+/**
+ * ¿Es un documento emitido? Numerada, viva y que no sea un borrador. La
+ * condición de estado va aparte del número a propósito: hasta la 4.2 el
+ * puente del simulador guardaba `borrador` CON correlativo (§16.1 #7), y una
+ * fila así no es una orden emitida por más número que tenga.
+ */
+export const ordenEmitida = (o) => !!o && !!o.correlativo && o.estado !== 'borrador' && !ordenMuerta(o);
+
+/**
+ * Las órdenes que tienen una factura vinculada, mirando los dos lados.
+ * Un comprobante anulado o borrado no cuenta como factura. Si la orden apunta
+ * a un movimiento que no está en la lista (todavía no bajó), se le cree al
+ * vínculo: es la orden la que lo dice.
+ *
+ * @returns {Set<string>} ids de orden
+ */
+export function ordenesFacturadas(ordenes = [], movimientos = []) {
+  const movPorId = new Map();
+  for (const m of (movimientos || [])) if (m && m.id) movPorId.set(m.id, m);
+  const movVivo = (m) => !m.deleted_at && m.estado_factura !== 'anulada';
+  const out = new Set();
+  for (const o of vivos(ordenes)) {
+    if (!o.accounting_movement_id) continue;
+    const m = movPorId.get(o.accounting_movement_id);
+    if (!m || movVivo(m)) out.add(o.id);
+  }
+  for (const m of movPorId.values()) {
+    if (m.orden_compra_id && movVivo(m)) out.add(m.orden_compra_id);
+  }
+  return out;
+}
+
+/**
+ * Las requisiciones con la anulación de su orden aplicada: una del PLAN cuya
+ * orden está anulada (o borrada) sale como `cancelada` — vuelve al plan. Las
+ * que no son del plan quedan como están (la pantalla de Compras las libera a
+ * `aprobada`, y eso es otra conversación). Una orden que no está en la lista
+ * no se da por anulada: puede no haber bajado todavía.
+ *
+ * No toca las filas: devuelve copias. Es lo que la pantalla le pasa a todo lo
+ * que lee requisiciones (el motor, `estadoDelPlan`, `armarRequisiciones`).
+ */
+export function aplicarAnulaciones({ requisiciones = [], ordenes = [] } = {}) {
+  const ordenPorId = new Map();
+  for (const o of (ordenes || [])) if (o && o.id) ordenPorId.set(o.id, o);
+  return (Array.isArray(requisiciones) ? requisiciones : []).map(r => {
+    if (!r || !r.oc_id || !esRequisicionDelPlan(r) || REQUISICION_MUERTA.has(String(r.estado || ''))) return r;
+    const o = ordenPorId.get(r.oc_id);
+    return o && ordenMuerta(o) ? { ...r, estado: 'cancelada' } : r;
+  });
+}
+
+/**
+ * Qué órdenes descuentan, según la perilla y la regla derivada.
+ *
+ * `comprado` null es el comportamiento de antes de la 4.2 (toda orden no
+ * anulada cuenta): lo conservan los llamadores que no eligen, como los tests
+ * del motor. La pantalla siempre pasa el del escenario.
+ *
+ * @returns {{cuentan:Map<string,Object>, resumen:Object}}
+ */
+export function ordenesQueCuentan({ ordenes = [], requisiciones = [], movimientos = [], comprado = null } = {}) {
+  const modo = COMPRADO_MODOS.includes(comprado) ? comprado : null;
+  const delPlanIds = new Set(vivos(requisiciones).filter(esRequisicionDelPlan).map(r => r.id));
+  const facturadas = modo === 'con_factura' ? ordenesFacturadas(ordenes, movimientos) : null;
+  const cuentan = new Map();
+  const resumen = {
+    modo, contadas: 0, delPlan: 0,
+    borradores: { ordenes: 0, monto: 0 },
+    sinFactura: { ordenes: 0, monto: 0 },
+  };
+  for (const o of vivos(ordenes)) {
+    if (ordenMuerta(o)) continue;
+    const delPlan = !!o.requisicion_id && delPlanIds.has(o.requisicion_id);
+    if (delPlan) {
+      resumen.delPlan += 1;
+    } else if (modo) {
+      if (!ordenEmitida(o)) {
+        resumen.borradores.ordenes += 1;
+        resumen.borradores.monto += num(o.monto_total);
+        continue;
+      }
+      if (facturadas && !facturadas.has(o.id)) {
+        resumen.sinFactura.ordenes += 1;
+        resumen.sinFactura.monto += num(o.monto_total);
+        continue;
+      }
+    }
+    cuentan.set(o.id, o);
+  }
+  resumen.contadas = cuentan.size;
+  resumen.borradores.monto = r2(resumen.borradores.monto);
+  resumen.sinFactura.monto = r2(resumen.sinFactura.monto);
+  return { cuentan, resumen };
+}
+
 /**
  * Cuánto de cada insumo ya está comprado o comprometido por una orden viva.
+ *
+ * Qué orden es «viva» lo decide `ordenesQueCuentan` (tanda 4.2): la perilla
+ * `comprado`, el borrador fuera, y lo del plan siempre adentro.
  *
  * Una orden ANULADA libera lo que reservaba. Una orden que ya tiene
  * comprobante vinculado no se cuenta acá si el caller pasó `yaComprado`:
@@ -442,10 +594,13 @@ export const factorDeItem = (it) => {
  *
  * Se cuenta con las mismas dos reglas que las órdenes, y por los mismos
  * motivos:
- *   · la requisición cancelada o rechazada NO reserva nada;
- *   · la que ya tiene `oc_id` tampoco se cuenta acá — su orden ya la cuenta
- *     el bloque de arriba, y restarla dos veces borraría material que sí hay
- *     que pedir.
+ *   · la requisición cancelada o rechazada NO reserva nada — tampoco la del
+ *     plan cuya orden se anuló (`aplicarAnulaciones`, tanda 4.2);
+ *   · la que ya tiene `oc_id` con su orden VIVA a la vista no se cuenta acá:
+ *     lo decide su orden (y la perilla `comprado`), y restarla dos veces
+ *     borraría material que sí hay que pedir. Si la orden no está en la lista
+ *     (no bajó todavía) se cuenta la requisición, que pide lo mismo; si se
+ *     anuló una que no es del plan, la requisición vuelve a reservar.
  * Y la línea SIN código de insumo no se descuenta de nada: sale por
  * `reqSinImputar`, igual que las 62 líneas de las órdenes retroactivas de
  * Miraflores salen por `sinImputar`.
@@ -495,13 +650,18 @@ export const factorDeItem = (it) => {
  *            reqSinImputar:{lineas:number, monto:number},
  *            consumoSobre:Map<string,number>,
  *            fueraPresupuesto:{lineas:number, monto:number},
- *            almacen:Object}}
+ *            almacen:Object, comprado:Object}}
  */
 export function coberturaPrevia({
   ordenes = [], ocItems = [], yaComprado = null,
   requisiciones = [], requisicionItems = [],
   almacen = [], almacenModo = 'entradas', almacenPorInsumo = null,
+  comprado = null, movimientos = [],
 } = {}) {
+  const reqs = aplicarAnulaciones({ requisiciones, ordenes });
+  const { cuentan, resumen: compradoResumen } = ordenesQueCuentan({
+    ordenes, requisiciones: reqs, movimientos, comprado,
+  });
   const cubierto = new Map();
   const suma = (cod, cant) => cubierto.set(cod, (cubierto.get(cod) || 0) + num(cant));
   // Tanda 3.5: la parte de lo cubierto que sigue SIN USARSE (stock, lo
@@ -519,8 +679,7 @@ export function coberturaPrevia({
   for (const [cod, cant] of alm.disponiblePorCodigo) sumaDisp(cod, cant);
 
   const vivas = new Map();
-  for (const o of vivos(ordenes)) {
-    if (o.estado === 'anulada' || o.estado === 'cancelada') continue;
+  for (const o of cuentan.values()) {
     // Con `yaComprado` en mano, la orden ya facturada se cuenta por la
     // factura. Sin él, es la única señal que hay y sí se cuenta.
     if (yaComprado && o.accounting_movement_id) continue;
@@ -576,10 +735,15 @@ export function coberturaPrevia({
   for (const [k, v] of consumoSobre) consumoSobre.set(k, r2(v));
 
   // ── lo ya pedido por una requisición viva (tanda 4) ──────────────
+  const ordenPorId = new Map();
+  for (const o of (ordenes || [])) if (o && o.id) ordenPorId.set(o.id, o);
   const reqVivas = new Set();
-  for (const r of vivos(requisiciones)) {
-    if (r.estado === 'cancelada' || r.estado === 'rechazada') continue;
-    if (r.oc_id) continue;
+  for (const r of vivos(reqs)) {
+    if (REQUISICION_MUERTA.has(String(r.estado || ''))) continue;
+    if (r.oc_id) {
+      const o = ordenPorId.get(r.oc_id);
+      if (o && !ordenMuerta(o)) continue;
+    }
     reqVivas.add(r.id);
   }
   const reqSinImputar = { lineas: 0, monto: 0 };
@@ -603,6 +767,7 @@ export function coberturaPrevia({
   return {
     cubierto, disponible, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto,
     almacen: { ...alm.resumen, ordenesCubiertas: cubiertasPorAlmacen },
+    comprado: compradoResumen,
   };
 }
 
@@ -717,6 +882,11 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  lo ya requisado — incluido lo que escribió este mismo
  *                  simulador en una corrida anterior (tanda 4, §7).
  * @param {Map|Object|null} [o.yaComprado]   código → cantidad ya comprada.
+ * @param {'con_factura'|'emitidas'|null} [o.comprado=null] qué órdenes
+ *                  descuentan (tanda 4.2, `ordenesQueCuentan`). null = todas
+ *                  las no anuladas, como antes.
+ * @param {Array}   [o.movimientos]          comprobantes, para reconocer la
+ *                  factura de una orden por `orden_compra_id`.
  * @param {Object}  [o.consumoSobres]        clave de sobre → monto ya gastado.
  * @param {Object}  [o.compras]              clave de línea → cómo se compra ese
  *                  insumo `{unidadCompra, factor, lote, colchonPct}` (tanda 2.2,
@@ -735,8 +905,8 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  *                  el modo 'personalizado'.
  * @param {boolean} [o.restarAvance=false]   saca del plan lo ya ejecutado según
  *                  el `porcentaje_avance` de cada partida (tanda 3.5). Con el
- *                  anclaje 'cero' no se aplica: una simulación no resta nada
- *                  real.
+ *                  anclaje 'cero' no se aplica: el avance es de la obra real,
+ *                  no de una simulación que arranca en otra fecha.
  *
  * @returns {{propuestas:Array, sobres:Array, manoObra:Array, pendientes:Array, resumen:Object}}
  */
@@ -756,6 +926,7 @@ export function simularOrdenes({
   anticipacionDias = 0,
   ordenes = [], ocItems = [], yaComprado = null,
   requisiciones = [], requisicionItems = [],
+  comprado = null, movimientos = [],
   consumoSobres = null,
   terminosCustom = null,
   compras = null,
@@ -816,6 +987,9 @@ export function simularOrdenes({
     reqSinImputar: { lineas: 0, monto: 0 },
     fueraPresupuesto: { lineas: 0, monto: 0 },
     almacen: null,
+    // Qué órdenes descontaron y cuáles quedaron afuera por la perilla
+    // (tanda 4.2): borradores y emitidas sin factura.
+    comprado: null,
     consumoSobresInformado: consumoSobres != null,
     // Consolidación (tanda 2.3): cuántas órdenes habría sin juntar, cuántas
     // se juntaron por monto y cuántas quedan chicas igual.
@@ -1032,16 +1206,21 @@ export function simularOrdenes({
   // ya está en obra cubre primero las necesidades más cercanas.
   const {
     cubierto, disponible, sinImputar, reqSinImputar, consumoSobre, fueraPresupuesto, almacen: almResumen,
+    comprado: compradoResumen,
   } = coberturaPrevia({
     ordenes, ocItems, yaComprado, requisiciones, requisicionItems,
-    almacen, almacenModo, almacenPorInsumo,
+    almacen, almacenModo, almacenPorInsumo, comprado, movimientos,
   });
   resumen.ocSinImputar = sinImputar;
   resumen.reqSinImputar = reqSinImputar;
   resumen.fueraPresupuesto = fueraPresupuesto;
   resumen.almacen = almResumen;
+  resumen.comprado = compradoResumen;
 
-  if (anc !== 'cero' && cubierto.size) {
+  // Desde la 4.2 se descuenta con cualquier anclaje: la Simulación también
+  // resta lo comprado de verdad (§16.2, decisión 2). Lo que NO se le pasa al
+  // motor no resta — esa decisión es de quien llama, no del anclaje.
+  if (cubierto.size) {
     const porClave = new Map();
     for (const c of celdas.values()) {
       if (!c.insumo_codigo) continue;      // sin código no hay contra qué restar

@@ -110,7 +110,10 @@ describe('normalizarParams — un escenario viejo siempre se puede abrir', () =>
     expect(Object.keys(paramsDeMotor(PARAMS_DEFAULT)).sort()).toEqual([
       // tanda 2.5: qué resta el almacén
       'almacenModo', 'almacenPorInsumo',
-      'anclaje', 'anticipacionDias', 'categorias', 'cronograma',
+      'anclaje', 'anticipacionDias', 'categorias',
+      // tanda 4.2: qué cuenta como ya comprado
+      'comprado',
+      'cronograma',
       // tanda 2.3: cómo se juntan las órdenes
       'frecuencia', 'frecuenciaPorRubro',
       'granularidad', 'montoMinimoOrden', 'reparto',

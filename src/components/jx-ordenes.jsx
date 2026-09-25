@@ -39,6 +39,7 @@ import {
   nuevaOrdenBorrador, numerarOrden, pasosDeOrden, estaNumerada,
   formatearCodigo,
   puedeFusionar, fusionarBorradores, previsualizarCorrelativos, ordenarPendientes,
+  liberacionPorAnulacion,
 } from "../lib/ordenes.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
@@ -1627,6 +1628,25 @@ function OrdenesPage({ showToast }) {
           version: (mv.version ?? 0) + 1,
           sync_status: mv.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
         });
+      }
+      // La requisición de la orden se libera (tanda 4.2 del simulador): la
+      // del plan pasa a `cancelada` y vuelve al plan; cualquier otra vuelve a
+      // `aprobada`. Sin esto quedaba `ordenada` apuntando a una orden anulada
+      // y el simulador la seguía mostrando como «ya emitida».
+      const reqs = await window.__db.requisiciones
+        .filter(r => !r.deleted_at && r.oc_id === o.id).toArray();
+      for (const req of reqs) {
+        const parche = liberacionPorAnulacion(req, o);
+        if (!parche) continue;
+        await window.__db.requisiciones.update(req.id, {
+          ...parche,
+          updated_at: now, updated_by: userId,
+          version: (req.version ?? 0) + 1,
+          sync_status: req.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+        });
+      }
+      if (reqs.length) {
+        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'requisiciones' } })); } catch {}
       }
       try { await window.__logAudit?.({ action: 'update', table: 'ordenes_compra', recordId: o.id, oldData: { estado: o.estado }, newData: { estado: 'anulada', motivo }, reason: `Anulación ${o.codigo}: ${motivo}` }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'ordenes_compra' } })); } catch {}

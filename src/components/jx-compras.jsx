@@ -1,6 +1,6 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
-import { proximoCodigo, TIPO_ORDEN_LABEL } from "../lib/ordenes.js";
+import { proximoCodigo, TIPO_ORDEN_LABEL, liberacionPorAnulacion } from "../lib/ordenes.js";
 import { titularContableDeObra } from "../lib/consorcio.js";
 import { hoyLocal } from "../lib/fecha.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
@@ -696,12 +696,15 @@ function OrdenesCompraPage({ showToast }) {
         version: (oc.version ?? 0) + 1,
         sync_status: oc.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      // Liberar la requisición de origen (vuelve a aprobada, sin OC).
+      // Liberar la requisición de origen: vuelve a aprobada, sin OC — o, si es
+      // del plan del simulador, pasa a cancelada y vuelve al plan
+      // (`liberacionPorAnulacion`, tanda 4.2).
       if (oc.requisicion_id) {
         const req = await window.__db.requisiciones.get(oc.requisicion_id);
-        if (req && req.oc_id === oc.id) {
+        const parche = liberacionPorAnulacion(req, oc);
+        if (parche) {
           await window.__db.requisiciones.update(oc.requisicion_id, {
-            oc_id: null, oc_codigo: null,
+            ...parche,
             updated_at: now,
             version: (req.version ?? 0) + 1,
             sync_status: req.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',

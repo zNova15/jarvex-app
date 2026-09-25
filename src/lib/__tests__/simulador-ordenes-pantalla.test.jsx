@@ -396,15 +396,22 @@ describe('la pantalla del Simulador de Órdenes', () => {
       expect(html).toContain('El plazo y el orden de las partidas no cambian');
     });
 
-    it('no muestra lo que es del modo real: ni la perilla del almacén ni avisos de compras', () => {
-      const html = render({ ajustesAbiertos: true });
-      expect(html).not.toContain('Del almacén, restar');
-      expect(html).not.toContain('Avisos (');
+    // Tanda 4.2 (§16.2, decisión 2): la Simulación también resta lo comprado
+    // y termina en órdenes reales. El almacén tiene su propia perilla, en
+    // «nada» por defecto; lo ejecutado sigue siendo solo del modo real.
+    it('muestra qué cuenta como comprado y el almacén de la Simulación (en «nada»), no lo ejecutado', () => {
+      const html = render({ ajustesAbiertos: true }).replace(/<!-- -->/g, '');
+      expect(html).toContain('Qué cuenta como ya comprado');
+      expect(html).toContain('Órdenes emitidas con factura');
+      expect(html).toContain('Del almacén, restar (en Simulación)');
+      expect(html).toContain('En Simulación el almacén no resta por defecto');
+      expect(html).not.toContain('Lo ya ejecutado (avance de las partidas)');
     });
 
-    it('no deja convertir en requisiciones: el plan no restó lo ya comprado', () => {
-      const html = render();
-      expect(html).toContain('no se convierte en requisiciones');
+    it('ya no bloquea «Convertir en requisiciones»: dice qué resta y qué no', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).not.toContain('no se convierte en requisiciones');
+      expect(html).toContain('pero <b>no el almacén</b>');
     });
   });
 
