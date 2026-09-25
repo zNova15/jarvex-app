@@ -149,6 +149,24 @@ describe('ronda 3 — los dos modos y la migración de los escenarios guardados 
     expect(normalizarParams({ cronograma: 'sin_cronograma' }).cronograma).toBe('sin_cronograma');
   });
 
+  it('el cronograma «aleatorio por escenario» guarda su historia y su semilla (tanda 3.3)', () => {
+    expect(PARAMS_DEFAULT).toMatchObject({ historia: 'azar', semilla: 1, historiaAjustes: {} });
+    const p = normalizarParams({ cronograma: 'escenario', historia: 'frenazo', semilla: 482913, reparto: 'escenario' });
+    expect(p).toMatchObject({ cronograma: 'escenario', historia: 'frenazo', semilla: 482913, reparto: 'escenario' });
+    // Una historia que salió del catálogo se abre «al azar»; una semilla rota es 1.
+    expect(normalizarParams({ historia: 'la-de-ayer', semilla: 'x' })).toMatchObject({ historia: 'azar', semilla: 1 });
+    // Los ajustes se recortan a los rangos de SU historia, y sin historia no hay.
+    expect(normalizarParams({ historia: 'frenazo', historiaAjustes: { ritmo: 0.1, basura: 3 } }).historiaAjustes).toEqual({ ritmo: 0.45 });
+    expect(normalizarParams({ historia: 'azar', historiaAjustes: { ritmo: 0.5 } }).historiaAjustes).toEqual({});
+  });
+
+  it('el motor no conoce «escenario» como cronograma: sin la traducción de la pantalla corre el Gantt', () => {
+    // La historia llega como `reprogramacion` desde armarCronograma(); acá no
+    // hay de dónde sacarla, y un cronograma a medias sería peor que el Gantt.
+    expect(paramsDeMotor({ cronograma: 'escenario' }).cronograma).toBe('gantt');
+    expect(paramsDeMotor({ reparto: 'escenario' }).reparto).toBe('escenario');
+  });
+
   it('el arranque arranca en el Gantt, y «una fecha» sin fecha todavía no se pierde', () => {
     expect(PARAMS_DEFAULT.arranque).toBe('gantt');
     const p = normalizarParams({ arranque: 'fecha', arranqueFecha: 'mañana' });

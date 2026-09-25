@@ -48,6 +48,9 @@ import { normalizarCompra } from './simulador-compra.js';
 import { FRECUENCIAS, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
 import { RUBRO_COMPRA_POR_ID } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
+import {
+  HISTORIA_AZAR, HISTORIA_IDS, semillaValida, normalizarAjustesHistoria,
+} from './simulador-cronograma.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -101,12 +104,22 @@ export const ARRANQUE_LABEL = {
  * Lo que la pantalla ofrece de los ejes del motor. «Reprogramado a mano» y
  * los repartos «por cuadrilla» y «manual» pedían un dato que nadie va a
  * cargar (fechas o reparto de 1.718 partidas) y terminaban en «Sin
- * planificar» (§15.1 punto 4). Se retiran de la pantalla; el motor los sigue
- * aceptando porque la tanda 3.3 los alimenta con el cronograma aleatorio por
- * escenario. Un escenario guardado con ellos se abre con el default.
+ * planificar» (§15.1 punto 4). Se retiran de la pantalla; un escenario
+ * guardado con ellos se abre con el default.
+ *
+ * Tanda 3.3 (§15.2 C y D): en su lugar, el cronograma «aleatorio por
+ * escenario» —una historia de la obra, ver `simulador-cronograma.js`— y el
+ * reparto «según el escenario». El motor no los conoce con ese nombre: la
+ * historia le llega como `reprogramacion` (cronograma 'reprogramado') y el
+ * reparto como `repartoManual`; la traducción es `armarCronograma()`.
  */
-export const CRONOGRAMAS_PANTALLA = ['gantt', 'sin_cronograma'];
-export const REPARTOS_PANTALLA = ['parejo', 'inicio'];
+export const CRONOGRAMAS_PANTALLA = ['gantt', 'escenario', 'sin_cronograma'];
+export const CRONOGRAMA_PANTALLA_LABEL = {
+  gantt: 'Gantt del expediente',
+  escenario: '🎲 Aleatorio por escenario (una historia de la obra)',
+  sin_cronograma: 'Sin cronograma (parejo en todo el plazo)',
+};
+export const REPARTOS_PANTALLA = ['parejo', 'inicio', 'escenario'];
 
 const esYmd = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
@@ -131,6 +144,14 @@ export const PARAMS_DEFAULT = {
   arranque: 'gantt',
   arranqueFecha: null,
   cronograma: 'gantt',
+  // Tanda 3.3 — la historia del cronograma «aleatorio por escenario»: un id
+  // del catálogo o 'azar' (la sortea la semilla). La semilla hace que el
+  // mismo escenario dé siempre el mismo cronograma; «🎲 Otro» la cambia.
+  // `historiaAjustes` son perillas fijadas dentro de los rangos de la
+  // historia (las va a usar la IA de la tanda 3.4); vacío = las de la semilla.
+  historia: HISTORIA_AZAR,
+  semilla: 1,
+  historiaAjustes: {},
   reparto: 'parejo',
   categorias: ['materiales', 'herramientas', 'servicios'],
   anticipacionDias: 0,
@@ -181,6 +202,11 @@ export function normalizarParams(p = {}) {
     // escribirla): el corrimiento no hace nada hasta que llegue una.
     arranqueFecha: esYmd(p.arranqueFecha) ? p.arranqueFecha : null,
     cronograma: enLista(p.cronograma, CRONOGRAMAS_PANTALLA, PARAMS_DEFAULT.cronograma),
+    // Una historia que ya no está en el catálogo se abre «al azar»: el
+    // escenario sigue teniendo un cronograma, no revienta.
+    historia: HISTORIA_IDS.includes(p.historia) ? p.historia : HISTORIA_AZAR,
+    semilla: semillaValida(p.semilla),
+    historiaAjustes: normalizarAjustesHistoria(p.historia, p.historiaAjustes),
     reparto: enLista(p.reparto, REPARTOS_PANTALLA, PARAMS_DEFAULT.reparto),
     // Sin ninguna categoría no hay nada que simular: se vuelve al default en
     // vez de devolver una pantalla vacía que parece un error de datos.
@@ -227,13 +253,20 @@ export function normalizarAlmacenPorInsumo(obj) {
   return Object.fromEntries(out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
-/** Los parámetros que van al motor de órdenes, tal cual los espera. */
+/**
+ * Los parámetros que van al motor de órdenes, tal cual los espera.
+ *
+ * El cronograma «escenario» sale como 'gantt': la historia y el arranque los
+ * traduce `armarCronograma()` (simulador-cronograma.js) a `reprogramacion`, y
+ * la pantalla pisa estos ejes con lo que devuelve. Sin esa traducción, el
+ * motor corre el Gantt — nunca una historia a medias.
+ */
 export function paramsDeMotor(params) {
   const p = normalizarParams(params);
   return {
     granularidad: p.granularidad,
     anclaje: p.modo === 'simulacion' ? 'cero' : 'hoy',
-    cronograma: p.cronograma,
+    cronograma: p.cronograma === 'escenario' ? 'gantt' : p.cronograma,
     reparto: p.reparto,
     categorias: p.categorias,
     anticipacionDias: p.anticipacionDias,

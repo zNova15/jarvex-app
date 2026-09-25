@@ -39,7 +39,10 @@
 // Y NUNCA elige `reparto:'cuadrilla'` ni `'manual'` — la tanda 1 ya dejó
 // escrito que esas dos estrategias «pueden no tener con qué contestar» sin
 // datos que hoy no siempre existen (dotación de cuadrilla, reparto fijado a
-// mano); un enfoque automático no puede caer ahí.
+// mano); un enfoque automático no puede caer ahí. El reparto «según el
+// escenario» (tanda 3.3) SÍ se hereda, pero solo si la base trae su dato
+// (`repartoManual`, que arma el cronograma del escenario para todas las
+// partidas fechadas); sin él, se cae a parejo como las otras dos.
 //
 // Puro: sin React, sin Dexie, sin red. Solo importa el motor que ya existe.
 // Testeado en __tests__/simulador-sorteo.test.js
@@ -73,9 +76,14 @@ export const ENFOQUE_RESUMEN = {
 
 // El reparto NUNCA sale de acá en 'cuadrilla' ni 'manual' (ver encabezado):
 // esas dos estrategias pueden quedar sin datos con qué contestar y un enfoque
-// automático no puede elegir una que no tiene con qué responder.
+// automático no puede elegir una que no tiene con qué responder. 'escenario'
+// pasa solo con su dato puesto.
 const REPARTO_SORTEO = new Set(['parejo', 'inicio']);
-const repartoDeBase = (r) => (REPARTO_SORTEO.has(r) ? r : 'parejo');
+const repartoDeBase = (r, repartoManual = null) => {
+  if (REPARTO_SORTEO.has(r)) return r;
+  if (r === 'escenario' && repartoManual && Object.keys(repartoManual).length) return r;
+  return 'parejo';
+};
 
 /**
  * Las perillas de cada enfoque, por ENCIMA de la base (anclaje, cronograma,
@@ -83,8 +91,8 @@ const repartoDeBase = (r) => (REPARTO_SORTEO.has(r) ? r : 'parejo');
  * `montoMinimoOrden` de 'pocas_ordenes' se completa en `sortearEnfoques` con
  * un número medido de la propia obra, no un valor de oficio.
  */
-function overridesDe(enfoque, base, montoMinimoSugerido) {
-  const repartoBase = repartoDeBase(base.reparto);
+function overridesDe(enfoque, base, montoMinimoSugerido, repartoManual) {
+  const repartoBase = repartoDeBase(base.reparto, repartoManual);
   switch (enfoque) {
     case 'caja_ajustada':
       // Ni antes de tiempo ni junto: lo que se pide es exactamente lo que se
@@ -116,7 +124,7 @@ export function montoMinimoSugerido(args) {
   // Mismo freno que los enfoques: si la base venía en 'cuadrilla' o 'manual'
   // sin los datos que esas estrategias necesitan, la corrida de medición no
   // puede heredar ese vacío — mediría una mediana de casi nada.
-  const reparto = repartoDeBase(args.reparto);
+  const reparto = repartoDeBase(args.reparto, args.repartoManual);
   const { propuestas } = simularOrdenes({ ...args, reparto, frecuencia: 'mensual', montoMinimoOrden: 0 });
   const montos = propuestas.map(p => p.monto).filter(m => m > 0).sort((a, b) => a - b);
   if (montos.length < 4) return 0;
@@ -149,7 +157,7 @@ export function sortearEnfoques(args = {}) {
   const minimoSugerido = montoMinimoSugerido({ ...args, ...base });
 
   return ENFOQUES_SORTEO.map(id => {
-    const overrides = overridesDe(id, base, minimoSugerido);
+    const overrides = overridesDe(id, base, minimoSugerido, args.repartoManual);
     const params = { ...base, ...overrides };
     const corrida = simularOrdenes({ ...args, ...params });
     return {

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   simularOrdenes, coberturaPrevia,
   periodoDe, periodosEntre, semanaISO, etiquetaPeriodo, sumarDias, diasEntre,
-  ANCLAJES, CRONOGRAMAS, REPARTOS, UMBRAL_TRAMO_LARGO_DIAS,
+  ANCLAJES, CRONOGRAMAS, REPARTOS, UMBRAL_TRAMO_LARGO_DIAS, MOTIVO_PENDIENTE_LABEL,
 } from '../simulador-ordenes.js';
 import { clasificarInsumoDePresupuesto } from '../insumo-clasificador.js';
 
@@ -287,6 +287,25 @@ describe('estrategias que pueden no tener con qué contestar (§3.3)', () => {
     const porPeriodo = Object.fromEntries(con.propuestas.map(p => [p.periodo, p.lineas[0].cantidad]));
     expect(porPeriodo['2026-06']).toBe(750);
     expect(porPeriodo['2026-08']).toBe(2250);
+  });
+
+  it('«según el escenario» lee el mismo dato que «manual», con su propio motivo si falta (tanda 3.3)', () => {
+    // El dato lo arma `repartoSegunEscenario()` para todas las partidas
+    // fechadas; si igual faltara, la línea no cae a un parejo de consuelo.
+    const sin = simularOrdenes({
+      insumosPartida: [tuberia], partidas, hoy: '2026-05-01', anclaje: 'cero', reparto: 'escenario',
+    });
+    expect(sin.pendientes[0].motivo).toBe('falta_reparto_escenario');
+    expect(MOTIVO_PENDIENTE_LABEL.falta_reparto_escenario).toBeTruthy();
+
+    const con = simularOrdenes({
+      insumosPartida: [tuberia], partidas, hoy: '2026-05-01', anclaje: 'cero', reparto: 'escenario',
+      repartoManual: { 'p-larga': { '2026-06': 1, '2026-08': 3 } },
+    });
+    const porPeriodo = Object.fromEntries(con.propuestas.map(p => [p.periodo, p.lineas[0].cantidad]));
+    expect(porPeriodo['2026-06']).toBe(750);
+    expect(porPeriodo['2026-08']).toBe(2250);
+    expect(con.resumen.reparto).toBe('escenario');
   });
 
   it('una partida sin fecha no se planifica con una fecha inventada', () => {
@@ -799,7 +818,7 @@ describe('las constantes que la pantalla va a ofrecer', () => {
   it('los cuatro ejes están completos y el umbral es el medido', () => {
     expect(ANCLAJES).toEqual(['hoy', 'restante', 'cero']);
     expect(CRONOGRAMAS).toEqual(['gantt', 'reprogramado', 'sin_cronograma']);
-    expect(REPARTOS).toEqual(['parejo', 'inicio', 'cuadrilla', 'manual']);
+    expect(REPARTOS).toEqual(['parejo', 'inicio', 'escenario', 'cuadrilla', 'manual']);
     expect(UMBRAL_TRAMO_LARGO_DIAS).toBe(30);
   });
 });

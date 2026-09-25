@@ -40,12 +40,15 @@
 import React from "react";
 import {
   simularOrdenes,
-  CRONOGRAMA_LABEL, REPARTO_LABEL, GRANULARIDADES,
+  REPARTO_LABEL, GRANULARIDADES,
   MOTIVO_PENDIENTE_LABEL, CATEGORIAS_SIMULADOR,
   mesDePeriodo, etiquetaPeriodo,
   ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
 } from "../lib/simulador-ordenes.js";
-import { desplazarCronograma, MOTIVO_SIN_DESPLAZAR_LABEL } from "../lib/simulador-cronograma.js";
+import {
+  armarCronograma, curvaDeCarga, fechaCorta,
+  HISTORIAS, HISTORIA_AZAR, MOTIVO_SIN_DESPLAZAR_LABEL, MOTIVO_SIN_HISTORIA_LABEL, NOTA_CRONOGRAMA_LABEL,
+} from "../lib/simulador-cronograma.js";
 import {
   catalogoDelPresupuesto, existenciasDelAlmacen, insumosCubiertosPorAlmacen,
 } from "../lib/simulador-imputacion.js";
@@ -59,7 +62,7 @@ import { FRECUENCIAS, FRECUENCIA_LABEL } from "../lib/simulador-consolidacion.js
 import { simularDotacion, planDeContratacion } from "../lib/simulador-dotacion.js";
 import {
   PARAMS_DEFAULT, paramsDeMotor,
-  MODOS, MODO_LABEL, ARRANQUES, ARRANQUE_LABEL, CRONOGRAMAS_PANTALLA, REPARTOS_PANTALLA,
+  MODOS, MODO_LABEL, ARRANQUES, ARRANQUE_LABEL, CRONOGRAMAS_PANTALLA, CRONOGRAMA_PANTALLA_LABEL, REPARTOS_PANTALLA,
   categoriaDePropuesta,
   nuevoEscenario, conParams,
   decidirPropuesta, decidirLinea, decidirPeriodo,
@@ -115,6 +118,13 @@ const LINEAS_POR_TANDA = 40;
  * un proveedor (§6). La línea suelta se puede pisar igual, al corregirla.
  */
 const DATALIST_PROVEEDORES = 'jx-sim-proveedores';
+
+/** Una semilla al azar para «🎲 Otro», distinta de la que ya está. */
+function semillaNueva(actual) {
+  let s = actual;
+  while (s === actual) s = 1 + Math.floor(Math.random() * 999999);
+  return s;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 
@@ -352,17 +362,26 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
 
   const simulacion = params.modo === 'simulacion';
 
-  // ── EL ARRANQUE (modo Simulación, §15.3) ──────────────────────────
-  // «Como si empezara hoy» o una fecha: se corre el cronograma entero, plazo
-  // incluido. El motor lo recibe como una reprogramación de todas las
-  // partidas — no hubo que tocarlo.
-  const desplazado = uM(() => (simulacion
-    ? desplazarCronograma({
-      partidas: partidasHook.data || [], plazo,
-      arranque: params.arranque, arranqueFecha: params.arranqueFecha,
-      hoy: window.__fecha?.hoyLocal?.() || undefined,
-    })
-    : { activo: false, reprogramacion: {}, plazo }), [simulacion, partidasHook.data, plazo, params.arranque, params.arranqueFecha]);
+  // ── DE DÓNDE SALEN LAS FECHAS (§15.3 y tanda 3.3) ─────────────────
+  // El arranque de la simulación («como si empezara hoy» o una fecha) corre
+  // el cronograma entero; encima, el cronograma «aleatorio por escenario»
+  // cuenta una historia de la obra (frenazo, arranque lento…). Las dos cosas
+  // le llegan al motor como una reprogramación de las partidas, y el reparto
+  // «según el escenario» como `repartoManual` (el motor solo aprendió el
+  // nombre de ese reparto). La traducción vive en `armarCronograma`
+  // (simulador-cronograma.js).
+  const cron = uM(() => armarCronograma({
+    partidas: partidasHook.data || [], insumosPartida: ipHook.data || [], plazo,
+    hoy: window.__fecha?.hoyLocal?.() || undefined,
+    modo: params.modo, arranque: params.arranque, arranqueFecha: params.arranqueFecha,
+    cronograma: params.cronograma,
+    historia: params.historia, semilla: params.semilla, historiaAjustes: params.historiaAjustes,
+    reparto: params.reparto, granularidad: params.granularidad, anticipacionDias: params.anticipacionDias,
+  }), [partidasHook.data, ipHook.data, plazo, params.modo, params.arranque, params.arranqueFecha,
+    params.cronograma, params.historia, params.semilla, params.historiaAjustes,
+    params.reparto, params.granularidad, params.anticipacionDias]);
+  const desplazado = cron.desplazado;
+  const historia = cron.escenario;
 
   // ── LO QUE TODAS LAS CORRIDAS COMPARTEN ───────────────────────────
   // En Simulación NO entra nada real: ni órdenes, ni requisiciones, ni
@@ -376,9 +395,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       insumosPartida: ipHook.data || [],
       partidas: partidasHook.data || [],
       ...motor,
-      cronograma: desplazado.activo && motor.cronograma === 'gantt' ? 'reprogramado' : motor.cronograma,
-      reprogramacion: desplazado.reprogramacion,
-      plazo: desplazado.plazo,
+      ...cron.motor,
       terminosCustom,
       compras,
       ...(simulacion
@@ -389,7 +406,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           consumoSobres, almacen: almacenFilas,
         }),
     };
-  }, [params, ipHook.data, partidasHook.data, desplazado, terminosCustom, compras, simulacion,
+  }, [params, ipHook.data, partidasHook.data, cron.motor, terminosCustom, compras, simulacion,
     ordenesObra, ocItems, requisicionesObra, reqItemsObra, consumoSobres, almacenFilas]);
 
   // ── LA CORRIDA DE ÓRDENES ─────────────────────────────────────────
@@ -403,6 +420,23 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       categorias: baseMotor.categorias.filter(c => c !== 'mano_obra'),
     });
   }, [obraId, baseMotor, recalcN]);
+
+  // ── LA CURVA DE CARGA (tanda 3.3, §15.2 C) ────────────────────────
+  // Lo que hace legible una historia: la plata de cada mes con la historia y
+  // SIN ella (el mismo escenario sobre el Gantt, con el mismo arranque). Es
+  // una segunda corrida del motor, y solo se hace con una historia activa.
+  const corridaSinHistoria = uM(() => {
+    if (!obraId || !cron.motorSinHistoria) return null;
+    return simularOrdenes({
+      ...baseMotor,
+      ...cron.motorSinHistoria,
+      categorias: baseMotor.categorias.filter(c => c !== 'mano_obra'),
+    });
+  }, [obraId, baseMotor, cron.motorSinHistoria, recalcN]);
+  const curva = uM(
+    () => (corrida && corridaSinHistoria ? curvaDeCarga(corridaSinHistoria, corrida) : null),
+    [corrida, corridaSinHistoria]
+  );
 
   // ── «Personalizado por insumo» (tanda 2.5) ────────────────────────
   // Es lo único de la imputación que sigue siendo del ESCENARIO: elegir qué
@@ -425,6 +459,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       granularidad: baseMotor.granularidad, anclaje: baseMotor.anclaje,
       cronograma: baseMotor.cronograma, reparto: baseMotor.reparto,
       reprogramacion: baseMotor.reprogramacion, plazo: baseMotor.plazo,
+      repartoManual: baseMotor.repartoManual,
       umbralTramoLargoDias: baseMotor.umbralTramoLargoDias,
       anticipacionDias: baseMotor.anticipacionDias,
       categorias: ['mano_obra'],
@@ -663,6 +698,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   }, [obraId]);
 
   const cambiarParam = (patch) => mutar(e => conParams(e, patch));
+
+  // «🎲 Otro» (§15.2 C): otra semilla. Con «al azar» sale otra historia; con
+  // una elegida, la misma historia con otra intensidad dentro de sus rangos.
+  // Los ajustes fijados se sueltan: el sorteo nuevo es justamente lo pedido.
+  const otraHistoria = () => cambiarParam({ semilla: semillaNueva(params.semilla), historiaAjustes: {} });
 
   // Vale para ese insumo en TODOS los meses y escenarios de la obra.
   const cambiarCompra = uC((clave, patch) => {
@@ -1058,9 +1098,29 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           <label style={{ display: 'block' }}>
             <span className="flabel">De dónde salen las fechas</span>
             <select className="fi" value={params.cronograma} onChange={e => cambiarParam({ cronograma: e.target.value })}>
-              {CRONOGRAMAS_PANTALLA.map(c => <option key={c} value={c}>{CRONOGRAMA_LABEL[c]}</option>)}
+              {CRONOGRAMAS_PANTALLA.map(c => <option key={c} value={c}>{CRONOGRAMA_PANTALLA_LABEL[c]}</option>)}
             </select>
           </label>
+          {params.cronograma === 'escenario' && (
+            <label style={{ display: 'block' }}>
+              <span className="flabel">La historia de la obra</span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select className="fi" style={{ flex: 1, minWidth: 0 }} value={params.historia}
+                  onChange={e => cambiarParam({ historia: e.target.value, historiaAjustes: {} })}>
+                  <option value={HISTORIA_AZAR}>
+                    🎲 Al azar{historia?.azar ? ` (salió: ${historia.historia.etiqueta})` : ''}
+                  </option>
+                  {HISTORIAS.map(h => <option key={h.id} value={h.id}>{h.icono} {h.etiqueta}</option>)}
+                </select>
+                <button className="btn btn-sm btn-ghost" onClick={otraHistoria}
+                  title={params.historia === HISTORIA_AZAR
+                    ? 'Sortear otra historia (y otra intensidad)'
+                    : 'La misma historia con otra intensidad: cuándo empieza, cuánto dura, a qué ritmo'}>
+                  🎲 Otro
+                </button>
+              </div>
+            </label>
+          )}
           <label style={{ display: 'block' }}>
             <span className="flabel">Período</span>
             <select className="fi" value={params.granularidad} onChange={e => cambiarParam({ granularidad: e.target.value })}>
@@ -1120,6 +1180,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
               <select className="fi" value={params.reparto} onChange={e => cambiarParam({ reparto: e.target.value })}>
                 {REPARTOS_PANTALLA.map(r => <option key={r} value={r}>{REPARTO_LABEL[r]}</option>)}
               </select>
+              {cron.notas.includes('reparto_sin_cronograma') && (
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--amber)', marginTop: 4 }}>
+                  ⚠ {NOTA_CRONOGRAMA_LABEL.reparto_sin_cronograma}
+                </span>
+              )}
             </label>
             <label style={{ display: 'block' }}
               title="Una orden por debajo de este monto se junta con la siguiente del mismo rubro, y se emite en la fecha de la primera: nada llega tarde. 0 = no se junta por monto.">
@@ -1205,6 +1270,17 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
             />
           </div>
         </div>
+      )}
+
+      {/* ── LA HISTORIA DEL ESCENARIO (tanda 3.3, §15.2 C) ──────────── */}
+      {params.cronograma === 'escenario' && historia && (
+        <HistoriaDelEscenario
+          historia={historia}
+          curva={curva}
+          reparto={params.reparto}
+          onRepartoEscenario={() => cambiarParam({ reparto: 'escenario' })}
+          onOtra={otraHistoria}
+        />
       )}
 
       {/* ── LA COBERTURA, CONTRA EL COMPRABLE (§2) ──────────────────── */}
@@ -2667,6 +2743,198 @@ function PersonalizadoAlmacen({ cubiertos, porInsumo, onParam }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LA HISTORIA DEL ESCENARIO (ronda 3, tanda 3.3 — doc §15.2 C)
+//
+// El cronograma «aleatorio por escenario» no se entiende mirando fechas de
+// 1.718 partidas: se entiende con la historia contada, sus tramos con el
+// ritmo de cada uno, y la curva de plata por mes contra el Gantt. Lo que
+// dice esta tarjeta sale entero de `cronogramaPorEscenario()` y de
+// `curvaDeCarga()`: acá no se calcula nada.
+// ═══════════════════════════════════════════════════════════════════
+
+function HistoriaDelEscenario({ historia, curva, reparto, onRepartoEscenario, onOtra }) {
+  const h = historia.historia;
+  if (!historia.activo) {
+    return (
+      <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--amber)', fontSize: 12 }}>
+        <b>{h.icono} {h.etiqueta}</b>
+        <div style={{ color: 'var(--amber)', marginTop: 4 }}>
+          ⚠ {MOTIVO_SIN_HISTORIA_LABEL[historia.motivo] || 'No se pudo armar la historia: se usan las fechas del Gantt.'}
+        </div>
+      </div>
+    );
+  }
+  // El color del tramo es su ESTADO de caja, con ícono y rótulo al lado:
+  // nunca solo el color.
+  const fondoTramo = (t) => (t.caja === 'apretada' ? 'var(--red-l)' : t.ritmo > 1.005 ? 'var(--green-l)' : 'var(--tint-neutral)');
+  const iconoTramo = (t) => (t.caja === 'apretada' ? '💸' : t.ritmo > 1.005 ? '⏩' : '▶');
+
+  return (
+    <div className="card card-p" style={{ marginBottom: 12, display: 'grid', gap: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <b style={{ fontSize: 14 }}>{h.icono} {h.etiqueta}</b>
+        <span style={{ fontSize: 11, color: 'var(--tm)' }}>
+          {historia.azar ? 'salió al azar · ' : ''}sorteo n.º {historia.semilla}
+        </span>
+        <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={onOtra}
+          title="Otra semilla: otra historia (si está «al azar») u otra intensidad de la misma">
+          🎲 Otro
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: 'var(--ts)', display: 'grid', gap: 4 }}>
+        {historia.relato.map((frase, i) => <p key={i} style={{ margin: 0 }}>{frase}</p>)}
+      </div>
+
+      {/* Los tramos, a escala de días: dónde se frena y dónde se acelera. */}
+      <div>
+        <div style={{ display: 'flex', gap: 2, borderRadius: 6, overflow: 'hidden' }}>
+          {historia.tramos.map((t, i) => (
+            <div key={i} title={`${t.nombre}: del ${fechaCorta(t.desde)} al ${fechaCorta(t.hasta)}, al ${Math.round(t.ritmo * 100)} % del Gantt`}
+              style={{
+                flex: `${t.dias} 1 0`, minWidth: 34, background: fondoTramo(t), padding: '6px 4px',
+                fontSize: 11, fontWeight: 600, color: 'var(--tp)', textAlign: 'center', whiteSpace: 'nowrap',
+              }}>
+              {iconoTramo(t)} {Math.round(t.ritmo * 100)} %
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gap: 2, marginTop: 6 }}>
+          {historia.tramos.map((t, i) => (
+            <div key={i} style={{ fontSize: 11, color: 'var(--tm)' }}>
+              {iconoTramo(t)} {fechaCorta(t.desde)} → {fechaCorta(t.hasta)} · <b style={{ color: 'var(--ts)' }}>{Math.round(t.ritmo * 100)} %</b> del ritmo del Gantt
+              {' '}· {t.nombre}
+              {t.calculado && !historia.estira && ' (calculado para terminar en fecha)'}
+              {t.caja === 'apretada' && (t.carasEsperan ? ' · caja apretada: las partidas caras esperan' : ' · caja apretada')}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {historia.estira && (
+        <div style={{ fontSize: 12, color: 'var(--amber)' }}>
+          ⚠ Esta historia ESTIRA el fin {historia.diasEstirados} días: la obra termina el {fechaCorta(historia.finNuevo)} en vez del {fechaCorta(historia.fin)}.
+          Es la única del catálogo que mueve la fecha de fin; el resto la respeta.
+        </div>
+      )}
+
+      {reparto !== 'escenario' && (
+        <div style={{ fontSize: 11.5, color: 'var(--tm)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <span style={{ flex: '1 1 300px' }}>
+            Los tramos largos se reparten «{REPARTO_LABEL[reparto] || reparto}»: adentro de una partida larga no se ve
+            el ritmo de la historia (un mes de frenazo pide lo mismo que uno normal).
+          </span>
+          <button className="btn btn-sm btn-ghost" onClick={onRepartoEscenario}>Repartir según el escenario</button>
+        </div>
+      )}
+
+      <CurvaDeCargaGrafico curva={curva} />
+    </div>
+  );
+}
+
+/**
+ * La curva de carga: la plata que pide el plan cada mes, con el Gantt (gris,
+ * contexto) y con la historia (ámbar, lo que se mira). Columnas finas, una
+ * leyenda, el pico de la historia rotulado, el valor de cada mes al pasar o
+ * con el teclado, y la tabla entera abajo para quien no quiera leer barras.
+ */
+function CurvaDeCargaGrafico({ curva }) {
+  const [foco, setFoco] = uS(null);
+  if (!curva?.filas?.length) {
+    return <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>Calculando la curva de carga…</div>;
+  }
+  const ALTO = 120;
+  const max = curva.maximo || 1;
+  const alto = (v) => (v > 0 ? Math.max(2, Math.round((v / max) * ALTO)) : 0);
+  const pico = curva.picoEscenario?.mes;
+  const f = foco ? curva.filas.find(x => x.mes === foco) : null;
+  const variacion = (x) => (x.base > 0 ? Math.round(((x.escenario - x.base) / x.base) * 100) : null);
+  const etiquetaX = (mes, i) => {
+    const anio = mes.slice(2, 4);
+    return `${etiquetaCorta(mes)}${i === 0 || mes.endsWith('-01') ? ` ${anio}` : ''}`;
+  };
+  const muestra = (color) => <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: color, marginRight: 4, verticalAlign: -1 }} />;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'baseline', marginBottom: 8 }}>
+        <b style={{ fontSize: 12.5 }}>Plata que pide el plan cada mes</b>
+        <span style={{ fontSize: 11, color: 'var(--ts)' }}>{muestra('var(--tm)')}Gantt, sin la historia</span>
+        <span style={{ fontSize: 11, color: 'var(--ts)' }}>{muestra('var(--amber-d)')}Con esta historia</span>
+        <span style={{ fontSize: 10.5, color: 'var(--tm)', marginLeft: 'auto' }}>escala: 0 a {solesK(max)}</span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', borderBottom: '1px solid var(--border-h)', paddingTop: 16 }}>
+        {curva.filas.map((x) => (
+          <div key={x.mes} tabIndex={0}
+            aria-label={`${x.etiqueta}: Gantt ${solesK(x.base)}, con esta historia ${solesK(x.escenario)}`}
+            onMouseEnter={() => setFoco(x.mes)} onMouseLeave={() => setFoco(null)}
+            onFocus={() => setFoco(x.mes)} onBlur={() => setFoco(null)}
+            style={{
+              flex: '1 1 0', minWidth: 0, height: ALTO, position: 'relative', cursor: 'default', outline: 'none',
+              display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 2,
+              background: foco === x.mes ? 'var(--row-hover)' : 'transparent', borderRadius: '4px 4px 0 0',
+            }}>
+            <div style={{ width: 'min(16px, 42%)', height: alto(x.base), background: 'var(--tm)', borderRadius: '4px 4px 0 0' }} />
+            <div style={{ width: 'min(16px, 42%)', height: alto(x.escenario), background: 'var(--amber-d)', borderRadius: '4px 4px 0 0', position: 'relative' }}>
+              {x.mes === pico && (
+                <span style={{
+                  position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: 2,
+                  fontSize: 10, fontWeight: 600, color: 'var(--tp)', whiteSpace: 'nowrap',
+                }}>{solesK(x.escenario)}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+        {curva.filas.map((x, i) => (
+          <div key={x.mes} style={{ flex: '1 1 0', minWidth: 0, textAlign: 'center', fontSize: 10.5, color: 'var(--tm)', whiteSpace: 'nowrap', overflow: 'visible' }}>
+            {etiquetaX(x.mes, i)}
+          </div>
+        ))}
+      </div>
+
+      {/* Lo que se lee al pasar (o al enfocar con el teclado); sin foco, los picos. */}
+      <div style={{ fontSize: 11.5, color: 'var(--ts)', marginTop: 8, minHeight: 17 }}>
+        {f ? (
+          <><b style={{ color: 'var(--tp)' }}>{solesK(f.escenario)}</b> con esta historia · {solesK(f.base)} con el Gantt
+            {variacion(f) != null && <> ({variacion(f) > 0 ? '+' : ''}{variacion(f)} %)</>} — {f.etiqueta}</>
+        ) : (
+          <>Pico con el Gantt: {curva.picoBase?.etiqueta} ({solesK(curva.picoBase?.base)}) · con esta historia: {curva.picoEscenario?.etiqueta} ({solesK(curva.picoEscenario?.escenario)}).
+            {' '}La historia mueve la plata, no la cambia: {solesK(curva.totalEscenario)} contra {solesK(curva.totalBase)} en total.</>
+        )}
+      </div>
+
+      <details style={{ marginTop: 6 }}>
+        <summary style={{ fontSize: 11.5, cursor: 'pointer', color: 'var(--tm)' }}>Ver la tabla mes por mes</summary>
+        <table style={{ width: '100%', fontSize: 11.5, marginTop: 6, borderCollapse: 'collapse', fontVariantNumeric: 'tabular-nums' }}>
+          <thead>
+            <tr style={{ color: 'var(--tm)', textAlign: 'right' }}>
+              <th style={{ textAlign: 'left', fontWeight: 500, padding: '2px 4px' }}>Mes</th>
+              <th style={{ fontWeight: 500, padding: '2px 4px' }}>Gantt</th>
+              <th style={{ fontWeight: 500, padding: '2px 4px' }}>Con esta historia</th>
+              <th style={{ fontWeight: 500, padding: '2px 4px' }}>Diferencia</th>
+            </tr>
+          </thead>
+          <tbody>
+            {curva.filas.map(x => (
+              <tr key={x.mes} style={{ borderTop: '1px solid var(--border)', textAlign: 'right' }}>
+                <td style={{ textAlign: 'left', padding: '2px 4px' }}>{x.etiqueta}</td>
+                <td style={{ padding: '2px 4px' }}>{soles(x.base)}</td>
+                <td style={{ padding: '2px 4px' }}>{soles(x.escenario)}</td>
+                <td style={{ padding: '2px 4px' }}>{x.escenario - x.base >= 0 ? '+' : ''}{soles(x.escenario - x.base)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
     </div>
   );
 }

@@ -1022,3 +1022,103 @@ tuvo que decidir:
   del arranque).
 - El primer render lee el escenario guardado sin esperar al efecto: antes se
   pintaba un instante con los defaults (modo real, con sus avisos).
+
+**Tanda 3.2 HECHA el 25-set** (commit c83f647, en staging). «Imputar lo ya
+comprado» es su propia página de Logística (`jx-simulador-imputar.jsx`, page
+id `imputar-compras`, mismo módulo/permiso que el simulador). Imputar una
+fila no depende del escenario; qué resta el almacén sí, y se quedó en ⚙.
+
+**Tanda 3.3 HECHA el 25-set** (en staging). `simulador-cronograma.js` suma el
+cronograma «aleatorio por escenario», el reparto «según el escenario» y la
+curva de carga; la pantalla gana el selector de historia con «🎲 Otro» y la
+tarjeta que la cuenta. Tests en `simulador-cronograma.test.js` (40 nuevos),
+`simulador-escenarios`, `simulador-sorteo`, `simulador-ordenes` y la pantalla.
+Sin migración. Lo que se hizo y lo que la tanda tuvo que decidir:
+
+- **El modelo es un FRENTE DE OBRA.** Una historia es una curva de ritmo por
+  tramos (100 % = el Gantt). El frente dice, para cada día del escenario,
+  hasta qué día del Gantt llegó la obra; cada partida arranca cuando el
+  frente llega a su inicio y termina cuando llega a su fin. Como todas se
+  leen contra el mismo frente, el orden del Gantt se respeta sin mirarlo
+  partida por partida, y la última partida termina el día que el frente
+  llega al fin.
+- **Las predecesoras NO sirven (medido).** `partidas.predecesoras` trae 1.158
+  textos estilo MS Project en Miraflores, pero los números no resuelven:
+  219 de 881 referencias no existen y, de las que resuelven por `orden`, 262
+  «fin-comienzo» contradicen las fechas del propio Gantt. El orden del Gantt
+  sigue siendo el proxy, como decía el §15.2.
+- **El fin se respeta por construcción** (§15.3): el ritmo del cierre no es
+  un dato de la historia, se calcula para que el frente llegue al fin el
+  último día. Solo `atraso_todo` («Pagos atrasados todo el plazo») estira
+  el fin, y la pantalla dice cuántos días.
+- **Catálogo cerrado de seis historias:** frenazo a mitad de obra (el
+  ejemplo de Gabriel), arranque lento, pagos a los tirones, obra adelantada,
+  todo para el final y pagos atrasados todo el plazo. Cada una con rangos
+  por perilla y un paso; hay un test que barre TODAS las esquinas de los
+  rangos: el cierre calculado queda siempre entre 50 % y 160 %.
+- **Las caras esperan con su propio frente:** quieto durante un tramo de caja
+  apretada que tenga plata después, y que alcanza al general al final del
+  tramo siguiente. Nunca arrancan antes que en el frente general. «Cara» se
+  mide contra la obra: las de más costo por día (costo de TODOS sus
+  insumos, la planilla también es caja) que suman la cuota del sorteo (30 a
+  50 % de la plata). En Miraflores: 30 % = 13 partidas (> S/ 6.893/día),
+  40 % = 30 (> S/ 3.540), 50 % = 47 (> S/ 3.025).
+- **La semilla** (FNV-1a + mulberry32, sin dependencias) va en los params del
+  escenario (`historia`, `semilla`, `historiaAjustes`). «Al azar» con la
+  semilla N da exactamente lo mismo que elegir a mano la historia que salió
+  con N. «🎲 Otro» cambia la semilla y suelta los ajustes.
+- **`historiaAjustes` ya existe para la 3.4:** perillas fijadas dentro de los
+  rangos, recortadas y pegadas al paso; con «al azar» no se aplican. La IA
+  va a elegir id + ajustes; las fechas las pone siempre la lib.
+- **Reparto «según el escenario»:** lo que avanza la obra en cada período
+  (por días con el Gantt; con una historia, un mes de frenazo lleva la
+  mitad por día). Lo arma `repartoSegunEscenario()` para TODAS las
+  partidas fechadas, en los mismos períodos que va a mirar el motor
+  (anticipación incluida). **El motor sí se tocó, mínimo:** `REPARTOS` suma
+  `'escenario'`, que lee el mismo `repartoManual` que `'manual'` pero con su
+  propio motivo de pendiente. Sin eso no había ida y vuelta con los puntos
+  de partida (que ahora lo heredan, solo si viene el dato). Con «sin
+  cronograma» cae a parejo y la pantalla lo dice.
+- **La curva de carga** es una segunda corrida del motor —el mismo escenario
+  sin la historia, con el mismo arranque— y solo se hace con una historia
+  activa (~110 ms en Miraflores). Suma por ENTREGA (lo que cada mes
+  necesita) más los sobres, no por fecha de emisión: la frecuencia es otra
+  perilla. Gráfico de énfasis (historia en `--amber-d`, Gantt en `--tm`,
+  validados con el script de dataviz en los dos temas), leyenda, pico
+  rotulado, valor al pasar o con teclado y tabla mes por mes.
+- **Una historia mueve la plata, no la crea:** en Miraflores, las seis
+  historias con los dos repartos dan el mismo neto planificado que el Gantt
+  (diferencia ≤ S/ 0,07, redondeo). Hay test.
+
+Medido en Miraflores (modo Simulación, reparto según el escenario, semilla 1;
+miles de soles por mes):
+
+| | abr | may | jun | jul | ago | set | oct | nov | dic |
+|---|---|---|---|---|---|---|---|---|---|
+| Gantt | 26 | 221 | 143 | 197 | 310 | 604 | 1.063 | 1.413 | 1.142 |
+| 🛑 Frenazo (25-jul→11-set al 50 %, cierre 122 %) | 26 | 220 | 143 | 176 | 101 | 261 | 836 | 1.780 | 1.576 |
+| 🐢 Arranque lento (hasta 12-jul al 60 %, cierre 117 %) | 26 | 49 | 133 | 185 | 265 | 333 | 984 | 1.657 | 1.489 |
+| 📶 Tirones (3 cortes al 50 %, cierre 126 %) | 26 | 221 | 110 | 197 | 205 | 502 | 758 | 1.485 | 1.614 |
+| 🚀 Adelantada (hasta 24-jul al 130 %, cierre 84 %) | 27 | 280 | 236 | 218 | 498 | 683 | 942 | 1.231 | 1.004 |
+| ⏰ Todo para el final (80 %, cierre 124 %) | 26 | 155 | 154 | 154 | 147 | 416 | 1.044 | 1.604 | 1.419 |
+
+«Pagos atrasados todo el plazo» al 75 % estira el fin al 22-mar-2027 y sigue
+con ene 940 · feb 1.121 · mar 559. La «adelantada» es la única que achata el
+amontonamiento del final que Gabriel vio en el Gantt (§15.1 punto 4).
+
+**Decisiones tomadas en la tanda, a revisar con Gabriel:**
+
+1. **En «📍 Según lo real» la historia corre desde HOY**, no desde el inicio
+   del plazo: lo que ya pasó, pasó como pasó (el Gantt). En Miraflores, con
+   el frenazo, eso deja 1 partida cara esperando (S/ 233 k) y 7 en marcha
+   que se paran (S/ 2,65 M).
+2. **Elegir una historia no cambia el reparto solo.** Con reparto parejo, la
+   tarjeta avisa que adentro de un tramo largo no se ve el ritmo y ofrece
+   un botón «Repartir según el escenario».
+3. **En modo real con una historia se puede convertir en requisiciones:**
+   la historia cambia CUÁNDO se pide, no cuánto (la plata total es la
+   misma). En Simulación sigue apagado, como decidió la 3.1.
+4. **En Miraflores (simulación) el frenazo casi no toca caras:** el dinero
+   está amontonado al final y en el tramo del frenazo (jul-set) cae una
+   sola partida cara (el tijeral, S/ 39.460). El frenazo se nota por el
+   ritmo, no por las caras; en modo real, desde hoy, sí se notan.

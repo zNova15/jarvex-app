@@ -128,6 +128,20 @@ describe('sortearEnfoques', () => {
     }
   });
 
+  it('el reparto «según el escenario» se hereda SOLO con su dato puesto (tanda 3.3)', () => {
+    // Con el dato (lo arma el cronograma del escenario para todas las
+    // partidas fechadas) no hay riesgo de «sin planificar»: se respeta.
+    const repartoManual = { 'p-larga': { '2026-06': 0.4, '2026-07': 0.4, '2026-08': 0.2 } };
+    const con = sortearEnfoques({ ...args, reparto: 'escenario', repartoManual });
+    expect(con.find(c => c.id === 'caja_ajustada').params.reparto).toBe('escenario');
+    expect(con.find(c => c.id === 'cero_desabastecimiento').params.reparto).toBe('inicio');
+    for (const c of con) expect(c.corrida.resumen.lineasPendientes).toBe(0);
+    // Sin el dato, cae a parejo como «cuadrilla» y «manual».
+    for (const c of sortearEnfoques({ ...args, reparto: 'escenario' })) {
+      expect(['parejo', 'inicio']).toContain(c.params.reparto);
+    }
+  });
+
   it('respeta el anclaje, el cronograma, las categorías y frecuenciaPorRubro de la base', () => {
     const base = {
       ...args, anclaje: 'restante', cronograma: 'sin_cronograma',

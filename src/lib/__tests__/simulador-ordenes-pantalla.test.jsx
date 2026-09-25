@@ -347,6 +347,68 @@ describe('la pantalla del Simulador de Órdenes', () => {
     });
   });
 
+  // ── Ronda 3, tanda 3.3: el cronograma «aleatorio por escenario» ──
+  it('ofrece el cronograma aleatorio por escenario y el reparto «según el escenario»', () => {
+    const html = render({ ajustesAbiertos: true });
+    expect(html).toContain('🎲 Aleatorio por escenario');
+    expect(html).toContain('Según el escenario (lo que avanza la obra cada mes)');
+    // Sin elegir el aleatorio, no hay historia ni curva que mostrar.
+    expect(html).not.toContain('La historia de la obra');
+    expect(html).not.toContain('Plata que pide el plan cada mes');
+  });
+
+  const conEscenario = (params) => {
+    const ESC = [{ id: 'e1', nombre: 'Historia', obra_id: OBRA, params, actualizado: '2026-10-01' }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+  };
+
+  describe('con una historia de la obra (tanda 3.3)', () => {
+    conEscenario({ modo: 'simulacion', cronograma: 'escenario', historia: 'frenazo', semilla: 3 });
+
+    it('dice qué historia tomó, la cuenta, y deja sortear otra', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).toContain('La historia de la obra');
+      expect(html).toContain('Frenazo a mitad de obra');
+      expect(html).toContain('sorteo n.º 3');
+      expect(html).toContain('🎲 Otro');
+      expect(html).toContain('del ritmo del Gantt');
+      // El fin se respeta (§15.3) y la pantalla lo dice.
+      expect(html).toContain('Termina el 30 dic 2026, en la fecha del plazo');
+      expect(html).not.toContain('ESTIRA el fin');
+    });
+
+    it('muestra la curva de carga contra el Gantt, con leyenda y tabla', () => {
+      const html = render();
+      expect(html).toContain('Plata que pide el plan cada mes');
+      expect(html).toContain('Gantt, sin la historia');
+      expect(html).toContain('Con esta historia');
+      expect(html).toContain('Ver la tabla mes por mes');
+      expect(html).toContain('La historia mueve la plata, no la cambia');
+    });
+
+    it('con el reparto parejo, avisa que adentro de un tramo largo no se ve el ritmo', () => {
+      expect(render()).toContain('Repartir según el escenario');
+    });
+  });
+
+  describe('con la historia que estira el fin', () => {
+    conEscenario({ modo: 'simulacion', cronograma: 'escenario', historia: 'atraso_todo', reparto: 'escenario' });
+
+    it('lo dice con todas las letras: es la única que mueve la fecha de fin', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).toContain('Pagos atrasados todo el plazo');
+      expect(html).toContain('ESTIRA el fin');
+      expect(html).toContain('Es la única del catálogo que mueve la fecha de fin');
+      // Ya reparte según el escenario: no hace falta sugerirlo.
+      expect(html).not.toContain('Repartir según el escenario');
+    });
+  });
+
   it('sin obra activa no revienta: muestra el vacío', () => {
     const antes = globalThis.__getObraActivaId;
     const antesHooks = globalThis.__hooks.useObras;

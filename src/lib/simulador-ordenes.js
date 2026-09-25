@@ -115,10 +115,15 @@ export const CRONOGRAMA_LABEL = {
 };
 
 /** §3.3 — cómo se reparte un insumo de tramo largo. */
-export const REPARTOS = ['parejo', 'inicio', 'cuadrilla', 'manual'];
+export const REPARTOS = ['parejo', 'inicio', 'escenario', 'cuadrilla', 'manual'];
 export const REPARTO_LABEL = {
   parejo: 'Parejo entre los períodos del tramo',
   inicio: 'Todo al inicio del tramo',
+  // Ronda 3, tanda 3.3: lo que avanza la obra en cada período según el
+  // cronograma del escenario (por días con el Gantt; con una historia, un mes
+  // de frenazo lleva menos). El dato lo arma `repartoSegunEscenario()` de
+  // simulador-cronograma.js y llega por `repartoManual`.
+  escenario: 'Según el escenario (lo que avanza la obra cada mes)',
   cuadrilla: 'Por cuadrilla que entra',
   manual: 'Manual, partida por partida',
 };
@@ -298,10 +303,14 @@ function repartirTramo(tramo, periodos, { reparto, cuadrillas, repartoManual, pa
 
   if (reparto === 'inicio') return { periodos: [{ periodo: periodos[0], fraccion: 1 }] };
 
-  if (reparto === 'manual') {
+  // 'escenario' usa el mismo dato que 'manual' —partida → {período: fracción}—
+  // pero no lo carga nadie a mano: lo arma el cronograma del escenario para
+  // TODAS las partidas fechadas. Si igual falta, la línea va a pendientes con
+  // su propio motivo; nunca a un parejo de consuelo.
+  if (reparto === 'manual' || reparto === 'escenario') {
     const fijado = repartoManual?.[partidaId];
     const entradas = Object.entries(fijado || {}).filter(([, f]) => num(f) > 0);
-    if (!entradas.length) return { error: 'falta_reparto_manual' };
+    if (!entradas.length) return { error: reparto === 'escenario' ? 'falta_reparto_escenario' : 'falta_reparto_manual' };
     const total = entradas.reduce((s, [, f]) => s + num(f), 0);
     return { periodos: entradas.map(([periodo, f]) => ({ periodo, fraccion: num(f) / total })) };
   }
@@ -603,11 +612,12 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  * @param {'mes'|'semana'} [o.granularidad='mes']
  * @param {'hoy'|'restante'|'cero'} [o.anclaje='hoy']            §3.1
  * @param {'gantt'|'reprogramado'|'sin_cronograma'} [o.cronograma='gantt'] §3.2
- * @param {'parejo'|'inicio'|'cuadrilla'|'manual'} [o.reparto='parejo']    §3.3
+ * @param {'parejo'|'inicio'|'escenario'|'cuadrilla'|'manual'} [o.reparto='parejo']    §3.3
  * @param {Array<string>|null} [o.categorias=null]  null = todas.            §3.4
  * @param {Object}  [o.reprogramacion]       partida_id → {inicio, fin}.
  * @param {Array}   [o.cuadrillas]           [{fecha, personas}].
- * @param {Object}  [o.repartoManual]        partida_id → {periodo: fracción}.
+ * @param {Object}  [o.repartoManual]        partida_id → {periodo: fracción}
+ *                  (con 'manual' y con 'escenario').
  * @param {Object}  [o.plazo]                {inicio, fin} del trabajo.
  * @param {number}  [o.umbralTramoLargoDias=30]
  * @param {number}  [o.anticipacionDias=0]   adelanta el pedido N días antes
@@ -1274,4 +1284,5 @@ export const MOTIVO_PENDIENTE_LABEL = {
   sin_plazo: 'El trabajo no tiene plazo cargado y el reparto es sin cronograma',
   falta_cuadrillas: 'Falta cargar cuántas personas entran y cuándo',
   falta_reparto_manual: 'Falta fijar a mano el reparto de esta partida',
+  falta_reparto_escenario: 'El escenario no trae cómo avanza esta partida',
 };
