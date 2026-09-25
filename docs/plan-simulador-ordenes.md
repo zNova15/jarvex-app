@@ -849,3 +849,116 @@ no puede: explicar un enfoque y variarlo con criterio.
       · Sin migración, sin tabla nueva. `simulador-sorteo.js` no se separó en
         un chunk aparte del build: solo lo importa `jx-simulador-ordenes.jsx`,
         así que Rollup lo deja adentro de ese mismo chunk lazy.
+
+## 15. Ronda 3 — la pantalla contesta dos preguntas mezcladas (24-set-2026, noche)
+
+Gabriel probó la ronda 2 en el preview de staging (Miraflores) y la frenó antes
+de pasar a main. Sus observaciones, y lo que hay detrás de cada una en el código:
+
+### 15.1 — Diagnóstico
+
+1. **Dos preguntas distintas en una sola pantalla.** «¿Cómo compraría esta obra
+   si arrancara / si pasara X?» (SIMULACIÓN, sale solo del presupuesto y del
+   cronograma) y «¿qué me falta pedir según lo que YA pasó?» (SEGÚN LO REAL:
+   resta órdenes, requisiciones, almacén y avance). Hoy las separa solo el
+   selector de anclaje (`hoy | restante | cero`), y los avisos de lo comprado
+   y del almacén salen SIEMPRE — también cuando la pregunta es hipotética,
+   donde no tienen nada que ver.
+2. **Los avisos ocupan media pantalla.** Tres tarjetas grandes (62 líneas de
+   OC sin imputar, 466 ítems del almacén, 2 requisiciones) y hasta cuatro
+   párrafos, antes de la primera orden.
+3. **Once perillas al mismo nivel** (anclaje, cronograma, reparto, período,
+   anticipación, umbral de tramo largo, categorías, frecuencia, monto mínimo,
+   frecuencia por rubro, almacén). Nada separa lo básico de lo fino.
+4. **«Reprogramado a mano» y «Manual, partida por partida» piden un dato que
+   nadie va a cargar** (fijar a mano las fechas o el reparto de 1.718
+   partidas). Hoy terminan en «Sin planificar». Gabriel pide que esas dos
+   opciones sean **ALEATORIO POR ESCENARIO**: no al azar incoherente, sino
+   un cronograma plausible armado sobre una historia de la obra (ej. «arranca
+   con buena caja, en los meses intermedios no pagan y se baja la marcha,
+   después pagan y se acelera al final»), y que diga qué historia tomó.
+   Observó además que con el Gantt del expediente **la carga de órdenes se
+   amontona en los últimos meses** (sep S/ 454k → oct 1,06 M → nov 1,2 M → dic
+   1,08 M, contra abr S/ 41k).
+5. **El filtro de categorías existe pero el resultado sale mezclado.** El
+   motor ya clasifica en Materiales / Herramientas y EPPs / Servicios y
+   alquileres (`CATEGORIA_DE_SUBCATEGORIA` en `insumo-clasificador.js`); la
+   lista de órdenes igual va por mes con todos los rubros juntos, y las
+   herramientas no se ven como bloque.
+6. **Siete pestañas, dos que no son del simulador.** «Imputar lo ya comprado»
+   es la correlación comprado-real ↔ presupuesto: es otra pregunta y merece su
+   propia sección. «Escenarios sugeridos» es CONFIGURACIÓN (tres combinaciones
+   de perillas), no un resultado.
+7. **Bug visual (arreglado en 55fcd28):** la tira sticky de meses tenía
+   `top: var(--header-h)` dentro de `.page-wrap`, que es el que scrollea; las
+   tarjetas pasaban por la franja de 58 px de arriba.
+
+Lo que ya existe y se reusa: el motor acepta `reprogramacion`
+(partida_id → {inicio, fin}) y `repartoManual`. **El «aleatorio» no necesita
+tocar el motor: es un GENERADOR de esos dos datos.** Y hay avance real para el
+modo «según lo real»: en Miraflores 96 partidas con `porcentaje_avance > 0`,
+20 terminadas, 392 reportes en `avance_obra` (ninguna con `fecha_inicio_real`).
+
+### 15.2 — Propuesta
+
+**A. Dos modos, el primer selector de la pantalla.**
+- 🧪 **Simulación** — presupuesto + cronograma elegido. No resta nada real, no
+  muestra avisos de compras ni de almacén. Reemplaza al anclaje `cero`
+  (deja de llamarse «auditoría»).
+- 📍 **Según lo real** — desde hoy; resta órdenes, requisiciones y almacén; en
+  avanzado, quita lo ya ejecutado (avance). Reemplaza a `hoy`. `restante` se
+  retira (nadie lo usa y confunde).
+
+**B. Configuración en dos niveles.** En la pantalla: modo, cronograma, qué se
+incluye, período, cada cuánto se emite. Detrás de ⚙: anticipación, umbral de
+tramo largo, reparto, monto mínimo, frecuencia por rubro, qué resta el almacén
+y el avance (solo modo real), y los tres enfoques de la 2.6 como «puntos de
+partida».
+
+**C. Cronograma «aleatorio por escenario»** (motor puro nuevo, con semilla):
+- Catálogo CERRADO de historias, cada una una curva de ritmo por tramo de la
+  obra (ej. 100 % → 50 % → 140 %).
+- Reprograma respetando el orden del Gantt (lo que empezaba antes sigue antes
+  — no hay precedencias cargadas y este es el mejor proxy) y, cuando la caja
+  aprieta, sigue con las partidas de menor costo por día y posterga las caras.
+- La semilla hace que el mismo escenario dé el mismo cronograma; «🎲 Otro»
+  sortea otra historia o varía la intensidad dentro de rangos.
+- **La IA elige la historia y la cuenta; nunca pone una fecha.** Ve el perfil
+  de carga del Gantt, el plazo y los montos, y devuelve un id del catálogo +
+  parámetros dentro de rangos + la explicación. Mismo principio que la 2.6: un
+  id fuera de la lista se descarta.
+- La pantalla muestra la **curva de carga por mes** (Gantt vs escenario): es lo
+  que hace legible el escenario.
+
+**D. Reparto de tramo largo:** Parejo / Todo al inicio / **Según el escenario**
+(reemplaza «Manual»; se esconde «Por cuadrilla» hasta que exista el dato).
+
+**E. Resultados por categoría:** un bloque por cada categoría incluida, con sus
+propios chips de mes y totales. Los sobres entran en el bloque de su
+categoría. Herramientas y EPP, en modo real, se comparan contra el stock del
+almacén («ya hay 12 carretillas»).
+
+**F. Pestañas finales:** Materiales · Herramientas y EPP · Servicios y
+alquileres · Mano de obra (referencia) · Sin planificar · Ya pedido.
+«⚠ Avisos (N)» pasa a ser un botón del encabezado, con los avisos que aplican
+al modo elegido. «Imputar lo ya comprado» se muda a su propia sección de
+Logística.
+
+### 15.3 — Decisiones pendientes de Gabriel
+
+1. En el escenario aleatorio, ¿se respeta la fecha de fin de obra (lo que se
+   frena se recupera acelerando) o se permite que se estire?
+2. En modo Simulación, ¿la obra arranca en la fecha del Gantt o «como si
+   empezara hoy» (se corre todo el cronograma)?
+3. ¿Se promueve a main lo que ya está en staging (almacén + ronda 2 tal
+   cual) o se espera a la ronda 3?
+
+### 15.4 — Tandas (orden pensado para no rehacer trabajo)
+
+| # | Qué | Toca | Modelo |
+|---|---|---|---|
+| 3.1 | Modos + avisos a botón + config básica/⚙ + pestañas por categoría + enfoques a ⚙ | `jx-simulador-ordenes.jsx`, `simulador-escenarios.js` (migrar params guardados) | Opus / alto / sesión nueva |
+| 3.2 | «Imputar lo ya comprado» a sección propia | página nueva (main, jx-app, sidebar, allowlists de jx-admin) | Sonnet / medio / misma sesión que 3.1 |
+| 3.3 | Motor de cronograma por escenario + reparto «según escenario» + curva de carga | lib pura nueva + tests | Opus / extra alto / sesión nueva |
+| 3.4 | La IA elige y narra el escenario | acción en `api/asistente-solicitud.js` | Opus / alto / misma sesión que 3.3 |
+| 3.5 | Modo real completo: quitar lo ejecutado (avance) + herramientas contra stock | motor + pantalla | Opus / alto / sesión nueva |
