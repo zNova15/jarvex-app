@@ -71,6 +71,7 @@
 import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
 import { leerConfig, construirCuerpo, openrouterChat, normalizarRespuesta, armarCadenaOpenRouter } from '../lib/openrouter.js';
 import { prepararCatalogo, candidatosDelTexto, completarConAlmacen, parsearTextoLocal, responsableDe } from '../src/lib/match-solicitud.js';
+import { HISTORIAS, sanearHistoriaIA, LARGO_PREOCUPACION } from '../src/lib/simulador-historias.js';
 
 // Techos: el mensaje de obra más largo que vimos no llega a 2.000 caracteres.
 // El catálogo YA NO va entero al prompt (ver arriba): se recibe completo para
@@ -481,6 +482,128 @@ export async function handleRecomendarEnfoque(req, res, body) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ACCIÓN 3: ELEGIR Y CONTAR LA HISTORIA DEL CRONOGRAMA (ronda 3, tanda 3.4 —
+// docs/plan-simulador-ordenes.md §15.2 C).
+//
+// `body.action === 'elegir_historia_simulador'`. Mismo endpoint, misma
+// allowlist que la acción 2 (quien usa el simulador).
+//
+// ── LA IA ELIGE Y CUENTA; NUNCA PONE UNA FECHA ─────────────────────
+// Ve el catálogo CERRADO de historias con los rangos de cada perilla, la
+// plata que pide el plan cada mes con el Gantt, el plazo y —si Gabriel la
+// escribió— qué le preocupa de la obra. Devuelve un id del catálogo, valores
+// para sus perillas y el relato. Todo pasa por `sanearHistoriaIA()` (lib
+// hoja, el catálogo real): id inventado → se descarta entero; perilla fuera
+// de rango → se recorta; oración con una fecha puntual → se tira. Las fechas
+// y los montos de la tarjeta los calcula el motor con lo que ella eligió.
+// ═══════════════════════════════════════════════════════════════════
+
+export function systemPromptHistoria() {
+  const catalogo = HISTORIAS.map(h => {
+    const perillas = Object.entries(h.rangos)
+      .map(([k, r]) => `    · ${k}: de ${r.min} a ${r.max}, de a ${r.paso} — ${r.que}`)
+      .join('\n');
+    return `- id: ${h.id} | ${h.etiqueta}${h.estira ? ' (LA ÚNICA QUE ESTIRA EL FIN DE OBRA)' : ''}\n  ${h.resumen}\n  perillas:\n${perillas}`;
+  }).join('\n');
+  return `Sos un jefe de obra de una constructora peruana con años de obras públicas. Te paso la plata que el plan de compras de UNA obra pide cada mes según su cronograma (Gantt) y un catálogo CERRADO de historias de cómo puede ir una obra en la realidad. Elegí la historia más plausible o más útil de simular para ESTA obra, fijá sus perillas dentro de los rangos y contala.
+
+CATÁLOGO (no hay otras):
+${catalogo}
+
+Las fracciones son del plazo que queda por delante (0.25 = a un cuarto del plazo). El ritmo 1 es el del Gantt; 0.5 es la mitad. El ritmo del cierre NO lo elegís vos: lo calcula el sistema para terminar en fecha.
+
+🔴 "historia" tiene que ser EXACTAMENTE uno de los id del catálogo.
+🔴 Cada perilla de "ajustes" tiene que estar dentro de su rango. Poné TODAS las perillas de la historia que elegiste, y ninguna de otra.
+🔴 NUNCA pongas una fecha (ni día, ni año): las fechas las calcula el sistema con lo que elijas. Podés nombrar meses que aparecen en la plata por mes.
+🔴 NUNCA inventes montos: si citás plata, que sea de la que te paso.
+Si la persona escribió qué le preocupa, eso manda sobre tu propia lectura.
+
+DEVOLVÉ SOLO JSON VÁLIDO, sin markdown y sin texto antes ni después:
+{
+  "historia": "frenazo",
+  "ajustes": { "inicio": 0.35, "duracion": 0.25, "ritmo": 0.5, "cuotaCaras": 0.4 },
+  "relato": "La obra arranca bien, pero cuando llega el grueso de las valorizaciones la entidad se atrasa en pagar y la marcha baja a la mitad. Con la caja apretada se sigue con lo barato y lo caro espera. Cuando entra la plata hay que apurar para cerrar en fecha.",
+  "porQue": "El plan concentra la plata en los últimos meses: es justo donde un atraso de pagos más duele."
+}
+"relato": 2 a 4 oraciones, en castellano de Perú, concretas. "porQue": 1 o 2 oraciones sobre por qué ésta para esta obra.`;
+}
+
+export function userPromptHistoria(contexto = {}) {
+  const c = contexto || {};
+  const p = [];
+  p.push(`OBRA: ${sanitizeForPrompt(c.obra || '(sin nombre)', 160)}`);
+  if (c.plazoInicio || c.plazoFin) p.push(`PLAZO: ${c.plazoInicio || '?'} a ${c.plazoFin || '?'}`);
+  p.push(c.modo === 'real'
+    ? `MODO: según lo real — la historia corre desde hoy${c.desde ? ` (${c.desde})` : ''} hasta el fin; lo anterior ya pasó.`
+    : 'MODO: simulación — la historia cubre la obra entera.');
+  if (c.comprableMiles != null) p.push(`PRESUPUESTO COMPRABLE: S/ ${Number(c.comprableMiles).toLocaleString('es-PE')} mil`);
+  p.push('');
+  p.push('PLATA QUE PIDE EL PLAN CADA MES CON EL GANTT (miles de soles):');
+  const meses = Array.isArray(c.meses) ? c.meses.slice(0, 48) : [];
+  if (!meses.length) p.push('(sin datos por mes)');
+  for (const m of meses) {
+    if (!m || !/^\d{4}-\d{2}$/.test(String(m.mes))) continue;
+    p.push(`- ${m.mes}: ${Math.round(Number(m.miles) || 0).toLocaleString('es-PE')}`);
+  }
+  const preocupa = sanitizeForPrompt(String(c.preocupacion || ''), LARGO_PREOCUPACION).trim();
+  if (preocupa) {
+    p.push('');
+    p.push(`LO QUE LE PREOCUPA A QUIEN PLANIFICA: ${preocupa}`);
+  }
+  return p.join('\n');
+}
+
+/**
+ * Rama de `handler` para `action:'elegir_historia_simulador'` (tanda 3.4).
+ * Nunca bloquea: sin IA responde 200 con `historia:null` y el motivo — la
+ * pantalla sigue con la historia que ya tenía (la del sorteo).
+ */
+export async function handleElegirHistoria(req, res, body) {
+  const contexto = (body?.contexto && typeof body.contexto === 'object') ? body.contexto : null;
+  if (!contexto || !Array.isArray(contexto.meses) || !contexto.meses.length) {
+    return res.status(422).json({ error: 'Falta la plata por mes del plan: sin eso no hay qué leer.' });
+  }
+
+  const sinIA = (motivo) => res.status(200).json({ result: { historia: null }, motivo, model: null, costo: 0 });
+
+  const cfg = leerConfig();
+  if (!cfg.activo) return sinIA('la IA no está configurada en el servidor');
+
+  const deadline = Date.now() + 25_000;
+  const cadena = armarCadenaOpenRouter('auto', cfg);
+  try {
+    const data = await openrouterChat(cfg.apiKey, construirCuerpo({
+      modelo: cadena.modelo,
+      respaldos: cadena.respaldos,
+      politica: cfg.politica,
+      system: systemPromptHistoria(),
+      user: userPromptHistoria(contexto),
+      // Un id, cuatro números y dos párrafos cortos. Igual que la acción 2,
+      // el techo es por el razonamiento de los gratuitos, no por el JSON.
+      maxTokens: 2000,
+      razonamiento: 'bajo',
+    }), deadline);
+
+    const r = normalizarRespuesta(data);
+    if (r.stop_reason === 'max_tokens') return sinIA('la respuesta de la IA se cortó');
+    const crudo = jsonDeTexto(r.content?.[0]?.text || '');
+    if (!crudo) return sinIA('la IA no devolvió un resultado legible');
+    const limpio = sanearHistoriaIA(crudo);
+    if (!limpio) return sinIA('la IA eligió una historia que no está en el catálogo');
+
+    return res.status(200).json({ result: limpio, model: r.model || cadena.modelo, costo: r.costo });
+  } catch (e) {
+    console.warn('[asistente-solicitud] historia: IA falló:', e?.upstreamStatus || e?.name || e?.message);
+    try {
+      return sinIA('la IA no respondió');
+    } catch (e2) {
+      const s2 = sanitizeError(e2, 'No se pudo pedir la historia');
+      return res.status(s2.status).json(s2.body);
+    }
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método no permitido' });
 
@@ -510,6 +633,14 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Tu rol no puede pedir recomendaciones del simulador de órdenes.' });
     }
     return handleRecomendarEnfoque(req, res, body);
+  }
+
+  // ── ACCIÓN 3 (tanda 3.4): elegir y contar la historia del cronograma ──
+  if (body.action === 'elegir_historia_simulador') {
+    if (!ROLES_ENFOQUES.includes(rol)) {
+      return res.status(403).json({ error: 'Tu rol no puede pedir historias del simulador de órdenes.' });
+    }
+    return handleElegirHistoria(req, res, body);
   }
 
   if (!ROLES.includes(rol)) {

@@ -49,8 +49,8 @@ import { FRECUENCIAS, FRECUENCIA_DEFAULT } from './simulador-consolidacion.js';
 import { RUBRO_COMPRA_POR_ID } from './indices-unificados-iupc.js';
 import { hoyLocal } from './fecha.js';
 import {
-  HISTORIA_AZAR, HISTORIA_IDS, semillaValida, normalizarAjustesHistoria,
-} from './simulador-cronograma.js';
+  HISTORIA_AZAR, HISTORIA_IDS, semillaValida, normalizarAjustesHistoria, normalizarRelatoIA,
+} from './simulador-historias.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -413,6 +413,10 @@ export function nuevoEscenario({ nombre = '', params = null, obraId = null, hoy 
     // mano contra su techo. Por eso llevan su propio carril.
     sobres: {},
     notas: '',
+    // Tanda 3.4: el relato de la historia que eligió la IA. Va con el
+    // escenario y no en sus params: no es una perilla, es lo que se dijo
+    // sobre ellas (y solo se muestra mientras sigan siendo ésas).
+    relatoIA: null,
   };
 }
 
@@ -453,7 +457,25 @@ export function normalizarEscenario(e = {}, { obraId = null } = {}) {
     ediciones: (e.ediciones && typeof e.ediciones === 'object') ? { ...e.ediciones } : {},
     sobres,
     notas: String(e.notas || ''),
+    relatoIA: normalizarRelatoIA(e.relatoIA),
   };
+}
+
+/**
+ * Aplica lo que eligió la IA (tanda 3.4): la historia y TODAS sus perillas
+ * pasan a los params — así la semilla ya no decide nada de esa historia — y
+ * el relato queda guardado al lado. `valores` son las perillas completas
+ * (lo que la IA no fijó, completado con el sorteo), para que el relato
+ * describa exactamente lo que se simula.
+ */
+export function conHistoriaIA(esc, { historia, valores, relato = '', porQue = '', model = null, fecha = null } = {}) {
+  const relatoIA = normalizarRelatoIA({ historia, ajustes: valores, relato, porQue, model, fecha: fecha || hoyLocal() });
+  if (!relatoIA) return esc;
+  return tocado({
+    ...esc,
+    params: normalizarParams({ ...esc.params, cronograma: 'escenario', historia, historiaAjustes: relatoIA.ajustes }),
+    relatoIA,
+  });
 }
 
 const tocado = (esc) => ({ ...esc, actualizado: hoyLocal() });

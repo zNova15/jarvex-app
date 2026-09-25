@@ -1122,3 +1122,43 @@ amontonamiento del final que Gabriel vio en el Gantt (§15.1 punto 4).
    está amontonado al final y en el tramo del frenazo (jul-set) cae una
    sola partida cara (el tijeral, S/ 39.460). El frenazo se nota por el
    ritmo, no por las caras; en modo real, desde hoy, sí se notan.
+
+**Tanda 3.4 HECHA el 25-set** (en staging). La IA elige y cuenta la historia;
+nunca pone una fecha. Tests en `simulador-historias.test.js` (19, con la red
+simulada) y en la pantalla. Sin migración. Lo que se hizo y lo que la tanda
+tuvo que decidir:
+
+- **El catálogo se mudó a una lib hoja**, `simulador-historias.js` (cero
+  imports; `simulador-cronograma.js` lo re-exporta). El endpoint la importa
+  para validar contra el catálogo REAL y no contra una copia del cliente, sin
+  arrastrar el motor ni el diccionario del IUPC a la función de Vercel —
+  mismo caso que `match-solicitud.js`. Un test verifica que siga sin imports.
+- **Acción `elegir_historia_simulador`** multiplexada en
+  `api/asistente-solicitud.js`, misma allowlist que la 2.6 y mismo OpenRouter
+  gratis. El prompt se arma del catálogo (ids, resúmenes, rangos con su paso).
+- **Lo que la IA ve** (`contextoParaHistoria`): nombre, plazo, desde cuándo
+  corre la historia, lo comprable y la plata por mes CON EL GANTT (la curva
+  de base de la 3.3), en miles. Ninguna partida ni insumo.
+- **Una entrada nueva, opcional:** «¿Qué te preocupa de esta obra?». Sin
+  ella, la IA solo tiene la forma de la curva para elegir y casi siempre
+  elegiría lo mismo; con ella («la entidad paga tarde a fin de año») la
+  elección tiene contra qué razonar. Manda sobre la lectura propia de la IA.
+- **Tres frenos, en servidor Y cliente** (`sanearHistoriaIA`): id fuera del
+  catálogo → se descarta todo; perilla fuera de rango → se recorta y se pega
+  al paso; oración con una fecha puntual (día, dd/mm o año) → se tira.
+  Nombrar un mes se permite: es leer la curva que se le dio.
+- **Lo que la IA no fijó se completa con el sorteo** y TODAS las perillas
+  pasan a `historiaAjustes`: el relato describe exactamente lo que se
+  simula. El relato se guarda en el escenario (`relatoIA`, no en params: no
+  es una perilla) y solo se muestra mientras la historia y las perillas
+  sigan siendo ésas (`relatoIAVigente`); «🎲 Otro» lo apaga. «Guardar
+  como…» lo copia.
+- En la tarjeta, el relato de la IA va arriba y dice lo que es («la IA eligió
+  la historia y sus perillas; las fechas, los ritmos y la plata de abajo los
+  calculó el sistema»); el relato determinístico, con las fechas, sigue
+  abajo. Nunca se llama sola: es un botón, con anti doble-click por ref.
+
+**Sin probar contra el modelo real:** los tests simulan la respuesta de
+OpenRouter. La primera prueba en el preview dice si el modelo gratuito
+respeta el formato; si no, el botón responde «no se consiguió una historia»
+y queda la del sorteo.

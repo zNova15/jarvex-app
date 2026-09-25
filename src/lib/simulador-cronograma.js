@@ -25,6 +25,18 @@ import {
   periodosEntre, rangoDePeriodo, mesDePeriodo, etiquetaPeriodo,
 } from './simulador-ordenes.js';
 import { hoyLocal } from './fecha.js';
+import {
+  HISTORIAS, HISTORIA_IDS, HISTORIA_POR_ID, HISTORIA_AZAR,
+  semillaValida, valorEnRango, normalizarAjustesHistoria,
+} from './simulador-historias.js';
+
+// El catálogo vive en una lib hoja (sin imports) desde la tanda 3.4: el
+// endpoint de la IA lo importa para validar lo que ella elige, y no puede
+// arrastrar el motor de órdenes. Se re-exporta para no romper a nadie.
+export {
+  HISTORIAS, HISTORIA_IDS, HISTORIA_POR_ID, HISTORIA_AZAR,
+  semillaValida, valorEnRango, normalizarAjustesHistoria,
+};
 
 const DIA_MS = 86400000;
 const esYmd = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v);
@@ -178,121 +190,9 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const redondear = (n, d = 2) => { const f = 10 ** d; return Math.round((num(n) + Number.EPSILON) * f) / f; };
 const vivas = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 
-export const HISTORIA_AZAR = 'azar';
-
 /** Ningún tramo (fijo o calculado) puede quedar fuera de esto. */
 export const RITMO_MIN = 0.3;
 export const RITMO_MAX = 2;
-
-/**
- * El catálogo CERRADO de historias. Cada una:
- *   · `rangos`: las perillas que la semilla (o la IA) elige, con su paso;
- *   · `tramos(v)`: la curva de ritmo, en fracciones del plazo del escenario
- *     (`hasta` crece hasta 1). `ritmo: null` = se calcula para cerrar en fecha.
- *     `caja: 'apretada'` = las caras esperan (si hay plata más adelante).
- *   · `estira: true` solo en la que mueve el fin.
- */
-export const HISTORIAS = [
-  {
-    id: 'frenazo',
-    etiqueta: 'Frenazo a mitad de obra',
-    icono: '🛑',
-    resumen: 'Arranca con buena caja; a mitad de obra se atrasan los pagos y se baja la marcha; cuando pagan, se acelera para terminar en fecha.',
-    rangos: {
-      inicio: { min: 0.25, max: 0.40, paso: 0.05, que: 'cuándo empieza el frenazo (fracción del plazo)' },
-      duracion: { min: 0.20, max: 0.30, paso: 0.05, que: 'cuánto dura el frenazo (fracción del plazo)' },
-      ritmo: { min: 0.45, max: 0.70, paso: 0.05, que: 'ritmo durante el frenazo (1 = el del Gantt)' },
-      cuotaCaras: { min: 0.30, max: 0.50, paso: 0.05, que: 'qué parte de la plata cuenta como partidas caras' },
-    },
-    tramos: (v) => [
-      { hasta: v.inicio, ritmo: 1, caja: 'normal', nombre: 'Arranque al ritmo del Gantt' },
-      { hasta: v.inicio + v.duracion, ritmo: v.ritmo, caja: 'apretada', nombre: 'Frenazo: no pagan' },
-      { hasta: 1, ritmo: null, caja: 'normal', nombre: 'Pagan: se recupera' },
-    ],
-  },
-  {
-    id: 'arranque_lento',
-    etiqueta: 'Arranque lento',
-    icono: '🐢',
-    resumen: 'El adelanto no llega a tiempo (o los permisos, o la movilización): los primeros meses se avanza despacio y después hay que recuperar.',
-    rangos: {
-      hasta: { min: 0.15, max: 0.30, paso: 0.05, que: 'hasta dónde dura el arranque lento (fracción del plazo)' },
-      ritmo: { min: 0.40, max: 0.70, paso: 0.05, que: 'ritmo del arranque (1 = el del Gantt)' },
-      cuotaCaras: { min: 0.30, max: 0.50, paso: 0.05, que: 'qué parte de la plata cuenta como partidas caras' },
-    },
-    tramos: (v) => [
-      { hasta: v.hasta, ritmo: v.ritmo, caja: 'apretada', nombre: 'Arranque lento' },
-      { hasta: 1, ritmo: null, caja: 'normal', nombre: 'Llega la plata: se recupera' },
-    ],
-  },
-  {
-    id: 'tirones',
-    etiqueta: 'Pagos a los tirones',
-    icono: '📶',
-    resumen: 'Cada valorización se paga tarde: la obra se frena unas semanas cada vez y retoma cuando entra la plata, un poco más rápido para no quedar atrás.',
-    rangos: {
-      cortes: { min: 2, max: 3, paso: 1, que: 'cuántas veces se corta la plata' },
-      duracion: { min: 0.06, max: 0.10, paso: 0.01, que: 'cuánto dura cada corte (fracción del plazo)' },
-      ritmo: { min: 0.30, max: 0.60, paso: 0.05, que: 'ritmo durante cada corte (1 = el del Gantt)' },
-      cuotaCaras: { min: 0.30, max: 0.50, paso: 0.05, que: 'qué parte de la plata cuenta como partidas caras' },
-    },
-    tramos: (v) => {
-      const n = Math.round(v.cortes);
-      const out = [];
-      for (let k = 1; k <= n; k += 1) {
-        const centro = k / (n + 1);
-        out.push({ hasta: centro - v.duracion / 2, ritmo: k === 1 ? 1 : null, caja: 'normal', nombre: k === 1 ? 'Arranque al ritmo del Gantt' : 'Entra la plata: retoma' });
-        out.push({ hasta: centro + v.duracion / 2, ritmo: v.ritmo, caja: 'apretada', nombre: `Corte ${k}: la valorización no se paga` });
-      }
-      out.push({ hasta: 1, ritmo: null, caja: 'normal', nombre: 'Entra la plata: cierre' });
-      return out;
-    },
-  },
-  {
-    id: 'adelantada',
-    etiqueta: 'Obra adelantada',
-    icono: '🚀',
-    resumen: 'Se entra fuerte al principio para no amontonar el final: los primeros meses se avanza más rápido que el Gantt y el cierre queda holgado.',
-    rangos: {
-      hasta: { min: 0.30, max: 0.50, paso: 0.05, que: 'hasta dónde dura el arranque fuerte (fracción del plazo)' },
-      ritmo: { min: 1.20, max: 1.50, paso: 0.05, que: 'ritmo del arranque fuerte (1 = el del Gantt)' },
-    },
-    tramos: (v) => [
-      { hasta: v.hasta, ritmo: v.ritmo, caja: 'normal', nombre: 'Arranque fuerte' },
-      { hasta: 1, ritmo: null, caja: 'normal', nombre: 'Cierre holgado' },
-    ],
-  },
-  {
-    id: 'cierre_apurado',
-    etiqueta: 'Todo para el final',
-    icono: '⏰',
-    resumen: 'La obra va tranquila la mayor parte del plazo y se aprieta en los últimos meses para llegar.',
-    rangos: {
-      hasta: { min: 0.55, max: 0.70, paso: 0.05, que: 'hasta dónde va tranquila (fracción del plazo)' },
-      ritmo: { min: 0.80, max: 0.90, paso: 0.05, que: 'ritmo de la marcha tranquila (1 = el del Gantt)' },
-    },
-    tramos: (v) => [
-      { hasta: v.hasta, ritmo: v.ritmo, caja: 'normal', nombre: 'Marcha tranquila' },
-      { hasta: 1, ritmo: null, caja: 'normal', nombre: 'Cierre apurado' },
-    ],
-  },
-  {
-    id: 'atraso_todo',
-    etiqueta: 'Pagos atrasados todo el plazo',
-    icono: '📉',
-    estira: true,
-    resumen: 'Los pagos llegan tarde de principio a fin y la obra no alcanza a recuperar: avanza más lento todo el tiempo y el fin se estira. Es la única historia que mueve la fecha de fin.',
-    rangos: {
-      ritmo: { min: 0.70, max: 0.90, paso: 0.05, que: 'ritmo de toda la obra (1 = el del Gantt)' },
-    },
-    tramos: (v) => [
-      { hasta: 1, ritmo: v.ritmo, caja: 'apretada', nombre: 'Todo el plazo, más lento' },
-    ],
-  },
-];
-
-export const HISTORIA_IDS = HISTORIAS.map(h => h.id);
-export const HISTORIA_POR_ID = new Map(HISTORIAS.map(h => [h.id, h]));
 
 export const MOTIVO_SIN_HISTORIA_LABEL = {
   sin_cronograma: 'El trabajo no tiene plazo ni partidas con fecha: no hay cronograma sobre el cual contar una historia.',
@@ -301,12 +201,6 @@ export const MOTIVO_SIN_HISTORIA_LABEL = {
 };
 
 // ── Semilla ───────────────────────────────────────────────────────
-
-/** Una semilla válida: entero de 1 a 2.147.483.647. Cualquier otra cosa es 1. */
-export function semillaValida(s) {
-  const n = Math.floor(Number(s));
-  return Number.isFinite(n) && n >= 1 && n <= 2147483647 ? n : 1;
-}
 
 // FNV-1a de 32 bits + mulberry32: chico, determinístico y sin dependencias.
 // No es criptográfico ni hace falta: solo tiene que dar lo mismo dos veces.
@@ -323,15 +217,6 @@ function generador(texto) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-}
-
-/** Un valor dentro de un rango, pegado a su paso. Null si no es un número. */
-function alRango(v, { min, max, paso }) {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
-  const c = Math.min(max, Math.max(min, n));
-  return redondear(min + Math.round((c - min) / paso) * paso, 4);
 }
 
 /**
@@ -359,25 +244,10 @@ export function valoresDeHistoria(historia, semilla = 1, ajustes = null) {
     // perilla cambiaría lo que la semilla le da a las siguientes.
     const pasos = Math.round((rango.max - rango.min) / rango.paso);
     const sorteado = redondear(rango.min + Math.min(pasos, Math.floor(rnd() * (pasos + 1))) * rango.paso, 4);
-    const pedido = alRango(ajustes?.[clave], rango);
+    const pedido = valorEnRango(ajustes?.[clave], rango);
     if (pedido != null) { valores[clave] = pedido; ajustados.push(clave); } else valores[clave] = sorteado;
   }
   return { valores, ajustados };
-}
-
-/**
- * Los ajustes guardables de una historia: solo perillas que existen, dentro
- * de su rango. Con «al azar» no hay ajustes (no se sabe de qué historia).
- */
-export function normalizarAjustesHistoria(historiaId, ajustes) {
-  const h = HISTORIA_POR_ID.get(historiaId);
-  if (!h || !ajustes || typeof ajustes !== 'object') return {};
-  const out = [];
-  for (const [clave, rango] of Object.entries(h.rangos)) {
-    const v = alRango(ajustes[clave], rango);
-    if (v != null) out.push([clave, v]);
-  }
-  return Object.fromEntries(out);
 }
 
 // ── El frente ─────────────────────────────────────────────────────

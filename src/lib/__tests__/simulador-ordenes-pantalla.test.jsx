@@ -394,6 +394,10 @@ describe('la pantalla del Simulador de Órdenes', () => {
     it('con el reparto parejo, avisa que adentro de un tramo largo no se ve el ritmo', () => {
       expect(render()).toContain('Repartir según el escenario');
     });
+
+    it('sin relato de la IA guardado, no inventa uno', () => {
+      expect(render()).not.toContain('Cómo la cuenta la IA');
+    });
   });
 
   describe('con la historia que estira el fin', () => {
@@ -406,6 +410,37 @@ describe('la pantalla del Simulador de Órdenes', () => {
       expect(html).toContain('Es la única del catálogo que mueve la fecha de fin');
       // Ya reparte según el escenario: no hace falta sugerirlo.
       expect(html).not.toContain('Repartir según el escenario');
+    });
+  });
+
+  describe('con la historia que eligió la IA (tanda 3.4)', () => {
+    const VALORES = { inicio: 0.35, duracion: 0.25, ritmo: 0.5, cuotaCaras: 0.4 };
+    const RELATO = { historia: 'frenazo', ajustes: VALORES, relato: 'La entidad paga tarde y la obra se frena.', porQue: 'La plata está al final.', model: 'modelo-x' };
+    const ESC = [{
+      id: 'e1', nombre: 'IA', obra_id: OBRA, actualizado: '2026-10-01',
+      params: { modo: 'simulacion', cronograma: 'escenario', historia: 'frenazo', historiaAjustes: VALORES },
+      relatoIA: RELATO,
+    }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+
+    it('muestra el relato de la IA, dicho como lo que es', () => {
+      const html = render();
+      expect(html).toContain('Cómo la cuenta la IA');
+      expect(html).toContain('La entidad paga tarde y la obra se frena.');
+      expect(html).toContain('las fechas, los ritmos y la plata de abajo los calculó el sistema');
+      // El relato del sistema, con las fechas de verdad, sigue abajo.
+      expect(html).toContain('en la fecha del plazo');
+    });
+
+    it('ofrece pedirle otra historia a la IA, con lo que preocupa como opcional', () => {
+      const html = render();
+      expect(html).toContain('Que la IA elija la historia');
+      expect(html).toContain('¿Qué te preocupa de esta obra? (opcional)');
     });
   });
 

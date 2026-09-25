@@ -46,9 +46,11 @@ import {
   ALMACEN_MODOS, ALMACEN_MODO_LABEL, ALMACEN_MODOS_INSUMO,
 } from "../lib/simulador-ordenes.js";
 import {
-  armarCronograma, curvaDeCarga, fechaCorta,
-  HISTORIAS, HISTORIA_AZAR, MOTIVO_SIN_DESPLAZAR_LABEL, MOTIVO_SIN_HISTORIA_LABEL, NOTA_CRONOGRAMA_LABEL,
+  armarCronograma, curvaDeCarga, fechaCorta, valoresDeHistoria,
+  HISTORIAS, HISTORIA_AZAR, HISTORIA_POR_ID, MOTIVO_SIN_DESPLAZAR_LABEL, MOTIVO_SIN_HISTORIA_LABEL, NOTA_CRONOGRAMA_LABEL,
 } from "../lib/simulador-cronograma.js";
+import { contextoParaHistoria, relatoIAVigente, LARGO_PREOCUPACION } from "../lib/simulador-historias.js";
+import { elegirHistoriaConIA } from "../lib/simulador-historia-ai.js";
 import {
   catalogoDelPresupuesto, existenciasDelAlmacen, insumosCubiertosPorAlmacen,
 } from "../lib/simulador-imputacion.js";
@@ -64,7 +66,7 @@ import {
   PARAMS_DEFAULT, paramsDeMotor,
   MODOS, MODO_LABEL, ARRANQUES, ARRANQUE_LABEL, CRONOGRAMAS_PANTALLA, CRONOGRAMA_PANTALLA_LABEL, REPARTOS_PANTALLA,
   categoriaDePropuesta,
-  nuevoEscenario, conParams,
+  nuevoEscenario, conParams, conHistoriaIA,
   decidirPropuesta, decidirLinea, decidirPeriodo,
   editarLinea, limpiarEdicion, proveedorDePropuesta,
   decidirSobre, agregarLineaSobre, editarLineaSobre, quitarLineaSobre, proveedorDeSobre,
@@ -201,6 +203,13 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // nunca se pide sola.
   const [recoIA, setRecoIA] = uS(null);
   const [pidiendoIA, setPidiendoIA] = uS(false);
+  // Tanda 3.4: que la IA elija y cuente la historia del cronograma. Lo que
+  // le preocupa a Gabriel de la obra va con el pedido (opcional); el relato
+  // que vuelve se guarda con el escenario (`relatoIA`).
+  const [preocupacion, setPreocupacion] = uS('');
+  const [pidiendoHistoria, setPidiendoHistoria] = uS(false);
+  const [motivoHistoriaIA, setMotivoHistoriaIA] = uS(null);
+  const historiaIARef = uR(false);
 
   // ── Escenarios (localStorage, por obra) ───────────────────────────
   // El primer render ya lee lo guardado (sin esperar al efecto): si no, la
@@ -704,6 +713,39 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // Los ajustes fijados se sueltan: el sorteo nuevo es justamente lo pedido.
   const otraHistoria = () => cambiarParam({ semilla: semillaNueva(params.semilla), historiaAjustes: {} });
 
+  // «🤖 Que la IA elija la historia» (tanda 3.4). La IA ve la plata por mes
+  // con el Gantt, el plazo y lo que preocupa; devuelve un id del catálogo,
+  // perillas y relato, ya saneados dos veces (servidor y cliente). Lo que no
+  // fijó se completa con el sorteo, para que el relato describa EXACTAMENTE
+  // lo que se simula. Anti doble-click con ref síncrono (regla crítica 2):
+  // dos pedidos en vuelo pisarían la historia con la del que llegue último.
+  const pedirHistoriaIA = async () => {
+    if (historiaIARef.current || !curva) return;
+    historiaIARef.current = true;
+    setPidiendoHistoria(true);
+    setMotivoHistoriaIA(null);
+    try {
+      const contexto = contextoParaHistoria({
+        obraNombre: obra?.nombre_obra || obra?.nombre || '',
+        plazo: cron.desplazado?.plazo || plazo,
+        desde: historia?.desdeHoy ? historia.inicio : null,
+        modo: params.modo,
+        curva,
+        montoComprable: corrida?.resumen?.montoComprable ?? null,
+        preocupacion,
+      });
+      const r = await elegirHistoriaConIA(contexto);
+      if (!r.historia) { setMotivoHistoriaIA(r.motivo || 'la IA no respondió'); return; }
+      const h = HISTORIA_POR_ID.get(r.historia);
+      const { valores } = valoresDeHistoria(h, params.semilla, r.ajustes);
+      mutar(e => conHistoriaIA(e, { ...r, valores }));
+      toast(`La IA eligió «${h.etiqueta}»: las fechas y la plata las recalculó el sistema`, 'green');
+    } finally {
+      historiaIARef.current = false;
+      setPidiendoHistoria(false);
+    }
+  };
+
   // Vale para ese insumo en TODOS los meses y escenarios de la obra.
   const cambiarCompra = uC((clave, patch) => {
     if (!obraId || !clave) return;
@@ -758,7 +800,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     if (!base) return;
     const nombre = (window.prompt?.('Nombre del escenario nuevo:', `${base.nombre} (copia)`) || '').trim();
     if (!nombre) return;
-    const copia = { ...nuevoEscenario({ nombre, obraId, params: base.params }), decisiones: base.decisiones, ediciones: base.ediciones, sobres: base.sobres };
+    const copia = { ...nuevoEscenario({ nombre, obraId, params: base.params }), decisiones: base.decisiones, ediciones: base.ediciones, sobres: base.sobres, relatoIA: base.relatoIA || null };
     const lista = guardarEscenario(obraId, copia);
     setEscenarios(lista);
     escRef.current = copia;
@@ -1280,6 +1322,12 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
           reparto={params.reparto}
           onRepartoEscenario={() => cambiarParam({ reparto: 'escenario' })}
           onOtra={otraHistoria}
+          relatoIA={relatoIAVigente(escenario?.relatoIA, params) ? escenario.relatoIA : null}
+          preocupacion={preocupacion}
+          onPreocupacion={setPreocupacion}
+          onPedirIA={pedirHistoriaIA}
+          pidiendoIA={pidiendoHistoria}
+          motivoIA={motivoHistoriaIA}
         />
       )}
 
@@ -2757,7 +2805,10 @@ function PersonalizadoAlmacen({ cubiertos, porInsumo, onParam }) {
 // `curvaDeCarga()`: acá no se calcula nada.
 // ═══════════════════════════════════════════════════════════════════
 
-function HistoriaDelEscenario({ historia, curva, reparto, onRepartoEscenario, onOtra }) {
+function HistoriaDelEscenario({
+  historia, curva, reparto, onRepartoEscenario, onOtra,
+  relatoIA = null, preocupacion = '', onPreocupacion, onPedirIA, pidiendoIA = false, motivoIA = null,
+}) {
   const h = historia.historia;
   if (!historia.activo) {
     return (
@@ -2787,9 +2838,41 @@ function HistoriaDelEscenario({ historia, curva, reparto, onRepartoEscenario, on
         </button>
       </div>
 
+      {/* Tanda 3.4: el relato de la IA, si esta historia la eligió ella. Va
+          ARRIBA del relato del sistema y dicho como lo que es: la IA eligió
+          y contó; las fechas y la plata de abajo son del motor. */}
+      {relatoIA && (
+        <div style={{ fontSize: 12, border: '1px solid var(--border-a)', borderRadius: 6, padding: 10, display: 'grid', gap: 4 }}>
+          <b style={{ fontSize: 11.5 }}>🤖 Cómo la cuenta la IA</b>
+          {relatoIA.relato && <p style={{ margin: 0, color: 'var(--ts)' }}>{relatoIA.relato}</p>}
+          {relatoIA.porQue && <p style={{ margin: 0, color: 'var(--tm)' }}><b>Por qué ésta:</b> {relatoIA.porQue}</p>}
+          <p style={{ margin: 0, fontSize: 10.5, color: 'var(--tm)' }}>
+            La IA eligió la historia y sus perillas; las fechas, los ritmos y la plata de abajo los calculó el sistema.
+            {relatoIA.model ? ` · ${relatoIA.model}` : ''}
+          </p>
+        </div>
+      )}
+
       <div style={{ fontSize: 12, color: 'var(--ts)', display: 'grid', gap: 4 }}>
         {historia.relato.map((frase, i) => <p key={i} style={{ margin: 0 }}>{frase}</p>)}
       </div>
+
+      {onPedirIA && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <input className="fi" style={{ flex: '1 1 260px' }} maxLength={LARGO_PREOCUPACION}
+            placeholder="¿Qué te preocupa de esta obra? (opcional) — ej.: la entidad paga tarde a fin de año"
+            value={preocupacion} onChange={e => onPreocupacion?.(e.target.value)} />
+          <button className="btn btn-sm btn-amber" disabled={pidiendoIA || !curva} onClick={onPedirIA}
+            title="La IA lee la plata por mes y lo que escribiste, elige una historia del catálogo y la cuenta. Nunca pone una fecha.">
+            {pidiendoIA ? 'Pensando…' : '🤖 Que la IA elija la historia'}
+          </button>
+          {motivoIA && (
+            <span style={{ fontSize: 11.5, color: 'var(--tm)', flexBasis: '100%' }}>
+              No se consiguió una historia de la IA ({motivoIA}). Sigue puesta la del sorteo.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Los tramos, a escala de días: dónde se frena y dónde se acelera. */}
       <div>
