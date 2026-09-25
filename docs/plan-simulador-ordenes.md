@@ -1333,7 +1333,7 @@ en mayo.
 | 4.2 | ~~Perilla «qué cuenta como ya comprado» + borrador fuera + factura una vez + descuento real también en Simulación + almacén `nada` por defecto en Simulación + regla derivada 16.2 + fix 16.1 #6 y #7~~ — HECHA (25-set, en staging) | Opus 5.5 / alto / sesión nueva |
 | 4.3 | ~~«Cerrar mes»: meses congelados como entrada del motor, rechazos y anulados de meses cerrados repartidos en los abiertos por estrategia, identidad estable de las decisiones (16.1 #5)~~ — HECHA (25-set, en staging) | Opus 5.5 / extra alto / misma sesión que 4.2 |
 | 4.4 | ~~Pre-órdenes editables, fecha y unidad por línea (posible migración chica). *Ajustado el 25-set:* «desde los dos modos» ya lo resolvió la 4.2 (la Simulación convierte), y el cierre de mes (4.3) ya escribe las pre-órdenes — falta EDITARLAS~~ — HECHA (25-set, en staging, mig 230) | Opus 5.5 / alto / sesión nueva |
-| 4.5 | Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan + ayuda. *Ajustado el 25-set:* «anulada → vuelve al plan» ya funciona (4.2 libera la requisición, 4.3 la reprograma si su mes estaba cerrado); falta MOSTRARLO en la lista de pre-órdenes | Opus 5.5 / alto / misma sesión que 4.4 |
+| 4.5 | ~~Emitir en lote (correlativo, logo, PDF) + estado de cada pre-orden en el plan + ayuda. *Ajustado el 25-set:* «anulada → vuelve al plan» ya funciona (4.2 libera la requisición, 4.3 la reprograma si su mes estaba cerrado); falta MOSTRARLO en la lista de pre-órdenes~~ — HECHA (25-set, en staging). **RONDA 4 COMPLETA** | Opus 5.5 / alto / misma sesión que 4.4 |
 
 Después: probar el preview y promover ronda 3 + ronda 4 a main.
 
@@ -1506,4 +1506,42 @@ otra PC) y el sugerido, en `notas` de cada línea.
   saca del plan por `pedidoSinCodigo` del cierre (localStorage), no por la
   requisición: descartar una pre-orden no lo devuelve al plan mientras el mes
   siga cerrado. Reabrir el mes sí.
-- Falta la 4.5: emitir en lote + estado de cada pre-orden en el plan.
+
+### 16.9 — Tanda 4.5, qué quedó (25-set-2026) — ronda 4 completa
+
+- **Emitir en lote** (`emitirLote`, `simulador-puente.js`, puro): recibe las
+  pre-órdenes marcadas y las numera UNA vez sobre un acumulador local (la
+  regla de `numerarOrden`), por fecha de necesidad ascendente. La que no se
+  puede emitir (sin proveedor, sin precios, ya ordenada, empresa que no es la
+  ejecutora) sale por `rechazadas` con su motivo y **no consume número**. OC y
+  OS llevan cada una su numeración. La pantalla muestra en la confirmación
+  qué código toma cada una y escribe exactamente eso (no recalcula después
+  del «sí»). Si Dexie falla a mitad, lo escrito queda escrito y el aviso dice
+  hasta dónde llegó.
+- **Qué se puede marcar:** solo las pre-órdenes LISTAS (proveedor + al menos
+  una línea con precio). «Marcar las N listas» existe porque lo que llega
+  acá ya se aceptó al cerrar el mes y se corrigió: no es el «emitir todo»
+  sobre tarjetas sin mirar que la tanda 4 original evitaba.
+- **El proveedor de cada pre-orden** subió de la fila a la lista: el lote lo
+  necesita para las que no se abrieron (elegido al editar → sugerido).
+- **La fecha de la orden es la de hoy.** Hasta acá la emisión de a una
+  tomaba `requisicion.fecha` (el día en que se escribió la pre-orden).
+- **PDF:** el mismo `generateOrdenPdf` de Órdenes (logo, RUC, numeración). Al
+  terminar, «Descargar el PDF» o «Descargar los N PDF (.zip)» (jszip, que
+  ya estaba como chunk: el navegador bloquea diez descargas seguidas); cada
+  emitida tiene además su botón «PDF».
+- **Estado de cada pre-orden** (`estadoDePreorden` / `historialDelPlan`):
+  pre-orden · emitida (con el estado de la orden: por confirmar, firmada,
+  recibida…) · sin bajar (emitida en otra PC) · anulada · descartada ·
+  cancelada. «Ya pedido» se divide en Por emitir / Emitidas / Volvieron al
+  plan (plegado), y la tarjeta de cada propuesta dice lo mismo.
+- **Las órdenes borradas también liberan:** la pantalla filtraba las borradas
+  antes de `aplicarAnulaciones`, así que una orden borrada (no anulada)
+  dejaba la requisición «ordenada» para siempre. Ahora se le pasan todas
+  (`ordenesTodas`). La numeración no cambia: `siguienteCorrelativo` ya
+  ignoraba las borradas.
+- `MOTIVO_DESCARTE` se mudó al puente (lo lee el estado); `simulador-preordenes.js`
+  lo re-exporta.
+- Tests: `simulador-emision-lote.test.js` (17) + 4 de pantalla nuevos.
+- **Siguiente:** Gabriel prueba el preview y se promueven las rondas 3 y 4 a
+  main; después, la revisión exhaustiva.

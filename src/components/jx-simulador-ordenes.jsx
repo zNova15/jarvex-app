@@ -29,9 +29,11 @@
 //     deja la decisión guardada en el navegador. Desde la tanda 4 hay DOS
 //     botones más, y son dos pasos separados a propósito (ver el encabezado
 //     de `simulador-puente.js`): «Convertir en requisiciones» escribe el
-//     pedido —que se puede editar, borrar y rehacer—, y «Emitir la orden»,
-//     de a una, quema el correlativo de la ejecutora. Meterlos en un botón
-//     haría que aceptar 30 tarjetas queme 30 números que no se arreglan.
+//     pedido —que se puede editar, borrar y rehacer—, y «Emitir la orden»
+//     quema el correlativo de la ejecutora. Meterlos en un botón haría que
+//     aceptar 30 tarjetas queme 30 números que no se arreglan. Desde la 4.5
+//     se emiten VARIAS pre-órdenes juntas, pero solo las que se marcan una
+//     por una ya corregidas, y con la vista previa de los números.
 //  2. NO PROPONE MANO DE OBRA COMO ORDEN. La planilla no se compra (§5): va
 //     en su propia pestaña, como número de referencia contra el padrón real,
 //     y con la leyenda puesta.
@@ -89,6 +91,7 @@ import {
 import {
   armarRequisiciones, borradorDeOrdenDesdeRequisicion, cierreDeRequisicion,
   consumoDeSobres, estadoDelPlan, puedeEmitirOrden,
+  emitirLote, historialDelPlan,
   MOTIVO_NO_EMITE_LABEL, MOTIVO_OMITIDA_LABEL,
 } from "../lib/simulador-puente.js";
 import {
@@ -225,6 +228,11 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   // escribiría la misma versión dos veces.
   const preordenRef = uR(false);
   const [guardandoPre, setGuardandoPre] = uS(null);   // id de la requisición en curso
+  // Tanda 4.5: lo último que se emitió (para ofrecer sus PDF) y las órdenes
+  // CON las borradas — una orden borrada libera su requisición igual que
+  // una anulada, y sin verla la pre-orden diría «la orden no llegó».
+  const [ultimoLote, setUltimoLote] = uS(null);
+  const [ordenesTodas, setOrdenesTodas] = uS([]);
   // Tanda 2.5: el almacén de la obra (lo que entró y lo que hay). Imputar
   // sus ítems es la página aparte desde la tanda 3.2 (`ImputarComprasPage`).
   const [almacenCrudo, setAlmacenCrudo] = uS(null);
@@ -298,13 +306,14 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
         ]);
         if (!vivo) return;
         setOrdenes(o.filter(x => !x.deleted_at));
+        setOrdenesTodas(o);
         setOcItems(i.filter(x => !x.deleted_at));
         setProveedores(pv.filter(x => !x.deleted_at));
         setRequisiciones(rq.filter(x => !x.deleted_at));
         setReqItems(ri.filter(x => !x.deleted_at));
         setMovs(mv.filter(x => !x.deleted_at));
       } catch {
-        if (vivo) { setOrdenes([]); setOcItems([]); setProveedores([]); setRequisiciones([]); setReqItems([]); setMovs([]); }
+        if (vivo) { setOrdenes([]); setOrdenesTodas([]); setOcItems([]); setProveedores([]); setRequisiciones([]); setReqItems([]); setMovs([]); }
       }
     };
     cargar();
@@ -381,9 +390,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
   const requisicionesObra = uM(
     () => aplicarAnulaciones({
       requisiciones: requisiciones.filter(r => !obraId || r.obra_id === obraId),
-      ordenes,
+      ordenes: ordenesTodas,
     }),
-    [requisiciones, obraId, ordenes]
+    [requisiciones, obraId, ordenesTodas]
   );
   const reqItemsObra = uM(() => {
     const ids = new Set(requisicionesObra.map(r => r.id));
@@ -403,6 +412,25 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     () => estadoDelPlan({ requisiciones: requisicionesObra, requisicionItems: reqItemsObra }),
     [requisicionesObra, reqItemsObra]
   );
+
+  // Tanda 4.5: TODAS las requisiciones del plan con su estado —incluidas las
+  // que volvieron al plan— para «Ya pedido» y para que la tarjeta de cada
+  // propuesta diga en qué quedó su orden (por confirmar, recibida, anulada…).
+  const historial = uM(
+    () => historialDelPlan({ requisiciones: requisicionesObra, requisicionItems: reqItemsObra, ordenes: ordenesTodas }),
+    [requisicionesObra, reqItemsObra, ordenesTodas]
+  );
+  const estadoPorRef = uM(() => {
+    const m = new Map();
+    for (const h of historial) {
+      const ref = String(h.requisicion.origen_ref || '');
+      if (!ref) continue;
+      // Una viva le gana a una que volvió al plan (anulada y re-pedida).
+      const prev = m.get(ref);
+      if (!prev || (prev.estado.vuelveAlPlan && !h.estado.vuelveAlPlan)) m.set(ref, h);
+    }
+    return m;
+  }, [historial]);
 
   const plazo = uM(() => (obra?.fecha_inicio
     ? { inicio: obra.fecha_inicio, fin: obra.fecha_fin_estimada || obra.fecha_fin || null }
@@ -1112,18 +1140,62 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     toast(`${etiqueta} reabierto`, 'amber');
   };
 
+  // ── EMITIR: de a una o en lote (tanda 4.5) ────────────────────────
+  // La escritura es UNA para los dos caminos: la orden, sus líneas y el
+  // cierre de la requisición (el otro sentido del puente, sin el cual el plan
+  // sigue proponiendo lo que ya es un documento). Lanza si Dexie falla.
+  const escribirOrdenEmitida = async ({ requisicion, orden, items }) => {
+    const now = new Date().toISOString();
+    // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
+    // (mirá el esquema): mandarles esas columnas hace que el push las
+    // rechace entero. Por eso el autor se marca solo en las cabeceras.
+    const marca = (fila, tabla, { conAutor = false } = {}) => ({
+      ...fila,
+      created_at: now, updated_at: now,
+      // Las columnas de autor son uuid: sin sesión van NULL, no el
+      // literal 'offline' (que rebotaría con un 22P02).
+      ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
+      version: 1, sync_status: 'pending_create', last_synced_at: null,
+      idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
+    });
+    await window.__db.ordenes_compra.add(marca(orden, 'oc', { conAutor: true }));
+    for (const it of items) await window.__db.oc_items.add(marca(it, 'oc_item'));
+    const fresca = (await window.__db.requisiciones.get(requisicion.id)) || requisicion;
+    await window.__db.requisiciones.update(requisicion.id, {
+      ...cierreDeRequisicion(orden),
+      updated_at: now, updated_by: autorId,
+      version: (fresca.version ?? 0) + 1,
+      sync_status: fresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
+    });
+    try {
+      await window.__logAudit?.({
+        action: 'create', table: 'ordenes_compra', recordId: orden.id,
+        newData: { codigo: orden.codigo, monto_total: orden.monto_total, proveedor: orden.proveedor_nombre, requisicion_id: requisicion.id },
+        reason: `Orden ${orden.codigo} emitida desde el plan del simulador (${items.length} líneas)`,
+      });
+    } catch {}
+  };
+
+  const provDeTexto = (texto) => {
+    const p = resolverProveedor(texto);
+    return p.id || p.nombre ? { id: p.id, nombre: p.nombre } : null;
+  };
+
   const emitirOrden = async (requisicion, proveedorTexto) => {
     if (emitirRef.current) return;
     const items = reqItemsObra.filter(it => it.requisicion_id === requisicion.id);
-    const prov = resolverProveedor(proveedorTexto);
     const b = borradorDeOrdenDesdeRequisicion({
       requisicion, items,
       obra, consorcios: consHook.data || [],
       company: titular,
-      proveedor: prov.id || prov.nombre ? { id: prov.id, nombre: prov.nombre } : null,
+      proveedor: provDeTexto(proveedorTexto),
       // El correlativo se pide contra TODAS las órdenes de la empresa, no
       // contra las de esta obra: la numeración es por empresa/tipo/año.
       ordenes,
+      // La fecha de la orden es la de HOY, la de emisión. Hasta la 4.4
+      // tomaba la de la requisición: una pre-orden escrita el 25-set y
+      // emitida el 3-oct salía fechada en setiembre.
+      hoy: window.__fecha?.hoyLocal?.() || undefined,
       nuevoId: () => window.__newId(),
     });
     if (!b.ok) { toast(MOTIVO_NO_EMITE_LABEL[b.motivo] || 'No se puede emitir', 'amber'); return; }
@@ -1137,40 +1209,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     emitirRef.current = true;
     setEmitiendo(requisicion.id);
     try {
-      const now = new Date().toISOString();
-      // `requisicion_items` y `oc_items` NO tienen `created_by`/`updated_by`
-      // (mirá el esquema): mandarles esas columnas hace que el push las
-      // rechace entero. Por eso el autor se marca solo en las cabeceras.
-      const marca = (fila, tabla, { conAutor = false } = {}) => ({
-        ...fila,
-        created_at: now, updated_at: now,
-        // Las columnas de autor son uuid: sin sesión van NULL, no el
-        // literal 'offline' (que rebotaría con un 22P02).
-        ...(conAutor ? { created_by: autorId, updated_by: autorId } : {}),
-        version: 1, sync_status: 'pending_create', last_synced_at: null,
-        idempotency_key: `${userId || 'anon'}_${tabla}_${fila.id}`,
-      });
-      await window.__db.ordenes_compra.add(marca(b.orden, 'oc', { conAutor: true }));
-      for (const it of b.items) await window.__db.oc_items.add(marca(it, 'oc_item'));
-      // El otro sentido del puente: sin esto el plan sigue proponiendo lo que
-      // ya es un documento.
-      const fresca = (await window.__db.requisiciones.get(requisicion.id)) || requisicion;
-      await window.__db.requisiciones.update(requisicion.id, {
-        ...cierreDeRequisicion(b.orden),
-        updated_at: now, updated_by: autorId,
-        version: (fresca.version ?? 0) + 1,
-        sync_status: fresca.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-      });
-      try {
-        await window.__logAudit?.({
-          action: 'create', table: 'ordenes_compra', recordId: b.orden.id,
-          newData: { codigo: b.orden.codigo, monto_total: b.orden.monto_total, proveedor: b.orden.proveedor_nombre, requisicion_id: requisicion.id },
-          reason: `Orden ${b.orden.codigo} emitida desde el plan del simulador (${b.items.length} líneas)`,
-        });
-      } catch {}
-      for (const t of ['ordenes_compra', 'oc_items', 'requisiciones']) {
-        try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: t } })); } catch {}
-      }
+      await escribirOrdenEmitida({ requisicion, orden: b.orden, items: b.items });
+      avisarCambio(['ordenes_compra', 'oc_items', 'requisiciones']);
+      setUltimoLote({ ids: [b.orden.id], codigos: [b.orden.codigo] });
       toast(`✓ ${b.orden.codigo} emitida por ${soles(b.orden.monto_total)}`, 'green');
     } catch (e) {
       console.warn('[simulador] error al emitir la orden', e);
@@ -1181,6 +1222,97 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
     }
   };
 
+  // «Emitir seleccionadas» (§16.3). La confirmación lista QUÉ NÚMERO le toca
+  // a cada una ANTES de escribir, y se escribe exactamente eso: el lote se
+  // numera una sola vez (`emitirLote`), no se recalcula después del «sí».
+  const emitirSeleccionadas = async (seleccion) => {
+    if (emitirRef.current || !seleccion?.length) return;
+    const lote = emitirLote({
+      preordenes: seleccion.map(s => ({
+        requisicion: s.requisicion,
+        items: reqItemsObra.filter(it => it.requisicion_id === s.requisicion.id),
+        proveedor: provDeTexto(s.proveedorTexto),
+      })),
+      obra, consorcios: consHook.data || [], company: titular,
+      ordenes, hoy: window.__fecha?.hoyLocal?.() || undefined,
+      nuevoId: () => window.__newId(),
+    });
+    if (!lote.emitidas.length) {
+      const m = lote.rechazadas[0];
+      toast(m ? `No se puede emitir ninguna: ${MOTIVO_NO_EMITE_LABEL[m.motivo] || m.motivo}` : 'Nada para emitir', 'amber');
+      return;
+    }
+    const lineas = lote.emitidas.map(e => `• ${e.orden.codigo} → ${e.orden.proveedor_nombre} · ${soles(e.orden.monto_total)}`);
+    const fuera = lote.rechazadas.map(x => `• ${x.requisicion.descripcion || x.requisicion.origen_ref}: ${MOTIVO_NO_EMITE_LABEL[x.motivo] || x.motivo}`);
+    if (!window.confirm?.(
+      `Se van a emitir ${lote.resumen.ordenes} orden(es) a nombre de ${titular?.name || titular?.legal_name || 'la ejecutora'}`
+      + ` por ${soles(lote.resumen.monto)}:\n\n${lineas.join('\n')}`
+      + (fuera.length ? `\n\nNo se emiten (no toman número):\n${fuera.join('\n')}` : '')
+      + '\n\nLos números quedan tomados aunque después se anulen. ¿Emitir?'
+    )) return;
+
+    emitirRef.current = true;
+    setEmitiendo('__lote__');
+    const hechas = [];
+    try {
+      for (const e of lote.emitidas) {
+        await escribirOrdenEmitida(e);
+        hechas.push(e.orden);
+      }
+      toast(`✓ ${hechas.length} orden(es) emitidas por ${soles(lote.resumen.monto)}`, 'green');
+    } catch (err) {
+      console.warn('[simulador] error al emitir el lote', err);
+      // Lo escrito queda escrito (cada orden con su requisición cerrada): se
+      // dice hasta dónde llegó, para no volver a emitir las que ya salieron.
+      toast(`Se cortó en la orden ${hechas.length + 1} de ${lote.emitidas.length}: ${err?.message || err}. `
+        + `Las ${hechas.length} anteriores quedaron emitidas.`, 'red');
+    } finally {
+      if (hechas.length) {
+        avisarCambio(['ordenes_compra', 'oc_items', 'requisiciones']);
+        setUltimoLote({ ids: hechas.map(o => o.id), codigos: hechas.map(o => o.codigo) });
+      }
+      emitirRef.current = false;
+      setEmitiendo(null);
+    }
+  };
+
+  // ── LOS PDF (tanda 4.5): el mismo generador que Órdenes (logo, RUC y
+  // numeración de la ejecutora). Una orden se descarga suelta; varias van en
+  // un .zip, porque el navegador bloquea diez descargas seguidas.
+  const descargarPdfs = async (ids) => {
+    const gen = window.__pdfs?.generateOrdenPdf;
+    if (!gen) { toast('El generador de PDF no está cargado', 'red'); return; }
+    try {
+      const provPorId = new Map((proveedores || []).map(p => [p.id, p]));
+      const compDe = (id) => (compHook.data || []).find(c => c.id === id) || titular || {};
+      const docs = [];
+      for (const id of ids) {
+        const o = (await window.__db.ordenes_compra.get(id)) || ordenes.find(x => x.id === id);
+        if (!o) continue;
+        const items = (await window.__db.oc_items.where('orden_compra_id').equals(id).toArray()).filter(x => !x.deleted_at);
+        docs.push({ o, items });
+      }
+      if (!docs.length) { toast('No se encontraron las órdenes', 'amber'); return; }
+      const ctx = (o) => ({ company: compDe(o.company_id), obra, proveedor: provPorId.get(o.proveedor_id) || null });
+      if (docs.length === 1) { gen(docs[0].o, docs[0].items, ctx(docs[0].o)); return; }
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      for (const { o, items } of docs) {
+        const { doc, filename } = gen(o, items, ctx(o), { download: false });
+        zip.file(filename, doc.output('arraybuffer'));
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ordenes-${(obra?.nombre_obra || 'obra').replace(/[^\w-]+/g, '_').slice(0, 40)}-${window.__fecha?.hoyLocal?.() || ''}.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e) {
+      console.warn('[simulador] error al generar los PDF', e);
+      toast(`No se pudieron generar los PDF: ${e?.message || e}`, 'red');
+    }
+  };
 
   // ── EDITAR UNA PRE-ORDEN (tanda 4.4, §16.3) ───────────────────────
   // Lo que se escribe lo decide `cambiosDePreorden` (solo lo que cambió); acá
@@ -1875,6 +2007,7 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
                   }}
                   resolverProveedor={resolverProveedor}
                   yaEscrita={yaEscrito.get(p.id) || null}
+                  estadoPlan={estadoPorRef.get(p.id) || null}
                   sugeridos={sugerencias[p.id] || null}
                   stock={stockPlan?.porClave || null}
                   editando={editando} setEditando={setEditando}
@@ -1920,12 +2053,14 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
       {/* ═══ YA PEDIDO: lo que el plan escribió (tanda 4) ══════════ */}
       {!cargando && vistaActual === 'documentos' && (
         <DocumentosVista
-          yaEscrito={yaEscrito}
-          ordenes={ordenes}
+          historial={historial}
           titular={titular}
           permiso={permiso}
           emitiendo={emitiendo}
           onEmitir={emitirOrden}
+          onEmitirLote={emitirSeleccionadas}
+          onPdf={descargarPdfs}
+          ultimoLote={ultimoLote}
           guardando={guardandoPre}
           onGuardar={guardarPreorden}
           onDescartar={descartarPreorden}
@@ -1977,9 +2112,9 @@ function SimuladorOrdenesPage({ showToast, vistaInicial = 'ordenes', ajustesAbie
         <p style={{ fontSize: 11.5, color: 'var(--tm)', margin: '8px 0 0' }}>
           <b>Son dos pasos, y el primero se puede deshacer.</b> «Convertir en requisiciones» escribe el pedido en la
           base —ahí sí lo ve el resto del equipo y viaja entre computadoras—, pero todavía no es una orden: en <b>Ya pedido</b>
-          se corrige (✎ Editar pre-orden) o se descarta y vuelve al plan. Emitir la orden se hace de a una desde <b>Ya pedido</b>, porque toma un número
-          correlativo de {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora'} que no se recupera
-          aunque después se anule.
+          se corrige (✎ Editar pre-orden) o se descarta y vuelve al plan. Emitir la orden también se hace desde <b>Ya pedido</b>,
+          de a una o marcando varias, porque toma un número correlativo de {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora'}{' '}
+          que no se recupera aunque después se anule: antes de escribir se muestra qué número le toca a cada una.
         </p>
         {!permiso.ok && permiso.motivo !== 'sin_obra' && (
           <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '6px 0 0' }}>
@@ -2194,7 +2329,7 @@ function ChipPeriodo({ c, onClick, chico, principal }) {
 // UNA ORDEN PROPUESTA
 // ═══════════════════════════════════════════════════════════════════
 
-function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, sugeridos, stock, editando, setEditando, tope, onVerMas, onEnsenar, listId, opciones }) {
+function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea, onEditar, onLimpiar, onCompra, onProveedorOrden, resolverProveedor, yaEscrita, estadoPlan = null, sugeridos, stock, editando, setEditando, tope, onVerMas, onEnsenar, listId, opciones }) {
   const visibles = abierta ? p.lineas.slice(0, tope) : [];
   // «Clasificar» por ORDEN (tanda 4.1, §16.1 #3): todos los nombres distintos
   // que el motor no reconoció, para enseñarlos de una sola vez con el mismo
@@ -2264,8 +2399,14 @@ function PropuestaCard({ p, mezcla, abierta, onToggle, onDecidir, onDecidirLinea
           {yaEscrita && (
             <div style={{ fontSize: 10.5, color: yaEscrita.ordenada ? 'var(--green)' : 'var(--blue)', marginTop: 2 }}>
               {yaEscrita.ordenada
-                ? `✓ Ya emitida como ${yaEscrita.requisicion.oc_codigo || 'orden'}`
-                : `📄 Ya escrita como requisición · ${yaEscrita.items.length} línea(s) por ${soles(yaEscrita.monto)}`}
+                ? `✓ ${estadoPlan && !estadoPlan.estado.vuelveAlPlan ? estadoPlan.estado.texto : `Ya emitida como ${yaEscrita.requisicion.oc_codigo || 'orden'}`}`
+                : `📄 Ya es pre-orden (sin emitir) · ${yaEscrita.items.length} línea(s) por ${soles(yaEscrita.monto)}`}
+            </div>
+          )}
+          {!yaEscrita && estadoPlan?.estado.vuelveAlPlan && (
+            <div style={{ fontSize: 10.5, color: 'var(--tm)', marginTop: 2 }}
+              title="Lo que se había pedido para esta propuesta ya no reserva nada: por eso el plan la vuelve a proponer.">
+              ↺ {estadoPlan.estado.texto}
             </div>
           )}
         </div>
@@ -3242,20 +3383,49 @@ function PendientesVista({ pendientes }) {
 // ═══════════════════════════════════════════════════════════════════
 // YA PEDIDO — lo que el plan escribió en la base (tanda 4, §7)
 //
-// Es la única pestaña donde se emite un documento, y se emite de a UNA.
-// La lista de acá arriba puede tener 30 tarjetas; un botón de «emitir todo»
-// quemaría 30 correlativos de la ejecutora en un click, y un correlativo
-// gastado no se recupera aunque la orden se anule (ver `ordenes.js`).
+// Es la única pestaña donde se emite un documento. Hasta la 4.4 se emitía de
+// a UNA: un «emitir todo» sobre las tarjetas de arriba quemaba 30
+// correlativos de un plan sin mirar, y un correlativo gastado no se recupera
+// aunque la orden se anule (ver `ordenes.js`). Desde la 4.5 (§16.3) lo que
+// llega acá ya se aceptó al cerrar el mes y se corrigió como pre-orden, así
+// que se pueden marcar VARIAS y emitirlas juntas: solo las listas (con
+// proveedor y precios), y la confirmación dice qué número toma cada una.
 // ═══════════════════════════════════════════════════════════════════
 
-function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEmitir, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
-  const filas = uM(() => [...yaEscrito.values()]
-    .sort((a, b) => String(a.requisicion.fecha_necesidad || '').localeCompare(String(b.requisicion.fecha_necesidad || ''))),
-  [yaEscrito]);
+// ¿Se puede marcar para el lote? Pre-orden sin emitir, con a quién emitirla
+// y al menos una línea con precio: lo mismo que pide `borradorDeOrdenDesdeRequisicion`,
+// dicho antes para no ofrecer una casilla que después rebota.
+const listaParaEmitir = (f, provTexto) => f.estado.clave === 'preorden'
+  && !!String(provTexto || '').trim()
+  && f.items.some(it => num(it.cantidad) > 0 && num(it.precio_estimado) > 0);
 
-  const porId = uM(() => new Map((ordenes || []).map(o => [o.id, o])), [ordenes]);
+function DocumentosVista({ historial, titular, permiso, emitiendo, onEmitir, onEmitirLote, onPdf, ultimoLote, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
+  // El proveedor de cada pre-orden vive ACÁ y no en la fila: el lote lo
+  // necesita para las que no se abrieron. Arranca en el elegido al editar
+  // (mig 230) o en el sugerido por el escenario.
+  const [provs, setProvs] = uS({});
+  const [sel, setSel] = uS(() => new Set());
+  const [verVolvieron, setVerVolvieron] = uS(false);
+  const provDe = (f) => (provs[f.requisicion.id] ?? (f.requisicion.proveedor_nombre || proveedorSugeridoDeItems(f.items)));
 
-  if (!filas.length) {
+  const porEmitir = historial.filter(f => f.estado.clave === 'preorden');
+  const emitidas = historial.filter(f => f.ordenada);
+  const volvieron = historial.filter(f => f.estado.vuelveAlPlan);
+  const listas = porEmitir.filter(f => listaParaEmitir(f, provDe(f)));
+  // Una marca que dejó de valer (se emitió de a una, se descartó, se le
+  // borró el proveedor) no cuenta: el lote es siempre lo marcado Y listo.
+  const marcadas = listas.filter(f => sel.has(f.requisicion.id));
+  const montoPend = porEmitir.reduce((s, f) => s + num(f.monto), 0);
+  const montoSel = marcadas.reduce((s, f) => s + num(f.monto), 0);
+  const ocupadoLote = emitiendo === '__lote__';
+
+  const marcar = (id, on) => setSel(prev => {
+    const n = new Set(prev);
+    if (on) n.add(id); else n.delete(id);
+    return n;
+  });
+
+  if (!historial.length) {
     return (
       <div className="card card-p" style={{ textAlign: 'center', color: 'var(--tm)', padding: 24 }}>
         Todavía no se convirtió ninguna propuesta. Aceptá lo que corresponda arriba y usá «Convertir en requisiciones» o «Cerrar mes».
@@ -3263,20 +3433,36 @@ function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEm
     );
   }
 
-  const pendientes = filas.filter(f => !f.ordenada);
-  const emitidas = filas.filter(f => f.ordenada);
-  const montoPend = pendientes.reduce((s, f) => s + num(f.monto), 0);
+  const fila = (f) => (
+    <RequisicionFila
+      key={f.requisicion.id} f={f}
+      prov={provDe(f)} setProv={(v) => setProvs(p => ({ ...p, [f.requisicion.id]: v }))}
+      marcable={permiso.ok && listaParaEmitir(f, provDe(f))}
+      marcada={sel.has(f.requisicion.id)} onMarcar={(on) => marcar(f.requisicion.id, on)}
+      puedeEmitir={permiso.ok}
+      ocupado={emitiendo === f.requisicion.id || ocupadoLote}
+      onEmitir={(texto) => onEmitir(f.requisicion, texto)}
+      onPdf={onPdf}
+      guardando={guardando === f.requisicion.id}
+      onGuardar={onGuardar}
+      onDescartar={onDescartar}
+      insumoDe={insumoDe}
+      compras={compras}
+      hoy={hoy}
+    />
+  );
 
   return (
     <>
       <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--blue)' }}>
-        <b>{pendientes.length} pre-orden(es) por {soles(montoPend)} esperando orden · {emitidas.length} ya emitida(s).</b>
+        <b>{porEmitir.length} pre-orden(es) por {soles(montoPend)} esperando orden · {emitidas.length} ya emitida(s)
+          {volvieron.length ? ` · ${volvieron.length} volvieron al plan` : ''}.</b>
         <p style={{ fontSize: 12, color: 'var(--tm)', margin: '6px 0 0' }}>
           Una pre-orden <b>se corrige acá</b> antes de emitirla (✎ Editar pre-orden): descripción, unidad, cantidad, precio,
           fecha de cada línea y a quién se le emite. Lo que bajes o quites vuelve al plan; «Descartar» la devuelve entera.
           La <b>orden</b>, en cambio, toma un número correlativo de{' '}
           {titular ? <b>{titular.name || titular.legal_name}</b> : 'la ejecutora del trabajo'} que queda gastado aunque
-          después se anule — por eso se emite de a una, con el proveedor puesto a mano.
+          después se anule: se emite de a una o marcando varias, y antes de escribir se muestra qué número le toca a cada una.
         </p>
         {!permiso.ok && (
           <p style={{ fontSize: 11.5, color: 'var(--amber)', margin: '6px 0 0' }}>
@@ -3285,21 +3471,59 @@ function DocumentosVista({ yaEscrito, ordenes, titular, permiso, emitiendo, onEm
         )}
       </div>
 
-      {filas.map(f => (
-        <RequisicionFila
-          key={f.requisicion.id} f={f}
-          orden={f.ordenada ? porId.get(f.requisicion.oc_id) : null}
-          puedeEmitir={permiso.ok}
-          ocupado={emitiendo === f.requisicion.id}
-          onEmitir={(texto) => onEmitir(f.requisicion, texto)}
-          guardando={guardando === f.requisicion.id}
-          onGuardar={onGuardar}
-          onDescartar={onDescartar}
-          insumoDe={insumoDe}
-          compras={compras}
-          hoy={hoy}
-        />
-      ))}
+      {ultimoLote?.ids?.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 12, borderLeft: '3px solid var(--green)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 12.5 }}>
+            ✓ Emitida(s): <b>{ultimoLote.codigos.join(', ')}</b>. El PDF sale con el logo, el RUC y la numeración de la ejecutora.
+          </span>
+          <button className="btn btn-sm btn-green" style={{ marginLeft: 'auto' }} onClick={() => onPdf(ultimoLote.ids)}>
+            <JxIcon name="download" size={13} /> {ultimoLote.ids.length > 1 ? `Descargar los ${ultimoLote.ids.length} PDF (.zip)` : 'Descargar el PDF'}
+          </button>
+        </div>
+      )}
+
+      {porEmitir.length > 0 && (
+        <div className="card card-p" style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <b style={{ fontSize: 12.5 }}>📝 Por emitir ({porEmitir.length})</b>
+          <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+            {listas.length} lista(s) para emitir{porEmitir.length > listas.length ? ` · ${porEmitir.length - listas.length} sin proveedor o sin precios` : ''}
+          </span>
+          <div style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {listas.length > 0 && (
+              <button className="btn btn-sm btn-ghost" disabled={!permiso.ok || ocupadoLote}
+                onClick={() => setSel(marcadas.length === listas.length ? new Set() : new Set(listas.map(f => f.requisicion.id)))}>
+                {marcadas.length === listas.length ? 'Desmarcar todas' : `Marcar las ${listas.length} listas`}
+              </button>
+            )}
+            <button className="btn btn-sm btn-amber" disabled={!permiso.ok || !marcadas.length || ocupadoLote || !!emitiendo}
+              title="Muestra qué número le toca a cada una antes de escribir nada"
+              onClick={async () => {
+                await onEmitirLote(marcadas.map(f => ({ requisicion: f.requisicion, proveedorTexto: provDe(f) })));
+                setSel(new Set());
+              }}>
+              <JxIcon name="file" size={13} /> {ocupadoLote ? 'Emitiendo…' : `Emitir seleccionadas (${marcadas.length})${marcadas.length ? ` · ${soles(montoSel)}` : ''}`}
+            </button>
+          </div>
+        </div>
+      )}
+      {porEmitir.map(fila)}
+
+      {emitidas.length > 0 && (
+        <div style={{ margin: '14px 0 8px', fontSize: 12.5 }}><b>✓ Emitidas ({emitidas.length})</b></div>
+      )}
+      {emitidas.map(fila)}
+
+      {volvieron.length > 0 && (
+        <div style={{ margin: '14px 0 8px' }}>
+          <button className="btn btn-sm btn-ghost" onClick={() => setVerVolvieron(v => !v)}>
+            <JxIcon name={verVolvieron ? 'chevD' : 'chevR'} size={12} /> ↺ Volvieron al plan ({volvieron.length})
+          </button>
+          <span style={{ fontSize: 11, color: 'var(--tm)', marginLeft: 8 }}>
+            Anuladas o descartadas: ya no reservan nada y el plan las vuelve a proponer.
+          </span>
+        </div>
+      )}
+      {verVolvieron && volvieron.map(fila)}
     </>
   );
 }
@@ -3309,37 +3533,36 @@ const fechaCortaUI = (f) => {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : (f || '—');
 };
 
-function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
+function RequisicionFila({ f, prov, setProv, marcable, marcada, onMarcar, puedeEmitir, ocupado, onEmitir, onPdf, guardando, onGuardar, onDescartar, insumoDe, compras, hoy }) {
   const [abierta, setAbierta] = uS(false);
   const [editando, setEditando] = uS(false);
   const r = f.requisicion;
-  // El proveedor ELEGIDO al editar (mig 230) y, si no hay, el que el
-  // escenario dejó anotado en las líneas. Se puede pisar: la orden se emite
-  // a quien la firma, no a quien sugirió una pantalla.
-  const sugerido = uM(() => r.proveedor_nombre || proveedorSugeridoDeItems(f.items), [r.proveedor_nombre, f.items]);
-  const [prov, setProv] = uS(sugerido);
-  uE(() => { setProv(sugerido); }, [sugerido]);
+  const orden = f.orden;
   const editable = esPreordenEditable(r);
+  const esPre = f.estado.clave === 'preorden';
   const conFecha = f.items.some(it => it.fecha_entrega);
 
   return (
-    <div className="card" style={{ marginBottom: 8, borderLeft: `3px solid ${f.ordenada ? 'var(--green)' : 'var(--blue)'}` }}>
+    <div className="card" style={{ marginBottom: 8, borderLeft: `3px solid ${f.estado.color}`, ...(f.estado.vuelveAlPlan ? { opacity: 0.75 } : {}) }}>
       <div className="card-p" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', cursor: 'pointer' }}
         onClick={() => setAbierta(v => !v)}>
+        {esPre && (
+          <input type="checkbox" checked={marcable && marcada} disabled={!marcable || ocupado}
+            title={marcable ? 'Marcar para «Emitir seleccionadas»' : 'Le falta a quién emitirla o precios: completalo en ✎ Editar pre-orden'}
+            onClick={e => e.stopPropagation()} onChange={e => onMarcar(e.target.checked)} />
+        )}
         <JxIcon name={abierta ? 'chevD' : 'chevR'} size={14} />
         <div style={{ minWidth: 200, flex: 1 }}>
           <b>{r.descripcion || r.origen_ref}</b>
           <div style={{ fontSize: 10.5, color: 'var(--tm)' }}>
             {f.items.length} línea(s) · creada el {String(r.fecha || '').slice(0, 10)}
             {r.fecha_necesidad && ` · se necesita para el ${fechaCortaUI(r.fecha_necesidad)}`}
-            {r.proveedor_nombre && ` · a ${r.proveedor_nombre}`}
+            {esPre && prov && ` · a ${prov}`}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          <b>{soles(f.monto)}</b>
-          <div style={{ fontSize: 10.5, color: f.ordenada ? 'var(--green)' : 'var(--tm)' }}>
-            {f.ordenada ? (r.oc_codigo || 'orden emitida') : 'pre-orden · sin emitir'}
-          </div>
+          <b>{soles(orden && !f.estado.vuelveAlPlan ? orden.monto_total : f.monto)}</b>
+          <div style={{ fontSize: 10.5, color: f.estado.color }}>{f.estado.texto}</div>
         </div>
       </div>
 
@@ -3356,17 +3579,17 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir, guardando, 
 
       {abierta && !(editando && editable) && (
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {!f.ordenada && (
+          {esPre && (
             <div style={{ padding: '10px 12px', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
               onClick={e => e.stopPropagation()}>
               <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Emitir a:</span>
               <input className="fi" list={DATALIST_PROVEEDORES} style={{ maxWidth: 300, fontSize: 12, padding: '4px 8px' }}
                 placeholder="Buscá por nombre…" value={prov} onChange={e => setProv(e.target.value)} />
               <button className="btn btn-sm btn-amber"
-                disabled={!puedeEmitir || ocupado || guardando || !prov.trim()}
+                disabled={!puedeEmitir || ocupado || guardando || !String(prov || '').trim()}
                 title={!puedeEmitir ? 'Solo la entidad ejecutora del trabajo puede emitir' : 'Toma el próximo correlativo de la ejecutora'}
                 onClick={() => onEmitir(prov)}>
-                <JxIcon name="file" size={13} /> {ocupado ? 'Emitiendo…' : 'Emitir la orden'}
+                <JxIcon name="file" size={13} /> {ocupado ? 'Emitiendo…' : 'Emitir esta orden'}
               </button>
               {editable && (
                 <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} disabled={ocupado || guardando}
@@ -3377,11 +3600,27 @@ function RequisicionFila({ f, orden, puedeEmitir, ocupado, onEmitir, guardando, 
               )}
             </div>
           )}
-          {f.ordenada && orden && (
+          {orden && (
+            <div style={{ padding: '10px 12px', fontSize: 11.5, color: 'var(--tm)', display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
+              onClick={e => e.stopPropagation()}>
+              <span>
+                {orden.codigo} · {orden.proveedor_nombre || 'sin proveedor'} · {soles(orden.monto_total)}
+                {' '}(valor de venta {soles(orden.monto_subtotal)} + IGV {soles(orden.monto_igv)}).
+                {f.estado.vuelveAlPlan
+                  ? ' Se anuló: lo suyo vuelve a proponerse en el plan.'
+                  : ' Se firma, se envía y se recibe desde Órdenes de Compra.'}
+              </span>
+              {!f.estado.vuelveAlPlan && (
+                <button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }} onClick={() => onPdf([orden.id])}
+                  title="El PDF con el logo, el RUC y la numeración de la ejecutora">
+                  <JxIcon name="download" size={11} /> PDF
+                </button>
+              )}
+            </div>
+          )}
+          {!orden && f.estado.clave === 'descartada' && (
             <div style={{ padding: '10px 12px', fontSize: 11.5, color: 'var(--tm)' }}>
-              {orden.codigo} · {orden.proveedor_nombre || 'sin proveedor'} · {soles(orden.monto_total)}
-              {' '}(valor de venta {soles(orden.monto_subtotal)} + IGV {soles(orden.monto_igv)}).
-              {' '}Se ve y se imprime desde Órdenes de Compra.
+              Se descartó como pre-orden sin emitir: no tomó ningún número y lo suyo vuelve a proponerse en el plan.
             </div>
           )}
           <div style={{ overflowX: 'auto', borderTop: '1px solid var(--border)' }}>

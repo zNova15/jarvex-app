@@ -31,7 +31,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import { esRequisicionDelPlan } from './ordenes.js';
-import { PREFIJO_ENTREGAS, ENTREGAS_A_COORDINAR } from './simulador-puente.js';
+import { PREFIJO_ENTREGAS, ENTREGAS_A_COORDINAR, MOTIVO_DESCARTE } from './simulador-puente.js';
 import { factorDeItem } from './simulador-ordenes.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -353,7 +353,8 @@ export function cambiosDePreorden({ requisicion = null, items = [], edicion = nu
   };
 }
 
-export const MOTIVO_DESCARTE = 'Descartada desde el simulador de órdenes: lo suyo vuelve al plan.';
+// El texto vive en el puente: lo lee `estadoDePreorden` para decir «descartada».
+export { MOTIVO_DESCARTE };
 
 /**
  * Descartar una pre-orden entera: pasa a `cancelada`, el mismo estado que

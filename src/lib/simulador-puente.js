@@ -49,7 +49,8 @@ import { hoyLocal } from './fecha.js';
 // lugar desde la tanda 2. Derivarlo de nuevo acá es justo lo que la tanda 3
 // evitó con `clave`: dos derivaciones paralelas se desincronizan en silencio.
 import { rangoDePeriodo } from './simulador-dotacion.js';
-import { textosDeTipo, numerarOrden, totalesDesdeItems, esRequisicionDelPlan } from './ordenes.js';
+import { textosDeTipo, numerarOrden, totalesDesdeItems, esRequisicionDelPlan, ESTADO_ORDEN_LABEL } from './ordenes.js';
+import { ordenMuerta } from './simulador-ordenes.js';
 import { titularContableDeObra } from './consorcio.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -696,4 +697,156 @@ export function estadoDelPlan({ requisiciones = [], requisicionItems = [] } = {}
     porRef.set(String(r.origen_ref), { requisicion: r, items, monto, ordenada: !!r.oc_id });
   }
   return porRef;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EMITIR EN LOTE (ronda 4, tanda 4.5 — §16.3 «Emitir seleccionadas»)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Hasta la 4.4 se emitía de a una, y el motivo era bueno: «convertir todo»
+// quemaba 30 correlativos de un plan que nadie había mirado. Desde la 4.3 y
+// la 4.4 lo que llega acá ya se miró dos veces —se aceptó al cerrar el mes y
+// se corrigió como pre-orden—, así que el §16.3 pide emitir las que uno
+// ELIGE, juntas. Lo que no cambia: nada se emite sin que la pantalla muestre
+// antes qué número le toca a cada una (la vista previa ES este cálculo), y
+// el lote se numera sobre un acumulador local — releer la base en cada
+// vuelta devolvería el mismo número dos veces (ver `numerarOrden`).
+
+/**
+ * Las órdenes de un lote de pre-órdenes, ya numeradas, sin escribir nada.
+ *
+ * Se recorren por fecha de necesidad (la que se necesita antes lleva el
+ * número más bajo) y, a igual fecha, por título: el orden tiene que ser el
+ * mismo en la vista previa y en la escritura. Una pre-orden que no se puede
+ * emitir (sin proveedor, sin precios, ya ordenada) sale por `rechazadas` con
+ * su motivo y NO consume número: las de abajo no se corren.
+ *
+ * @param {Object} o
+ * @param {Array<{requisicion:Object, items:Array, proveedor:Object|null}>} o.preordenes
+ * @param {Array}  o.ordenes  TODAS las órdenes (la numeración es por empresa/tipo/año).
+ * @returns {{emitidas:Array<{requisicion:Object, orden:Object, items:Array}>,
+ *            rechazadas:Array<{requisicion:Object, motivo:string}>,
+ *            resumen:{ordenes:number, monto:number, codigos:Array<string>}}}
+ */
+export function emitirLote({
+  preordenes = [], obra = null, consorcios = [], company = null,
+  ordenes = [], igvPct = 18, hoy = null, nuevoId = idPorDefecto,
+} = {}) {
+  const lista = [...(preordenes || [])].filter(p => p && p.requisicion)
+    .sort((a, b) => String(a.requisicion.fecha_necesidad || '9999').localeCompare(String(b.requisicion.fecha_necesidad || '9999'))
+      || String(a.requisicion.descripcion || '').localeCompare(String(b.requisicion.descripcion || ''), 'es')
+      || String(a.requisicion.id).localeCompare(String(b.requisicion.id)));
+  const acumulado = [...(ordenes || [])];
+  const emitidas = [], rechazadas = [];
+  const vistas = new Set();
+  let monto = 0;
+  for (const p of lista) {
+    const r = p.requisicion;
+    if (vistas.has(r.id)) continue;   // la misma pre-orden marcada dos veces
+    vistas.add(r.id);
+    const b = borradorDeOrdenDesdeRequisicion({
+      requisicion: r, items: p.items || [], obra, consorcios, company,
+      proveedor: p.proveedor || null, ordenes: acumulado, igvPct, hoy, nuevoId,
+    });
+    if (!b.ok) { rechazadas.push({ requisicion: r, motivo: b.motivo }); continue; }
+    acumulado.push(b.orden);
+    emitidas.push({ requisicion: r, orden: b.orden, items: b.items });
+    monto += num(b.orden.monto_total);
+  }
+  return {
+    emitidas, rechazadas,
+    resumen: { ordenes: emitidas.length, monto: r2(monto), codigos: emitidas.map(e => e.orden.codigo) },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// EL ESTADO DE CADA PRE-ORDEN (tanda 4.5)
+// ═══════════════════════════════════════════════════════════════════
+
+/** Lo que `descarteDePreorden` (simulador-preordenes.js) deja escrito. */
+export const MOTIVO_DESCARTE = 'Descartada desde el simulador de órdenes: lo suyo vuelve al plan.';
+
+const textoAnulada = (codigo) => (codigo ? `Orden ${codigo} anulada — volvió al plan` : 'Orden anulada — volvió al plan');
+
+/**
+ * En qué quedó una requisición del plan, en una palabra y en una frase.
+ *
+ *   preorden   — escrita, sin orden: se corrige y se emite.
+ *   emitida    — tiene orden viva; la frase dice en qué va (por confirmar,
+ *                firmada, recibida…).
+ *   sin_bajar  — dice que tiene orden pero la orden no está a la vista (se
+ *                emitió en otra computadora y todavía no sincronizó).
+ *   anulada    — su orden se anuló o se borró: volvió al plan (4.2).
+ *   descartada — se descartó como pre-orden: volvió al plan (4.4).
+ *   cancelada  — cancelada o rechazada por otro camino (Compras): no reserva.
+ *
+ * @param {Object} o
+ * @param {Object} o.requisicion
+ * @param {Object|null} [o.orden]  la orden de su `oc_id`, si está a la vista
+ *                                 (con las borradas: una orden borrada también la libera).
+ * @returns {{clave:string, texto:string, color:string, vuelveAlPlan:boolean}}
+ */
+export function estadoDePreorden({ requisicion = null, orden = null } = {}) {
+  const r = requisicion || {};
+  const estado = String(r.estado || '');
+  const codigo = orden?.codigo || r.oc_codigo || null;
+  if (r.oc_id && orden && ordenMuerta(orden)) {
+    return { clave: 'anulada', texto: textoAnulada(codigo), color: 'var(--red)', vuelveAlPlan: true };
+  }
+  if (REQUISICION_MUERTA.has(estado)) {
+    if (r.oc_id) return { clave: 'anulada', texto: textoAnulada(codigo), color: 'var(--red)', vuelveAlPlan: true };
+    if (String(r.motivo_rechazo || '') === MOTIVO_DESCARTE) {
+      return { clave: 'descartada', texto: 'Descartada — volvió al plan', color: 'var(--tm)', vuelveAlPlan: true };
+    }
+    return {
+      clave: 'cancelada', texto: estado === 'rechazada' ? 'Rechazada — no reserva' : 'Cancelada — no reserva',
+      color: 'var(--tm)', vuelveAlPlan: true,
+    };
+  }
+  if (r.oc_id) {
+    if (!orden) {
+      return {
+        clave: 'sin_bajar', texto: `Emitida como ${codigo || 'orden'} (la orden todavía no llegó a esta computadora)`,
+        color: 'var(--green)', vuelveAlPlan: false,
+      };
+    }
+    const et = ESTADO_ORDEN_LABEL[orden.estado] || orden.estado || 'emitida';
+    return { clave: 'emitida', texto: `Emitida como ${codigo} · ${et}`, color: 'var(--green)', vuelveAlPlan: false };
+  }
+  return { clave: 'preorden', texto: 'Pre-orden · sin emitir', color: 'var(--blue)', vuelveAlPlan: false };
+}
+
+/**
+ * TODAS las requisiciones del plan de una obra con su estado, incluidas las
+ * que volvieron al plan (`estadoDelPlan` las deja afuera a propósito: no
+ * reservan). La lista de «Ya pedido» necesita las dos cosas — lo que está en
+ * curso y lo que se deshizo — para que una orden anulada no desaparezca sin
+ * dejar rastro.
+ *
+ * @param {Array} [o.ordenes] conviene pasar también las BORRADAS: una orden
+ *                            borrada libera su requisición igual que una anulada.
+ * @returns {Array<{requisicion:Object, items:Array, monto:number, orden:Object|null, estado:Object, ordenada:boolean}>}
+ */
+export function historialDelPlan({ requisiciones = [], requisicionItems = [], ordenes = [] } = {}) {
+  const itemsPorReq = new Map();
+  for (const it of vivos(requisicionItems)) {
+    const arr = itemsPorReq.get(it.requisicion_id) || [];
+    arr.push(it);
+    itemsPorReq.set(it.requisicion_id, arr);
+  }
+  const ordenPorId = new Map();
+  for (const o of (ordenes || [])) if (o && o.id) ordenPorId.set(o.id, o);
+  const out = [];
+  for (const r of vivos(requisiciones)) {
+    if (!esDelSimulador(r)) continue;
+    const items = itemsPorReq.get(r.id) || [];
+    const orden = r.oc_id ? ordenPorId.get(r.oc_id) || null : null;
+    const estado = estadoDePreorden({ requisicion: r, orden });
+    out.push({
+      requisicion: r, items, orden, estado,
+      ordenada: estado.clave === 'emitida' || estado.clave === 'sin_bajar',
+      monto: r2(items.reduce((s, it) => s + num(it.cantidad) * num(it.precio_estimado), 0)),
+    });
+  }
+  return out.sort((a, b) => String(a.requisicion.fecha_necesidad || '').localeCompare(String(b.requisicion.fecha_necesidad || '')));
 }

@@ -34,7 +34,8 @@ const items = [
   { id: 'it2', requisicion_id: 'rq1', insumo_codigo: null, tipo_insumo: 'material',
     nombre: 'CODO PVC 4"', unidad: 'und', cantidad: 10, precio_estimado: null, fecha_entrega: '2026-10-15' },
 ];
-const f = { requisicion: req, items, monto: 28 * 72, ordenada: false };
+const PRE = { clave: 'preorden', texto: 'Pre-orden · sin emitir', color: 'var(--blue)', vuelveAlPlan: false };
+const f = { requisicion: req, items, monto: 28 * 72, ordenada: false, orden: null, estado: PRE };
 const insumoDe = (cod) => (cod === '210030001' ? { codigo: cod, nombre: 'TUBERIA PVC 4"', unidad: 'm' } : null);
 
 beforeAll(async () => {
@@ -43,23 +44,61 @@ beforeAll(async () => {
 });
 
 describe('Ya pedido: las pre-órdenes', () => {
+  // React separa los textos contiguos con <!-- --> al renderizar en servidor.
   const lista = (extra = {}) => renderToString(React.createElement(mod.DocumentosVista, {
-    yaEscrito: new Map([[req.origen_ref, f]]), ordenes: [], titular: { name: 'CONSORCIO EL INCA' },
-    permiso: { ok: true }, emitiendo: null, onEmitir() {}, guardando: null, onGuardar() {}, onDescartar() {},
+    historial: [f], titular: { name: 'CONSORCIO EL INCA' },
+    permiso: { ok: true }, emitiendo: null, onEmitir() {}, onEmitirLote() {}, onPdf() {}, ultimoLote: null,
+    guardando: null, onGuardar() {}, onDescartar() {},
     insumoDe, compras: {}, hoy: '2026-09-25', ...extra,
-  }));
+  })).replace(/<!-- -->/g, '');
 
   it('dice que se corrigen ACÁ, no «desde Compras» (donde no se puede)', () => {
     const html = lista();
     expect(html).toContain('se corrige acá');
     expect(html).not.toContain('desde Compras');
-    expect(html).toContain('pre-orden · sin emitir');
+    expect(html).toContain('Pre-orden · sin emitir');
   });
 
   it('la tarjeta dice el proveedor elegido', () => {
     const r2 = { ...req, proveedor_nombre: 'NICOLL PERU' };
-    const html = lista({ yaEscrito: new Map([[req.origen_ref, { ...f, requisicion: r2 }]]) });
+    const html = lista({ historial: [{ ...f, requisicion: r2 }] });
     expect(html).toContain('a NICOLL PERU');
+  });
+
+  // ── tanda 4.5 ──────────────────────────────────────────────────
+  it('ofrece emitir en lote las LISTAS (con proveedor y precios), apagado hasta marcar', () => {
+    const html = lista();
+    expect(html).toContain('1 lista(s) para emitir');
+    expect(html).toContain('Marcar las 1 listas');
+    expect(html).toMatch(/disabled=""[^>]*title="Muestra qué número/);
+    expect(html).toContain("Emitir seleccionadas (0)");
+  });
+
+  it('una pre-orden sin proveedor ni sugerido no es «lista» y no se puede marcar', () => {
+    const sinProv = { ...f, items: items.map(it => ({ ...it, notas: null })) };
+    const html = lista({ historial: [sinProv] });
+    expect(html).toContain('0 lista(s) para emitir');
+    expect(html).toContain('1 sin proveedor o sin precios');
+  });
+
+  it('separa por emitir, emitidas y las que volvieron al plan', () => {
+    const orden = { id: 'oc1', codigo: 'EI-OC-005-2026', estado: 'firmada', monto_total: 2378.88, proveedor_nombre: 'PLASTICOS SAC' };
+    const emitida = { ...f, requisicion: { ...req, id: 'rq2', oc_id: 'oc1', oc_codigo: orden.codigo, estado: 'ordenada' }, orden, ordenada: true,
+      estado: { clave: 'emitida', texto: 'Emitida como EI-OC-005-2026 · Firmada', color: 'var(--green)', vuelveAlPlan: false } };
+    const volvio = { ...f, requisicion: { ...req, id: 'rq3', estado: 'cancelada' },
+      estado: { clave: 'descartada', texto: 'Descartada — volvió al plan', color: 'var(--tm)', vuelveAlPlan: true } };
+    const html = lista({ historial: [f, emitida, volvio] });
+    expect(html).toContain('📝 Por emitir (1)');
+    expect(html).toContain('✓ Emitidas (1)');
+    expect(html).toContain('Emitida como EI-OC-005-2026 · Firmada');
+    expect(html).toContain('Volvieron al plan (1)');
+    expect(html).toContain('1 volvieron al plan');
+  });
+
+  it('después de emitir ofrece los PDF (un .zip si son varios)', () => {
+    const html = lista({ ultimoLote: { ids: ['a', 'b'], codigos: ['EI-OC-005-2026', 'EI-OC-006-2026'] } });
+    expect(html).toContain('EI-OC-005-2026, EI-OC-006-2026');
+    expect(html).toContain('Descargar los 2 PDF (.zip)');
   });
 });
 
