@@ -371,11 +371,38 @@ describe('la pantalla del Simulador de Órdenes', () => {
   });
 
   // ── Ronda 4, tanda 4.3: cerrar mes ──
-  it('ofrece cerrar el primer mes con órdenes, sobre la corrida entera', () => {
+  // 25-set (corrección de Gabriel): no se cierra el MES, se cierra la ORDEN.
+  it('cada orden ofrece «Cerrar orden»; ya no hay franja para cerrar meses', () => {
     const html = render().replace(/<!-- -->/g, '');
-    expect(html).toContain('🔒 Cierre de meses');
-    expect(html).toContain('🔒 Cerrar octubre 2026');
-    expect(html).toContain('Los meses se cierran en orden');
+    expect(html).toContain('🔒 Cerrar orden');
+    expect(html).not.toContain('🔒 Cierre de meses');
+    expect(html).not.toContain('🔒 Cerrar octubre 2026');
+  });
+
+  it('«Según lo real» ofrece desde cuándo pedir (hoy o una fecha)', () => {
+    const html = render().replace(/<!-- -->/g, '');
+    expect(html).toContain('Pido desde');
+    expect(html).toContain('Desde una fecha que elijo');
+  });
+
+  describe('con una orden cerrada', () => {
+    const ESC = [{
+      id: 'e1', nombre: 'Con orden cerrada', obra_id: OBRA, params: {}, actualizado: '2026-10-01',
+      cierresOrden: { x: { atomos: ['2026-10|concreto'], titulo: 'Concreto, agregados y aditivos', periodo: '2026-10',
+        rubro: 'concreto', categoria: 'materiales', fecha: '2026-10-01', requisiciones: 1, lineas: 1, monto: 1200 } },
+    }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+
+    it('la lista en «Órdenes cerradas» y ya no la propone en su mes', () => {
+      const html = render().replace(/<!-- -->/g, '');
+      expect(html).toContain('🔒 Órdenes cerradas (1)');
+      expect(html).not.toContain('Concreto, agregados y aditivos — octubre 2026');
+    });
   });
 
   describe('con un mes cerrado', () => {

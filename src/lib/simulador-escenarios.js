@@ -105,6 +105,31 @@ export const ARRANQUE_LABEL = {
 };
 
 /**
+ * En modo «Según lo real», DESDE CUÁNDO se pide (pedido de Gabriel, 25-set):
+ * hoy (el default de siempre) o una fecha elegida. La fecha hace de «hoy» para
+ * el plan: lo pendiente de antes se trae a ese mes y la historia del
+ * cronograma corre desde ahí. No mueve el Gantt —eso es el arranque de la
+ * Simulación—: contesta «¿qué me faltaría pedir si arranco las compras el 1
+ * de noviembre?». La fecha de las órdenes que se emiten sigue siendo la real.
+ */
+export const DESDES_REAL = ['hoy', 'fecha'];
+export const DESDE_REAL_LABEL = {
+  hoy: 'Desde hoy',
+  fecha: 'Desde una fecha que elijo',
+};
+
+/**
+ * La fecha que hace de «hoy» para el plan. En Simulación y en «desde hoy» es
+ * la de hoy; con una fecha elegida (y válida), esa.
+ */
+export function hoyDelPlan(params, hoy = null) {
+  const h = hoy || hoyLocal();
+  const p = params || {};
+  if (p.modo === 'simulacion') return h;
+  return p.desdeReal === 'fecha' && esYmd(p.desdeRealFecha) ? p.desdeRealFecha : h;
+}
+
+/**
  * Lo que la pantalla ofrece de los ejes del motor. «Reprogramado a mano» y
  * los repartos «por cuadrilla» y «manual» pedían un dato que nadie va a
  * cargar (fechas o reparto de 1.718 partidas) y terminaban en «Sin
@@ -147,6 +172,8 @@ export const PARAMS_DEFAULT = {
   modo: 'real',
   arranque: 'gantt',
   arranqueFecha: null,
+  desdeReal: 'hoy',
+  desdeRealFecha: null,
   cronograma: 'gantt',
   // Tanda 3.3 — la historia del cronograma «aleatorio por escenario»: un id
   // del catálogo o 'azar' (la sortea la semilla). La semilla hace que el
@@ -220,6 +247,8 @@ export function normalizarParams(p = {}) {
     // «Una fecha» sin fecha todavía es válido (se acaba de elegir y falta
     // escribirla): el corrimiento no hace nada hasta que llegue una.
     arranqueFecha: esYmd(p.arranqueFecha) ? p.arranqueFecha : null,
+    desdeReal: enLista(p.desdeReal, DESDES_REAL, PARAMS_DEFAULT.desdeReal),
+    desdeRealFecha: esYmd(p.desdeRealFecha) ? p.desdeRealFecha : null,
     cronograma: enLista(p.cronograma, CRONOGRAMAS_PANTALLA, PARAMS_DEFAULT.cronograma),
     // Una historia que ya no está en el catálogo se abre «al azar»: el
     // escenario sigue teniendo un cronograma, no revienta.
@@ -473,6 +502,9 @@ export function nuevoEscenario({ nombre = '', params = null, obraId = null, hoy 
     relatoIA: null,
     // Tanda 4.3: los meses cerrados, 'YYYY-MM' → lo que se hizo al cerrar.
     cierres: {},
+    // 25-set: las ÓRDENES cerradas, id de la propuesta → sus átomos y lo
+    // que se escribió. Reemplaza al cierre por mes en la pantalla.
+    cierresOrden: {},
   };
 }
 
@@ -515,6 +547,7 @@ export function normalizarEscenario(e = {}, { obraId = null } = {}) {
     notas: String(e.notas || ''),
     relatoIA: normalizarRelatoIA(e.relatoIA),
     cierres: normalizarCierres(e.cierres),
+    cierresOrden: normalizarCierresOrden(e.cierresOrden),
   };
 }
 
@@ -561,12 +594,17 @@ export function mesesCerradosDe(esc) {
   return Object.keys(esc?.cierres || {}).filter(esMes).sort();
 }
 
-/** Lo que el motor necesita de los cierres. */
+/** Lo que el motor necesita de los cierres (por mes y por orden). */
 export function motorDeCierres(esc) {
   const meses = mesesCerradosDe(esc);
+  const ordenes = ordenesCerradasDe(esc);
   return {
     mesesCerrados: meses,
-    pedidoSinCodigo: meses.flatMap(m => esc.cierres[m].sinCodigo || []),
+    atomosCerrados: [...new Set(ordenes.flatMap(o => o.atomos))].sort(),
+    pedidoSinCodigo: [...new Set([
+      ...meses.flatMap(m => esc.cierres[m].sinCodigo || []),
+      ...ordenes.flatMap(o => o.sinCodigo || []),
+    ])].sort(),
   };
 }
 
@@ -642,6 +680,126 @@ export function reabrirMes(esc, mes) {
   const cierres = { ...(esc.cierres || {}) };
   delete cierres[mes];
   return tocado({ ...esc, cierres });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CERRAR ORDEN (25-set, corrección de Gabriel sobre la 4.3)
+//
+// «En realidad no es cerrar mes, sino cerrar ORDEN dentro de los meses
+// propuestos.» Se cierra una orden (una tarjeta: «Concreto — octubre»), no un
+// mes entero: lo aceptado de ESA orden se escribe como pre-orden y lo que no
+// se aceptó se reprograma en los períodos abiertos siguientes DEL MISMO
+// RUBRO. Al motor le llega como `atomosCerrados` (los 'periodo|rubro' de la
+// orden): el mismo mecanismo del mes cerrado, con la granularidad de la orden.
+//
+// ── SE CIERRA EN ORDEN DENTRO DE CADA RUBRO ───────────────────────
+// El descuento de lo pedido resta por código desde los meses MÁS VIEJOS.
+// Si se cerrara «Concreto — octubre» con «Concreto — setiembre» abierta, el
+// cemento escrito para octubre se comería primero el de setiembre: setiembre
+// quedaría corto y el de octubre, reprogramado a noviembre. El total cierra,
+// pero las fechas no. Por eso solo se puede cerrar la orden más temprana que
+// siga abierta de cada rubro, y reabrir la última cerrada de cada rubro.
+// (Un insumo es siempre del mismo rubro: la regla por rubro alcanza.)
+//
+// Los cierres por MES de la 4.3 se siguen leyendo (el motor los respeta), pero
+// la pantalla ya no ofrece cerrar meses.
+// ═══════════════════════════════════════════════════════════════════
+
+const esAtomo = (a) => /^[^|]+\|[^|]+$/.test(String(a || ''));
+
+/** Los cierres de orden guardados, saneados. */
+export function normalizarCierresOrden(obj) {
+  const out = {};
+  for (const [id, c] of Object.entries(obj || {})) {
+    if (!id || !c || typeof c !== 'object') continue;
+    const atomos = Array.isArray(c.atomos) ? [...new Set(c.atomos.map(String).filter(esAtomo))].sort() : [];
+    if (!atomos.length) continue;
+    out[id] = {
+      atomos,
+      titulo: typeof c.titulo === 'string' ? c.titulo : '',
+      periodo: typeof c.periodo === 'string' ? c.periodo : atomos[0].split('|')[0],
+      rubro: typeof c.rubro === 'string' ? c.rubro : atomos[0].split('|')[1],
+      categoria: typeof c.categoria === 'string' ? c.categoria : null,
+      fecha: typeof c.fecha === 'string' ? c.fecha : null,
+      requisiciones: Math.max(0, Math.round(num(c.requisiciones))),
+      lineas: Math.max(0, Math.round(num(c.lineas))),
+      monto: r2(c.monto),
+      montoReprogramado: r2(c.montoReprogramado),
+      sinCodigo: Array.isArray(c.sinCodigo)
+        ? [...new Set(c.sinCodigo.map(String).filter(x => /^\d{4}-\d{2}\|~/.test(x)))].sort()
+        : [],
+    };
+  }
+  return out;
+}
+
+/** Las órdenes cerradas, de la más temprana a la más tardía. */
+export function ordenesCerradasDe(esc) {
+  return Object.entries(esc?.cierresOrden || {})
+    .map(([id, c]) => ({ id, ...c }))
+    .sort((a, b) => String(a.periodo).localeCompare(String(b.periodo)) || String(a.rubro).localeCompare(String(b.rubro)));
+}
+
+/**
+ * ¿Se puede cerrar esta orden? Solo si no queda abierta ninguna orden MÁS
+ * TEMPRANA del mismo rubro (ver arriba). Devuelve la que falta cerrar antes.
+ *
+ * @returns {{ok:boolean, antes:Object|null}}
+ */
+export function ordenCerrable(p, propuestas = []) {
+  if (!p || !Array.isArray(p.atomos) || !p.atomos.length) return { ok: false, antes: null };
+  const antes = (propuestas || [])
+    .filter(q => q && q.id !== p.id && q.rubro === p.rubro && String(q.periodo) < String(p.periodo))
+    .sort((a, b) => String(a.periodo).localeCompare(String(b.periodo)))[0] || null;
+  return { ok: !antes, antes };
+}
+
+/** ¿Se puede reabrir? Solo la ÚLTIMA cerrada de su rubro. */
+export function ordenReabrible(esc, id) {
+  const c = esc?.cierresOrden?.[id];
+  if (!c) return false;
+  return !ordenesCerradasDe(esc).some(o => o.id !== id && o.rubro === c.rubro && String(o.periodo) > String(c.periodo));
+}
+
+/**
+ * Qué pasa si se cierra la orden `p`: lo aceptado (listo para escribir), lo
+ * aceptado sin precio y lo que no se aceptó (va a reprogramarse). No escribe.
+ */
+export function resumenDeCierreOrden(p) {
+  const { lineas, sinPrecio } = lineasAceptadas({ propuestas: [p], sobres: [] });
+  const noAceptadas = (p?.lineas || []).filter(l => l.decision !== 'aceptada');
+  return {
+    propuesta: p,
+    lineas, sinPrecio,
+    rechazadas: noAceptadas.filter(l => l.decision === 'rechazada').length,
+    sinDecidir: noAceptadas.filter(l => l.decision !== 'rechazada').length,
+    montoAceptado: r2(lineas.reduce((t, l) => t + num(l.monto), 0)),
+    montoNoAceptado: r2(noAceptadas.reduce((t, l) => t + num(l.monto), 0)),
+  };
+}
+
+/** Cierra una orden. `info` es lo que se escribió (para mostrarlo después). */
+export function cerrarOrden(esc, p, info = {}) {
+  if (!p || !Array.isArray(p.atomos) || !p.atomos.length) return esc;
+  const cierresOrden = normalizarCierresOrden({
+    ...(esc.cierresOrden || {}),
+    [p.id]: {
+      ...info,
+      atomos: p.atomos.map(a => (typeof a === 'string' ? a : a.id)),
+      titulo: p.titulo || '', periodo: p.periodo, rubro: p.rubro,
+      categoria: info.categoria || null,
+      fecha: info.fecha || hoyLocal(),
+    },
+  });
+  return tocado({ ...esc, cierresOrden });
+}
+
+/** Reabre una orden cerrada (solo la última de su rubro). */
+export function reabrirOrden(esc, id) {
+  if (!ordenReabrible(esc, id)) return esc;
+  const cierresOrden = { ...(esc.cierresOrden || {}) };
+  delete cierresOrden[id];
+  return tocado({ ...esc, cierresOrden });
 }
 
 /**

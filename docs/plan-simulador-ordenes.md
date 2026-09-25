@@ -1545,3 +1545,34 @@ otra PC) y el sugerido, en `notas` de cada línea.
 - Tests: `simulador-emision-lote.test.js` (17) + 4 de pantalla nuevos.
 - **Siguiente:** Gabriel prueba el preview y se promueven las rondas 3 y 4 a
   main; después, la revisión exhaustiva.
+
+### 16.10 — Correcciones de Gabriel tras probar staging (25-set-2026)
+
+1. **«Según lo real» no dejaba elegir desde cuándo.** Nuevo parámetro «Pido
+   desde»: hoy (default) o una fecha (`desdeReal` / `desdeRealFecha`,
+   `hoyDelPlan()` en `simulador-escenarios.js`). La fecha hace de «hoy» para
+   el cronograma y el motor: lo pendiente de antes se trae a ese mes. No
+   corre el Gantt (eso es el arranque de la Simulación) y no toca la fecha de
+   emisión de las órdenes ni las validaciones, que siguen con la de verdad.
+2. **La tira de meses seguía dejando ver lo que corre por debajo.** Medido en
+   Chromium real (Playwright): el arreglo de la 4.1 (margin-top negativo +
+   padding-top) NO movía dónde se frena el sticky — quedaba a 24px del tope
+   — y, sin scroll, se montaba 24px sobre la tarjeta de arriba. Lo correcto
+   es `top` NEGATIVO igual al padding de `.page-wrap` (−24px; −14px en
+   celular): se frena en el borde real y no se monta sobre nada.
+3. **No era «cerrar mes»: es «cerrar ORDEN» dentro de los meses propuestos.**
+   Cada tarjeta tiene «🔒 Cerrar orden»: lo aceptado de ESA orden pasa a
+   pre-orden y lo demás se reprograma en las órdenes siguientes DEL MISMO
+   RUBRO. Motor: `atomosCerrados` (los `periodo|rubro` de la orden) además de
+   `mesesCerrados`; una celda está cerrada si lo está su mes o su átomo, los
+   destinos se buscan abiertos para ese rubro y el arrastre del modo real
+   también es por rubro. Escenario: `cierresOrden` (localStorage, «Guardar
+   como…» lo copia). **Dentro de un rubro se cierra en orden** (la más
+   temprana abierta) y se reabre la última: el descuento por código resta
+   desde lo más viejo, y cerrar mayo con abril abierto dejaría corto abril.
+   La franja de meses queda solo para reabrir cierres por mes viejos; las
+   órdenes cerradas se listan en «🔒 Órdenes cerradas» en su pestaña.
+   Tests: `simulador-cierre-orden.test.js` (16) + 3 de pantalla.
+4. Rondas 3 y 4 promovidas a main a pedido de Gabriel («pasás todo a main de
+   una buena vez»).
+

@@ -249,7 +249,7 @@ describe('el escenario guarda los cierres', () => {
 
   it('lo que va al motor', () => {
     const esc = cerrarMes(cerrarMes(nuevoEscenario({}), '2026-05', { sinCodigo: ['2026-05|~b|m'] }), '2026-04', { sinCodigo: ['2026-04|~a|m'] });
-    expect(motorDeCierres(esc)).toEqual({ mesesCerrados: ['2026-04', '2026-05'], pedidoSinCodigo: ['2026-04|~a|m', '2026-05|~b|m'] });
+    expect(motorDeCierres(esc)).toEqual({ mesesCerrados: ['2026-04', '2026-05'], atomosCerrados: [], pedidoSinCodigo: ['2026-04|~a|m', '2026-05|~b|m'] });
   });
 
   it('el mes que toca cerrar es el primero con órdenes que no está cerrado', () => {

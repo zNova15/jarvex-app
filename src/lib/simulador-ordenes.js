@@ -906,6 +906,10 @@ const claveInsumo = (ip) => (ip.insumo_codigo && String(ip.insumo_codigo).trim()
  * @param {Array<string>} [o.mesesCerrados] meses 'YYYY-MM' cerrados en el
  *                  escenario (tanda 4.3, `reprogramarCerrados`): lo que queda
  *                  en ellos se reparte en los meses abiertos siguientes.
+ * @param {Array<string>} [o.atomosCerrados] órdenes cerradas (25-set, «cerrar
+ *                  orden»): sus átomos `'periodo|rubro'`. Igual que un mes
+ *                  cerrado pero de UN rubro: lo que queda ahí se reparte en
+ *                  los períodos abiertos siguientes de ese mismo rubro.
  * @param {Array<string>} [o.pedidoSinCodigo] `'YYYY-MM|clave'` de líneas SIN
  *                  código que ya se escribieron al cerrar un mes: no se
  *                  pueden descontar por código, así que se sacan del plan.
@@ -944,6 +948,7 @@ export function simularOrdenes({
   almacenPorInsumo = null,
   restarAvance = false,
   mesesCerrados = [],
+  atomosCerrados = [],
   pedidoSinCodigo = [],
 } = {}) {
   const gran = GRANULARIDADES.includes(granularidad) ? granularidad : 'mes';
@@ -1285,8 +1290,13 @@ export function simularOrdenes({
   const cerradosSet = new Set((Array.isArray(mesesCerrados) ? mesesCerrados : [])
     .filter(m => /^\d{4}-\d{2}$/.test(String(m))));
   const mesCerrado = (periodo) => cerradosSet.has(mesDePeriodo(periodo));
+  // Cerrar ORDEN (25-set): los átomos 'periodo|rubro' de las órdenes
+  // cerradas. Una celda está cerrada si lo está su mes o su átomo.
+  const atomosSet = new Set((Array.isArray(atomosCerrados) ? atomosCerrados : [])
+    .map(String).filter(a => a.includes('|')));
+  const cerradoEn = (periodo, rubro) => mesCerrado(periodo) || atomosSet.has(`${periodo}|${rubro}`);
   resumen.cierre = reprogramarCerrados(celdas, {
-    mesCerrado, meses: [...cerradosSet].sort(), pedidoSinCodigo,
+    mesCerrado, cerradoEn, meses: [...cerradosSet].sort(), atomos: [...atomosSet].sort(), pedidoSinCodigo,
     granularidad: gran, reparto: rep, plazo,
     // En modo real nada se reprograma al pasado: el anclaje lo traería igual.
     desde: anc === 'cero' ? null : periodoActual,
@@ -1296,10 +1306,19 @@ export function simularOrdenes({
   // ── 3) aplicar el anclaje (§3.1) ──────────────────────────────────
   // Lo atrasado va al primer período ABIERTO desde hoy: si el mes actual
   // está cerrado (tanda 4.3), al siguiente.
-  const periodoDestino = primerPeriodoAbierto(periodoActual, gran, mesCerrado);
+  // Por rubro: si la orden de concreto de este mes está cerrada, el concreto
+  // atrasado va al mes siguiente, pero el acero sigue viniendo a este.
+  const destinoPorRubro = new Map();
+  const destinoDe = (rubro) => {
+    if (!destinoPorRubro.has(rubro)) {
+      destinoPorRubro.set(rubro, primerPeriodoAbierto(periodoActual, gran, (p) => cerradoEn(p, rubro)));
+    }
+    return destinoPorRubro.get(rubro);
+  };
   const aplicarAnclaje = (mapa) => {
     if (anc === 'cero') return;
     for (const [k, c] of [...mapa]) {
+      const periodoDestino = destinoDe(c.rubro);
       if (c.periodo >= periodoDestino) continue;
       mapa.delete(k);
       if (anc === 'restante') {
@@ -1795,11 +1814,14 @@ export function atomosDeCelda(c, atomoId) {
  * función de afuera). Devuelve el resumen del cierre.
  */
 export function reprogramarCerrados(celdas, {
-  mesCerrado = () => false, meses = [], pedidoSinCodigo = [],
+  mesCerrado = () => false, cerradoEn = null, meses = [], atomos = [], pedidoSinCodigo = [],
   granularidad = 'mes', reparto = 'parejo', plazo = null, desde = null, pendientes = [],
 } = {}) {
+  // Una celda está cerrada si lo está su mes o su orden (átomo periodo|rubro).
+  const cerrada = cerradoEn || ((periodo) => mesCerrado(periodo));
   const resumen = {
     meses,
+    atomos,
     reprogramado: { lineas: 0, monto: 0, porMes: {} },
     yaPedidoSinCodigo: { lineas: 0, monto: 0 },
     sinMesAbierto: { lineas: 0, monto: 0 },
@@ -1816,7 +1838,7 @@ export function reprogramarCerrados(celdas, {
       resumen.yaPedidoSinCodigo.monto += num(c.monto);
     }
   }
-  if (!meses.length) { resumen.yaPedidoSinCodigo.monto = r2(resumen.yaPedidoSinCodigo.monto); return resumen; }
+  if (!meses.length && !atomos.length) { resumen.yaPedidoSinCodigo.monto = r2(resumen.yaPedidoSinCodigo.monto); return resumen; }
 
   const todas = [...celdas.values()];
   if (!todas.length) return resumen;
@@ -1826,19 +1848,21 @@ export function reprogramarCerrados(celdas, {
   if (desde && desde > max) max = desde;
   const rMin = rangoDePeriodo(min), rMax = rangoDePeriodo(max);
   if (!rMin || !rMax) return resumen;
-  const abiertos = periodosEntre(rMin.inicio, rMax.fin, granularidad).filter(p => !mesCerrado(p));
+  const periodos = periodosEntre(rMin.inicio, rMax.fin, granularidad);
 
   // La carga de cada período abierto ANTES de reprogramar: es lo que la obra
   // pide ahí por sí sola (pesos del reparto 'escenario').
   const carga = new Map();
-  for (const c of todas) if (!mesCerrado(c.periodo)) carga.set(c.periodo, (carga.get(c.periodo) || 0) + num(c.monto));
+  for (const c of todas) if (!cerrada(c.periodo, c.rubro)) carga.set(c.periodo, (carga.get(c.periodo) || 0) + num(c.monto));
 
   for (const [k, c] of [...celdas]) {
-    if (!mesCerrado(c.periodo)) continue;
+    if (!cerrada(c.periodo, c.rubro)) continue;
     celdas.delete(k);
     if (!(c.cantidad > 0.0001) && !(c.monto > 0.004)) continue;
     const mes = mesDePeriodo(c.periodo);
-    const destinos = abiertos.filter(p => p > c.periodo && (!desde || p >= desde));
+    // Solo a períodos abiertos PARA ESTE RUBRO: lo de una orden de concreto
+    // cerrada no puede caer en otra orden de concreto ya cerrada.
+    const destinos = periodos.filter(p => p > c.periodo && (!desde || p >= desde) && !cerrada(p, c.rubro));
     if (!destinos.length) {
       resumen.sinMesAbierto.lineas += 1;
       resumen.sinMesAbierto.monto += num(c.monto);

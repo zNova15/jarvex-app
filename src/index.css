@@ -183,16 +183,17 @@ textarea.fi { resize: vertical; min-height: 80px; }
 .page-wrap { padding: 24px 28px; overflow-y: auto; height: 100%; }
 
 /* Tira sticky que se pega al TOPE de un .page-wrap con padding (25-set-2026).
-   `position: sticky; top: 0` calcula el offset contra el borde de la caja de
-   padding del scrollport, así que se detiene a padding-top del borde real —
-   esos 24px (14px en celular) de por medio no los cubre nada y las tarjetas
-   ya scrolleadas pasan por ahí por encima de la tira (§16.1 #2 del plan del
-   simulador; 55fcd28 no lo cubrió porque solo movió el `top`, no el hueco).
-   El margen negativo saca la tira de esa franja y el padding-top de vuelta
-   la empuja adentro: la tira ahora ES la primera franja de 24px, con su
-   propio fondo, y no queda nada sin cubrir por donde asomarse. */
-.jx-sticky-page-top { margin-top: -24px; padding-top: 24px; }
-@media (max-width: 768px) { .jx-sticky-page-top { margin-top: -14px; padding-top: 14px; } }
+   Un sticky se frena contra el borde de ADENTRO del padding del scrollport:
+   con `top: 0` queda a 24px (14px en celular) del tope real, y por esa franja
+   pasan las tarjetas ya scrolleadas por encima de la tira.
+   La 4.1 lo quiso tapar con margin-top negativo + padding-top: NO sirve — el
+   margen no mueve dónde se frena el sticky (sigue a 24px) y, sin scroll, la
+   tira se montaba 24px sobre la tarjeta de arriba. Medido en Chromium real
+   el 25-set: con `top` NEGATIVO igual al padding la tira se frena en el
+   borde real (0px) y sin scroll queda en su lugar, sin montarse sobre nada.
+   Si cambia el padding de .page-wrap, cambia esto con él. */
+.jx-sticky-page-top { position: sticky; top: -24px; }
+@media (max-width: 768px) { .jx-sticky-page-top { top: -14px; } }
 .pg-hd { margin-bottom: 22px; }
 .pg-title { font-size: 21px; font-weight: 800; color: var(--tp); letter-spacing: -.02em; }
 .pg-sub { font-size: 12.5px; color: var(--tm); margin-top: 3px; }
