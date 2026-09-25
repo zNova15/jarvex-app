@@ -136,6 +136,10 @@ const NAV = [
   // CUÁNDO conviene pedir cada cosa. Es del plano OBRA y solo de ahí — se
   // simula contra el presupuesto de UN trabajo, no del grupo.
   { id: 'simulador-ordenes', label: 'Simulador de Órdenes (cuándo pedir)', icon: 'gantt', plano: 'obra' },
+  // A qué línea del presupuesto corresponde cada compra ya hecha (para que el
+  // simulador no la vuelva a pedir). Era una pestaña de ahí; sección propia
+  // desde la tanda 3.2 (doc §15.1 punto 6: es otra pregunta).
+  { id: 'imputar-compras', label: 'Imputar lo ya comprado', icon: 'link', plano: 'obra' },
 
   { section: 'DIRECCIÓN', area: 'direccion' },
   { id: 'dashboard-ejecutivo', label: 'Dashboard Ejecutivo', icon: 'dashboard' },

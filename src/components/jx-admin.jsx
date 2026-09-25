@@ -1199,6 +1199,7 @@ window.__moduleIdMap = {
   'ordenes': 'Órdenes de Compra',              // mismo módulo/permiso, otra puerta (tanda 5)
   'abastecimiento': 'Órdenes de Compra',       // decide QUÉ pedir; la orden es su consecuencia (tanda 7)
   'simulador-ordenes': 'Órdenes de Compra',    // decide CUÁNDO pedir; mismo módulo/permiso
+  'imputar-compras': 'Órdenes de Compra',      // a qué línea del presupuesto corresponde cada compra; mismo módulo/permiso (tanda 3.2)
   'compras-pendientes': 'Recepciones',
   // Subcontratos
   'subcontratistas': 'Subcontratistas',
@@ -1530,6 +1531,14 @@ window.__canSeeSidebarItem = function(rol, itemId) {
   // las decisiones viven en el navegador— pero muestra el presupuesto entero
   // de la obra con sus precios, que es información de plata.
   if (itemId === 'simulador-ordenes') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
+    || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
+  // IMPUTAR LO YA COMPRADO (tanda 3.2): hereda EXACTAMENTE los roles de
+  // 'simulador-ordenes' — era su pestaña hasta esta tanda y sigue siendo la
+  // misma gente («Gabriel y la contadora en jefe»). A diferencia del
+  // simulador, ESTA pantalla SÍ escribe en la base (la imputación de cada
+  // orden y cada ítem del almacén), así que en rigor pide 'w', pero se deja
+  // igual que su hermana para no abrir una puerta que la otra no tiene.
+  if (itemId === 'imputar-compras') return ['admin', 'gerente', 'contador', 'ayudante_contador'].includes(rol)
     || (window.__hasPerm?.(rol, 'Órdenes de Compra', 'r') ?? false);
   // Activos fijos: el registro que se le presenta a SUNAT. Lo llevan las
   // contadoras y la tesorería; no es una pantalla de maquinaria.

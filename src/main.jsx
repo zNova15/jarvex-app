@@ -238,6 +238,7 @@ const PAGE_CHUNKS = {
   'jx-ordenes':               () => import('./components/jx-ordenes.jsx'),
   'jx-abastecimiento':        () => import('./components/jx-abastecimiento.jsx'),
   'jx-simulador-ordenes':     () => import('./components/jx-simulador-ordenes.jsx'),
+  'jx-simulador-imputar':     () => import('./components/jx-simulador-imputar.jsx'),
   'jx-compras-pendientes':    () => import('./components/jx-compras-pendientes.jsx'),
   'jx-ingeniero':             () => import('./components/jx-ingeniero.jsx'),
   'jx-control-consumo':       () => import('./components/jx-control-consumo.jsx'),

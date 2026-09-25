@@ -51,7 +51,9 @@ export const GRUPOS_TRABAJO = [
     // conversación que la requisición y la OC del día a día. No es
     // contabilidad —no respalda nada todavía— ni gestión de obra: no toca
     // el presupuesto, lo lee.
-    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra', 'simulador-ordenes'],
+    // 'imputar-compras' entró el 25-set (tanda 3.2): era su pestaña, ahora es
+    // su propia página, pero sigue siendo la misma conversación logística.
+    items: ['solicitud-residente', 'requisiciones', 'ordenes-compra', 'simulador-ordenes', 'imputar-compras'],
   },
   {
     id: 'gestion',

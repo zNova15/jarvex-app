@@ -430,6 +430,7 @@ function Header({ page, plano = 'obra', onInicio, onVolver, puedeVolver, onToggl
     ordenes:'Órdenes de Compra y Servicio',
     abastecimiento:'Abastecimiento de la obra',
     'simulador-ordenes':'Simulador de Órdenes por Presupuesto',
+    'imputar-compras':'Imputar lo ya comprado',
     valorizaciones:'Valorizaciones', 'activos-pesados':'Activos Pesados / Maquinaria',
     'activos-fijos':'Activos Fijos de la empresa',
     'charlas-seguridad':'Charlas de Seguridad', iperc:'IPERC — Matriz de Riesgos',
@@ -717,6 +718,10 @@ const PAGE_REGISTRY = {
   'abastecimiento':         { chunk: 'jx-abastecimiento', component: 'AbastecimientoPage' },
   // === jx-simulador-ordenes (cuándo pedir cada cosa, tanda 3 del simulador) ===
   'simulador-ordenes':      { chunk: 'jx-simulador-ordenes', component: 'SimuladorOrdenesPage' },
+  // === jx-simulador-imputar (a qué línea del presupuesto corresponde cada
+  // compra ya hecha; era una pestaña del simulador, sección propia desde la
+  // tanda 3.2) ===
+  'imputar-compras':        { chunk: 'jx-simulador-imputar', component: 'ImputarComprasPage' },
   'compras-pendientes':     { chunk: 'jx-compras-pendientes', component: 'ComprasPendientesPage' },
   // === jx-valorizaciones ===
   'valorizaciones':         { chunk: 'jx-valorizaciones', component: 'ValorizacionesPage' },

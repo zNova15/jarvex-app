@@ -241,14 +241,27 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('Personalizado por insumo');
   });
 
-  it('la bandeja de imputación DICE que nada se imputa solo (tanda 2.5)', () => {
-    const html = render({ vistaInicial: 'imputar' });
-    expect(html).toContain('Para que el plan no vuelva a pedir lo que ya se compró');
-    expect(html).toContain('Nada se imputa solo');
-    expect(html).toContain('Órdenes ya emitidas');
-    expect(html).toContain('Almacén de la obra');
-    // Nunca un botón de aceptar en lote.
-    expect(html).not.toMatch(/Aceptar todas<\/button>|Imputar todas/);
+  // La bandeja en sí («Nada se imputa solo», «Órdenes ya emitidas»…) se mudó
+  // a su propia página en la tanda 3.2 — ver simulador-imputar-pantalla.test.jsx.
+  // Lo que queda acá, del ESCENARIO, es elegir insumo por insumo qué se resta:
+  // ese picker se había dejado de dibujar al mover la pestaña (regresión de
+  // la propia tanda 3.1, atajada acá).
+  describe('modo personalizado del almacén', () => {
+    const ESC = [{ id: 'e1', nombre: 'Personalizado', obra_id: OBRA, params: { almacenModo: 'personalizado' }, actualizado: '2026-10-01' }];
+    let antes;
+    beforeAll(() => {
+      antes = globalThis.localStorage.getItem;
+      globalThis.localStorage.getItem = (k) => (k === `jx_sim_ordenes_v1:${OBRA}` ? JSON.stringify(ESC) : null);
+    });
+    afterAll(() => { globalThis.localStorage.getItem = antes; });
+
+    it('sin nada imputado todavía, dice que hay que imputar primero', () => {
+      const html = render({ ajustesAbiertos: true });
+      expect(html).toContain('Personalizado por insumo');
+      expect(html).toContain('todavía no hay ítems del almacén imputados');
+      // El acceso a la página de imputar sigue estando, para cuando falte.
+      expect(html).toContain('Imputar lo ya comprado');
+    });
   });
 
   it('los escenarios sugeridos son PUNTOS DE PARTIDA dentro de ⚙, corridos por el motor real (2.6 → 3.1)', () => {
@@ -296,10 +309,12 @@ describe('la pantalla del Simulador de Órdenes', () => {
     expect(html).toContain('Concreto, agregados y aditivos — octubre 2026');
   });
 
-  it('Imputar se sigue abriendo (desde los avisos) con un botón para volver al plan', () => {
+  // «vistaInicial: 'imputar'» ya no existe como vista: cualquier resto de esa
+  // navegación vieja (localStorage, un link guardado) cae en la primera
+  // categoría en vez de romper.
+  it('un vistaInicial "imputar" ya retirado no rompe: cae en la primera categoría', () => {
     const html = render({ vistaInicial: 'imputar' });
-    expect(html).toContain('Volver al plan');
-    expect(html).toContain('Nada se imputa solo');
+    expect(html).toContain('Concreto, agregados y aditivos — octubre 2026');
   });
 
   describe('en modo Simulación', () => {
