@@ -16,6 +16,9 @@
 
 import { consumoPorObraModeloB } from './costo-obra.js';
 import { requiereBancarizacion } from './tipo-cambio.js';
+import { movimientosQueCuentan, notasPorFactura } from './notas-credito.js';
+
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 // La evidencia bancaria (constancias + depósitos multi-factura) se carga desde
 // `bancarizado-db.js`: desde el 17-set el Libro Diario también la necesita para
@@ -50,13 +53,46 @@ export function faltaBancarizacion(m, bancarizadoSet) {
 /**
  * Agrega la contabilidad en KPIs, consumo por obra/empresa, bancarización,
  * top proveedores/categorías, facturas recientes y pagos. FUNCIÓN PURA.
+ *
+ * ── TODO EN SOLES, NUNCA SOLES + DÓLARES CRUDOS (tanda C, 25-set-2026) ──
+ * Hasta hoy sumaba `amount` tal cual: KOPLAST aportaba US$ 150.000 que el PDF
+ * «Reporte contable» mostraba como S/ 150.000 de compras (regla 11 del
+ * CLAUDE.md). Ahora cada comprobante en otra moneda se pasa a soles con el
+ * tipo de cambio de SU fecha de emisión —el mismo criterio que el Registro de
+ * Compras y el Libro Diario (Gabriel: soles al TC de la fecha de emisión)— y
+ * lo que no tiene tasa queda FUERA de las sumas y se cuenta en
+ * `kpis.sinTipoCambio`, en vez de entrar como si fueran soles.
+ *
+ * Y cuenta solo lo que cuenta: nada dado de baja, y las notas de crédito con
+ * su signo (factura y nota vivas, la nota resta — Gabriel, 25-set-2026).
+ * Antes sumaba también los anulados.
+ *
+ * @param tasaDe  (mov) => tipo de cambio del comprobante, o null. Sin él solo
+ *                vale el `tipo_cambio` estampado en el propio comprobante.
  */
 export function agregarContable({
   movimientos = [], bancarizadoSet = new Set(), pagos = [],
   companiesById = new Map(), obrasById = new Map(), consorcios = [],
-  from = null, to = null, topN = 10,
+  from = null, to = null, topN = 10, tasaDe = null,
 } = {}) {
-  const movs = movimientos.filter(m => !m.deleted_at && inRango(m.date, from, to));
+  const cuentan = movimientosQueCuentan(movimientos, { referencia: movimientos })
+    .filter(m => inRango(m.date, from, to));
+  // Una factura anulada entera por su nota no se pagó (o se devolvió): no se
+  // le reclama bancarización, igual que no se le reclama la detracción.
+  const anuladasPorNota = notasPorFactura(movimientos);
+
+  // A soles. `amount` pasa a ser el importe en soles; lo que dice el papel
+  // queda en `montoOrigen`/`monedaOrigen` para mostrarlo al lado.
+  const sinTc = new Map();   // 'USD' → cantidad
+  const aSoles = (m) => {
+    const moneda = String(m.currency || 'PEN').trim().toUpperCase();
+    if (moneda === 'PEN') return m;
+    const propio = Number(m.tipo_cambio);
+    const tc = propio > 0 ? propio : (typeof tasaDe === 'function' ? Number(tasaDe(m)) || 0 : 0);
+    if (!(tc > 0)) { sinTc.set(moneda, (sinTc.get(moneda) || 0) + 1); return null; }
+    return { ...m, amount: r2((Number(m.amount) || 0) * tc), monedaOrigen: moneda, montoOrigen: Number(m.amount) || 0, tcUsado: tc };
+  };
+  const movs = cuentan.map(aSoles).filter(Boolean);
   const compras = movs.filter(esCompra);
   const ventas = movs.filter(esVenta);
   const nomEmp = (id) => companiesById.get(id)?.name || companiesById.get(id)?.legal_name || '(sin empresa)';
@@ -64,7 +100,15 @@ export function agregarContable({
   const amt = (m) => Number(m.amount) || 0;
 
   // ── Bancarización pendiente ──
-  const pend = compras.filter(m => faltaBancarizacion(m, bancarizadoSet));
+  // Se mide sobre el comprobante ORIGINAL (moneda y tasa del papel): el D.L.
+  // 1529 tiene su propio umbral en dólares (US$ 500) y la copia en soles ya
+  // no lo sabría. El monto que se suma sí es el de soles.
+  const enSolesPorId = new Map(compras.map(m => [m.id, m]));
+  const pend = cuentan
+    .filter(m => esCompra(m) && enSolesPorId.has(m.id))
+    .filter(m => !anuladasPorNota.get(m.id)?.anulada)
+    .filter(m => faltaBancarizacion(m, bancarizadoSet))
+    .map(m => enSolesPorId.get(m.id));
 
   // ── Agrupaciones ──
   const groupSum = (arr, keyFn, nameFn) => {
@@ -95,7 +139,9 @@ export function agregarContable({
   const facturasRecientes = [...compras].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, topN).map(m => ({
     id: m.id, fecha: m.date, proveedor: m.third_party_name || '—', doc: m.document_number || '—',
     empresa: nomEmp(m.company_id), obra: nomObra(m.obra_id), monto: amt(m),
-    estado: m.payment_status || '—', faltaBanc: faltaBancarizacion(m, bancarizadoSet),
+    // Lo que dice el papel, cuando no está en soles: la fila lo muestra al lado.
+    monedaOrigen: m.monedaOrigen || 'PEN', montoOrigen: m.montoOrigen ?? amt(m),
+    estado: m.payment_status || '—', faltaBanc: pend.some(p => p.id === m.id),
   }));
 
   // ── Pagos (compromisos): agrupados por estado y por tipo de beneficiario ──
@@ -116,6 +162,11 @@ export function agregarContable({
       bancPendMonto: +pend.reduce((s, m) => s + amt(m), 0).toFixed(2),
       pagadoTotal: +pagadoTotal.toFixed(2),
       pagoPendiente: +pagoPendiente.toFixed(2),
+      // Comprobantes en otra moneda sin tipo de cambio: quedaron FUERA de las
+      // sumas de arriba. Un total que cierra de menos sin decirlo es peor que
+      // uno que avisa.
+      sinTipoCambio: [...sinTc.values()].reduce((s, n) => s + n, 0),
+      sinTipoCambioPorMoneda: [...sinTc.entries()].map(([moneda, n]) => ({ moneda, n })),
     },
     consumoPorObra, consumoPorEmpresa, topProveedores, topCategorias, facturasRecientes,
     pagosPorEstado,

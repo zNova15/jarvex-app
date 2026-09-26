@@ -19,7 +19,7 @@
 // ═══════════════════════════════════════════════════════════════════
 import { db, SYNC_STATUS } from '../db/jarvex.db';
 import { validarPeriodoDeclarado, periodoDeEmision, humano } from './periodo-declaracion.js';
-import { CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, motivoForzado } from './periodo-contable.js';
+import { cerradoHastaActual, movEnPeriodoCerrado, motivoForzado } from './periodo-contable.js';
 
 const avisar = () => {
   try {
@@ -36,7 +36,7 @@ const avisar = () => {
  * @returns {{ ok:boolean, error?:string, avisos?:string[], periodo?:string|null }}
  */
 export async function fijarPeriodoDeclarado(movimientoId, periodo, {
-  userId = null, periodosPresentados = [], cerradoHasta = CERRADO_HASTA_DEFAULT,
+  userId = null, periodosPresentados = [], cerradoHasta = cerradoHastaActual(),
 } = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el comprobante.' };
 

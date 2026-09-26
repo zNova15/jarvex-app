@@ -13,6 +13,7 @@ import { fijarCuentaManual, fijarSalidaExistencia } from "../lib/cuenta-manual-d
 import { opcionesContrapartida, avisoEfectivoSobreUmbral, CAJA } from "../lib/contrapartida.js";
 import { opcionesDestino, nombreDestino, contrapartidaDeDestino } from "../lib/destino-asiento.js";
 import { avisoPeriodoCerrado, periodoCerrado } from "../lib/periodo-contable.js";
+import { contextoDeAsientos } from "../lib/asientos-contexto.js";
 import {
   esDestinoExistencia, opcionesSalida, patasDeSalida, validarSalida, resumenExistencias,
 } from "../lib/existencias-balance.js";
@@ -66,6 +67,20 @@ const fmtS = (n) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+
+// El importe con el símbolo de SU moneda. Un asiento sin tipo de cambio sigue
+// en dólares (25-set-2026): ponerle «S/» sería exactamente el error que la
+// tanda C vino a sacar.
+const fmtMon = (n, moneda = 'PEN') => (String(moneda || 'PEN').toUpperCase() === 'PEN'
+  ? fmtS(n)
+  : `${String(moneda).toUpperCase() === 'USD' ? 'US$' : moneda} ` + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const fmtTc = (tc) => Number(tc || 0).toLocaleString('es-PE', { minimumFractionDigits: 3, maximumFractionDigits: 4 });
+/** «US$ 80.000,00 × 3,495» — lo que dice el papel, al lado del asiento en soles. */
+const txtConversion = (a) => (a?.conversion
+  ? (a.sinTipoCambio
+    ? `${fmtMon(a.conversion.total, a.conversion.moneda)} sin tipo de cambio`
+    : `${fmtMon(a.conversion.total, a.conversion.moneda)} × ${fmtTc(a.conversion.tc)}`)
+  : '');
 
 // new Date('YYYY-MM-DD') = medianoche UTC → en Perú mostraba el día ANTERIOR
 // en toda la columna Fecha del Libro Diario. fmtFechaLarga parte el string.
@@ -328,7 +343,7 @@ function SelectorCuenta({
  */
 function ModalCuenta({
   asiento, movimiento, hermanos = [], familiaDe = null, bancarizadoIds = null, movsVivos = [],
-  puedeReclasificar = false, userId, onClose, showToast,
+  puedeReclasificar = false, userId, onClose, showToast, contexto = null,
 }) {
   const cuentasAsiento = asiento?.cuentas || {};
   const deducida = cuentasAsiento.detalle?.[0]?.cuenta || null;
@@ -500,6 +515,9 @@ function ModalCuenta({
     cambios: { cuenta, contrapartida: contra, destino },
     familiaDe,
     bancarizadoIds,
+    // La moneda, el anticipo y la tasa (tanda C): sin esto la ventana simulaba
+    // el asiento en dólares y anunciaba uno distinto del que muestra el libro.
+    contexto,
     movs: movsVivos,
     hermanos: aplicarATodos ? hermanos : [],
     puedeReclasificar,
@@ -507,7 +525,7 @@ function ModalCuenta({
   const consecuencias = uM(
     () => (paso === 'consecuencias' ? armarConsecuencias({ ...argsConsecuencias, seleccion }) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paso, seleccion, movimiento, cuenta, contra, destino, familiaDe, bancarizadoIds, movsVivos, hermanos, aplicarATodos, puedeReclasificar],
+    [paso, seleccion, movimiento, cuenta, contra, destino, familiaDe, bancarizadoIds, contexto, movsVivos, hermanos, aplicarATodos, puedeReclasificar],
   );
 
   // El texto de auditoría: lo que se hizo, dicho entero. Es lo que alguien va
@@ -1150,14 +1168,27 @@ function LibroDiarioPage({ showToast }) {
     return () => { vivo = false; window.removeEventListener('jx_data_changed', onCambio); };
   }, []);
 
+  // ── LA MONEDA, EL ANTICIPO Y LA NOTA SIN EFECTO (tanda C, 25-set-2026) ──
+  // Gabriel: el libro va en soles al TC de la fecha de emisión (el USD queda de
+  // referencia), los anticipos a proveedores van a la 422 y cada entrega que
+  // los consume va a la 60 contra la 422. Se arma con TODOS los movimientos:
+  // el anticipo y su entrega suelen ser de meses distintos, igual que una nota
+  // y la factura que modifica. `asientos-contexto.js` lo arma igual para el PLE.
+  const { data: tasasTc = [] } = (window.__hooks?.useTiposCambio?.() ?? { data: [] });
+  const { data: aplicacionesAnticipo = [] } = (window.__hooks?.useAnticipoAplicaciones?.() ?? { data: [] });
+  const contexto = uM(
+    () => contextoDeAsientos({ movimientos: movs || [], aplicaciones: aplicacionesAnticipo || [], tasas: tasasTc || [] }),
+    [movs, aplicacionesAnticipo, tasasTc],
+  );
+
   // Asientos generados al vuelo
   const asientosTodos = uM(
     // `ventana`: desde la tanda 5 un movimiento puede producir DOS asientos
     // con fechas distintas. El filtro de período tiene que aplicarse al
     // asiento, no al movimiento — si no, la compra de mayo se vería en agosto
     // solo porque su salida fue en agosto.
-    () => generarAsientosBatch(movsFiltrados, { repartoDe, bancarizadoIds, ventana: { anio, mes } }),
-    [movsFiltrados, repartoDe, bancarizadoIds, anio, mes],
+    () => generarAsientosBatch(movsFiltrados, { ...contexto, repartoDe, bancarizadoIds, ventana: { anio, mes } }),
+    [movsFiltrados, contexto, repartoDe, bancarizadoIds, anio, mes],
   );
   const descuadrados = uM(() => asientosTodos.filter(a => !a.cuadra), [asientosTodos]);
 
@@ -1231,13 +1262,14 @@ function LibroDiarioPage({ showToast }) {
   // Totales globales — SOLO S/ (hallazgo inspección 1-sep): los asientos en
   // USD se sumaban como si fueran soles en totales/PDF/Excel. Cada asiento
   // cuadra internamente, así que la herramienta de descuadre nunca podía
-  // verlo. Sin tipo de cambio no hay conversión honesta: lo extranjero se
-  // separa y se informa aparte, sin mezclar monedas.
+  // verlo. Desde la tanda C (25-set) el asiento en dólares YA viene en soles
+  // cuando hay tipo de cambio, y suma. Lo que queda aparte es solo lo que no
+  // tiene tasa: sin ella no hay conversión honesta.
   const totales = uM(() => {
     let totDebe = 0, totHaber = 0, lineas = 0;
     const extranjeras = new Map();   // 'USD' → { debe, asientos }
     asientos.forEach(a => {
-      const cur = movsById.get(a.movimiento_id)?.currency || 'PEN';
+      const cur = a.moneda || 'PEN';
       if (cur !== 'PEN') {
         const e = extranjeras.get(cur) || { debe: 0, asientos: 0 };
         a.partidas.forEach(p => { e.debe += p.debe; lineas += 1; });
@@ -1258,7 +1290,7 @@ function LibroDiarioPage({ showToast }) {
       cuadra: Math.abs(totDebe - totHaber) < 0.05,
       extranjeras: [...extranjeras.entries()].map(([cur, e]) => ({ cur, debe: Math.round(e.debe * 100) / 100, asientos: e.asientos })),
     };
-  }, [asientos, movsById]);
+  }, [asientos]);
 
   // Comprobante adjunto por movimiento (el mismo material que Movimientos
   // muestra con el ojo 👁): factura/imagen guardada por Captura Mágica.
@@ -1384,7 +1416,10 @@ function LibroDiarioPage({ showToast }) {
       const body = [];
       asientos.forEach((a, idx) => {
         // Solo ASCII: jsPDF con helvetica estándar (WinAnsi) corrompe ⚠ y Δ.
-        const marcas = (a.extorno ? ' [NC extorno]' : '') + (!a.cuadra ? ` [DESCUADRE ${fmtS(Math.abs(a.delta))}]` : '');
+        const marcas = (a.extorno ? ' [NC extorno]' : '') + (!a.cuadra ? ` [DESCUADRE ${fmtS(Math.abs(a.delta))}]` : '')
+          // La moneda del papel y la tasa usada: el importe está en soles, pero
+          // quien lee el PDF tiene que poder volver al comprobante.
+          + (a.conversion ? ` [${txtConversion(a).replace('×', 'x')}]` : '');
         a.partidas.forEach((p, j) => {
           body.push([
             j === 0 ? String(idx + 1) : '',
@@ -1392,8 +1427,8 @@ function LibroDiarioPage({ showToast }) {
             j === 0 ? (a.glosa.slice(0, 60) + marcas) : '',
             p.cuenta,
             p.descripcion.slice(0, 40),
-            p.debe !== 0 ? fmtS(p.debe) : '',
-            p.haber !== 0 ? fmtS(p.haber) : '',
+            p.debe !== 0 ? fmtMon(p.debe, a.moneda) : '',
+            p.haber !== 0 ? fmtMon(p.haber, a.moneda) : '',
           ]);
         });
       });
@@ -1455,7 +1490,10 @@ function LibroDiarioPage({ showToast }) {
         showToast?.('Excel no disponible', 'red');
         return;
       }
-      const columnas = ['N°', 'Fecha', 'Glosa', 'Tipo', 'Cuenta', 'Nombre cuenta', 'Descripción', 'Debe', 'Haber', 'Δ asiento'];
+      // Moneda y T.C. (tanda C): el Debe y el Haber están en la moneda de la
+      // columna «Moneda» —PEN salvo lo que no tiene tasa—; «Importe del papel»
+      // y «T.C.» dicen de dónde salió la conversión.
+      const columnas = ['N°', 'Fecha', 'Glosa', 'Tipo', 'Cuenta', 'Nombre cuenta', 'Descripción', 'Debe', 'Haber', 'Δ asiento', 'Moneda', 'Importe del papel', 'T.C.'];
       const filas = [];
       asientos.forEach((a, idx) => {
         a.partidas.forEach((p, j) => {
@@ -1472,10 +1510,13 @@ function LibroDiarioPage({ showToast }) {
             // Δ del PROPIO asiento (herramienta de descuadre): las contadoras
             // revisan el cuadre en Excel — con esta columna el culpable salta solo.
             j === 0 && !a.cuadra ? a.delta : '',
+            a.moneda || 'PEN',
+            j === 0 && a.conversion ? `${a.conversion.moneda} ${a.conversion.total}` : '',
+            j === 0 && a.conversion?.tc ? a.conversion.tc : '',
           ]);
         });
       });
-      filas.push(['', '', '', '', '', '', totales.extranjeras.length ? 'TOTALES (solo S/)' : 'TOTALES', totales.totDebe, totales.totHaber, '']);
+      filas.push(['', '', '', '', '', '', totales.extranjeras.length ? 'TOTALES (solo S/)' : 'TOTALES', totales.totDebe, totales.totHaber, '', 'PEN', '', '']);
 
       window.__reports.generateExcel({
         // Máx 31 chars de sheetName en xlsx — 'DESC' marca la vista parcial.
@@ -1722,10 +1763,41 @@ function LibroDiarioPage({ showToast }) {
                                 <span className={`badge ${TIPO_BADGE[a.type] || 'b-gray'}`} style={{ fontSize: 10 }}>
                                   {TIPO_LABEL[a.type] || a.type}
                                 </span>
-                                {(movsById.get(a.movimiento_id)?.currency || 'PEN') !== 'PEN' && (
+                                {a.conversion && (a.sinTipoCambio ? (
+                                  <span className="badge b-red" style={{ fontSize: 10 }}
+                                    title={`El comprobante está en ${a.conversion.moneda} y no hay tipo de cambio para su fecha: el asiento quedó en ${a.conversion.moneda}, fuera de los totales en S/ y del PLE. Cargá la tasa (Registro de Compras y Ventas → pasada de tipos de cambio) y se convierte solo.`}>
+                                    ⚠ {a.conversion.moneda} sin tipo de cambio
+                                  </span>
+                                ) : (
                                   <span className="badge b-blue" style={{ fontSize: 10 }}
-                                    title="Asiento en moneda extranjera: sus montos están en la moneda del comprobante y NO se suman con los totales en S/.">
-                                    {movsById.get(a.movimiento_id)?.currency}
+                                    title={`El papel dice ${fmtMon(a.conversion.total, a.conversion.moneda)}. El asiento va en soles al tipo de cambio ${a.conversion.origenTc === 'comprobante' ? 'estampado en el comprobante' : 'de SUNAT para su fecha de emisión'} (${fmtTc(a.conversion.tc)}).`}>
+                                    {txtConversion(a)}
+                                  </span>
+                                ))}
+                                {a.esAnticipo && (
+                                  <span className="badge b-purple" style={{ fontSize: 10 }}
+                                    title="Anticipo a proveedor: plata que salió por mercadería que todavía no llegó. Va a la 422, no a la 60. Cada entrega que lo consume lo baja.">
+                                    anticipo · 422
+                                  </span>
+                                )}
+                                {a.anticipo && (
+                                  <span className="badge b-purple" style={{ fontSize: 10 }}
+                                    title={`Mercadería que llegó contra un anticipo ya pagado (${a.anticipo.detalle.map(d => d.documento).filter(Boolean).join(', ')}): su base va a la 60 contra la 422, sin IGV — el crédito fiscal se tomó en el anticipo.`}>
+                                    consume anticipo {fmtMon(a.anticipo.aplicado, a.moneda)}
+                                  </span>
+                                )}
+                                {a.enCero && (
+                                  <span className="badge b-amber" style={{ fontSize: 10 }}
+                                    title="Factura en cero: el descuento de un anticipo ya está en el pie. Vinculala con su anticipo en Contabilidad → Anticipos y la mercadería llega sola a la 60.">
+                                    en cero · sin anticipo
+                                  </span>
+                                )}
+                                {a.detraccion && (
+                                  <span className="badge b-blue" style={{ fontSize: 10 }}
+                                    title={a.detraccion.cuenta === '1071'
+                                      ? 'La detracción que depositó el cliente va a la cuenta de detracciones del Banco de la Nación (1071), no a la cuenta corriente.'
+                                      : 'La detracción ya depositada es una parte de la deuda que ya se pagó: sale del banco y la 42 queda por el saldo.'}>
+                                    detracción {fmtS(a.detraccion.monto)} · {a.detraccion.cuenta}
                                   </span>
                                 )}
                                 {a.extorno && (
@@ -1794,10 +1866,10 @@ function LibroDiarioPage({ showToast }) {
                           <div style={{ fontSize: 10, color: 'var(--tm)' }}>{cuentaNombre(p.cuenta)}</div>
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: p.debe !== 0 ? 700 : 400, color: p.debe !== 0 ? 'var(--green)' : 'var(--tm)' }} className="col-num">
-                          {p.debe !== 0 ? fmtS(p.debe) : '—'}
+                          {p.debe !== 0 ? fmtMon(p.debe, a.moneda) : '—'}
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: p.haber !== 0 ? 700 : 400, color: p.haber !== 0 ? 'var(--red)' : 'var(--tm)' }} className="col-num">
-                          {p.haber !== 0 ? fmtS(p.haber) : '—'}
+                          {p.haber !== 0 ? fmtMon(p.haber, a.moneda) : '—'}
                         </td>
                       </tr>
                     );
@@ -1858,6 +1930,7 @@ function LibroDiarioPage({ showToast }) {
           hermanos={hermanosEditando}
           familiaDe={familiaDe}
           bancarizadoIds={bancarizadoIds}
+          contexto={contexto}
           movsVivos={movsVivos}
           puedeReclasificar={ROLES_CATALOGO.includes(rolActual)}
           userId={userId}

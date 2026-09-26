@@ -15,6 +15,7 @@ import {
 } from "../lib/revision-facturas.js";
 import { itemsDeFactura } from "../lib/cruce-recepcion.js";
 import { sugerirCodigoSpot } from "../lib/sugerir-codigo-spot.js";
+import { tasaDeComprobante } from "../lib/tipo-cambio-pasada.js";
 
 const { useState, useMemo } = React;
 const JxIcon = (p) => (window.JxIcon ? <window.JxIcon {...p} /> : null);
@@ -40,9 +41,13 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
   ), [descartes]);
 
   const movsById = useMemo(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
+  // La detracción se deposita en soles: un comprobante en dólares se juzga con
+  // la tasa de su fecha de emisión (tanda C, 25-set-2026).
+  const { data: tasasTc = [] } = window.__hooks?.useTiposCambio?.() || { data: [] };
+  const tasaDe = useMemo(() => (m) => tasaDeComprobante(m, tasasTc || [])?.valor || null, [tasasTc]);
   const hallazgos = useMemo(
-    () => revisarLote(movs || [], { hoy, descartados }),
-    [movs, hoy, descartados]
+    () => revisarLote(movs || [], { hoy, descartados, tasaDe }),
+    [movs, hoy, descartados, tasaDe]
   );
   const resumen = useMemo(() => resumenRevision(hallazgos), [hallazgos]);
   const visibles = hallazgos.filter(h => h.nivel === verNivel);

@@ -129,31 +129,40 @@ describe('2. notas de crédito', () => {
     expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_huerfana')).toHaveLength(0);
   });
 
-  it('🔴 una factura anulada por completo que sigue viva se reporta', () => {
+  // 25-set-2026: Gabriel decidió que factura y nota quedan LAS DOS vigentes,
+  // como en el RCE. La factura anulada viva dejó de ser una incoherencia; lo
+  // que desentona ahora es darla de baja (la nota restaba dos veces).
+  it('una factura anulada por su nota y VIVA ya no es incoherencia: es la regla', () => {
     const movs = [
       venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06'),
       venta('n', JARVEX, 'E001-1', '20615346081', -12920, '2026-07-06', { document_type: 'nota_credito', related_movement_id: 'f' }),
     ];
-    const r = notasIncoherentes(movs).filter(h => h.regla === 'factura_anulada_viva');
-    expect(r).toHaveLength(1);
-    expect(r[0].gravedad).toBe('alta');
-    expect(r[0].monto).toBe(12920);
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_baja_con_nota')).toHaveLength(0);
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_anulada_viva')).toHaveLength(0);
   });
 
-  it('si ya la dieron de baja, no insiste', () => {
+  it('🔴 la factura DADA DE BAJA con su nota viva se reporta', () => {
     const movs = [
       venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06', { payment_status: 'cancelled' }),
       venta('n', JARVEX, 'E001-1', '20615346081', -12920, '2026-07-06', { document_type: 'nota_credito', related_movement_id: 'f' }),
     ];
-    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_anulada_viva')).toHaveLength(0);
+    const r = notasIncoherentes(movs).filter(h => h.regla === 'factura_baja_con_nota');
+    expect(r).toHaveLength(1);
+    expect(r[0].monto).toBe(12920);
+    expect(r[0].detalle).toMatch(/las dos quedan vigentes/);
   });
 
-  it('una nota PARCIAL no convierte la factura en anulada', () => {
+  it('una baja SIN nota (comunicación de baja) no es incoherencia', () => {
+    const movs = [venta('f', JARVEX, 'E001-9', '20615346081', 900, '2026-07-06', { payment_status: 'cancelled' })];
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_baja_con_nota')).toHaveLength(0);
+  });
+
+  it('una nota PARCIAL sobre una factura dada de baja tampoco dispara la regla', () => {
     const movs = [
-      venta('f', JARVEX, 'E001-7', '20615346081', 9000, '2026-07-06'),
+      venta('f', JARVEX, 'E001-7', '20615346081', 9000, '2026-07-06', { payment_status: 'cancelled' }),
       venta('n', JARVEX, 'E001-7', '20615346081', -100, '2026-07-08', { document_type: 'nota_credito', related_movement_id: 'f' }),
     ];
-    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_anulada_viva')).toHaveLength(0);
+    expect(notasIncoherentes(movs).filter(h => h.regla === 'factura_baja_con_nota')).toHaveLength(0);
   });
 
   // Gabriel, 23-set-2026: «un comprobante fue emitido y declarado en una fecha
@@ -211,12 +220,12 @@ describe('2. notas de crédito', () => {
     expect(notasIncoherentes(movs).filter(h => h.regla === 'nota_fecha_imposible')).toHaveLength(0);
   });
 
-  it('la factura anulada trae los ids de sus notas, para el segundo 👁', () => {
+  it('la factura dada de baja trae los ids de sus notas, para el segundo 👁', () => {
     const movs = [
-      venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06'),
+      venta('f', JARVEX, 'E001-1', '20615346081', 12920, '2026-07-06', { payment_status: 'cancelled' }),
       venta('n', JARVEX, 'E001-1', '20615346081', -12920, '2026-07-06', { document_type: 'nota_credito', related_movement_id: 'f' }),
     ];
-    const [h] = notasIncoherentes(movs).filter(x => x.regla === 'factura_anulada_viva');
+    const [h] = notasIncoherentes(movs).filter(x => x.regla === 'factura_baja_con_nota');
     expect(h.notasIds).toEqual(['n']);
   });
 });

@@ -53,7 +53,7 @@ import { claveMapeo } from './mapeo-insumos.js';
 import { etiquetaCategoria } from './indices-unificados-iupc.js';
 import { generarAsiento } from './asientos.js';
 import { derivarTypeContable } from './clasificacion-contable.js';
-import { movEnPeriodoCerrado, CERRADO_HASTA_DEFAULT } from './periodo-contable.js';
+import { movEnPeriodoCerrado, cerradoHastaActual } from './periodo-contable.js';
 import { nombreDeCuenta } from './pcge.js';
 import { nombreDestino, seTraslada } from './destino-asiento.js';
 import { esVentaMov } from './costo-obra.js';
@@ -471,7 +471,7 @@ const cuentasDe = (reparto) => (reparto?.lineas || []).map(l => l.cuenta);
  */
 export function alcanceDeCorrecciones({
   movs = [], familiaDe, familiaDeCorregida, correcciones = [],
-  excluirId = null, companyId = null, cerradoHasta = CERRADO_HASTA_DEFAULT,
+  excluirId = null, companyId = null, cerradoHasta = cerradoHastaActual(),
 } = {}) {
   const vacio = { cambian: [], conManual: 0, cerrados: 0, otrasEmpresas: 0, porMoneda: {}, ejemplos: [] };
   if (!correcciones.length || typeof familiaDe !== 'function') return vacio;
@@ -535,7 +535,7 @@ export function alcanceDeCorrecciones({
  * escritura deja su rastro en auditoría.
  */
 export function planDeHermanos(hermanos = [], {
-  cambios = {}, familiaDeCorregida = null, hayCorrecciones = false, cerradoHasta = CERRADO_HASTA_DEFAULT,
+  cambios = {}, familiaDeCorregida = null, hayCorrecciones = false, cerradoHasta = cerradoHastaActual(),
 } = {}) {
   const out = { planes: [], cerrados: [], seArreglanSolos: [] };
   for (const h of hermanos) {
@@ -585,11 +585,13 @@ function planPara(mov, cambios) {
  *   seleccion      { correcciones: {norm: familia}, corregirTipo, aceptaCerrados }
  *                  — null en la primera pasada: se usa `seleccionInicial`
  *   cerradoHasta
+ *   contexto       `contextoDeAsientos()`: tasa de cambio, anticipos, referencia
  *   puedeReclasificar  si el rol escribe el catálogo (admin, gerente, contador)
  */
 export function armarConsecuencias({
   mov, cambios = {}, familiaDe = null, bancarizadoIds = null, movs = [], hermanos = [],
-  seleccion = null, cerradoHasta = CERRADO_HASTA_DEFAULT, puedeReclasificar = true,
+  seleccion = null, cerradoHasta = cerradoHastaActual(), puedeReclasificar = true,
+  contexto = null,
 } = {}) {
   const m = mov || {};
   const esVenta = esVentaMov(m);
@@ -630,7 +632,11 @@ export function armarConsecuencias({
   const cuentaFinal = cuentaElegida && !salesola ? cuentaElegida : null;
 
   // ── A: el asiento antes y después ──
-  const opts = (fam) => ({ repartoDe: repartoDe(fam), bancarizadoIds });
+  // `contexto` (tanda C): la tasa, el anticipo y la referencia que usa el
+  // Libro Diario. Sin él, el asiento simulado de un comprobante en dólares
+  // saldría en dólares y el de un anticipo en la 60 — otro asiento que el que
+  // la pantalla muestra.
+  const opts = (fam) => ({ ...(contexto || {}), repartoDe: repartoDe(fam), bancarizadoIds });
   const asientoAntes = generarAsiento(m, opts(resolver));
 
   let movDespues = {

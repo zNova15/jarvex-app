@@ -125,3 +125,49 @@ describe('faltaBancarizacion — par intercompany', () => {
     expect(faltaBancarizacion(externa, bancarizadoSet)).toBe(true);
   });
 });
+
+// ── Tanda C (25-set-2026): regla 11 y anulados ──────────────────────
+describe('agregarContable — soles, nunca soles + dólares crudos', () => {
+  const rango = { from: '2026-03-01', to: '2026-03-31', companiesById, obrasById, bancarizadoSet: new Set() };
+
+  it('🔴 un comprobante en dólares entra en SOLES al tipo de cambio del papel', () => {
+    const movs = [{ id: 'k', type: 'cost', date: '2026-03-31', amount: 80000, currency: 'USD', tipo_cambio: 3.495, company_id: 'c1', third_party_name: 'KOPLAST' }];
+    const r = agregarContable({ ...rango, movimientos: movs });
+    expect(r.kpis.totalCompras).toBe(279600);
+    expect(r.facturasRecientes[0].monedaOrigen).toBe('USD');
+    expect(r.facturasRecientes[0].montoOrigen).toBe(80000);
+  });
+
+  it('sin tasa en el papel usa la de su fecha; sin ninguna, queda FUERA y se cuenta', () => {
+    const movs = [
+      { id: 'a', type: 'cost', date: '2026-03-10', amount: 100, currency: 'USD', company_id: 'c1' },
+      { id: 'b', type: 'cost', date: '2026-03-11', amount: 100, currency: 'USD', company_id: 'c1' },
+    ];
+    const r = agregarContable({ ...rango, movimientos: movs, tasaDe: (m) => (m.id === 'a' ? 3.5 : null) });
+    expect(r.kpis.totalCompras).toBe(350);
+    expect(r.kpis.sinTipoCambio).toBe(1);
+    expect(r.kpis.sinTipoCambioPorMoneda).toEqual([{ moneda: 'USD', n: 1 }]);
+  });
+
+  it('🔴 lo dado de baja no suma (antes sí)', () => {
+    const movs = [{ id: 'x', type: 'cost', date: '2026-03-10', amount: 500, currency: 'PEN', company_id: 'c1', payment_status: 'cancelled' }];
+    expect(agregarContable({ ...rango, movimientos: movs }).kpis.totalCompras).toBe(0);
+  });
+
+  it('factura y nota vivas suman cero, y la anulada por nota no reclama bancarización', () => {
+    const movs = [
+      { id: 'f', type: 'cost', date: '2026-03-10', amount: 9000, currency: 'PEN', company_id: 'c1' },
+      { id: 'n', type: 'cost', date: '2026-03-12', amount: -9000, currency: 'PEN', company_id: 'c1', document_type: 'nota_credito', related_movement_id: 'f' },
+    ];
+    const r = agregarContable({ ...rango, movimientos: movs });
+    expect(r.kpis.totalCompras).toBe(0);
+    expect(r.kpis.bancPendCount).toBe(0);
+  });
+
+  it('bancarización en dólares se mide con su umbral propio (US$ 500) y se suma en soles', () => {
+    const movs = [{ id: 'u', type: 'cost', date: '2026-03-10', amount: 600, currency: 'USD', tipo_cambio: 3.4, company_id: 'c1' }];
+    const r = agregarContable({ ...rango, movimientos: movs });
+    expect(r.kpis.bancPendCount).toBe(1);
+    expect(r.kpis.bancPendMonto).toBe(2040);
+  });
+});

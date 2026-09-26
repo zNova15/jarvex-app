@@ -2748,6 +2748,29 @@ function SistemaTab({ showToast }) {
     } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
   };
 
+  // ── HASTA DÓNDE YA SE PRESENTÓ A SUNAT (tanda C, 25-set-2026) ──────
+  // `app_config` 'periodo_cerrado_hasta'. Existía la fila (31-jul) pero nadie
+  // la leía y no había dónde cambiarla: el aviso de «mes ya presentado» del
+  // Libro Diario iba a decir julio para siempre. Se mueve una vez por mes,
+  // cuando se declara. No bloquea nada (desde el 22-set solo avisa y deja
+  // escrito el motivo en la auditoría).
+  const cierreCfg = window.__hooks?.resolverConfig ? window.__hooks.resolverConfig(appCfgHook.data, 'periodo_cerrado_hasta', '2026-07-31') : '2026-07-31';
+  const [cierreSel, setCierreSel] = uSAd('');
+  const cierreMostrado = cierreSel === '' ? String(cierreCfg || '').slice(0, 10) : cierreSel;
+  const guardarCierre = async () => {
+    const f = String(cierreMostrado || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) { showToast?.('Elegí una fecha', 'red'); return; }
+    const hoy = window.__fecha?.hoyLocal?.() || '';
+    if (hoy && f > hoy) { showToast?.('No se puede dar por presentado un día que todavía no pasó', 'red'); return; }
+    try {
+      const vivas = (appCfgHook.data || []).filter(r => !r.deleted_at && r.clave === 'periodo_cerrado_hasta');
+      vivas.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+      if (vivas[0]) await appCfgHook.update(vivas[0].id, { valor: f });
+      else await appCfgHook.create({ clave: 'periodo_cerrado_hasta', valor: f });
+      showToast?.(`✓ Presentado a SUNAT hasta el ${f} — rige en cada equipo tras su próximo sync`, 'green');
+    } catch (e) { showToast?.('No se pudo guardar: ' + (e?.message || e), 'red'); }
+  };
+
   uEAd(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -3163,6 +3186,22 @@ function SistemaTab({ showToast }) {
             disabled={!isAdmin} value={umbralMostrado} onChange={e=>setUmbralSel(e.target.value)}/>
           <span style={{ fontSize:12, color:'var(--tm)' }}>soles</span>
           {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarUmbral}>Guardar</button>}
+        </div>
+        {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
+      </div>
+      <div className="card card-p" style={{ gridColumn:'1 / -1', borderLeft:'3px solid var(--blue)' }}>
+        <div style={{ fontSize:13, fontWeight:700, display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+          <JxIcon name="lock" size={14} color="var(--blue)"/> Período ya presentado a SUNAT
+        </div>
+        <div style={{ fontSize:12, color:'var(--tm)', marginBottom:10 }}>
+          Último día ya declarado. Cambiar la cuenta, el destino o el mes de declaración de un comprobante
+          de antes de esa fecha <b>no se bloquea</b>, pero el Libro Diario lo avisa y la auditoría lo deja escrito.
+          Movelo cada vez que se declara un mes. Actual: <strong style={{ color:'var(--tp)' }}>{String(cierreCfg || '').slice(0, 10)}</strong>.
+        </div>
+        <div style={{ display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+          <input className="fi" type="date" style={{ maxWidth:170 }}
+            disabled={!isAdmin} value={cierreMostrado} onChange={e=>setCierreSel(e.target.value)}/>
+          {isAdmin && <button className="btn btn-amber btn-sm" onClick={guardarCierre}>Guardar</button>}
         </div>
         {!isAdmin && <div style={{ fontSize:11, color:'var(--tm)', marginTop:6 }}>Solo el administrador puede cambiarlo.</div>}
       </div>

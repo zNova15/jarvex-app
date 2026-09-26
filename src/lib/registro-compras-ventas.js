@@ -39,6 +39,7 @@
 
 import { desglosarIgv } from './igv-desglose.js';
 import { ymdDe } from './fecha.js';
+import { movimientosQueCuentan } from './notas-credito.js';
 import {
   tipoComprobante, tipoDocIdentidad, partirComprobante,
   nombreTabla10, esReciboHonorarios, usaDependenciaAduanera, esDependenciaAduaneraValida,
@@ -355,7 +356,9 @@ export function filaVenta(m, { correlativo, movsById, cuentaDe, tasaDe } = {}) {
  * @returns {{compras:{filas,totales}, ventas:{filas,totales}}}
  */
 export function armarRegistro({ movimientos = [], movsById = null, cuentaDe = null, tasaDe = null } = {}) {
-  const vivos = (movimientos || []).filter(m => m && !m.deleted_at && m.payment_status !== 'cancelled');
+  // Factura y nota quedan las DOS vivas (Gabriel, 25-set-2026): una nota cuya
+  // factura igual quedó dada de baja no resta — si no, la baja cuenta doble.
+  const vivos = movimientosQueCuentan(movimientos, { referencia: movsById || null });
   // Orden del registro: por fecha y, a igual fecha, por número de comprobante.
   // El correlativo se asigna DESPUÉS de ordenar: es el número de la fila en la
   // hoja, y tiene que ser estable mes a mes.

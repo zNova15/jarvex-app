@@ -85,7 +85,7 @@
 import { cuenta as cuentaPcge } from './pcge.js';
 import { ESPEJO_61, contrapartidaDeDestino } from './destino-asiento.js';
 import { ELEMENTO_9, esCuentaElemento9, cuenta9 } from './pcge-elemento9.js';
-import { periodoCerrado, CERRADO_HASTA_DEFAULT } from './periodo-contable.js';
+import { periodoCerrado, cerradoHastaActual } from './periodo-contable.js';
 
 const r2 = (n) => {
   const v = Number(n);
@@ -330,7 +330,7 @@ export function diasEntre(desde, hasta) {
  * quizá se pagó de más.
  */
 export function costoAtrapado(movimiento, {
-  entro = 0, hoy = '', cerradoHasta = CERRADO_HASTA_DEFAULT,
+  entro = 0, hoy = '', cerradoHasta = cerradoHastaActual(),
 } = {}) {
   const saldo = saldoDeExistencia(movimiento, { entro });
   if (!saldo || saldo.queda <= 0.01) return null;
@@ -364,7 +364,7 @@ export function costoAtrapado(movimiento, {
  * —ni tiene que saber— cómo se arma un asiento.
  */
 export function resumenExistencias(filas = [], {
-  hoy = '', cerradoHasta = CERRADO_HASTA_DEFAULT,
+  hoy = '', cerradoHasta = cerradoHastaActual(),
 } = {}) {
   const porCuenta = new Map();
   let totalQueda = 0;

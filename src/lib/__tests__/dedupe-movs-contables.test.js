@@ -10,25 +10,36 @@ const ventaBase = {
 
 describe('claveComprobante', () => {
   it('venta: empresa emisora + serie normalizada (el RUC del tercero NO participa)', () => {
-    expect(claveComprobante(ventaBase)).toBe('venta|emp-A|E001-134');
+    expect(claveComprobante(ventaBase)).toBe('venta|emp-A|comprobante|E001-134');
     // El mismo doc escrito distinto (ceros a la izquierda) → misma clave.
     expect(claveComprobante({ ...ventaBase, document_number: 'E001-00000134' }))
-      .toBe('venta|emp-A|E001-134');
+      .toBe('venta|emp-A|comprobante|E001-134');
   });
 
   it('compra: proveedor (RUC) + serie', () => {
     const compra = { ...ventaBase, id: 'c1', clase: 'compra', type: 'cost' };
-    expect(claveComprobante(compra)).toBe('compra|20601234567|E001-134');
+    expect(claveComprobante(compra)).toBe('compra|20601234567|comprobante|E001-134');
   });
 
   it('compra sin RUC cae al nombre normalizado', () => {
     const compra = { ...ventaBase, clase: 'compra', third_party_ruc: null, third_party_name: '  Ferretería  El Sol ' };
-    expect(claveComprobante(compra)).toBe('compra|FERRETERÍA EL SOL|E001-134');
+    expect(claveComprobante(compra)).toBe('compra|FERRETERÍA EL SOL|comprobante|E001-134');
   });
 
   it('sin document_number o borrado → null (no participa)', () => {
     expect(claveComprobante({ ...ventaBase, document_number: '' })).toBe(null);
     expect(claveComprobante({ ...ventaBase, deleted_at: '2026-01-01' })).toBe(null);
+  });
+
+  // Tanda C (25-set-2026): la venta E001-1 y su nota de crédito E001-1 son
+  // dos papeles válidos (SUNAT numera por tipo). Antes caían en el mismo
+  // grupo y el fusionador borraba la NOTA.
+  it('🔴 una nota de crédito NUNCA comparte llave con la factura del mismo número', () => {
+    const nota = { ...ventaBase, id: 'n1', document_type: 'nota_credito', amount: -5000 };
+    expect(claveComprobante(nota)).toBe('venta|emp-A|nota_credito|E001-134');
+    expect(claveComprobante(nota)).not.toBe(claveComprobante(ventaBase));
+    const grupos = detectarDuplicados([ventaBase, nota]);
+    expect(grupos).toHaveLength(0);
   });
 
   it('clase se infiere del type cuando falta', () => {

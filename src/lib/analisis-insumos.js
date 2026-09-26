@@ -42,7 +42,7 @@ export const claseDeMov = (mv) => mv?.clase || (mv?.type === 'income' ? 'venta' 
 // Se calcula ACÁ y no en cada pantalla por la misma razón que todo lo demás de
 // este archivo: un solo lugar que mira `items_factura` y un solo criterio de
 // qué línea cuenta. `notasPorFactura` es la MISMA función que usa el escáner
-// para su aviso `factura_anulada_viva` — el inventario y el escáner no pueden
+// para sus avisos de notas — el inventario y el escáner no pueden
 // contar dos historias distintas de la misma factura.
 //
 // 🔴 ANULAR NO ES BORRAR. La línea sale igual, marcada: quien quiera contarla

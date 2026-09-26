@@ -1,6 +1,7 @@
 import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
+import { liquidarValorizacion, DETRACCION_OBRA } from "../lib/detraccion.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -109,7 +110,7 @@ function ValorizacionesPage({ showToast }) {
       fecha_corte: hoy.toISOString().slice(0,10),
       cliente_nombre: obra?.cliente || '',
       cliente_ruc: obra?.cliente_ruc || '',
-      detraccion_pct: 12,
+      detraccion_pct: DETRACCION_OBRA.pct,
       igv_pct: 18,
       retenciones: 0,
       adelantos: 0,
@@ -138,7 +139,7 @@ function ValorizacionesPage({ showToast }) {
       numero: v.numero, periodo_mes: v.periodo_mes, periodo_anio: v.periodo_anio,
       fecha_corte: v.fecha_corte, cliente_nombre: v.cliente_nombre || '',
       cliente_ruc: v.cliente_ruc || '',
-      detraccion_pct: Number(v.detraccion_pct||12),
+      detraccion_pct: Number(v.detraccion_pct||DETRACCION_OBRA.pct),
       igv_pct: Number(v.igv_pct||18),
       adelantos: Number(v.adelantos||0),
       retenciones: Number(v.retenciones||0),
@@ -165,16 +166,18 @@ function ValorizacionesPage({ showToast }) {
   };
 
   // Cálculos
+  // La factura se emite por el BRUTO (Gabriel, 25-set-2026): adelanto y
+  // garantía se descuentan del neto a cobrar, no de la base; detracción 4 %
+  // (obra, código 030). La cuenta vive en `detraccion.js`, la misma del PDF.
   const totales = uM(() => {
     let bruto = 0;
     valPartidas.forEach(vp => { bruto += vp.metrado_mes * vp.pu; });
     bruto = +bruto.toFixed(2);
-    const subtotal = +(bruto - (Number(form.adelantos)||0) - (Number(form.retenciones)||0)).toFixed(2);
-    const igv = +(subtotal * (Number(form.igv_pct||18) / 100)).toFixed(2);
-    const total = +(subtotal + igv).toFixed(2);
-    const detraccion = +(total * (Number(form.detraccion_pct||12) / 100)).toFixed(2);
-    const neto = +(total - detraccion).toFixed(2);
-    return { bruto, subtotal, igv, total, detraccion, neto };
+    const l = liquidarValorizacion({
+      bruto, adelantos: Number(form.adelantos) || 0, retenciones: Number(form.retenciones) || 0,
+      igvPct: Number(form.igv_pct || 18), detraccionPct: Number(form.detraccion_pct || DETRACCION_OBRA.pct),
+    });
+    return { bruto, subtotal: l.base, igv: l.igv, total: l.total, detraccion: l.detraccion, neto: l.neto };
   }, [valPartidas, form.adelantos, form.retenciones, form.igv_pct, form.detraccion_pct]);
 
   const updateMetrado = (partida_id, valor) => {
@@ -224,7 +227,7 @@ function ValorizacionesPage({ showToast }) {
           igv_pct: Number(form.igv_pct)||18,
           monto_igv: totales.igv,
           monto_total: totales.total,
-          detraccion_pct: Number(form.detraccion_pct)||12,
+          detraccion_pct: Number(form.detraccion_pct)||DETRACCION_OBRA.pct,
           detraccion_monto: totales.detraccion,
           monto_neto_cobrar: totales.neto,
           factura_serie: form.factura_serie || null,
@@ -314,7 +317,7 @@ function ValorizacionesPage({ showToast }) {
         document_type: 'factura',
         document_number: val.factura_serie && val.factura_numero ? `${val.factura_serie}-${val.factura_numero}` : null,
         is_intercompany: false,
-        notas: `Detracción 12%: S/${val.detraccion_monto?.toFixed(2)} · Neto a cobrar: S/${val.monto_neto_cobrar?.toFixed(2)}`,
+        notas: `Detracción ${val.detraccion_pct ?? DETRACCION_OBRA.pct}%: S/${val.detraccion_monto?.toFixed(2)} · Neto a cobrar: S/${val.monto_neto_cobrar?.toFixed(2)}`,
         created_by: userId, updated_by: userId,
         created_at: now, updated_at: now,
         version: 1, sync_status: 'pending_create', last_synced_at: null,
@@ -551,7 +554,7 @@ function ValorizacionesPage({ showToast }) {
             </div>
             <div>
               <label className="flabel">Detracción %</label>
-              <input className="fi" type="number" step="0.01" value={form.detraccion_pct||12} onChange={e=>setForm({...form, detraccion_pct:e.target.value})}/>
+              <input className="fi" type="number" step="0.01" value={form.detraccion_pct||DETRACCION_OBRA.pct} onChange={e=>setForm({...form, detraccion_pct:e.target.value})}/>
             </div>
             <div>
               <label className="flabel">Factura serie</label>
@@ -570,16 +573,14 @@ function ValorizacionesPage({ showToast }) {
           {/* Resumen totales */}
           <div className="card card-p" style={{ marginTop:14, background:'var(--bg-c2)' }}>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:6, fontSize:12 }}>
-              <div>Bruto:</div><div style={{ textAlign:'right' }}>{fmtS(totales.bruto)}</div>
-              <div>(-) Adelantos:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.adelantos||0)}</div>
-              <div>(-) Retenciones:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.retenciones||0)}</div>
-              <div style={{ fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:6 }}>Subtotal:</div>
-              <div style={{ textAlign:'right', fontWeight:700, borderTop:'1px solid var(--border)', paddingTop:6 }}>{fmtS(totales.subtotal)}</div>
+              <div>Bruto valorizado (base de la factura):</div><div style={{ textAlign:'right' }}>{fmtS(totales.bruto)}</div>
               <div>(+) IGV ({form.igv_pct}%):</div><div style={{ textAlign:'right' }}>{fmtS(totales.igv)}</div>
-              <div style={{ fontWeight:800, color:'var(--blue)' }}>TOTAL FACTURA:</div>
-              <div style={{ textAlign:'right', fontWeight:800, color:'var(--blue)' }}>{fmtS(totales.total)}</div>
+              <div style={{ fontWeight:800, color:'var(--blue)', borderTop:'1px solid var(--border)', paddingTop:6 }}>TOTAL FACTURA:</div>
+              <div style={{ textAlign:'right', fontWeight:800, color:'var(--blue)', borderTop:'1px solid var(--border)', paddingTop:6 }}>{fmtS(totales.total)}</div>
               <div>(-) Detracción ({form.detraccion_pct}%):</div>
               <div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(totales.detraccion)}</div>
+              <div>(-) Amortización de adelantos:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.adelantos||0)}</div>
+              <div>(-) Retenciones / fondo de garantía:</div><div style={{ textAlign:'right', color:'var(--orange)' }}>{fmtS(form.retenciones||0)}</div>
               <div style={{ fontWeight:800, color:'var(--green)' }}>NETO A COBRAR:</div>
               <div style={{ textAlign:'right', fontWeight:800, color:'var(--green)' }}>{fmtS(totales.neto)}</div>
             </div>

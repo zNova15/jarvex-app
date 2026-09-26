@@ -52,7 +52,6 @@ import { OjoComprobante, useVisorComprobante } from './jx-visor-comprobante.jsx'
 import { ventasSinEspejo, datosDelEspejo } from '../lib/interco-espejo.js';
 import { candidatasDeNota } from '../lib/notas-credito.js';
 import { movimientosConParRegistrado, puedeEditarMovimiento, puedeEliminarMovimiento } from '../lib/interco-edicion.js';
-import { planDeAnulacion, facturasAnuladasVivas, espejoDe } from '../lib/anulacion-cascada.js';
 import { esVentaMov } from '../lib/costo-obra.js';
 import { getCurrentMode } from '../lib/app-mode-core.js';
 import { setEmpresaActivaId } from '../lib/empresa-activa.js';
@@ -1142,27 +1141,9 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   const { data: intercoTx } = window.__hooks?.useIntercompanyTransactions?.() || { data: [] };
   const idsConPar = uM(() => movimientosConParRegistrado(intercoTx), [intercoTx]);
 
-  // ── LO QUE FRENA UNA ANULACIÓN EN CASCADA (tanda 9) ─────────────
-  // La plata ya aplicada: partes de pago y anticipos consumidos. `pagos_partes`
-  // no tiene hook propio —no hay pantalla que la liste— así que se lee de Dexie
-  // una vez y se refresca con el evento de siempre.
-  const { data: anticipos = [] } = window.__hooks?.useAnticipoAplicaciones?.() || { data: [] };
-  const [pagosPartes, setPagosPartes] = uS(() => []);
-  uE(() => {
-    let vivoEf = true;
-    const cargar = () => (window.__db?.pagos_partes
-      ? window.__db.pagos_partes.filter(p => !p.deleted_at).toArray()
-        .then(r => { if (vivoEf) setPagosPartes(r); }).catch(() => {})
-      : null);
-    cargar();
-    const onCambio = () => cargar();
-    window.addEventListener('jx_data_changed', onCambio);
-    return () => { vivoEf = false; window.removeEventListener('jx_data_changed', onCambio); };
-  }, []);
-  const nombreDeEmpresa = uM(() => {
-    const m = new Map((companies || []).map(c => [c.id, c.name || c.legal_name]));
-    return (id) => m.get(id) || null;
-  }, [companies]);
+  // (Hasta el 25-set acá vivía la «anulación en cascada» de la tanda 9, que
+  // daba de baja la factura anulada por su nota. Gabriel decidió que las dos
+  // quedan vigentes, como en el RCE: ver `notas-credito.js`.)
 
   const decHook = window.__hooks?.useCotejoDecisiones?.() || { data: [] };
   const decisiones = uM(
@@ -1193,22 +1174,6 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   const pendientes = uM(() => hallazgosPendientes(hallazgos), [hallazgos]);
   const resumen = uM(() => resumirHallazgos(pendientes), [pendientes]);
 
-  // Las facturas anuladas que siguen vivas Y que están a la vista con los
-  // filtros puestos: el botón de lote no puede tocar nada que no se esté
-  // mostrando. En producción son 21 en total, en 6 empresas y desde 2023.
-  // Solo para el rótulo del botón: si hay espejo, decirlo antes de apretarlo.
-  const espejoDelHallazgo = (h) => {
-    if (h?.regla !== 'factura_anulada_viva') return null;
-    const f = movsPorId.get(h.movimientoId);
-    return f ? espejoDe(f, movs) : null;
-  };
-
-  const anulablesEnVista = uM(() => {
-    const aLaVista = new Set(
-      pendientes.filter(h => h.regla === 'factura_anulada_viva').map(h => h.movimientoId));
-    return facturasAnuladasVivas({ movimientos: movs }).filter(f => aLaVista.has(f.id));
-  }, [pendientes, movs]);
-
   const movsPorId = uM(() => new Map((movs || []).map(m => [m.id, m])), [movs]);
 
   // ── LOS DOCUMENTOS QUE HAY QUE PODER MIRAR PARA CADA HALLAZGO ─────
@@ -1229,7 +1194,7 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
         { id: h.gemeloId, etiqueta: 'Ver la copia original' },
       ];
     }
-    if (h.regla === 'factura_anulada_viva' && h.notasIds?.length) {
+    if (h.regla === 'factura_baja_con_nota' && h.notasIds?.length) {
       return [
         { id: h.movimientoId, etiqueta: 'Ver la factura' },
         ...h.notasIds.map((id, i) => ({
@@ -1413,146 +1378,6 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
   };
 
   /**
-   * Dar de baja la factura que una nota de crédito ya anuló, EN CASCADA.
-   *
-   * Tanda 9. La tanda 5 le puso un botón que escribía un campo en un
-   * comprobante; esto contesta la pregunta completa —qué más deja de ser cierto
-   * cuando una factura se anula— y frena cuando hay plata en el medio.
-   *
-   * Lo que se escribe sigue siendo UN campo por comprobante
-   * (`payment_status='cancelled'`), pero se escribe en TODAS las patas: la
-   * factura y su espejo del otro libro. En producción la E001-43 de S/ 9.000
-   * está cargada dos veces —venta en AGENCIA DE VIAJES, compra en EL INCA— y la
-   * misma nota anula las dos: dar de baja una sola deja al grupo declarando una
-   * compra que del otro lado ya no existe.
-   *
-   * El resto de la cascada es DERIVADO y por eso se acomoda solo: el asiento,
-   * el Registro, el PLE, el costo de obra y la exigencia de detracción y
-   * bancarización ya filtran por ese estado. La ventana lo dice antes de
-   * tocar nada, porque «deja de sumar S/ 478.808» no es algo que deba
-   * enterarse después.
-   */
-  const anularFactura = async (h) => {
-    if (enCursoRef.current) return;
-    if (!canWrite) { showToast?.('No tenés permiso para editar comprobantes.', 'red'); return; }
-    const plan = planDeAnulacion(h.movimientoId, {
-      movimientos: movs, pagosPartes, anticipos, idsConPar, empresaDe: nombreDeEmpresa,
-    });
-    if (plan.bloqueos.length) { showToast?.(plan.bloqueos[0], 'amber'); return; }
-    if (!plan.aCancelar.length) { showToast?.(plan.avisos[0] || 'No hay nada que cambiar.', 'blue'); return; }
-
-    if (!confirm(
-      `¿Dar de baja ${plan.aCancelar.length > 1 ? `${plan.aCancelar.length} comprobantes` : `la factura ${h.documento || 's/n'}`}? `
-      + `${plan.etiqueta}. `
-      + plan.consecuencias.map(c => `• ${c}`).join(' ')
-      + (plan.avisos.length ? ` OJO: ${plan.avisos.join(' ')}` : '')
-    )) return;
-
-    enCursoRef.current = true;
-    try {
-      const hecho = await darDeBajaEnCascada(plan);
-      showToast?.(
-        hecho.ok > 1
-          ? `✓ ${hecho.ok} comprobantes dados de baja (la factura y su espejo). Ya no suman en ninguna de las dos empresas.`
-          : `✓ ${h.documento || 'La factura'} quedó anulada y ya no suma.`,
-        'green');
-      if (hecho.fallaron.length) showToast?.(`Quedó sin aplicar: ${hecho.fallaron[0]}`, 'amber');
-    } catch (err) {
-      showToast?.('No se pudo anular: ' + (err?.message || err), 'red');
-    } finally { enCursoRef.current = false; }
-  };
-
-  /** La escritura de la cascada: un campo, en todas las patas. */
-  const darDeBajaEnCascada = async (plan) => {
-    const out = { ok: 0, fallaron: [] };
-    for (const id of plan.aCancelar) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        const fresh = await window.__db.accounting_movements.get(id);
-        if (!fresh) { out.fallaron.push('un comprobante no está en este dispositivo — sincronizá'); continue; }
-        // eslint-disable-next-line no-await-in-loop
-        await window.__db.accounting_movements.update(id, {
-          payment_status: 'cancelled',
-          updated_at: new Date().toISOString(), updated_by: userId,
-          version: (fresh.version ?? 0) + 1,
-          sync_status: fresh.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
-        });
-        out.ok++;
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await window.__logAudit?.({
-            action: 'update', table: 'accounting_movements', recordId: id,
-            oldData: { payment_status: fresh.payment_status ?? null },
-            newData: { payment_status: 'cancelled' },
-            reason: `Escáner · anulación en cascada: ${plan.etiqueta}`
-              + (plan.aCancelar.length > 1 ? ` (se dio de baja también su espejo del otro libro)` : ''),
-          });
-        } catch {}
-      } catch (e) {
-        out.fallaron.push(e?.message || String(e));
-      }
-    }
-    if (out.ok) {
-      try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
-    }
-    return out;
-  };
-
-  /**
-   * LA PASADA: todas las facturas anuladas que siguen vivas, de una vez.
-   *
-   * En producción son 21, en 6 empresas y desde 2023 — de a una son 21
-   * ventanas. Se salta las que tienen algo que frene (plata aplicada, par
-   * interco registrado) y lo dice al final, en vez de abortar toda la tanda
-   * por una.
-   */
-  const anularTodasEnLote = async () => {
-    if (enCursoRef.current) return;
-    if (!canWrite) { showToast?.('No tenés permiso para editar comprobantes.', 'red'); return; }
-    const lista = anulablesEnVista;
-    if (!lista.length) return;
-    const total = lista.reduce((t, f) => t + (f.moneda === 'PEN' ? f.monto : 0), 0);
-    if (!confirm(
-      `¿Dar de baja las ${lista.length} facturas que sus notas de crédito ya anularon? `
-      + `Dejan de sumar ${fmtS(total)} en soles${lista.some(f => f.moneda !== 'PEN') ? ' (más lo que está en otra moneda, que no se mezcla)' : ''}. `
-      + 'Cada una se da de baja junto con su espejo del otro libro si lo tiene. '
-      + 'Las que tengan pagos aplicados o sean parte de una operación registrada se saltean y te lo digo al final.'
-    )) return;
-
-    enCursoRef.current = true;
-    try {
-      let ok = 0; const saltadas = [];
-      // Los que ya se dieron de baja EN ESTA corrida. Hace falta porque `movs`
-      // es el prop de React y no se refresca en medio del bucle: cuando se
-      // anula un par interco, la segunda pata ya está hecha y sin esto se
-      // escribiría dos veces (otra versión, otro push, por nada).
-      const hechos = new Set();
-      for (const f of lista) {
-        if (hechos.has(f.id)) continue;
-        const plan = planDeAnulacion(f.id, {
-          movimientos: movs, pagosPartes, anticipos, idsConPar, empresaDe: nombreDeEmpresa,
-        });
-        const pendientesDelPlan = plan.aCancelar.filter(id => !hechos.has(id));
-        if (plan.bloqueos.length || !pendientesDelPlan.length) {
-          if (plan.bloqueos.length) saltadas.push(`${f.documento}: ${plan.bloqueos[0]}`);
-          continue;
-        }
-        // eslint-disable-next-line no-await-in-loop
-        const hecho = await darDeBajaEnCascada({ ...plan, aCancelar: pendientesDelPlan });
-        ok += hecho.ok;
-        for (const id of pendientesDelPlan) hechos.add(id);
-      }
-      setCorrida(c => c + 1);
-      showToast?.(
-        `✓ ${ok} comprobantes dados de baja.`
-        + (saltadas.length ? ` ${saltadas.length} se saltearon: ${saltadas[0]}` : ''),
-        saltadas.length ? 'amber' : 'green');
-    } catch (err) {
-      showToast?.('La pasada se cortó: ' + (err?.message || err), 'red');
-    } finally { enCursoRef.current = false; }
-  };
-
-  /**
    * Borrar la COPIA de un comprobante cargado dos veces.
    *
    * El hallazgo ya sabe cuál es cuál: `movimientoId` es la copia (la que se
@@ -1649,12 +1474,6 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
             Solo {MESES_ESCANER[(Number(periodo.mes) || 1) - 1]} {periodo.anio}
           </label>
         )}
-        {anulablesEnVista.length > 1 && (
-          <button className="btn btn-amber" onClick={anularTodasEnLote} disabled={!canWrite}
-            title="Dar de baja de una vez todas las facturas que sus notas de crédito ya anularon, cada una con su espejo">
-            Dar de baja las {anulablesEnVista.length} anuladas
-          </button>
-        )}
         <button className="btn" onClick={exportar} disabled={!hallazgos.length}>Exportar (.csv)</button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, fontSize: 12, alignItems: 'center' }}>
           {ultimaCorrida && (
@@ -1709,21 +1528,6 @@ export function EscanerIncoherencias({ company, companies, movs, showToast, user
                       {esVentaMov(movsPorId.get(h.movimientoId))
                         ? `El espejo automático es para una venta interna enlazada a una empresa del grupo. Ésta no lo está (o la contraparte figura como tercero en el catálogo): revisala en Movimientos Contables.`
                         : `Acá el otro lado sería una VENTA de ${h.empresaEsperada}: lleva su propio correlativo y se emite, así que no se fabrica desde esta pantalla.`}
-                    </div>
-                  )}
-                  {h.regla === 'factura_anulada_viva' && (
-                    <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <button className="btn btn-sm btn-amber" onClick={() => anularFactura(h)} disabled={!canWrite}>
-                        Dar de baja la factura{espejoDelHallazgo(h) ? ' y su espejo' : ''}
-                      </button>
-                      <span style={{ fontSize: 11, color: 'var(--tm)' }}>
-                        Sus {fmtS(h.monto)} dejan de sumar en los reportes de esta empresa —Libro Diario,
-                        Registro y PLE— y deja de exigirse su detracción y su bancarización.
-                        {espejoDelHallazgo(h)
-                          ? ' Se da de baja junto con el mismo comprobante cargado en el otro libro.'
-                          : ''}
-                        {' '}El comprobante no se borra. La ventana te dice todo antes de aplicar.
-                      </span>
                     </div>
                   )}
                   {h.regla === 'comprobante_duplicado' && (

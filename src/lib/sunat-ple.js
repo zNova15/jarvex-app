@@ -30,6 +30,7 @@
 
 import { desglosarIgv } from './igv-desglose.js';
 import { fmtFechaLarga, enPeriodo } from './fecha.js';
+import { notaSinEfecto } from './notas-credito.js';
 
 // ─── Helpers ─────────────────────────────────────────────────
 function pad2(n)  { return String(n || 0).padStart(2, '0'); }
@@ -170,9 +171,14 @@ export function generateLibroDiarioPLE(asientos, periodo, ruc) {
 
   let totDebe = 0, totHaber = 0;
   let counter = 0;
+  // Un asiento en otra moneda SIN tipo de cambio no se declara (25-set-2026):
+  // el libro se lleva en soles y el campo 7 dice PEN. Mandarlo con sus dólares
+  // sería declarar US$ 80.000 como S/ 80.000. Se cuenta para avisarlo.
+  let omitidos = 0;
 
   asientos.forEach((a) => {
     if (!a || !isInPeriodo(a.fecha, periodo)) return;
+    if (a.sinTipoCambio) { omitidos++; return; }
     counter++;
     const c = cuo(counter);
     const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
@@ -222,6 +228,7 @@ export function generateLibroDiarioPLE(asientos, periodo, ruc) {
     registros: counter,
     totDebe : r2(totDebe),
     totHaber: r2(totHaber),
+    omitidos,
   };
 }
 
@@ -247,8 +254,11 @@ export function generateLibroMayorPLE(asientos, periodo, ruc) {
   // Agrupar por cuenta
   const porCuenta = new Map();
   let counter = 0;
+  let omitidos = 0;
   asientos.forEach((a) => {
     if (!a || !isInPeriodo(a.fecha, periodo)) return;
+    // Mismo criterio que el Libro Diario: lo que no está en soles no se declara.
+    if (a.sinTipoCambio) { omitidos++; return; }
     counter++;
     (a.partidas || []).forEach((p) => {
       const k = String(p.cuenta || '').trim();
@@ -335,6 +345,9 @@ export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc, opts
   movs.forEach((m) => {
     if (!m || m.deleted_at) return;
     if (m.payment_status === 'cancelled') return;
+    // Factura y nota quedan las dos vivas; la nota de una factura dada de
+    // baja no resta (ver `notas-credito.js`, 25-set-2026).
+    if (notaSinEfecto(m, movsById)) return;
     if (!isInPeriodo(m.date || m.created_at, periodo)) return;
     if (m.type !== 'cost' && m.type !== 'expense') return;
 
@@ -466,6 +479,7 @@ export function generateRegistroVentasPLE(movs_income, periodo, ruc, opts = {}) 
   movs.forEach((m) => {
     if (!m || m.deleted_at) return;
     if (m.payment_status === 'cancelled') return;
+    if (notaSinEfecto(m, movsById)) return;
     if (!isInPeriodo(m.date || m.created_at, periodo)) return;
     if (m.type !== 'income') return;
 

@@ -112,7 +112,14 @@ export function desglosarIgv(mov) {
     // dato. Es el caso de una comisión bancaria exonerada —todo el importe es
     // no gravado— y tratarla como «no sé» mandaba el total entero a la columna
     // de adquisiciones gravadas. Quien no sabe la base pasa `null`.
-    const base = (baseGravadaAbs != null && baseGravadaAbs >= 0) ? r2(baseGravadaAbs) : null;
+    //
+    // Y NO PUEDE PASARSE de lo que queda del total sin IGV (tanda C,
+    // 25-set-2026). La factura en CERO de una entrega contra anticipo trae en
+    // `notas` el subtotal de sus ítems (9.294,40) y un total 0: la base
+    // gravada salía 9.294,40 sobre un total de 0 y el Registro de Compras
+    // mostraba «no gravadas −9.294,40». Base + IGV + no gravado = total, así
+    // que la base nunca supera total − IGV.
+    const base = (baseGravadaAbs != null && baseGravadaAbs >= 0) ? r2(Math.min(baseGravadaAbs, subFinal)) : null;
     const refBase = base != null ? base : subFinal;
     return {
       total,

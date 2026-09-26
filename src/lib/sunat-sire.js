@@ -25,6 +25,7 @@ import JSZip from 'jszip';
 import { desglosarIgv } from './igv-desglose.js';
 import { fmtFechaLarga, enPeriodo } from './fecha.js';
 import { llaveDeMovimiento, llaveDeFilaSunat, llaveComprobante } from './comparativa-sunat.js';
+import { notaSinEfecto } from './notas-credito.js';
 
 export const LIBRO_RVIE_REEMPLAZO = '140400';
 export const LIBRO_RCE_REEMPLAZO  = '080400';
@@ -161,6 +162,7 @@ export function generateReemplazoPropuestaRVIE(movs, periodoInput, ruc, razonSoc
   (movs || []).forEach(m => {
     if (!m || m.deleted_at) return;
     if (m.payment_status === 'cancelled') return;
+    if (notaSinEfecto(m, movsById)) return;   // factura y nota vivas (25-set)
     if (m.type !== 'income') return;
     if (seleccionados && !seleccionados.has(m.id)) return;
 
@@ -277,6 +279,7 @@ export function generateReemplazoPropuestaRCE(movs, periodoInput, ruc, razonSoci
   (movs || []).forEach(m => {
     if (!m || m.deleted_at) return;
     if (m.payment_status === 'cancelled') return;
+    if (notaSinEfecto(m, movsById)) return;   // factura y nota vivas (25-set)
     if (m.type !== 'cost' && m.type !== 'expense') return;
     if (seleccionados && !seleccionados.has(m.id)) return;
 
@@ -421,6 +424,7 @@ export async function buildSireZipPackage(generadorResult) {
 export function analizarComprobantesParaSire(movs, libro, opts = {}) {
   const periodo = opts.periodo ? normalizarPeriodo(opts.periodo) : null;
   const esVenta = libro === 'ventas';
+  const movsById = opts.movsById || new Map((movs || []).map(m => [m.id, m]));
 
   // Conjunto de llaves de comprobantes ya presentados en SUNAT
   const presentadosMap = new Map();
@@ -446,6 +450,7 @@ export function analizarComprobantesParaSire(movs, libro, opts = {}) {
   (movs || []).forEach(m => {
     if (!m || m.deleted_at) return;
     if (m.payment_status === 'cancelled') return;
+    if (notaSinEfecto(m, movsById)) return;   // factura y nota vivas (25-set)
 
     if (esVenta) {
       if (m.type !== 'income') return;

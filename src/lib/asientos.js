@@ -6,13 +6,14 @@
 //  No persiste en DB — es una vista derivada. Funciones puras.
 // ─────────────────────────────────────────────────────────────
 
-import { desglosarIgv, describirIgv } from './igv-desglose.js';
+import { desglosarIgv, describirIgv, IGV_RATE } from './igv-desglose.js';
 import { fmtFechaLarga } from './fecha.js';
 import { resolverContrapartida, avisoEfectivoSobreUmbral } from './contrapartida.js';
 import { resolverDestino, nombreDestino } from './destino-asiento.js';
 import {
   esDestinoExistencia, patasDeSalida, saldoDeExistencia, nombreSalida,
 } from './existencias-balance.js';
+import { esNota, movimientosQueCuentan } from './notas-credito.js';
 
 function r2(n) {
   const v = Number(n);
@@ -25,6 +26,132 @@ function fmtS(n) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+/** El importe con el símbolo de SU moneda: un asiento sin tipo de cambio no está en soles. */
+function fmtMon(n, moneda = 'PEN') {
+  if (String(moneda || 'PEN').toUpperCase() === 'PEN') return fmtS(n);
+  const sim = String(moneda).toUpperCase() === 'USD' ? 'US$ ' : `${moneda} `;
+  return sim + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Clase canónica: `clase` manda sobre `type`, como en el resto de la app. */
+const claseDe = (m) => m?.clase || (m?.type === 'income' ? 'venta' : 'compra');
+
+// ── EL LIBRO SE LLEVA EN SOLES (Gabriel, 25-set-2026) ─────────────────
+// Pregunta 4 de la revisión: «¿el libro diario se lleva en soles al TC de la
+// fecha de emisión y el USD queda como referencia?». Sí. Hasta hoy este
+// archivo no miraba `currency`: la factura F003-3384 de KOPLAST (US$ 80.000,
+// TC 3,495) se asentaba «60 D 67.796,61 / 4011 D 12.203,39 / 42 H 80.000» con
+// la etiqueta S/. Lo correcto son S/ 279.600, y así los 43 comprobantes en
+// dólares del grupo.
+//
+// El tipo de cambio sale, en este orden: el estampado en el comprobante (es el
+// que se declaró y queda congelado), y si no tiene, el de SUNAT para su fecha
+// de emisión (`opts.tasaDe`, que la pantalla arma con la tabla `tipos_cambio`).
+// Una COMPRA usa el de venta y una VENTA el de compra — eso lo resuelve
+// `tasaDeComprobante()`, no esta lib.
+//
+// SIN TASA NO SE INVENTA NADA — y tampoco se bloquea (respuesta de Gabriel:
+// «pedir la tasa para regularizarlos, no bloquear»). El asiento sale igual, en
+// la moneda del papel, marcado `sinTipoCambio`: el Libro Diario lo aísla con su
+// propio filtro, no lo suma a los totales en soles y el PLE no lo declara.
+// Eran 6 el 25-set-2026.
+
+/** El tipo de cambio de un comprobante en otra moneda, o null si no hay. */
+export function tipoCambioDelMovimiento(m, opts = {}) {
+  const moneda = String(m?.currency || 'PEN').toUpperCase();
+  if (moneda === 'PEN') return null;
+  const propio = Number(m?.tipo_cambio);
+  if (propio > 0) return { tc: propio, origen: 'comprobante' };
+  const buscado = typeof opts?.tasaDe === 'function' ? Number(opts.tasaDe(m)) : 0;
+  if (buscado > 0) return { tc: buscado, origen: 'fecha' };
+  return null;
+}
+
+/**
+ * El mismo desglose multiplicado por el tipo de cambio. La base se recalcula
+ * como total − IGV DESPUÉS de convertir, no se convierte por separado: si no,
+ * el redondeo de cada pieza por su lado descuadra el asiento en un céntimo.
+ */
+function desgloseEnSoles(dg, tc) {
+  const total = r2(dg.total * tc);
+  const igv = r2(dg.igv * tc);
+  return {
+    ...dg,
+    total,
+    igv,
+    subtotal: r2(total - igv),
+    baseGravada: dg.baseGravada != null ? r2(dg.baseGravada * tc) : null,
+    noGravado: r2((dg.noGravado || 0) * tc),
+  };
+}
+
+// ── LAS ENTREGAS QUE CONSUMEN UN ANTICIPO (Gabriel, 25-set-2026) ──────
+// «Sí se usa la 422. La factura de anticipo muestra IGV en su detalle.» El
+// anticipo se asienta `422 D base / 40111 D IGV / 42 H total`: es un derecho
+// contra el proveedor, no una compra. Y cada entrega que lo consume
+// (`anticipo_aplicaciones`, mig 207) lleva a la 60 la base de lo que llegó
+// contra la 422, SIN IGV: el crédito fiscal ya se tomó en el anticipo.
+//
+// El caso que lo mide: KOPLAST F003-3388/3395/3412/3417, cuatro facturas en
+// CERO (el descuento del anticipo ya está en el pie) con aplicaciones de
+// US$ 9.294,40 / 9.875,30 / 9.294,40 / 9.294,40. Hasta hoy eran cuatro
+// asientos de S/ 0,00 «cuadrados» y la mercadería no tocaba ninguna 60.
+//
+// La base se saca con la proporción base/total DEL ANTICIPO (lo que se aplica
+// es parte de su total con IGV) y se convierte con el tipo de cambio DEL
+// ANTICIPO, no con el de la entrega: la 422 es una partida no monetaria y
+// queda al cambio histórico (NIC 21). Así la 422 se cancela exacta en soles.
+
+/** Las aplicaciones de anticipo de una factura, ya en la unidad del asiento. */
+function aplicacionesDelAsiento(m, opts, { enSoles }) {
+  const filas = typeof opts?.aplicacionesDe === 'function' ? (opts.aplicacionesDe(m) || []) : [];
+  const detalle = [];
+  let base = 0;
+  let faltaTc = false;
+  for (const a of filas) {
+    const anticipo = a?.anticipo;
+    const monto = Math.abs(Number(a?.monto) || 0);
+    if (!anticipo || anticipo.deleted_at || !(monto > 0)) continue;
+    const dgA = desglosarIgv(anticipo);
+    const ratio = Math.abs(dgA.total) > 0.005
+      ? Math.abs(dgA.subtotal) / Math.abs(dgA.total)
+      : 1 / (1 + IGV_RATE);
+    const baseOrigen = r2(monto * ratio);
+    const moneda = String(a?.moneda || anticipo.currency || 'PEN').toUpperCase();
+    let tc = null;
+    if (moneda !== 'PEN' && enSoles) {
+      const t = tipoCambioDelMovimiento(anticipo, opts);
+      if (!t) { faltaTc = true; continue; }
+      tc = t.tc;
+    }
+    const importe = tc ? r2(baseOrigen * tc) : baseOrigen;
+    base = r2(base + importe);
+    detalle.push({
+      anticipoId: anticipo.id, documento: anticipo.document_number || '',
+      monto, moneda, baseOrigen, tc, importe,
+    });
+  }
+  return { base, detalle, faltaTc };
+}
+
+// ── LA DETRACCIÓN EN EL ASIENTO (Gabriel, 25-set-2026) ───────────────
+// El monto de la detracción se deposita SIEMPRE en soles (también cuando el
+// comprobante está en dólares: es lo que guarda la columna, medido con la
+// E001-11 de FRAJMAC, US$ 432 → S/ 173,75). Por eso solo se parte la
+// contrapartida cuando el asiento está en soles.
+//   · VENTA con la detracción ya depositada por el cliente: esa parte no llegó
+//     a la cuenta corriente sino a la de detracciones del Banco de la Nación,
+//     que es un fondo con destino obligado → `1071` (PCGE «Fondos sujetos a
+//     restricción»). Antes el asiento ponía el total entero en la 104.
+//   · COMPRA pendiente con la detracción ya depositada: esa parte de la deuda
+//     ya se pagó → `42 H total − detracción` y `104 H detracción`.
+function detraccionDepositada(m, { enSoles, total }) {
+  if (!m?.detraccion_aplica || m.detraccion_estado !== 'depositada' || !enSoles || esNota(m)) return 0;
+  const d = r2(Math.abs(Number(m.detraccion_monto) || 0));
+  if (!(d > 0) || d >= Math.abs(total)) return 0;
+  return d;
 }
 
 // Ojo: NO usar new Date('YYYY-MM-DD') — en Perú (UTC−5) devuelve el día
@@ -209,7 +336,7 @@ function sufijoLinea(linea, cuantas) {
 }
 
 function lineasDeNaturaleza(m, base, opts) {
-  const esIngreso = (m.type || 'expense') === 'income';
+  const esIngreso = claseDe(m) === 'venta';
   const tipo = m.type || 'expense';
 
   if (m.cuenta_pcge) {
@@ -217,6 +344,18 @@ function lineasDeNaturaleza(m, base, opts) {
       lineas: [{ cuenta: m.cuenta_pcge, importe: base }],
       provisional: false, manual: true, revisar: false,
       origen: 'manual', confianza: 'manual',
+    };
+  }
+
+  // El anticipo no es una compra: es plata a cuenta de una mercadería que
+  // todavía no llegó. Va a la 422 y no pasa por el reparto de los ítems (su
+  // único ítem dice «ANTICIPO DE CLIENTE» y el IUPC no lo reconoce: caía en la
+  // 60 provisional). Una cuenta puesta a mano, arriba, le sigue ganando.
+  if (!esIngreso && typeof opts?.esAnticipo === 'function' && opts.esAnticipo(m)) {
+    return {
+      lineas: [{ cuenta: '422', importe: base }],
+      provisional: false, manual: false, revisar: false,
+      origen: 'anticipo', confianza: 'alta', esAnticipo: true,
     };
   }
 
@@ -270,8 +409,33 @@ function lineasDeNaturaleza(m, base, opts) {
 
 function construirAsiento(movimiento, opts = {}) {
   const m = movimiento || {};
-  const desglose = desglosarIgv(m);
+  const esVenta = claseDe(m) === 'venta';
+
+  // ── LA UNIDAD DEL ASIENTO: soles, o la moneda del papel si falta la tasa ──
+  const monedaOrigen = String(m.currency || 'PEN').toUpperCase();
+  const dgOrigen = desglosarIgv(m);
+  const tcMov = tipoCambioDelMovimiento(m, opts);
+  // Las entregas contra un anticipo necesitan la tasa DEL ANTICIPO; si falta,
+  // el asiento entero queda en la moneda del papel (factura y anticipo van en
+  // la misma moneda: `anticipos.js` no deja cruzarlas).
+  const aplicPrevia = monedaOrigen === 'PEN' || esVenta
+    ? null
+    : aplicacionesDelAsiento(m, opts, { enSoles: true });
+  const faltaTcMov = monedaOrigen !== 'PEN' && !tcMov && Math.abs(dgOrigen.total) > 0.005;
+  const sinTipoCambio = monedaOrigen !== 'PEN' && (faltaTcMov || !!aplicPrevia?.faltaTc);
+  const enSoles = !sinTipoCambio;
+  const monedaAsiento = enSoles ? 'PEN' : monedaOrigen;
+  const desglose = (monedaOrigen !== 'PEN' && enSoles && tcMov)
+    ? desgloseEnSoles(dgOrigen, tcMov.tc)
+    : dgOrigen;
   const { total, subtotal, igv } = desglose;
+  const conversion = monedaOrigen === 'PEN' ? null : {
+    moneda: monedaOrigen,
+    total: dgOrigen.total,
+    tc: enSoles && tcMov ? tcMov.tc : null,
+    origenTc: enSoles && tcMov ? tcMov.origen : null,
+  };
+
   // Sufijo de la línea 4011: deja ver en el propio asiento (y en el PDF/Excel)
   // si el IGV salió del comprobante y a qué tasa, o si hubo que estimarlo.
   const igvNota = ` (${describirIgv(desglose)})`;
@@ -279,7 +443,7 @@ function construirAsiento(movimiento, opts = {}) {
   // MISMA cuenta 60/63/70 que la base gravada (así lo manda el PCGE), pero se
   // deja dicho en la glosa de la línea para que la contadora no lo busque.
   const noGravNota = Math.abs(desglose.noGravado || 0) > 0.005
-    ? ` — incluye ${fmtS(Math.abs(desglose.noGravado))} no gravado`
+    ? ` — incluye ${fmtMon(Math.abs(desglose.noGravado), monedaAsiento)} no gravado`
     : '';
   const tipo = m.type || 'expense';
   const pagado = m.payment_status === 'paid';
@@ -303,7 +467,8 @@ function construirAsiento(movimiento, opts = {}) {
         // de una pata vale para las dos (misma regla que el reporte contable).
         || !!(m.is_intercompany && m.related_movement_id && opts.bancarizadoIds.has(m.related_movement_id)))
       : false,
-    tipoCambio: opts?.tipoCambio ?? null,
+    // El umbral de US$ 500 / S/ 2.000 se mide con la tasa del comprobante.
+    tipoCambio: opts?.tipoCambio ?? (tcMov ? tcMov.tc : null),
   });
   const cuentaCaja = contra.cuenta || cuentaCajaOBanco(m.metodo_pago || m.payment_method);
   const partidas = [];
@@ -312,28 +477,41 @@ function construirAsiento(movimiento, opts = {}) {
   // la glosa nunca mostraba el número del comprobante).
   const docRef = m.document_number || m.documento || m.doc_numero || m.factura || '';
 
-  // Las cuentas de gasto/ingreso y cómo se reparte la base entre ellas.
-  const naturaleza = lineasDeNaturaleza(m, subtotal, opts);
+  // Lo que llegó contra un anticipo ya pagado. Se recalcula con la unidad que
+  // quedó: si el asiento no pudo pasar a soles, va en la moneda del papel.
+  const aplic = esVenta
+    ? { base: 0, detalle: [], faltaTc: false }
+    : aplicacionesDelAsiento(m, opts, { enSoles });
+  const detr = detraccionDepositada(m, { enSoles, total });
+  const totalCero = Math.abs(total) < 0.005;
+
+  // Las cuentas de gasto/ingreso y cómo se reparte la base entre ellas. La
+  // base de lo que llegó contra el anticipo entra a las MISMAS cuentas que la
+  // del comprobante: es la misma mercadería, pagada por adelantado.
+  const naturaleza = lineasDeNaturaleza(m, r2(subtotal + aplic.base), opts);
   // El importe que viaja al asiento de destino. Queda en 0 para las ventas:
   // un ingreso no se traslada por la 79, se cierra contra el resultado.
   let baseDestino = 0;
+  // La cuenta de la contrapartida, dicha al empujarla: la última partida del
+  // asiento puede ser la del destino o la del anticipo, no la de la plata.
+  let cuentaContra = null;
 
-  if (tipo === 'income') {
+  if (esVenta) {
     // ─── Ingreso (venta) ─────────────────────────────────
-    if (pagado) {
+    cuentaContra = pagado ? cuentaCaja : (contrapartidaManual || '121');
+    partidas.push({
+      // 121 Facturas por cobrar, salvo que la contadora haya fijado otra
+      // (131 si el cliente es una relacionada, por ejemplo).
+      cuenta: cuentaContra,
+      descripcion: pagado ? `Cobro de ${desc}` : `Factura por cobrar — ${desc}`,
+      debe: r2(total - detr),
+      haber: 0,
+    });
+    if (detr > 0) {
       partidas.push({
-        cuenta: cuentaCaja,
-        descripcion: `Cobro de ${desc}`,
-        debe: total,
-        haber: 0,
-      });
-    } else {
-      partidas.push({
-        // 121 Facturas por cobrar, salvo que la contadora haya fijado otra
-        // (131 si el cliente es una relacionada, por ejemplo).
-        cuenta: contrapartidaManual || '121',
-        descripcion: `Factura por cobrar — ${desc}`,
-        debe: total,
+        cuenta: '1071',
+        descripcion: `Detracción depositada en el Banco de la Nación — ${desc}`,
+        debe: detr,
         haber: 0,
       });
     }
@@ -372,7 +550,8 @@ function construirAsiento(movimiento, opts = {}) {
     for (const l of naturaleza.lineas) {
       partidas.push({
         cuenta: l.cuenta,
-        descripcion: desc + noGravNota + sufijoLinea(l, naturaleza.lineas.length),
+        descripcion: (naturaleza.esAnticipo ? `Anticipo a proveedor — ${desc}` : desc)
+          + noGravNota + sufijoLinea(l, naturaleza.lineas.length),
         debe: l.importe,
         haber: 0,
       });
@@ -391,28 +570,52 @@ function construirAsiento(movimiento, opts = {}) {
 
     // Las líneas de naturaleza son las primeras del asiento y nada se pushea
     // antes que ellas en esta rama: por eso el `slice` desde 0 es exacto.
-    baseDestino = r2(
+    // Un anticipo no tiene destino: la 422 es Balance, no un gasto que
+    // trasladar. Su destino llega con cada entrega.
+    baseDestino = naturaleza.esAnticipo ? 0 : r2(
       partidas.slice(0, naturaleza.lineas.length).reduce((s, p) => s + p.debe, 0),
     );
 
-    if (pagado) {
+    // Una factura en CERO no debe nada ni se pagó con nada: sin esta guarda el
+    // asiento llevaba una línea «Pago de …» de S/ 0,00.
+    if (!totalCero) {
+      if (pagado) {
+        cuentaContra = cuentaCaja;
+        partidas.push({
+          cuenta: cuentaCaja,
+          descripcion: `Pago de ${desc}`,
+          debe: 0,
+          haber: total,
+        });
+      } else {
+        // Pendiente: planilla → 41, resto → 42. La contadora puede fijar otra
+        // (mig 220): un anticipo pendiente puede no ser una cuenta comercial.
+        cuentaContra = contrapartidaManual || (esPlanilla ? '41' : '42');
+        partidas.push({
+          cuenta: cuentaContra,
+          descripcion: esPlanilla
+            ? `Remuneraciones por pagar — ${desc}`
+            : `Cuenta por pagar — ${desc}`,
+          debe: 0,
+          haber: r2(total - detr),
+        });
+        if (detr > 0) {
+          partidas.push({
+            cuenta: '104',
+            descripcion: `Depósito de la detracción — ${desc}`,
+            debe: 0,
+            haber: detr,
+          });
+        }
+      }
+    }
+    if (aplic.base > 0) {
+      const docs = aplic.detalle.map(d => d.documento).filter(Boolean).join(', ');
       partidas.push({
-        cuenta: cuentaCaja,
-        descripcion: `Pago de ${desc}`,
+        cuenta: '422',
+        descripcion: `Aplicación del anticipo${docs ? ` ${docs}` : ''} — ${desc}`,
         debe: 0,
-        haber: total,
-      });
-    } else {
-      // Pendiente: planilla → 41, resto → 42. La contadora puede fijar otra
-      // (mig 220): un anticipo pendiente puede no ser una cuenta comercial.
-      const cuentaDeuda = contrapartidaManual || (esPlanilla ? '41' : '42');
-      partidas.push({
-        cuenta: cuentaDeuda,
-        descripcion: esPlanilla
-          ? `Remuneraciones por pagar — ${desc}`
-          : `Cuenta por pagar — ${desc}`,
-        debe: 0,
-        haber: total,
+        haber: aplic.base,
       });
     }
   }
@@ -421,7 +624,7 @@ function construirAsiento(movimiento, opts = {}) {
   const sumDebe = partidas.reduce((s, p) => s + p.debe, 0);
   const sumHaber = partidas.reduce((s, p) => s + p.haber, 0);
   const diff = r2(sumDebe - sumHaber);
-  if (Math.abs(diff) > 0 && Math.abs(diff) < 0.05) {
+  if (partidas.length && Math.abs(diff) > 0 && Math.abs(diff) < 0.05) {
     const last = partidas[partidas.length - 1];
     if (last.haber > 0) last.haber = r2(last.haber + diff);
     else last.debe = r2(last.debe - diff);
@@ -443,7 +646,9 @@ function construirAsiento(movimiento, opts = {}) {
   // La regla 68 → 78 mira la PRIMERA cuenta de naturaleza. Alcanza: la 68 es
   // depreciación y provisiones, que no salen de los ítems de un comprobante,
   // así que nunca viene repartida con otras.
-  const destino = resolverDestino(m, { cuentaOrigen: naturaleza.lineas[0]?.cuenta || '' });
+  const destino = naturaleza.esAnticipo
+    ? null
+    : resolverDestino(m, { cuentaOrigen: naturaleza.lineas[0]?.cuenta || '' });
   if (destino?.cuenta && destino.contrapartida && baseDestino > 0) {
     partidas.push({
       cuenta: destino.cuenta,
@@ -483,6 +688,19 @@ function construirAsiento(movimiento, opts = {}) {
     type: tipo,
     movimiento_id: m.id,
     desglose,
+    // En qué moneda están los importes de ESTE asiento: 'PEN' siempre que se
+    // pudo convertir. `conversion` guarda lo que dice el papel (moneda, total
+    // y la tasa usada) para mostrarlo al lado — el USD queda como referencia.
+    moneda: monedaAsiento,
+    sinTipoCambio,
+    conversion,
+    // Una factura en cero que no consumió ningún anticipo: el asiento sale
+    // vacío. No es un error de cuadre sino un vínculo que falta hacer en el
+    // panel de Anticipos, y por eso tiene su propio filtro.
+    enCero: totalCero && !(aplic.base > 0) && !naturaleza.esAnticipo,
+    esAnticipo: !!naturaleza.esAnticipo,
+    anticipo: aplic.base > 0 ? { aplicado: aplic.base, detalle: aplic.detalle } : null,
+    detraccion: detr > 0 ? { monto: detr, cuenta: esVenta ? '1071' : '104' } : null,
     // Lo que entró al Balance por este comprobante y lo que queda ahí. Va en
     // la raíz y no dentro de `cuentas` porque el panel de existencias lo lee
     // sin mirar el estado de las cuentas, y porque `entro` es el número que
@@ -511,20 +729,21 @@ function construirAsiento(movimiento, opts = {}) {
       // puedan aislar: una contrapartida provisional con cara de definitiva es
       // el mismo error que tenía la cuenta de gasto antes de la tanda 2.
       contrapartida: {
-        cuenta: pagado ? cuentaCaja : (partidas[partidas.length - 1]?.cuenta || null),
+        cuenta: cuentaContra,
         origen: contra.origen,
         confianza: contra.confianza,
         porque: contra.porque,
-        porDefinir: contra.porDefinir && pagado,
+        porDefinir: contra.porDefinir && pagado && !totalCero,
         prohibeEfectivo: contra.prohibeEfectivo,
         // Si igual terminó en la caja (porque alguien la puso a mano sabiendo
         // lo que hacía), el asiento lleva la consecuencia tributaria escrita.
-        aviso: pagado ? avisoEfectivoSobreUmbral(m, cuentaCaja) : null,
+        aviso: pagado && !totalCero ? avisoEfectivoSobreUmbral(m, cuentaCaja) : null,
       },
       // A DÓNDE FUE, que es la mitad que faltaba. `null` en una venta: un
       // ingreso no se traslada por la 79. En un egreso siempre hay objeto,
       // aunque sea para decir `porDefinir` — es lo que permite aislar la pila
       // de los que todavía nadie destinó, igual que se hizo con la cuenta.
+      // Un anticipo tampoco tiene: la 422 es Balance.
       destino: destino ? {
         cuenta: destino.cuenta,
         nombre: nombreDestino(destino.cuenta),
@@ -649,6 +868,15 @@ function asientoDeSalida(m, { destino, cuentaOrigen, numero, glosa, desc }) {
  *     sigue siendo pura y sin dependencias.
  *     Sin `repartoDe`, el asiento sale como salía: con la cuenta inferida del
  *     campo `category`, pero ahora marcada `provisional`.
+ *   tasaDe(mov) → tipo de cambio de SUNAT para la fecha de emisión, si el
+ *     comprobante no trae el suyo (25-set-2026). Sin él, un comprobante en
+ *     dólares sin tasa estampada sale `sinTipoCambio`.
+ *   esAnticipo(mov) / aplicacionesDe(mov) → el anticipo a proveedor va a la
+ *     422 y cada entrega que lo consume, 60 contra 422. Los arma
+ *     `asientos-contexto.js` con `anticipo_aplicaciones`.
+ *   referencia → TODOS los movimientos (o un Map por id): para reconocer una
+ *     nota de crédito cuya factura está dada de baja aunque la factura sea de
+ *     otro mes. Esa nota no resta: ver `notas-credito.js`.
  */
 export function generarAsientosBatch(movimientos, opts = {}) {
   const arr = Array.isArray(movimientos) ? movimientos : [];
@@ -664,8 +892,9 @@ export function generarAsientosBatch(movimientos, opts = {}) {
     if (v.mes && v.mes !== 'all' && ymd.slice(5, 7) !== String(v.mes)) return false;
     return true;
   };
-  return arr
-    .filter(m => m && !m.deleted_at && m.payment_status !== 'cancelled')
+  // Factura y nota quedan las DOS vivas (Gabriel, 25-set-2026); una nota cuya
+  // factura igual quedó dada de baja no resta, o la baja se cuenta dos veces.
+  return movimientosQueCuentan(arr, { referencia: opts.referencia || arr })
     .flatMap((m) => {
       const a = generarAsiento(m, opts);
       return a.salidaExistencia ? [a, a.salidaExistencia] : [a];
@@ -713,6 +942,13 @@ export const ESTADOS_CUENTA = [
   // Es la pila que hay que mirar antes de cerrar el mes — cada fila de ahí es
   // un costo que todavía no bajó ningún resultado.
   { v: 'existencia_en_balance',     label: '📦 Sigue en el inventario' },
+  // Los dos de la MONEDA y del ANTICIPO (25-set). Ninguno es un error de la
+  // cuenta: son datos que faltan cargar. Uno es la tasa SUNAT de una fecha
+  // (sin ella el asiento queda en dólares, fuera de los totales y del PLE);
+  // el otro, vincular una factura en cero con el anticipo que la pagó (sin
+  // eso la mercadería no llega a la 60).
+  { v: 'sin_tipo_cambio',           label: '⚠ En otra moneda sin tipo de cambio' },
+  { v: 'en_cero',                   label: '⚠ Factura en cero sin anticipo vinculado' },
 ];
 
 /**
@@ -730,6 +966,8 @@ export function cumpleEstadoCuenta(asiento, estado) {
   if (estado === 'existencia_en_balance') {
     return !asiento?.esSalidaExistencia && (asiento?.existencia?.queda || 0) > 0.01;
   }
+  if (estado === 'sin_tipo_cambio') return asiento?.sinTipoCambio === true;
+  if (estado === 'en_cero') return asiento?.enCero === true;
   const c = asiento?.cuentas;
   // Un asiento generado sin el reparto no se da por bueno solo por ser viejo:
   // que no sepamos de dónde salió su cuenta es justo estar «por definir».

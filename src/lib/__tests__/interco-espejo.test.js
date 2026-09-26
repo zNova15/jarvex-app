@@ -156,6 +156,12 @@ describe('los datos del espejo que se crea', () => {
     expect(e.related_movement_id).toBe('v2');
   });
 
+  it('copia el tipo de cambio de la venta (tanda C): es el mismo comprobante', () => {
+    const e = datosDelEspejo(vta({ id: 'v9', currency: 'USD', tipo_cambio: 3.41 }), { vendedora: JARVEX, compradora: INCA });
+    expect(e.currency).toBe('USD');
+    expect(e.tipo_cambio).toBe(3.41);
+  });
+
   it('copia el comprobante, el importe y la obra tal cual', () => {
     const e = d();
     expect(e.document_number).toBe('E001-2');

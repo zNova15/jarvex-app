@@ -1,18 +1,28 @@
-﻿// ═══════════════════════════════════════════════════════════════════
-// JARVEX — Catálogo de Códigos de Detracción SPOT (Anexo 3 de SUNAT).
+// ═══════════════════════════════════════════════════════════════════
+// JARVEX — Catálogo de Códigos de Detracción SPOT (Anexos 2 y 3 de SUNAT).
 //
 // Centraliza los códigos oficiales de detracción más utilizados en el sector
 // de obras de construcción y contratistas en Perú.
+//
+// 🔴 CORREGIDO EL 25-SET-2026 (tanda C de la revisión). El catálogo decía
+// «037 — Contratos de construcción (4 %)» y «030 — Contratos de gerencia
+// (10 %)». Las dos cosas estaban mal: en el Anexo 3 de SUNAT el **030 es
+// Contratos de construcción al 4 %** y el **037 es «Demás servicios gravados
+// con el IGV» al 12 %**. El 028 «transporte de pasajeros al 12 %» tampoco
+// existe: el transporte de personas es el 026, al 10 %. Verificado contra la
+// orientación de SUNAT (Apéndices del Sistema de Detracciones). Un código
+// equivocado en la constancia es un depósito que SUNAT no cruza con la
+// operación.
 // Puro: sin React, sin dependencias.
 // ═══════════════════════════════════════════════════════════════════
 
 export const CATALOGO_SPOT = [
   {
-    codigo: '037',
+    codigo: '030',
     tasa: 4,
     nombre: 'Contratos de construcción',
     categoria: 'Construcción',
-    descripcion: 'Ejecución de obras, valorizaciones, partidas constructivas, tarrajeo, encofrado, demolición, etc.',
+    descripcion: 'Ejecución de obras, valorizaciones, partidas constructivas, tarrajeo, encofrado, demolición, subcontratos de obra.',
   },
   {
     codigo: '019',
@@ -25,16 +35,23 @@ export const CATALOGO_SPOT = [
   {
     codigo: '027',
     tasa: 4,
-    nombre: 'Transporte de bienes por vía terrestre',
+    nombre: 'Servicio de transporte de carga',
     categoria: 'Transporte',
     descripcion: 'Fletes, traslados de materiales, tubos, agregados y equipos.',
   },
   {
     codigo: '022',
     tasa: 12,
-    nombre: 'Otros servicios empresariales / profesionales',
+    nombre: 'Otros servicios empresariales',
     categoria: 'Servicios',
-    descripcion: 'Supervisión técnica, monitoreo ambiental, ensayos de laboratorio, asesoría y consultorías.',
+    descripcion: 'Consultoría, supervisión técnica, asesoría, arquitectura e ingeniería, monitoreo ambiental, ensayos de laboratorio.',
+  },
+  {
+    codigo: '037',
+    tasa: 12,
+    nombre: 'Demás servicios gravados con el IGV',
+    categoria: 'Servicios',
+    descripcion: 'Cualquier otro servicio gravado que no tenga un código propio. NO es el de construcción (ese es el 030).',
   },
   {
     codigo: '020',
@@ -58,18 +75,25 @@ export const CATALOGO_SPOT = [
     descripcion: 'Maquila y confección o fabricación de estructuras metálicas o piezas a pedido.',
   },
   {
-    codigo: '028',
-    tasa: 12,
-    nombre: 'Transporte de pasajeros',
+    codigo: '026',
+    tasa: 10,
+    nombre: 'Servicio de transporte de personas',
     categoria: 'Transporte',
     descripcion: 'Transporte terrestre de personal u operarios hacia la obra.',
   },
   {
-    codigo: '030',
+    codigo: '012',
+    tasa: 12,
+    nombre: 'Intermediación laboral y tercerización',
+    categoria: 'Servicios',
+    descripcion: 'Destaque de personal, services, tercerización de actividades.',
+  },
+  {
+    codigo: '009',
     tasa: 10,
-    nombre: 'Contratos de gerencia o gestión',
-    categoria: 'Gestión',
-    descripcion: 'Administración y gerencia delegada de proyectos u obras.',
+    nombre: 'Arena y piedra',
+    categoria: 'Bienes',
+    descripcion: 'Venta de agregados: arena, piedra chancada, hormigón (Anexo 2).',
   },
 ];
 
@@ -96,9 +120,18 @@ export function tasaOficialSpot(codigo) {
   return item ? item.tasa : null;
 }
 
+/** ¿Esa tasa es una de las que corresponden a ese código? null si el código no está en el catálogo. */
+export function tasaCorrespondeAlCodigo(codigo, tasa) {
+  const item = buscarCodigoSpot(codigo);
+  if (!item) return null;
+  const t = Number(tasa);
+  if (!Number.isFinite(t)) return null;
+  return [item.tasa, ...(item.tasasAlternativas || [])].includes(t);
+}
+
 /**
  * Etiqueta legible para selectores en la interfaz.
- * Ej: "037 — Contratos de construcción (4%)"
+ * Ej: "030 — Contratos de construcción (4%)"
  * @param {object|string} itemOCodigo
  * @returns {string}
  */

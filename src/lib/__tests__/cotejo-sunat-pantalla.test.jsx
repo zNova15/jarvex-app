@@ -306,15 +306,22 @@ const DUPLICADO_ORIGINAL = {
 };
 const DUPLICADO_COPIA = { ...DUPLICADO_ORIGINAL, id: 'd-2', created_at: '2026-04-28T09:00:00Z' };
 
-describe('El escáner arregla la factura anulada que sigue contando', () => {
-  it('ofrece darla de baja de un clic, en vez de mandar a otra pantalla', () => {
+// 25-set-2026: Gabriel decidió que factura y nota quedan LAS DOS vigentes,
+// como en el RCE. La «factura anulada que sigue contando» dejó de ser un
+// hallazgo y el botón «Dar de baja» se fue: darla de baja restaba la nota dos
+// veces. Lo que se reclama ahora es lo contrario.
+describe('Factura y nota de crédito: las dos vigentes', () => {
+  it('🔴 la factura anulada por su nota y VIVA ya no es incoherencia ni ofrece darla de baja', () => {
     const html = renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]);
-    expect(html).toContain('Factura anulada que sigue contando');
-    expect(html).toContain('Dar de baja la factura');
-    // Y dice qué va a pasar: el importe deja de sumar.
-    expect(html).toContain('dejan de sumar');
-    // Lo que ya no dice: «se arregla en Movimientos Contables».
-    expect(html).not.toContain('Se arregla en Movimientos Contables');
+    expect(html).not.toContain('Factura anulada que sigue contando');
+    expect(html).not.toContain('Dar de baja');
+  });
+
+  it('la factura DADA DE BAJA con su nota viva se reclama, sin botón de baja', () => {
+    const html = plano(renderEscaner([{ ...FACTURA_ANULADA_VIVA, payment_status: 'cancelled' }, NOTA_QUE_LA_ANULA]));
+    expect(html).toContain('Factura dada de baja con su nota de crédito viva');
+    expect(html).toContain('las dos quedan vigentes');
+    expect(html).not.toContain('Dar de baja');
   });
 });
 
@@ -335,10 +342,10 @@ describe('El escáner permite borrar la copia de un comprobante duplicado', () =
   });
 });
 
-// ── LA ANULACIÓN EN CASCADA (tanda 9, 17-set-2026) ─────────────────
-// Medido: 21 facturas anuladas por nota de crédito siguen vivas, en 6 empresas
-// y desde 2023. La E001-43 de S/ 9.000 está cargada DOS VECES —venta en una
-// empresa, compra en la otra— y la misma nota anula las dos.
+// ── LA ANULACIÓN EN CASCADA (tanda 9, 17-set-2026) — RETIRADA el 25-set ──
+// La E001-43 de S/ 9.000 está cargada DOS VECES —venta en una empresa, compra
+// en la otra— y la misma nota anula las dos. Con la regla nueva las cuatro
+// patas quedan vigentes y no hay nada que reclamar.
 const VENTA_ANULADA_INTERCO = {
   id: 'f-venta-43', company_id: JARVEX, clase: 'venta', type: 'income',
   document_type: 'factura', document_number: 'E001-43', date: '2026-07-07',
@@ -362,36 +369,9 @@ const NOTA_43_COMPRA = {
 };
 const CASCADA = [VENTA_ANULADA_INTERCO, COMPRA_ESPEJO_43, NOTA_43_VENTA, NOTA_43_COMPRA];
 
-describe('El escáner da de baja en cascada', () => {
-  it('cuando hay espejo, el botón lo dice ANTES de apretarlo', () => {
-    const html = plano(renderEscaner(CASCADA));
-    expect(html).toContain('Dar de baja la factura y su espejo');
-    expect(html).toContain('el mismo comprobante cargado en el otro libro');
-  });
-
-  it('sin espejo, el botón es solo por la factura', () => {
-    const html = plano(renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
-    expect(html).toContain('Dar de baja la factura');
-    expect(html).not.toContain('Dar de baja la factura y su espejo');
-  });
-
-  it('el botón dice lo que deja de exigirse, no solo lo que deja de sumar', () => {
-    const html = renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]);
-    expect(html).toContain('detracción');
-    expect(html).toContain('bancarización');
-    expect(html).toContain('PLE');
-  });
-
-  it('con varias anuladas a la vista ofrece darlas de baja todas de una', () => {
-    // De a una serían 21 ventanas en produccion.
+describe('Ya no hay baja en cascada ni lote de anuladas', () => {
+  it('el par interco anulado por sus notas no ofrece darlo de baja', () => {
     const html = plano(renderEscaner([...CASCADA, FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
-    expect(html).toMatch(/Dar de baja las \d+ anuladas/);
-    // Las dos patas del par cuentan como dos: las dos siguen vivas.
-    expect(html).toContain('Dar de baja las 3 anuladas');
-  });
-
-  it('con una sola no ofrece el lote: seria un boton para un caso', () => {
-    const html = plano(renderEscaner([FACTURA_ANULADA_VIVA, NOTA_QUE_LA_ANULA]));
-    expect(html).not.toMatch(/Dar de baja las \d+ anuladas/);
+    expect(html).not.toMatch(/Dar de baja/);
   });
 });

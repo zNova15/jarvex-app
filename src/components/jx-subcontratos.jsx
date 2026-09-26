@@ -495,7 +495,7 @@ function SubcontratosPage({ showToast }) {
       monto_contrato: '',
       moneda: 'PEN',
       retencion_pct: 5,
-      detraccion_pct: 12,
+      detraccion_pct: 4,   // obra: 4 %, código 030 (Gabriel, 25-set-2026)
       igv_pct: 18,
       estado: 'borrador',
       observaciones: '',
@@ -514,7 +514,7 @@ function SubcontratosPage({ showToast }) {
         ...form,
         monto_contrato: monto,
         retencion_pct: parseFloat(form.retencion_pct)||0,
-        detraccion_pct: parseFloat(form.detraccion_pct)||12,
+        detraccion_pct: parseFloat(form.detraccion_pct)||4,
         igv_pct: parseFloat(form.igv_pct)||18,
         saldo_pendiente: monto - (Number(editing?.monto_valorizado || 0)),
       };
@@ -632,7 +632,7 @@ function SubcontratosPage({ showToast }) {
               </select>
             </div>
             <div><label className="flabel">Retención garantía %</label><input className="fi" type="number" step="0.1" value={form.retencion_pct||5} onChange={e=>setForm({...form, retencion_pct:e.target.value})}/></div>
-            <div><label className="flabel">Detracción %</label><input className="fi" type="number" step="0.1" value={form.detraccion_pct||12} onChange={e=>setForm({...form, detraccion_pct:e.target.value})}/></div>
+            <div><label className="flabel">Detracción %</label><input className="fi" type="number" step="0.1" value={form.detraccion_pct||4} onChange={e=>setForm({...form, detraccion_pct:e.target.value})}/></div>
             <div><label className="flabel">Fianza fiel cumplimiento</label><input className="fi" type="number" step="0.01" value={form.fianza_fiel_cumplimiento||''} onChange={e=>setForm({...form, fianza_fiel_cumplimiento:e.target.value})}/></div>
             <div><label className="flabel">Fianza adelanto</label><input className="fi" type="number" step="0.01" value={form.fianza_adelanto||''} onChange={e=>setForm({...form, fianza_adelanto:e.target.value})}/></div>
             <div style={{gridColumn:'1/-1'}}><label className="flabel">Observaciones</label><textarea className="fi" rows={2} value={form.observaciones||''} onChange={e=>setForm({...form, observaciones:e.target.value})}/></div>

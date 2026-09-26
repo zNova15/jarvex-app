@@ -8,6 +8,9 @@ import {
 } from '../lib/sunat-ple.js';
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
+import { contextoDeAsientos } from '../lib/asientos-contexto.js';
+import { notaSinEfecto } from '../lib/notas-credito.js';
+import { tasaDeComprobante } from '../lib/tipo-cambio-pasada.js';
 import { cargarBancarizados } from '../lib/bancarizado-db.js';
 import { crearResolvedorDeFamilia, cuentasDeComprobante } from '../lib/cuenta-de-comprobante.js';
 import { activoPorLinea, activoDeLineaDe } from '../lib/naturaleza-insumo.js';
@@ -89,10 +92,14 @@ function LibrosElectronicosPage({ showToast }) {
     return (movs || []).filter(m => {
       if (!m || m.deleted_at) return false;
       if (m.payment_status === 'cancelled') return false;
+      // Factura y nota quedan las DOS vivas (Gabriel, 25-set-2026). Una nota
+      // cuya factura igual quedó dada de baja no resta: si no, la baja se
+      // cuenta dos veces en el registro, el PLE y el libro de este mes.
+      if (notaSinEfecto(m, movsById)) return false;
       if (companyId && m.company_id && m.company_id !== companyId) return false;
       return declaraEnPeriodo(m, Number(anio), Number(mes));
     });
-  }, [movs, anio, mes, companyId]);
+  }, [movs, movsById, anio, mes, companyId]);
 
   const movsCompras = uM(
     () => movsPeriodo.filter(m => m.type === 'cost' || m.type === 'expense'),
@@ -144,22 +151,43 @@ function LibrosElectronicosPage({ showToast }) {
     return () => { vivo = false; };
   }, []);
 
-  const asientos = uM(
-    () => generarAsientosBatch(movsPeriodo, { repartoDe, bancarizadoIds }),
-    [movsPeriodo, repartoDe, bancarizadoIds]
+  // La moneda, los anticipos y la referencia: los MISMOS que usa el Libro
+  // Diario en pantalla (tanda C). Si esta pantalla asentara el anticipo en la
+  // 60 y el libro en la 422, el PLE que llega a SUNAT sería el equivocado.
+  const { data: tasasTc = [] } = window.__hooks?.useTiposCambio?.() || { data: [] };
+  const { data: aplicacionesAnticipo = [] } = window.__hooks?.useAnticipoAplicaciones?.() || { data: [] };
+  const contexto = uM(
+    () => contextoDeAsientos({ movimientos: movs || [], aplicaciones: aplicacionesAnticipo || [], tasas: tasasTc || [] }),
+    [movs, aplicacionesAnticipo, tasasTc],
   );
 
-  // Totales para card resumen
+  const asientos = uM(
+    () => generarAsientosBatch(movsPeriodo, { ...contexto, repartoDe, bancarizadoIds }),
+    [movsPeriodo, contexto, repartoDe, bancarizadoIds]
+  );
+
+  // Totales para card resumen — EN SOLES al tipo de cambio de cada comprobante
+  // (regla 11: nunca soles y dólares crudos en la misma suma). Lo que no tiene
+  // tasa queda afuera y se cuenta, en vez de sumarse como si fueran soles.
   const resumen = uM(() => {
-    const totVentas = movsVentas.reduce((s, m) => s + Number(m.amount || 0), 0);
-    const totCompras = movsCompras.reduce((s, m) => s + Number(m.amount || 0), 0);
+    let sinTc = 0;
+    const enSoles = (m) => {
+      const mon = String(m.currency || 'PEN').toUpperCase();
+      if (mon === 'PEN') return Number(m.amount || 0);
+      const t = tasaDeComprobante(m, tasasTc || []);
+      if (!t) { sinTc += 1; return 0; }
+      return Number(m.amount || 0) * t.valor;
+    };
+    const totVentas = movsVentas.reduce((s, m) => s + enSoles(m), 0);
+    const totCompras = movsCompras.reduce((s, m) => s + enSoles(m), 0);
     return {
       registros: movsPeriodo.length,
       ventas:    totVentas,
       compras:   totCompras,
       asientos:  asientos.length,
+      sinTc,
     };
-  }, [movsPeriodo, movsVentas, movsCompras, asientos]);
+  }, [movsPeriodo, movsVentas, movsCompras, asientos, tasasTc]);
 
   // Planilla del período seleccionado
   const planillaPeriodo = uM(() => {
@@ -181,7 +209,9 @@ function LibrosElectronicosPage({ showToast }) {
     const out = generateLibroDiarioPLE(asientos, periodo, ruc);
     if (!out.content) return showToast?.('Sin asientos en el período', 'orange');
     downloadPLE(out.filename, out.content);
-    showToast?.(`Libro Diario PLE: ${out.registros} asientos`, 'green');
+    showToast?.(`Libro Diario PLE: ${out.registros} asientos`
+      + (out.omitidos ? ` · ${out.omitidos} en otra moneda sin tipo de cambio quedaron AFUERA — cargá la tasa y volvé a generarlo` : ''),
+      out.omitidos ? 'amber' : 'green');
   };
 
   const handleLibroMayor = () => {
@@ -189,7 +219,9 @@ function LibrosElectronicosPage({ showToast }) {
     const out = generateLibroMayorPLE(asientos, periodo, ruc);
     if (!out.content) return showToast?.('Sin asientos en el período', 'orange');
     downloadPLE(out.filename, out.content);
-    showToast?.(`Libro Mayor PLE: ${out.registros} cuentas`, 'green');
+    showToast?.(`Libro Mayor PLE: ${out.registros} cuentas`
+      + (out.omitidos ? ` · ${out.omitidos} asientos en otra moneda sin tipo de cambio quedaron AFUERA` : ''),
+      out.omitidos ? 'amber' : 'green');
   };
 
   const handleRegistroCompras = () => {

@@ -34,7 +34,7 @@ import {
 } from './existencias-balance.js';
 import { derivarTypeContable } from './clasificacion-contable.js';
 import {
-  CERRADO_HASTA_DEFAULT, movEnPeriodoCerrado, motivoForzado, periodoCerrado,
+  cerradoHastaActual, movEnPeriodoCerrado, motivoForzado, periodoCerrado,
 } from './periodo-contable.js';
 
 const avisar = () => {
@@ -110,7 +110,7 @@ const COLUMNAS_CUENTA = ['cuenta_pcge', 'cuenta_pcge_contrapartida', 'cuenta_pcg
  * @returns {Promise<{ok:boolean, error?:string}>}
  */
 export async function fijarCuentaManual(movimientoId, cambios = {}, {
-  userId = null, motivo = '', cerradoHasta = CERRADO_HASTA_DEFAULT,
+  userId = null, motivo = '', cerradoHasta = cerradoHastaActual(),
 } = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
 
@@ -243,7 +243,7 @@ export async function fijarCuentaManual(movimientoId, cambios = {}, {
  */
 export async function fijarSalidaExistencia(movimientoId, salida = {}, {
   userId = null, motivo = '', entro = null,
-  cerradoHasta = CERRADO_HASTA_DEFAULT,
+  cerradoHasta = cerradoHastaActual(),
 } = {}) {
   if (!movimientoId) return { ok: false, error: 'Falta el movimiento.' };
 

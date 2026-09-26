@@ -140,3 +140,14 @@ describe('parseNotasSeguro', () => {
     expect(parseNotasSeguro('{"a":1}')).toEqual({ a: 1 });
   });
 });
+
+// Tanda C (25-set-2026): la factura en cero de una entrega contra anticipo.
+describe('desglosarIgv — factura en cero', () => {
+  it('🔴 la base gravada no supera el total: el registro no muestra no gravadas negativas', () => {
+    const d = desglosarIgv({ amount: 0, notas: JSON.stringify({ subtotal: 9294.4, igv: 0 }) });
+    expect(d.total).toBe(0);
+    expect(d.baseGravada).toBe(0);
+    expect(d.subtotal).toBe(0);
+    expect(d.noGravado).toBe(0);
+  });
+});

@@ -33,13 +33,31 @@
 //     nota de crédito, todos con aritmética imposible (uno tiene subtotal 65
 //     sobre un total de 55).
 //
-// Puro: sin React, sin Dexie, sin imports.
+// Puro: sin React, sin Dexie. Las reglas de la detracción (umbral, tasa,
+// moneda) vienen de `detraccion.js`, que es la única fuente desde el 25-set.
 // ═══════════════════════════════════════════════════════════════════
+
+import {
+  UMBRAL_DETRACCION, montoDetraccion, totalEnSoles, propuestaDetraccion,
+} from './detraccion.js';
+import { tasaCorrespondeAlCodigo, buscarCodigoSpot } from './codigos-spot.js';
+import { notasPorFactura } from './notas-credito.js';
 
 export const NIVEL = { CONTRADICCION: 'contradiccion', REVISAR: 'revisar' };
 
-/** Umbral SPOT: una operación de S/ 700 o menos no está sujeta a detracción. */
-export const UMBRAL_DETRACCION = 700;
+/** Umbral SPOT — se re-exporta: vive en `detraccion.js`. */
+export { UMBRAL_DETRACCION };
+
+/**
+ * El tipo de cambio del comprobante: el suyo, o el de su fecha (`tasaDe`).
+ * La detracción se deposita en soles aunque la factura esté en dólares.
+ */
+const tcDe = (m, tasaDe) => {
+  if (String(m?.currency || 'PEN').toUpperCase() === 'PEN') return 1;
+  if (Number(m?.tipo_cambio) > 0) return Number(m.tipo_cambio);
+  const t = typeof tasaDe === 'function' ? Number(tasaDe(m)) : 0;
+  return t > 0 ? t : null;
+};
 
 /** Tolerancia en soles. Absorbe el redondeo de la captura, no un error real. */
 const TOL = 1;
@@ -72,15 +90,21 @@ export const REGLAS = [
     id: 'detraccion-monto-no-cuadra',
     nivel: NIVEL.CONTRADICCION,
     titulo: 'El monto de la detracción no cuadra con su propio porcentaje',
-    evaluar(m) {
-      if (!m.detraccion_aplica) return null;
+    evaluar(m, { tasaDe } = {}) {
+      if (!m.detraccion_aplica || esNota(m)) return null;
       const pct = num(m.detraccion_pct), monto = num(m.detraccion_monto), total = num(m.amount);
       if (pct == null || monto == null || total == null) return null;
-      const esperado = Math.round(abs(total) * pct) / 100;
+      // El monto se deposita en SOLES: en un comprobante en dólares se compara
+      // contra el total convertido al tipo de cambio de su fecha (25-set). Antes
+      // la E001-11 de US$ 432 con S/ 173,75 bien cargados salía como error.
+      const moneda = String(m.currency || 'PEN').toUpperCase();
+      const esperado = montoDetraccion({ total, moneda, tipoCambio: tcDe(m, tasaDe), pct });
+      if (esperado == null) return null;                 // sin tasa no se puede juzgar
       if (abs(monto - esperado) <= TOL) return null;
+      const base = moneda === 'PEN' ? abs(total).toFixed(2) : `S/ ${totalEnSoles({ total, moneda, tipoCambio: tcDe(m, tasaDe) }).toFixed(2)} (${moneda} ${abs(total).toFixed(2)})`;
       return {
-        detalle: `Dice ${pct}% de ${abs(total).toFixed(2)}, que son ${esperado.toFixed(2)}, pero tiene cargado ${monto.toFixed(2)}.`,
-        sugerencia: `Si el porcentaje es el correcto, el monto debería ser ${esperado.toFixed(2)}.`,
+        detalle: `Dice ${pct}% de ${base}, que son S/ ${esperado.toFixed(2)}, pero tiene cargado S/ ${monto.toFixed(2)}.`,
+        sugerencia: `Si el porcentaje es el correcto, el monto debería ser S/ ${esperado.toFixed(2)}.`,
       };
     },
   },
@@ -102,13 +126,13 @@ export const REGLAS = [
     id: 'detraccion-bajo-umbral',
     nivel: NIVEL.CONTRADICCION,
     titulo: 'Detracción cargada en una operación que no está sujeta',
-    evaluar(m) {
+    evaluar(m, { tasaDe } = {}) {
       if (!m.detraccion_aplica) return null;
-      if ((m.currency || 'PEN') !== 'PEN') return null;   // el umbral es en soles
-      const total = abs(num(m.amount) ?? 0);
-      if (total > UMBRAL_DETRACCION) return null;
+      // El umbral es en soles: un comprobante en dólares se mide convertido.
+      const total = totalEnSoles({ total: num(m.amount) ?? 0, moneda: m.currency, tipoCambio: tcDe(m, tasaDe) });
+      if (total == null || total > UMBRAL_DETRACCION) return null;
       return {
-        detalle: `La operación es de ${total.toFixed(2)} y las de S/ ${UMBRAL_DETRACCION} o menos no están sujetas a detracción.`,
+        detalle: `La operación es de S/ ${total.toFixed(2)} y las de S/ ${UMBRAL_DETRACCION} o menos no están sujetas a detracción.`,
         sugerencia: 'Lo normal es quitar la detracción de este comprobante.',
       };
     },
@@ -160,6 +184,64 @@ export const REGLAS = [
     },
   },
   // ── NIVEL 2: puede estar bien, decide la contadora ────────────────
+  {
+    // Gabriel, 25-set-2026: «recalcular con marca de revisión». Eran 21 con la
+    // detracción marcada y sin monto (Captura Mágica no lo exige) y el escáner
+    // callaba cuando el monto era NULL. Ahora la app PROPONE el importe con la
+    // regla de la casa y esto queda a la vista hasta que alguien lo cargue o lo
+    // marque revisado. Una factura anulada por su nota no deposita nada.
+    id: 'detraccion-sin-monto',
+    nivel: NIVEL.REVISAR,
+    titulo: 'Tiene detracción pero le falta el monto',
+    evaluar(m, { tasaDe, anuladas } = {}) {
+      if (!m.detraccion_aplica || esNota(m)) return null;
+      if (anuladas?.get?.(m.id)?.anulada) return null;
+      const monto = num(m.detraccion_monto);
+      if (monto != null && monto > 0) return null;
+      const total = totalEnSoles({ total: num(m.amount) ?? 0, moneda: m.currency, tipoCambio: tcDe(m, tasaDe) });
+      if (total != null && total <= UMBRAL_DETRACCION) return null;   // eso lo dice «bajo umbral»
+      const p = propuestaDetraccion(m, { tipoCambio: tcDe(m, tasaDe) });
+      if (!p) {
+        return {
+          detalle: 'Está marcada con detracción pero no tiene monto, ni porcentaje, ni un código o un texto del que deducirlo.',
+          sugerencia: 'Cargá el porcentaje (4 % obra, 12 % consultoría) o el código, y el monto sale solo.',
+        };
+      }
+      if (p.monto == null) {
+        return {
+          detalle: `Correspondería el ${p.pct}% (${p.porque}), pero el comprobante está en ${m.currency} y no hay tipo de cambio para su fecha.`,
+          sugerencia: 'Cargá la tasa del día de emisión: la detracción se deposita en soles.',
+        };
+      }
+      return {
+        detalle: `Propuesta: S/ ${p.monto.toFixed(2)} — el ${p.pct}%${p.codigo ? ` (código ${p.codigo})` : ''}, porque ${p.porque}.`,
+        sugerencia: 'Confirmalo contra la constancia o el PDF y cargalo en el comprobante.',
+        propuesta: p,
+      };
+    },
+  },
+  {
+    // 25-set-2026: el catálogo SPOT de la app tenía la construcción en el 037
+    // (es el 030). Queda al menos un comprobante con 037 al 4 %. Esto avisa
+    // cualquier código cuya tasa oficial no es la cargada.
+    id: 'detraccion-codigo-tasa',
+    nivel: NIVEL.REVISAR,
+    titulo: 'El código de detracción no corresponde a la tasa cargada',
+    evaluar(m) {
+      if (!m.detraccion_aplica) return null;
+      const cod = String(m.detraccion_codigo || '').trim();
+      const pct = num(m.detraccion_pct);
+      if (!cod || pct == null) return null;
+      if (tasaCorrespondeAlCodigo(cod, pct) !== false) return null;
+      const c = buscarCodigoSpot(cod);
+      return {
+        detalle: `El código ${c.codigo} es «${c.nombre}», al ${c.tasa}%, y el comprobante tiene ${pct}%.`,
+        sugerencia: (c.codigo === '037' && pct === 4)
+          ? 'Si es un contrato de construcción, el código es el 030 (4 %). El 037 son los demás servicios, al 12 %.'
+          : 'Revisá cuál de los dos está mal: el código o el porcentaje.',
+      };
+    },
+  },
   {
     id: 'igv-no-es-18',
     nivel: NIVEL.REVISAR,
@@ -215,14 +297,14 @@ export const REGLAS = [
  * @param opts.hoy   fecha local 'YYYY-MM-DD' (window.__fecha.hoyLocal())
  * @param opts.descartados Set de `${mov.id}::${regla.id}` ya marcados como revisados
  */
-export function revisarMovimiento(mov, { hoy = null, descartados = null } = {}) {
+export function revisarMovimiento(mov, { hoy = null, descartados = null, tasaDe = null, anuladas = null } = {}) {
   if (!mov || mov.deleted_at) return [];
   const fuera = descartados instanceof Set ? descartados : new Set();
   const out = [];
   for (const r of REGLAS) {
     if (fuera.has(claveDescarte(mov.id, r.id))) continue;
     let res = null;
-    try { res = r.evaluar(mov, { hoy }); } catch { res = null; }
+    try { res = r.evaluar(mov, { hoy, tasaDe, anuladas }); } catch { res = null; }
     if (!res) continue;
     out.push({
       movimiento_id: mov.id,
@@ -231,6 +313,7 @@ export function revisarMovimiento(mov, { hoy = null, descartados = null } = {}) 
       titulo: r.titulo,
       detalle: res.detalle,
       sugerencia: res.sugerencia || null,
+      propuesta: res.propuesta || null,
     });
   }
   return out;
@@ -248,10 +331,13 @@ export function claveDescarte(movimientoId, reglaId) {
 export function revisarLote(movs, opts = {}) {
   const out = [];
   const porId = new Map();
+  // Qué facturas anuló entera su nota de crédito: esas quedan vivas (Gabriel,
+  // 25-set-2026) pero no se les reclama la detracción que nunca se deposita.
+  const anuladas = opts.anuladas || notasPorFactura(movs || []);
   for (const m of movs || []) {
     if (!m || m.deleted_at) continue;
     porId.set(m.id, m);
-    out.push(...revisarMovimiento(m, opts));
+    out.push(...revisarMovimiento(m, { ...opts, anuladas }));
   }
   const peso = (h) => (h.nivel === NIVEL.CONTRADICCION ? 0 : 1);
   out.sort((a, b) => {

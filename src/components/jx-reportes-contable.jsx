@@ -1,5 +1,6 @@
 import React from "react";
 import { cargarBancarizados, agregarContable } from "../lib/reportes-contable.js";
+import { tasaDeComprobante } from "../lib/tipo-cambio-pasada.js";
 import { generateReportePDF, downloadPDF } from "../lib/reports.js";
 import { JxIcon, fmtN, fmtS, fmtSk, ChartTop, chartsToPNG, KpiCards } from "./jx-reportes-shared.jsx";
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uRf } = React;
@@ -46,14 +47,22 @@ export function ContableView({ ctx }) {
 
   const movsAmbito = uM(() => ambito === 'todas' ? movs : movs.filter(m => m.obra_id === ambito), [movs, ambito]);
   const pagosAmbito = uM(() => ambito === 'todas' ? pagos : pagos.filter(p => p.obra_id === ambito), [pagos, ambito]);
-  const agg = uM(() => agregarContable({ movimientos: movsAmbito, bancarizadoSet: banc, pagos: pagosAmbito, companiesById, obrasById, consorcios, from: period.from, to: period.to, topN: 10 }), [movsAmbito, banc, pagosAmbito, companiesById, obrasById, consorcios, period]);
+  // Todo en soles al tipo de cambio de la fecha de emisión (tanda C): la tasa
+  // sale de la tabla `tipos_cambio`, como en el Registro de Compras.
+  const { data: tasasTc = [] } = (window.__hooks?.useTiposCambio?.() ?? { data: [] });
+  const tasaDe = uM(() => (m) => tasaDeComprobante(m, tasasTc || [])?.valor || null, [tasasTc]);
+  const agg = uM(() => agregarContable({ movimientos: movsAmbito, bancarizadoSet: banc, pagos: pagosAmbito, companiesById, obrasById, consorcios, from: period.from, to: period.to, topN: 10, tasaDe }), [movsAmbito, banc, pagosAmbito, companiesById, obrasById, consorcios, period, tasaDe]);
+  const avisoSinTc = agg.kpis.sinTipoCambio
+    ? `${agg.kpis.sinTipoCambio} comprobante(s) en ${agg.kpis.sinTipoCambioPorMoneda.map(x => x.moneda).join('/')} sin tipo de cambio quedaron FUERA de estos totales. Cargá la tasa desde el Registro de Compras y Ventas.`
+    : '';
 
   const ambitoLbl = ambito === 'todas' ? 'Todas las obras' : (obrasById.get(ambito)?.nombre_obra || obrasById.get(ambito)?.nombre || 'Obra');
 
   async function exportarPDF() {
     setPdfBusy(true);
     try {
-      const meta = [`Ámbito: ${ambitoLbl}`, `Período: ${periodoLabel}${period.from ? ` (${period.from} a ${period.to})` : ''}`];
+      const meta = [`Ámbito: ${ambitoLbl}`, `Período: ${periodoLabel}${period.from ? ` (${period.from} a ${period.to})` : ''}`, 'Importes en soles al tipo de cambio de la fecha de emisión'];
+      if (avisoSinTc) meta.push(avisoSinTc);
       const kpis = [
         { label: 'Compras', value: fmtS(agg.kpis.totalCompras) }, { label: 'Ventas', value: fmtS(agg.kpis.totalVentas) },
         { label: 'N° facturas', value: fmtN(agg.kpis.nFacturas) }, { label: 'Falta bancarizar', value: `${agg.kpis.bancPendCount} · ${fmtSk(agg.kpis.bancPendMonto)}` },
@@ -63,7 +72,7 @@ export function ContableView({ ctx }) {
       const tablas = [
         { titulo: 'Consumo por obra (las dos columnas NO se suman)', columnas: ['Obra', 'N°', 'Costo de la obra', 'Aporte del grupo'], filas: agg.consumoPorObra.map(o => [o.nombre, o.nCosto, o.hayTitular ? fmtS(o.costo) : '—', fmtS(o.aporte)]) },
         { titulo: 'Consumo por empresa del grupo', columnas: ['Empresa', 'N°', 'Monto'], filas: agg.consumoPorEmpresa.map(c => [c.nombre, c.n, fmtS(c.monto)]) },
-        { titulo: 'Facturas recientes', columnas: ['Fecha', 'Proveedor', 'Doc.', 'Empresa', 'Monto', 'Estado', 'Bancariz.'], filas: agg.facturasRecientes.map(f => [f.fecha, f.proveedor, f.doc, f.empresa, fmtS(f.monto), (EST_PAGO[f.estado]?.lbl || f.estado), f.faltaBanc ? 'FALTA' : 'ok']) },
+        { titulo: 'Facturas recientes', columnas: ['Fecha', 'Proveedor', 'Doc.', 'Empresa', 'Monto', 'Estado', 'Bancariz.'], filas: agg.facturasRecientes.map(f => [f.fecha, f.proveedor, f.doc, f.empresa, fmtS(f.monto) + (f.monedaOrigen !== 'PEN' ? ` (${f.monedaOrigen} ${Number(f.montoOrigen).toFixed(2)})` : ''), (EST_PAGO[f.estado]?.lbl || f.estado), f.faltaBanc ? 'FALTA' : 'ok']) },
       ];
       const doc = await generateReportePDF({ company, titulo: 'REPORTE CONTABLE', subtitulo: ambitoLbl, meta, kpis, charts, tablas, footer: `Generado por ${userName} — JARVEX` });
       downloadPDF(doc, `JARVEX_contable_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.pdf`);
@@ -95,6 +104,9 @@ export function ContableView({ ctx }) {
       { lbl: 'PAGADO', val: fmtSk(agg.kpis.pagadoTotal), color: 'var(--green)' },
       { lbl: 'PAGO PENDIENTE', val: fmtSk(agg.kpis.pagoPendiente), color: 'var(--red)' },
     ]} />
+    {avisoSinTc && (
+      <div className="card card-p" style={{ marginBottom: 12, fontSize: 12, color: 'var(--amber)', borderLeft: '3px solid var(--amber)' }}>⚠ {avisoSinTc}</div>
+    )}
 
     {cargando ? (
       <div className="card card-p empty-state"><JxIcon name="dollar" size={32} color="var(--tm)" /><p>Cargando contabilidad…</p></div>
@@ -130,7 +142,7 @@ export function ContableView({ ctx }) {
             <thead><tr><th>Fecha</th><th>Proveedor</th><th>Doc.</th><th>Empresa</th><th>Obra</th><th style={{ textAlign: 'right' }}>Monto</th><th>Estado</th><th>Bancariz.</th></tr></thead>
             <tbody>
               {agg.facturasRecientes.length === 0 ? (<tr><td colSpan={8} style={{ textAlign: 'center', padding: 20, color: 'var(--tm)' }}>Sin facturas en el período</td></tr>)
-                : agg.facturasRecientes.map(f => { const e = EST_PAGO[f.estado] || { cls: 'b-gray', lbl: f.estado }; return (<tr key={f.id}><td className="col-m">{f.fecha}</td><td className="col-p">{f.proveedor}</td><td style={{ fontFamily: 'monospace' }}>{f.doc}</td><td>{f.empresa}</td><td>{f.obra}</td><td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtS(f.monto)}</td><td><span className={`badge ${e.cls}`}>{e.lbl}</span></td><td>{f.faltaBanc ? <span className="badge b-red">Falta</span> : <span className="badge b-green">ok</span>}</td></tr>); })}
+                : agg.facturasRecientes.map(f => { const e = EST_PAGO[f.estado] || { cls: 'b-gray', lbl: f.estado }; return (<tr key={f.id}><td className="col-m">{f.fecha}</td><td className="col-p">{f.proveedor}</td><td style={{ fontFamily: 'monospace' }}>{f.doc}</td><td>{f.empresa}</td><td>{f.obra}</td><td style={{ textAlign: 'right', fontWeight: 600 }} title={f.monedaOrigen !== 'PEN' ? `El papel dice ${f.monedaOrigen} ${Number(f.montoOrigen).toLocaleString('es-PE', { minimumFractionDigits: 2 })}; acá va en soles al tipo de cambio de su fecha.` : undefined}>{fmtS(f.monto)}{f.monedaOrigen !== 'PEN' && <div style={{ fontSize: 10, color: 'var(--tm)', fontWeight: 400 }}>{f.monedaOrigen} {Number(f.montoOrigen).toLocaleString('es-PE', { minimumFractionDigits: 2 })}</div>}</td><td><span className={`badge ${e.cls}`}>{e.lbl}</span></td><td>{f.faltaBanc ? <span className="badge b-red">Falta</span> : <span className="badge b-green">ok</span>}</td></tr>); })}
             </tbody>
           </table>
         </div>

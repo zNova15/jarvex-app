@@ -98,3 +98,21 @@ describe('documentoYaUsado', () => {
     expect(documentoYaUsado(MOVS, { companyId: GASOMI, documento: 'F001-00005000' })).toBeNull();
   });
 });
+
+// Tanda C (25-set-2026): el correlativo corre por TIPO de comprobante.
+describe('la numeración va por tipo de documento', () => {
+  const conNotas = [
+    v({ id: 'f4', document_number: 'E001-00000004' }),
+    v({ id: 'n5', document_number: 'E001-00000005', document_type: 'nota_credito' }),
+  ];
+  it('🔴 una nota de crédito E001-5 no le quita el 5 a las facturas', () => {
+    expect(siguienteComprobante(conNotas, { companyId: GASOMI, serie: 'E001' }).correlativo).toBe(5);
+  });
+  it('y las notas llevan su propia cuenta', () => {
+    expect(siguienteComprobante(conNotas, { companyId: GASOMI, serie: 'E001', tipo: 'nota_credito' }).correlativo).toBe(6);
+  });
+  it('la factura E001-5 no choca con la nota E001-5', () => {
+    expect(documentoYaUsado(conNotas, { companyId: GASOMI, documento: 'E001-00000005' })).toBeNull();
+    expect(documentoYaUsado(conNotas, { companyId: GASOMI, documento: 'E001-00000005', tipo: 'nota_credito' })?.id).toBe('n5');
+  });
+});

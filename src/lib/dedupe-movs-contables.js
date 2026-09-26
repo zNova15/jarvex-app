@@ -54,19 +54,28 @@ export function familiaDocumento(m) {
 }
 
 // Clave de identidad del comprobante (null = no identificable → no participa).
+//
+// 🔴 LLEVA LA FAMILIA DEL DOCUMENTO (tanda C, 25-set-2026). SUNAT numera cada
+// tipo de comprobante por separado: la factura E001-1 y la nota de crédito
+// E001-1 son dos papeles válidos y JARVEX emite justamente así
+// (`avisoSerieRepetida` en notas-credito.js). Sin la familia, la venta E001-1
+// (S/ 12.920) y su nota E001-1 (−S/ 12.920) caían en el mismo grupo, el panel
+// ofrecía fusionarlas y el fusionador borraba la NOTA. La segunda llave
+// (`claveSinRuc`) ya la exigía; ésta no.
 export function claveComprobante(m) {
   if (!m || m.deleted_at) return null;
   const comp = normalizarComprobante(m.document_number);
   if (!comp) return null;
   const clase = claseDe(m);
+  const familia = familiaDocumento(m);
   if (clase === 'venta') {
     if (!m.company_id) return null;
-    return `venta|${m.company_id}|${comp}`;
+    return `venta|${m.company_id}|${familia}|${comp}`;
   }
   const tercero = normalizarRuc(m.third_party_ruc)
     || String(m.third_party_name || '').trim().toUpperCase().replace(/\s+/g, ' ');
   if (!tercero) return null;
-  return `compra|${tercero}|${comp}`;
+  return `compra|${tercero}|${familia}|${comp}`;
 }
 
 /**

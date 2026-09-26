@@ -54,6 +54,31 @@ export const CLAVE_CONFIG = 'periodo_cerrado_hasta';
  */
 export const CERRADO_HASTA_DEFAULT = '2026-07-31';
 
+// ── LA FECHA VIGENTE (tanda C, 25-set-2026) ─────────────────────────
+// El encabezado lo prometía desde el 18-set («sale de `app_config`… se edita
+// sin deploy») y no era cierto: NADIE leía la fila. La fecha estaba clavada en
+// el 31-jul en las cuatro libs que la usan, y cuando se declare agosto el aviso
+// y la auditoría iban a seguir diciendo julio.
+//
+// Ahora la app la carga al arrancar y en cada sync (`useAuth.js`, junto con el
+// resto de `app_config`) y la deja acá. Las funciones la toman como valor por
+// defecto, así que ninguna pantalla tiene que acordarse de pasarla; los tests
+// y quien quiera otra fecha la siguen pasando explícita.
+let cerradoHastaVigente = CERRADO_HASTA_DEFAULT;
+
+/** Fija la fecha que vino de `app_config`. Devuelve false si no es una fecha. */
+export function fijarCerradoHasta(valor) {
+  const f = String(valor ?? '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(f)) return false;
+  cerradoHastaVigente = f;
+  return true;
+}
+
+/** La fecha de cierre vigente: la de `app_config`, o la de por defecto. */
+export function cerradoHastaActual() {
+  return cerradoHastaVigente;
+}
+
 /** La fecha del comprobante, en 'YYYY-MM-DD' y sin hora. */
 export function fechaDe(movimiento) {
   const m = movimiento || {};
@@ -68,7 +93,7 @@ export function fechaDe(movimiento) {
  * fechas. Nada de `new Date()`: en Perú (UTC−5) parsear 'YYYY-MM-DD' devuelve
  * el día anterior, y acá el día importa (regla 7 del CLAUDE.md).
  */
-export function periodoCerrado(fecha, hasta = CERRADO_HASTA_DEFAULT) {
+export function periodoCerrado(fecha, hasta = cerradoHastaActual()) {
   const f = String(fecha ?? '').slice(0, 10);
   const h = String(hasta ?? '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f) || !/^\d{4}-\d{2}-\d{2}$/.test(h)) return false;
@@ -76,7 +101,7 @@ export function periodoCerrado(fecha, hasta = CERRADO_HASTA_DEFAULT) {
 }
 
 /** Lo mismo, pero preguntándoselo al movimiento. */
-export const movEnPeriodoCerrado = (movimiento, hasta = CERRADO_HASTA_DEFAULT) =>
+export const movEnPeriodoCerrado = (movimiento, hasta = cerradoHastaActual()) =>
   periodoCerrado(fechaDe(movimiento), hasta);
 
 /**
@@ -86,7 +111,7 @@ export const movEnPeriodoCerrado = (movimiento, hasta = CERRADO_HASTA_DEFAULT) =
  * Desde el 22-set-2026 esto AVISA, no frena (ver el encabezado). El botón de
  * guardar queda habilitado igual.
  */
-export function avisoPeriodoCerrado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
+export function avisoPeriodoCerrado(movimiento, hasta = cerradoHastaActual()) {
   if (!movEnPeriodoCerrado(movimiento, hasta)) return null;
   const doc = movimiento?.document_number || 'Este comprobante';
   return `${doc} es del ${fechaDe(movimiento)}, dentro del período ya presentado a SUNAT `
@@ -102,7 +127,7 @@ export function avisoPeriodoCerrado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
  * nadie tenga que pedirlo, y se concatena aunque venga otro motivo: es el dato
  * que alguien va a buscar dentro de un año.
  */
-export function motivoForzado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
+export function motivoForzado(movimiento, hasta = cerradoHastaActual()) {
   return `Libro Diario · se modifica ${movimiento?.document_number || 'un comprobante'} `
     + `del ${fechaDe(movimiento)}, dentro del período ya presentado (hasta ${hasta})`;
 }
@@ -110,4 +135,5 @@ export function motivoForzado(movimiento, hasta = CERRADO_HASTA_DEFAULT) {
 export default {
   CLAVE_CONFIG, CERRADO_HASTA_DEFAULT, fechaDe, periodoCerrado,
   movEnPeriodoCerrado, avisoPeriodoCerrado, motivoForzado,
+  fijarCerradoHasta, cerradoHastaActual,
 };

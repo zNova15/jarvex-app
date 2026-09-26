@@ -231,3 +231,67 @@ describe('revisarLote y resumen', () => {
     expect(resumenRevision(null).total).toBe(0);
   });
 });
+
+// ── Tanda C (25-set-2026): la detracción en dólares, sin monto y con código mal puesto ──
+describe('detracción en dólares: se deposita en SOLES', () => {
+  // E001-11 de FRAJMAC: US$ 432, 12 %, S/ 173,75 al TC 3,352 — estaba BIEN y
+  // el escáner lo acusaba porque comparaba contra el 12 % de 432 dólares.
+  const usd = mov({ amount: 432, currency: 'USD', tipo_cambio: 3.352, detraccion_aplica: true,
+    detraccion_pct: 12, detraccion_monto: 173.75, detraccion_codigo: '022' });
+  it('🔴 el monto en soles bien cargado ya no es contradicción', () => {
+    expect(hallazgos(usd)).not.toContain('detraccion-monto-no-cuadra');
+  });
+  it('sin tasa no se juzga el monto (no se inventa el cambio)', () => {
+    expect(hallazgos({ ...usd, tipo_cambio: null })).not.toContain('detraccion-monto-no-cuadra');
+  });
+  it('el umbral de S/ 700 se mide convertido: US$ 432 × 3,352 pasa el umbral', () => {
+    expect(hallazgos(usd)).not.toContain('detraccion-bajo-umbral');
+    expect(hallazgos({ ...usd, amount: 150, detraccion_monto: 60.34 })).toContain('detraccion-bajo-umbral');
+  });
+});
+
+describe('detracción sin monto: la app propone, alguien confirma', () => {
+  it('🔴 con porcentaje cargado propone el monto exacto', () => {
+    const [h] = revisarMovimiento(mov({ amount: 20000, detraccion_aplica: true, detraccion_pct: 12, detraccion_monto: null }))
+      .filter(x => x.regla === 'detraccion-sin-monto');
+    expect(h.nivel).toBe(NIVEL.REVISAR);
+    expect(h.propuesta.monto).toBe(2400);
+  });
+  it('una valorización sin porcentaje ni código → 4 %, código 030 (regla de Gabriel)', () => {
+    const m = conNotas({ amount: 508745.84, detraccion_aplica: true, detraccion_monto: null },
+      { items_factura: [{ descripcion: 'VALORIZACIÓN N 06 CORRESPONDIENTE AL MES DE JULIO' }] });
+    const [h] = revisarMovimiento(m).filter(x => x.regla === 'detraccion-sin-monto');
+    expect(h.propuesta.pct).toBe(4);
+    expect(h.propuesta.codigo).toBe('030');
+    expect(h.propuesta.monto).toBe(20349.83);
+  });
+  it('una consultoría → 12 %, código 022', () => {
+    const m = conNotas({ amount: 5000, detraccion_aplica: true }, { items_factura: [{ descripcion: 'SUPERVISIÓN DE OBRA' }] });
+    const [h] = revisarMovimiento(m).filter(x => x.regla === 'detraccion-sin-monto');
+    expect(h.propuesta.pct).toBe(12);
+    expect(h.propuesta.codigo).toBe('022');
+  });
+  it('sin nada de dónde deducirlo, lo dice y NO inventa un porcentaje', () => {
+    const m = conNotas({ amount: 8400, detraccion_aplica: true }, { items_factura: [{ descripcion: 'PORTONES METALICOS' }] });
+    const [h] = revisarMovimiento(m).filter(x => x.regla === 'detraccion-sin-monto');
+    expect(h.propuesta).toBe(null);
+    expect(h.detalle).toMatch(/ni porcentaje/);
+  });
+  it('una factura anulada entera por su nota no reclama el monto', () => {
+    const f = mov({ id: 'f', amount: 9000, detraccion_aplica: true, detraccion_pct: 12 });
+    const n = mov({ id: 'n', amount: -9000, document_type: 'nota_credito', related_movement_id: 'f' });
+    expect(revisarLote([f, n]).filter(h => h.regla === 'detraccion-sin-monto')).toHaveLength(0);
+  });
+});
+
+describe('código SPOT que no corresponde a la tasa', () => {
+  it('🔴 037 al 4 % avisa que la construcción es el 030', () => {
+    const [h] = revisarMovimiento(mov({ amount: 40000, detraccion_aplica: true, detraccion_pct: 4,
+      detraccion_monto: 1600, detraccion_codigo: '037' })).filter(x => x.regla === 'detraccion-codigo-tasa');
+    expect(h.sugerencia).toMatch(/030/);
+  });
+  it('el alquiler al 4 % NO es un error: el 019 admite 10 % y 4 %', () => {
+    expect(hallazgos(mov({ amount: 7005, detraccion_aplica: true, detraccion_pct: 4, detraccion_monto: 280.2, detraccion_codigo: '019' })))
+      .not.toContain('detraccion-codigo-tasa');
+  });
+});

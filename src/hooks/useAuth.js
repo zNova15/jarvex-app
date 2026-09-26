@@ -5,6 +5,7 @@ import { syncAll } from '../sync/SyncEngine';
 import { identifyUser, resetUser } from '../lib/posthog.js';
 import { hayTrabajoEnCurso, trabajosEnCurso } from '../lib/sesion-ocupada.js';
 import { hayServicioRestringido } from '../lib/servicio-restringido.js';
+import { fijarCerradoHasta, CLAVE_CONFIG as CLAVE_CIERRE } from '../lib/periodo-contable.js';
 
 export const AuthContext = createContext(null);
 
@@ -197,15 +198,25 @@ export function useAuthProvider() {
   // Copiar a localStorage el timeout configurado en app_config (llega por el
   // sync) — de ahí lo lee síncrono el timer de abajo. Se ignoran filas demo
   // (config editada en modo prueba no rige la sesión real).
+  //
+  // Y la FECHA DE CIERRE contable (`periodo_cerrado_hasta`, tanda C del
+  // 25-set-2026): hasta hoy nadie la leía y el aviso de «mes ya presentado»
+  // decía julio para siempre. Se deja en `periodo-contable.js`, que es de
+  // donde la toman el Libro Diario, la auditoría y el costo atrapado.
   useEffect(() => {
+    const masReciente = (rows) => rows
+      .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
     const refrescar = async () => {
       try {
         const rows = await db.app_config
-          .filter(r => !r.deleted_at && r.demo !== true && r.clave === 'sesion_timeout_min')
+          .filter(r => !r.deleted_at && r.demo !== true
+            && (r.clave === 'sesion_timeout_min' || r.clave === CLAVE_CIERRE))
           .toArray();
-        if (!rows.length) return;
-        rows.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
-        localStorage.setItem(INACTIVITY_LS_KEY, String(clampTimeoutMin(rows[0].valor)));
+        const cierre = masReciente(rows.filter(r => r.clave === CLAVE_CIERRE));
+        if (cierre) fijarCerradoHasta(cierre.valor);
+        const timeout = masReciente(rows.filter(r => r.clave === 'sesion_timeout_min'));
+        if (!timeout) return;
+        localStorage.setItem(INACTIVITY_LS_KEY, String(clampTimeoutMin(timeout.valor)));
       } catch { /* sin tabla aún (device con schema viejo) o sin localStorage */ }
     };
     refrescar();

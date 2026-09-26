@@ -16,7 +16,7 @@
 //        monitoreo ambiental, liquidación de obra…            3 casos, TODOS al 12%
 //
 // Esos tres son SEGUROS: no los inventé, son los que la contadora ya usa una
-// y otra vez para lo mismo. El resto del Anexo 3 (028, 029, 030, 037…) NO
+// y otra vez para lo mismo. El resto del Anexo 3 (012, 026, 037…) NO
 // entra en este archivo: no hay un solo caso real que los valide, y luego de
 // haberme equivocado una vez con la tasa del 019, prefiero un catálogo chico
 // y cierto a uno completo y adivinado.
@@ -54,7 +54,7 @@ export const CODIGOS_VALIDADOS = {
   '022': { label: 'Otros servicios / servicio profesional o técnico' },
   '025': { label: 'Fabricación de bienes por encargo' },
   '027': { label: 'Transporte de bienes por vía terrestre' },
-  '037': { label: 'Contratos de construcción' },
+  '030': { label: 'Contratos de construcción' },
 };
 
 const norm = (s) => String(s || '')
@@ -129,9 +129,11 @@ export function sugerirCodigoSpot(descripcion, { tipoInsumo, tasaActual } = {}) 
     };
   }
 
-  // 3) Contratos de construcción -> 037 (4%)
+  // 3) Contratos de construcción -> 030 (4%)
+  // 🔴 25-set-2026: decía 037. En el Anexo 3 de SUNAT la construcción es el 030;
+  // el 037 son «demás servicios gravados» al 12 %. Ver `codigos-spot.js`.
   // Casos de obra, partidas, tarrajeo, valorizaciones, etc. (Gabriel, 11-sep-2026).
-  // La tasa de 12% descarta 037 (indica servicio profesional/técnico como liquidación o supervisión).
+  // La tasa de 12% descarta 030 (indica servicio profesional/técnico como liquidación o supervisión).
   const tasaEs12 = tasaActual != null && Number(tasaActual) === 12;
   const esConsultoriaTecnica = d.includes('liquidacion') || d.includes('supervis')
     || d.includes('monitoreo') || d.includes('elaboracion') || d.includes('estudio') || d.includes('diseno');
@@ -144,12 +146,12 @@ export function sugerirCodigoSpot(descripcion, { tipoInsumo, tasaActual } = {}) 
 
   if (esConstruccion) {
     const avisoTasaInusual = (tasaActual != null && Number(tasaActual) !== 4)
-      ? `La tasa cargada (${tasaActual}%) no es el 4% reglamentario de contratos de construcción (Anexo 3 SUNAT, código 037). Confirmalo con la contadora.`
+      ? `La tasa cargada (${tasaActual}%) no es el 4% reglamentario de contratos de construcción (Anexo 3 SUNAT, código 030). Confirmalo con la contadora.`
       : null;
     return {
-      codigo: '037',
+      codigo: '030',
       confianza: 'alta',
-      motivo: 'Es un contrato o servicio de construcción en obra: corresponde al código 037 (Contratos de construcción) al 4% según el Anexo 3 de SUNAT.',
+      motivo: 'Es un contrato o servicio de construcción en obra: corresponde al código 030 (Contratos de construcción) al 4% según el Anexo 3 de SUNAT.',
       tasaUnica: 4,
       tasasPosibles: null,
       avisoTasa: null,

@@ -49,7 +49,8 @@ const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 // Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
 // Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
 // de detracción cargada. Se usa para avisar, nunca para borrar el dato solo.
-const UMBRAL_DETRACCION = 700;
+// Desde la tanda C (25-set) vive en `detraccion.js`: había dos copias.
+import { UMBRAL_DETRACCION } from "../lib/detraccion.js";
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
 const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -3688,14 +3689,22 @@ function MovimientosContablesPage({ showToast }) {
                           // ruido que nadie puede cerrar. Cerco de vista para
                           // datos históricos; el alta ya no los deja entrar.
                           const _esNotaM = ['nota_credito', 'nota_debito'].includes(m.document_type);
-                          if (m.detraccion_aplica && !_esNotaM && m.payment_status !== 'cancelled') {
+                          // Una factura anulada entera por su nota queda VIVA
+                          // (Gabriel, 25-set-2026: factura y nota, como en el
+                          // RCE) pero su detracción no se deposita nunca.
+                          const _anuladaNC = !!notasDeFactura.get(m.id)?.anulada;
+                          if (m.detraccion_aplica && !_esNotaM && !_anuladaNC && m.payment_status !== 'cancelled') {
+                            // El monto de la detracción está SIEMPRE en soles, aunque
+                            // el comprobante sea en dólares: el neto se descuenta en
+                            // la moneda del papel con su tipo de cambio.
                             const _monto = Number(m.detraccion_monto) || 0;
-                            const _neto = Math.max(0, (Number(m.amount) || 0) - _monto);
+                            const _tcM = (m.currency || 'PEN') === 'PEN' ? 1 : (Number(m.tipo_cambio) || 0);
+                            const _neto = _tcM > 0 ? Math.max(0, (Number(m.amount) || 0) - _monto / _tcM) : (Number(m.amount) || 0);
                             const depositada = m.detraccion_estado === 'depositada';
                             return (
                               <div style={{ fontSize:10, marginTop:2, color: depositada ? 'var(--green)' : 'var(--amber)' }}
                                 title={`Detracción${m.detraccion_pct != null ? ' ' + m.detraccion_pct + '%' : ''}${m.detraccion_codigo ? ' · código ' + m.detraccion_codigo : ''} · neto a pagar ${fmtCur(_neto, m.currency)}`}>
-                                {depositada ? '✅' : '⏳'} Detracción {fmtCur(_monto, m.currency)}{m.detraccion_pct != null ? ` (${m.detraccion_pct}%)` : ''}{depositada ? ' · depositada' : ' · falta depósito'}
+                                {depositada ? '✅' : '⏳'} Detracción {fmtCur(_monto, 'PEN')}{m.detraccion_pct != null ? ` (${m.detraccion_pct}%)` : ''}{depositada ? ' · depositada' : ' · falta depósito'}
                                 {evD && evD.url && (
                                   <button className="btn btn-ghost btn-xs" style={{ marginLeft:4, padding:'0 4px', fontSize:9, color:'var(--blue)', verticalAlign:'middle' }}
                                     title="Ver la constancia de detracción" onClick={()=>setEvidenciaModal(evD)}>

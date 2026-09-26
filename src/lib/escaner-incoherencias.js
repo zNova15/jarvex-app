@@ -13,8 +13,9 @@
 // producción ANTES de escribirlas (los números están en cada regla):
 //   1. INTERCOMPANY SIN ESPEJO — un comprobante marcado entre empresas del
 //      grupo al que le falta el otro lado.
-//   2. NOTA DE CRÉDITO HUÉRFANA O SIN EFECTO — una nota que no apunta a nada,
-//      o una factura anulada que sigue contando como si estuviera viva.
+//   2. NOTA DE CRÉDITO HUÉRFANA O MAL CERRADA — una nota que no apunta a nada,
+//      o una factura dada de baja cuya nota sigue viva (25-set: las dos
+//      tienen que quedar vigentes, como en el RCE).
 //   3. IMPORTES QUE NO CUADRAN SOLOS — el total contra su propio desglose, las
 //      notas de crédito en positivo, y el mismo comprobante cargado dos veces.
 //   4. SERIE O NÚMERO IMPOSIBLE — lo que no tiene forma de comprobante, y los
@@ -103,8 +104,8 @@ const hallazgo = (familia, regla, mov, { gravedad = 'media', titulo, detalle, mo
  * `interco-espejo.js` ya lo tenía escrito desde la tanda 15 y esta regla no lo
  * había copiado:
  *   · Una operación ANULADA quedó sin efecto: el comprador no tiene nada que
- *     registrar. (Y si la factura anulada sigue viva y sumando, eso lo dice la
- *     familia 2 —`factura_anulada_viva`—, que es el problema de verdad.)
+ *     registrar. (Desde el 25-set la factura anulada y su nota quedan las dos
+ *     vivas y suman cero: ver `notas-credito.js`.)
  *   · Una nota de crédito o débito no es una compra nueva: es el otro lado de
  *     un espejo que ya existe o de una operación que se deshizo.
  * Sin estos dos frenos, la única familia que puede reclamar plata de verdad
@@ -164,9 +165,10 @@ export function intercompanySinEspejo(movs, { companies = [] } = {}) {
  *    qué rebaja, así que ningún reporte la puede aplicar.
  *    MEDIDO: de 18 notas de crédito vivas, varias no tienen el vínculo.
  *
- * b) SIN EFECTO — la factura está anulada por una nota que SÍ cubre su importe,
- *    pero la factura sigue con `payment_status` de viva y sumando. La app la
- *    sigue contando como ingreso o costo.
+ * b) DADA DE BAJA CON SU NOTA VIVA — la nota cubre la factura entera y además
+ *    la factura quedó `cancelled`. Hasta el 25-set esta regla pedía lo
+ *    contrario (dar de baja la factura anulada); ahora las dos quedan vigentes,
+ *    como en el RCE, y la baja es lo que desentona.
  *
  * ⚠️ Que una nota tenga la MISMA serie que su factura NO es un error: en SUNAT
  * la numeración corre por tipo de comprobante y JARVEX emite E001 para las dos
@@ -190,18 +192,27 @@ export function notasIncoherentes(movs) {
     }
   }
 
-  // Facturas anuladas por completo que siguen vivas.
+  // ── FACTURA DADA DE BAJA CON SU NOTA VIVA (25-set-2026) ──────────
+  // Hasta el 25-set esta familia reclamaba lo contrario —«factura anulada que
+  // sigue contando»— y ofrecía darla de baja. Gabriel decidió que factura y
+  // nota quedan LAS DOS vigentes, como en el RCE de SUNAT: la nota ya resta en
+  // negativo y el par da cero. Darla de baja además restaba dos veces (8 casos
+  // medidos, S/ 5.984,77 y US$ 54.874,04). Ver `notas-credito.js`.
+  // Lo incoherente ahora es la baja: el libro ya no resta dos veces (la nota
+  // de una factura dada de baja no cuenta), pero la empresa queda sin la
+  // factura que SUNAT sí tiene y el cotejo del mes no cierra.
   const notas = notasPorFactura(vivas);
   for (const [facturaId, info] of notas.entries()) {
     if (!info.anulada) continue;
     const f = porId.get(facturaId);
-    if (!f) continue;
-    if (f.payment_status === 'cancelled') continue;      // ya está dada de baja
-    out.push(hallazgo('nota_credito', 'factura_anulada_viva', f, {
-      gravedad: 'alta',
+    if (!f || f.payment_status !== 'cancelled') continue;
+    out.push(hallazgo('nota_credito', 'factura_baja_con_nota', f, {
+      gravedad: 'media',
       monto: abs(f.amount),
-      titulo: 'Factura anulada que sigue contando',
-      detalle: `${info.etiqueta}, pero ${f.document_number || 'la factura'} sigue activa por S/ ${abs(f.amount).toLocaleString('es-PE', { minimumFractionDigits: 2 })} y suma en los reportes.`,
+      titulo: 'Factura dada de baja con su nota de crédito viva',
+      detalle: `${info.etiqueta}, y además ${f.document_number || 'la factura'} quedó «Anulada». `
+        + 'Desde el 25-set las dos quedan vigentes, como en el RCE de SUNAT: la nota ya la resta. '
+        + 'Volvé a ponerle en Movimientos Contables el estado que tenía (Pagado o Pendiente).',
       // Los ids de las notas que la anulan — para que la pantalla pueda
       // mostrar el 👁 de la factura Y el de cada nota, y así comprobarse una
       // contra la otra en vez de tener que confiar en el texto.

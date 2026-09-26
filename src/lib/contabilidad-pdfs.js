@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { textosDeTipo, totalesDesdeItems, nombreArchivoOrden, tituloImprimible } from './ordenes.js';
 import { fmtFechaLarga, fechaLocalDe } from './fecha.js';
+import { liquidarValorizacion, DETRACCION_OBRA } from './detraccion.js';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers
@@ -536,13 +537,19 @@ export function generateValorizacionPdf(val, partidasVal, obra, company) {
   if (bruto === 0 && val.bruto != null) bruto = Number(val.bruto);
   const adelantos = Number(val.adelantos ?? val.amortizacion_adelanto ?? 0);
   const retenciones = Number(val.retenciones ?? val.fondo_garantia ?? 0);
-  const subtotal = bruto - adelantos - retenciones;
-  const igvRate = 0.18;
-  const igv = subtotal * igvRate;
-  const totalFactura = subtotal + igv;
-  const detraccionRate = Number(val.detraccion_rate ?? 0.12);
-  const detraccion = totalFactura * detraccionRate;
-  const neto = totalFactura - detraccion;
+  // Se emite por el BRUTO (Gabriel, 25-set-2026). Antes: base = bruto −
+  // adelanto − garantía y detracción al 12 %; con S/ 100.000 valorizados salía
+  // un IGV de S/ 900 de menos y una detracción de S/ 7.788 de más.
+  const detraccionRate = val.detraccion_rate != null ? Number(val.detraccion_rate)
+    : (val.detraccion_pct != null ? Number(val.detraccion_pct) / 100 : DETRACCION_OBRA.pct / 100);
+  const liq = liquidarValorizacion({
+    bruto, adelantos, retenciones, igvPct: Number(val.igv_pct ?? 18), detraccionPct: detraccionRate * 100,
+  });
+  const subtotal = liq.base;
+  const igv = liq.igv;
+  const totalFactura = liq.total;
+  const detraccion = liq.detraccion;
+  const neto = liq.neto;
 
   // Verificar espacio
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -559,13 +566,12 @@ export function generateValorizacionPdf(val, partidasVal, obra, company) {
   endY += 4;
 
   const rows = [
-    ['Bruto valorizado', fmtS(bruto)],
-    ['(-) Amortización adelantos', fmtS(adelantos)],
-    ['(-) Retenciones / Fondo de garantía', fmtS(retenciones)],
     ['Subtotal', fmtS(subtotal)],
-    ['IGV (18%)', fmtS(igv)],
+    [`IGV (${Number(val.igv_pct ?? 18)}%)`, fmtS(igv)],
     ['TOTAL FACTURA', fmtS(totalFactura)],
     [`(-) Detracción (${(detraccionRate * 100).toFixed(0)}%)`, fmtS(detraccion)],
+    ['(-) Amortización adelantos', fmtS(adelantos)],
+    ['(-) Retenciones / Fondo de garantía', fmtS(retenciones)],
     ['NETO A COBRAR', fmtS(neto)],
   ];
 

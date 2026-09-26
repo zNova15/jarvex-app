@@ -42,6 +42,20 @@ import { esVentaMov } from './costo-obra.js';
 
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 
+/**
+ * El TIPO de comprobante con el que corre la numeración.
+ *
+ * ⚠️ TAMBIÉN SE MIRA POR TIPO (tanda C, 25-set-2026). SUNAT exige correlativos
+ * por tipo de comprobante y serie: la factura E001-4 y la nota de crédito
+ * E001-1 conviven, porque JARVEX emite las dos con la serie E001. Contando las
+ * notas, una NC E001-5 hacía que la siguiente FACTURA propuesta fuera la
+ * E001-6 y el 5 de facturas quedaba sin usar para siempre.
+ */
+export const tipoDeNumeracion = (m) => {
+  const t = String(m?.document_type || 'factura').trim().toLowerCase();
+  return t || 'factura';
+};
+
 /** Serie válida: una letra + 3 dígitos (F001, B001, FC01, T001…). */
 export const SERIE_RE = /^[A-Z][A-Z0-9]{3}$/;
 
@@ -89,6 +103,7 @@ export function siguienteComprobante(movs = [], { companyId = null, company = nu
       if (m.company_id !== cid) continue;
       if (!esVentaMov(m)) continue;                 // una compra lleva el número del proveedor
       if (m.payment_status === 'cancelled') continue;
+      if (tipoDeNumeracion(m) !== tipo) continue;   // cada tipo lleva su cuenta
       const p = partirDocumento(m.document_number);
       if (!p || p.serie !== s) continue;
       usados += 1;
@@ -106,13 +121,15 @@ export function siguienteComprobante(movs = [], { companyId = null, company = nu
  * sistema del contador externo— y ahí hay que avisar antes de duplicarlo, no
  * después. Devuelve el movimiento que lo tiene, o null.
  */
-export function documentoYaUsado(movs = [], { companyId, documento }) {
+export function documentoYaUsado(movs = [], { companyId, documento, tipo = 'factura' }) {
   const p = partirDocumento(documento);
   if (!p || !companyId) return null;
   for (const m of vivos(movs)) {
     if (m.company_id !== companyId) continue;
     if (!esVentaMov(m)) continue;
     if (m.payment_status === 'cancelled') continue;
+    // Una factura E001-5 no choca con la nota de crédito E001-5: son otro tipo.
+    if (tipoDeNumeracion(m) !== tipo) continue;
     const q = partirDocumento(m.document_number);
     if (q && q.serie === p.serie && q.correlativo === p.correlativo) return m;
   }

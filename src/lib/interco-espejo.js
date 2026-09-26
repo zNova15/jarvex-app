@@ -176,6 +176,10 @@ export function datosDelEspejo(venta, { vendedora = null, compradora = null } = 
     description: `${etiqueta} ${venta?.document_number || ''} · ${vendedora?.name || ''} (espejo de operación interna)`.replace(/\s+/g, ' ').trim(),
     amount: num(venta?.amount),
     currency: venta?.currency || 'PEN',
+    // El MISMO tipo de cambio que la venta (tanda C, 25-set-2026): es el mismo
+    // comprobante. Sin él, el espejo de una venta en dólares nacía sin tasa y
+    // su asiento quedaba en dólares, fuera del libro en soles.
+    tipo_cambio: venta?.tipo_cambio ?? null,
     third_party_name: vendedora?.name || null,
     third_party_ruc: vendedora?.ruc || null,
     payment_status: 'paid',

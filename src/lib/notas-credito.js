@@ -107,6 +107,58 @@ export function notasPorFactura(movimientos, { tolerancia = 0.05 } = {}) {
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// FACTURA Y NOTA QUEDAN LAS DOS VIVAS (Gabriel, 25-set-2026).
+//
+// La pregunta 3 de la revisión: «¿se prefiere que factura y NC queden las dos
+// vivas (como pide el RCE) o que la baja cancele también la NC?». Respuesta:
+// las DOS vivas, y la nota resta en negativo — factura 1.000, nota −1.000,
+// neto 0. Es exactamente lo que SUNAT tiene en el Registro de Compras, así que
+// el cotejo contra el RCE cierra fila por fila.
+//
+// La tanda 9 (17-set) hacía lo contrario: daba de baja la factura
+// (`payment_status='cancelled'`) y dejaba viva la nota. Todos los reportes
+// sacaban la factura cancelada pero seguían restando la nota → la baja se
+// contaba DOS veces. Medido el 25-set: 8 facturas en ese estado, S/ 5.984,77 y
+// US$ 54.874,04 de crédito fiscal negativo que nunca existió.
+//
+// Por eso, además de dejar de cancelar, los reportes que suman plata tienen
+// esta defensa: una nota cuya factura SÍ está dada de baja (una comunicación
+// de baja legítima, o una PC con la versión vieja de la app) no resta nada.
+// El par neto es cero en los dos casos; lo que no puede pasar es −X.
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * ¿Esta nota modifica un comprobante que está dado de baja?
+ *
+ * @param m         el movimiento a mirar
+ * @param movsById  Map id → movimiento con TODOS los movimientos (la factura
+ *                  suele ser de otro mes que la nota, así que la lista del
+ *                  período no alcanza para encontrarla)
+ */
+export function notaSinEfecto(m, movsById) {
+  if (!m || !esNota(m) || !m.related_movement_id) return false;
+  const destino = movsById instanceof Map ? movsById.get(m.related_movement_id) : null;
+  if (!destino || destino.deleted_at || esNota(destino)) return false;
+  return destino.payment_status === 'cancelled';
+}
+
+/**
+ * Los movimientos que SUMAN en un reporte de plata: vivos, no dados de baja,
+ * y sin las notas cuya factura está dada de baja.
+ *
+ * @param movs        los que se quieren sumar (pueden ser los del período)
+ * @param referencia  todos los movimientos, o un Map id → movimiento, para
+ *                    encontrar la factura de cada nota. Sin él se usan `movs`.
+ */
+export function movimientosQueCuentan(movs, { referencia = null } = {}) {
+  const lista = Array.isArray(movs) ? movs : [];
+  const porId = referencia instanceof Map
+    ? referencia
+    : new Map((Array.isArray(referencia) ? referencia : lista).filter(Boolean).map(m => [m.id, m]));
+  return lista.filter(m => m && !m.deleted_at && m.payment_status !== 'cancelled' && !notaSinEfecto(m, porId));
+}
+
 /**
  * ¿Esta nota anula por completo la factura que referencia?
  *
