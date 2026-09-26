@@ -14,6 +14,8 @@
 //   3. Determinación rigurosa de bancarización obligatoria multimoneda.
 // ═══════════════════════════════════════════════════════════════════
 
+import { hoyLocal } from './fecha.js';
+
 export const UMBRAL_BANCARIZACION_PEN = 2000;
 export const UMBRAL_BANCARIZACION_USD = 500;
 
@@ -123,7 +125,7 @@ export function registrarTipoCambio(fecha, { compra, venta, fuente = 'manual' })
  * @returns {{ compra: number, venta: number, fecha: string, fuente: string }}
  */
 export function obtenerTipoCambio(fecha, opts = {}) {
-  const f = fecha ? String(fecha).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const f = fecha ? String(fecha).slice(0, 10) : hoyLocal();
   if (CACHE_TC.has(f)) return CACHE_TC.get(f);
 
   // Buscar la fecha anterior más cercana disponible
@@ -143,7 +145,7 @@ export function obtenerTipoCambio(fecha, opts = {}) {
  * Si la red falla o está offline, retorna silenciosamente el fallback local.
  */
 export async function consultarTipoCambioOnline(fecha) {
-  const f = fecha ? String(fecha).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const f = fecha ? String(fecha).slice(0, 10) : hoyLocal();
   if (CACHE_TC.has(f) && CACHE_TC.get(f).fuente !== 'default') {
     return CACHE_TC.get(f);
   }

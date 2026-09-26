@@ -58,8 +58,8 @@ function clasificarRubro(actividadTexto) {
 }
 
 // ── SOAP: enviar comprobante a billService de SUNAT (era /api/sunat-bill) ──
-// Consolidado acá para no exceder el límite de 12 functions del plan
-// Hobby de Vercel. Se diferencia por método HTTP:
+// Consolidado acá por preferencia de multiplexar (la cuenta es Pro; el tope
+// de 12 functions era de Hobby y no aplica). Se diferencia por método HTTP:
 //   GET  /api/sunat?ruc=...        → consulta info de RUC
 //   POST /api/sunat                → envía SOAP envelope al billService
 const BILL_ENDPOINTS = {

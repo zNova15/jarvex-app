@@ -829,7 +829,8 @@ export default async function handler(req, res) {
   }
 
   // ── Acción 'clasificar_costo_gasto': COSTO DE OBRA vs GASTO DE LA EMPRESA.
-  // (Misma función serverless — Vercel Hobby está en 12/12.)
+  // (Misma función serverless — se prefiere multiplexar aunque la cuenta es
+  // Pro y ya no tiene el tope de 12 de Hobby.)
   if (body.action === 'clasificar_costo_gasto') {
     return await clasificarCostoGasto(req, res, apiKey, body);
   }

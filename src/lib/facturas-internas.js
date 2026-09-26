@@ -10,6 +10,7 @@
 import { db, newId, newIdempotencyKey, SYNC_STATUS } from '../db/jarvex.db';
 import { getCurrentMode } from './app-mode-core.js';
 import { derivarTypeContable } from './clasificacion-contable.js';
+import { hoyLocal } from './fecha.js';
 
 const IGV_RATE = 0.18;
 
@@ -65,7 +66,7 @@ export async function generarFacturasInternas(cadena, companies, userId) {
 
   const isPrueba = getCurrentMode() === 'prueba';
   const moneda = cadena.moneda || 'PEN';
-  const fechaBase = cadena.fecha || new Date().toISOString().slice(0, 10);
+  const fechaBase = cadena.fecha || hoyLocal();
 
   // Items: si la cadena tiene `items[]`, usamos cada uno con su precio escalado
   // por el markup acumulado. Si es legacy single-item, generamos uno solo.

@@ -89,7 +89,8 @@ export function clearCuentaPcgeCache() {
 
 // ─────────────────────────────────────────────────────────────
 //  COSTO DE OBRA vs GASTO DE LA EMPRESA (pedido de Gabriel, 31-ago-2026)
-//  Mismo endpoint (action='clasificar_costo_gasto'; Vercel Hobby está 12/12).
+//  Mismo endpoint (action='clasificar_costo_gasto'; se prefiere multiplexar
+//  aunque la cuenta es Pro y ya no tiene el tope de 12 de Hobby).
 //  La respuesta NUNCA se aplica sola: alimenta el override manual que la
 //  contadora confirma (columna clasificacion_manual, mig 163).
 // ─────────────────────────────────────────────────────────────

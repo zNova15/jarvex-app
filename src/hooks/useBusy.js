@@ -39,6 +39,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export function useBusy(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const [busy, setBusyState] = useState(false);
+  const busyRef = useRef(false);
   const safetyTimerRef = useRef(null);
   const mountedRef = useRef(true);
 
@@ -55,6 +56,7 @@ export function useBusy(timeoutMs = DEFAULT_TIMEOUT_MS) {
 
   const setBusy = useCallback((value) => {
     if (!mountedRef.current) return;
+    busyRef.current = value;
     if (safetyTimerRef.current) {
       clearTimeout(safetyTimerRef.current);
       safetyTimerRef.current = null;
@@ -66,6 +68,7 @@ export function useBusy(timeoutMs = DEFAULT_TIMEOUT_MS) {
       safetyTimerRef.current = setTimeout(() => {
         if (mountedRef.current) {
           console.warn('[useBusy] timeout safety triggered after', timeoutMs, 'ms — liberando flag');
+          busyRef.current = false;
           setBusyState(false);
         }
         safetyTimerRef.current = null;
@@ -75,9 +78,12 @@ export function useBusy(timeoutMs = DEFAULT_TIMEOUT_MS) {
 
   // runBusy: wrapper para handlers async. Devuelve una función que se
   // puede pasar directo a onClick. Si está busy, ignora el click.
+  // Guard SÍNCRONO por ref (no por el `busy` de estado): el estado recién
+  // se activa tras el primer `await`, así que dos clicks en la misma
+  // ventana de tiempo pasarían los dos (regla 2 de CLAUDE.md).
   const runBusy = useCallback((handler) => {
     return async (...args) => {
-      if (busy) return; // doble click guard — el primer click sigue ganando
+      if (busyRef.current) return; // doble click guard — el primer click sigue ganando
       setBusy(true);
       try {
         return await handler(...args);
@@ -85,7 +91,7 @@ export function useBusy(timeoutMs = DEFAULT_TIMEOUT_MS) {
         if (mountedRef.current) setBusy(false);
       }
     };
-  }, [busy, setBusy]);
+  }, [setBusy]);
 
   return [busy, runBusy, setBusy];
 }

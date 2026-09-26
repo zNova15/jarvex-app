@@ -2888,66 +2888,6 @@ async function aplicarPullMaster(tabla, dataArr, lastSync, { reconciliar = !last
       if (maxUpd) await setLastSync(tabla, maxUpd, idDelBorde(dataArr, maxUpd));
 }
 
-// Tablas hijas/items que NO tienen columna created_by en el schema —
-// el .neq('created_by', userId) provoca HTTP 400 (column does not exist).
-// Esta lista es solo el seed inicial; tablas nuevas sin created_by se
-// auto-detectan en runtime y se cachean en sync_metadata para no repetir
-// el intento fallido en cada sync.
-const TABLES_WITHOUT_CREATED_BY = new Set([
-  'requisicion_items', 'cotizacion_items', 'oc_items', 'recepcion_items',
-  'valorizacion_partidas', 'valorizacion_adicionales',
-  'charla_asistentes',
-  'insumos_partida', 'insumos_partida_versionadas',
-]);
-
-// Cache en memoria de tablas detectadas en runtime como sin created_by.
-// Se hidrata desde sync_metadata al primer pull para que sobreviva reloads.
-const _runtimeNoCreatedBy = new Set();
-let _noCreatedByHydrated = false;
-
-const NO_CREATED_BY_META_KEY = '_no_created_by_tables';
-
-async function hydrateNoCreatedByCache() {
-  if (_noCreatedByHydrated) return;
-  _noCreatedByHydrated = true;
-  try {
-    const meta = await db.sync_metadata.get(NO_CREATED_BY_META_KEY);
-    const list = meta?.tables;
-    if (Array.isArray(list)) list.forEach(t => _runtimeNoCreatedBy.add(t));
-  } catch (e) {
-    console.warn('[SyncEngine] hydrateNoCreatedByCache:', e?.message || e);
-  }
-}
-
-async function persistNoCreatedByCache() {
-  try {
-    await db.sync_metadata.put({
-      tabla: NO_CREATED_BY_META_KEY,
-      tables: Array.from(_runtimeNoCreatedBy),
-      last_synced_at: new Date().toISOString(),
-    });
-  } catch (e) {
-    console.warn('[SyncEngine] persistNoCreatedByCache:', e?.message || e);
-  }
-}
-
-function isMissingCreatedByError(error) {
-  if (!error) return false;
-  const msg = (error.message || '').toLowerCase();
-  // PostgREST: 42703 = undefined_column. También matcheamos por mensaje
-  // por si el code no llega.
-  return (
-    error.code === '42703' ||
-    msg.includes('column "created_by" does not exist') ||
-    msg.includes("column 'created_by' does not exist") ||
-    (msg.includes('created_by') && msg.includes('does not exist'))
-  );
-}
-
-function tableSkipsCreatedBy(tabla) {
-  return TABLES_WITHOUT_CREATED_BY.has(tabla) || _runtimeNoCreatedBy.has(tabla);
-}
-
 // Reparación única por device (client-side migration). El watermark de pull
 // transaccional se grababa con el RELOJ DEL CLIENTE (new Date()), no con el
 // MAX(updated_at) de lo traído. Un device que avanzó su watermark por delante
@@ -3140,7 +3080,6 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
   const userId = (await supabase.auth.getSession())?.data?.session?.user?.id;
   if (!userId) return;
 
-  await hydrateNoCreatedByCache();
   if (!saltarReparaciones) {
     // Cura una vez los devices con watermark transaccional "envenenado".
     await repairTransactionalWatermarksOnce();
@@ -3148,7 +3087,6 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
     await repairPersonalChecksOnce();
     await repairAccountingPaymentStatusOnce();
   }
-  let cacheChanged = false;
 
   // Solo las transaccional-only: las demás ya las bajó el pull MASTER (una
   // tabla, un watermark, una consulta por ciclo).
@@ -3194,7 +3132,6 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
     // guard por-registro de abajo (skip si sync_status !== synced) ya protege
     // las ediciones locales no sincronizadas, y la RLS del server es la fuente
     // de verdad de visibilidad.
-    const skipCreatedBy = tableSkipsCreatedBy(tabla);
     // buildQuery devuelve un query nuevo en cada página (fetchAllRows lo
     // re-ejecuta con distintos .range()).
     const buildQuery = () => baseQuery();
@@ -3208,18 +3145,6 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
       console.warn(`[SyncEngine] pull tx ${tabla}: cursor compuesto rechazado (${error.message}) → repliegue a .gte`);
       lastSyncId = null;
       ({ data, error } = await fetchAllRows(buildQuery));
-    }
-
-    // Auto-retry: si el error es por columna created_by inexistente,
-    // reintentamos sin el filtro y cacheamos el resultado para futuras syncs.
-    if (error && !skipCreatedBy && isMissingCreatedByError(error)) {
-      console.warn(
-        `[SyncEngine] pull ${tabla}: columna created_by ausente — ` +
-        `reintentando sin filtro y cacheando.`
-      );
-      _runtimeNoCreatedBy.add(tabla);
-      cacheChanged = true;
-      ({ data, error } = await fetchAllRows(baseQuery));
     }
 
     // Antes el error se tragaba sin rastro (la ruta master sí lo registraba):
@@ -3257,8 +3182,6 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
      continue;
    }
   }
-
-  if (cacheChanged) await persistNoCreatedByCache();
 }
 
 // Aplica a Dexie el resultado de un pull TRANSACCIONAL (venga del REST por-tabla
@@ -3374,7 +3297,6 @@ async function pullConsolidado() {
   // Reparaciones one-shot ANTES de leer watermarks: pueden resetearlos, y esas
   // tablas deben ir al full pull legacy en ESTE mismo ciclo.
   await repairMasterFinanceWatermarksOnce();
-  await hydrateNoCreatedByCache();
   await repairTransactionalWatermarksOnce();
   await limpiarFantasmas();
   await repairPersonalChecksOnce();

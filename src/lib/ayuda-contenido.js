@@ -263,7 +263,7 @@ const AYUDA = {
     'EL EXCEL TRAE TODO (8-set): «Exportar Excel» ahora incluye el almacén de SALIDA y el de LLEGADA por separado (un traspaso tiene los dos y antes salía uno solo), el frente, la unidad y la marca, el documento, quién registró la fila y si el movimiento fue REVERTIDO — un reverso que salía igual que un movimiento vigente se sumaba dos veces.',
   ] },
   'caja-chica': { titulo: 'Caja Chica', que: 'El fondo para compras urgentes que maneja la almacenera: ingresos de fondo, gastos y el saldo que va quedando.', como: [
-    'Registrá cada gasto con su comprobante; rendí la caja al cerrarla.',
+    'Registrá cada gasto con su comprobante. No hay cierre ni rendición periódica: el saldo se calcula siempre acumulado, movimiento por movimiento.',
     'LA FOTO DEL GASTO (8-set): en la columna «Respaldo» de cada fila, el botón 📷 adjunta la boleta, la factura o una foto del gasto. Acepta IMAGEN o PDF (hasta 10 MB) y se pueden adjuntar varios. Antes solo se anotaba el número de la boleta a mano y el papel no quedaba en ningún lado: al cerrar la caja no había con qué cotejar.',
     'Quién ve esos archivos: almacén (que lleva la caja), contabilidad, tesorería, administración y gerencia. No los ven los ingenieros ni el personal de campo.',
     'EXPORTAR EXCEL (8-set): el botón de arriba baja el libro completo con el SALDO ACUMULADO fila por fila —la columna que la pantalla calculaba y el archivo no tenía—, quién registró cada movimiento y si tiene respaldo adjunto.',
@@ -541,7 +541,11 @@ const AYUDA = {
       admin: 'Igual que la Contadora Jefe: "Cambiar", ✕ en pagos registrados, bandeja "Sin clasificar" y edición de la vinculación (obra / Gastos Generales / Contabilidad Neta) desde Editar Movimiento.',
     },
   },
-  'conciliacion-insumos': { titulo: 'Conciliación de Insumos', que: 'Cruce entre lo comprado (facturas) y lo ingresado al almacén.', como: ['Las diferencias señalan compras sin ingreso o ingresos sin factura.'] },
+  'conciliacion-insumos': { titulo: 'Conciliación de Insumos', que: 'Cruza las TRES fuentes del mismo insumo: PRESUPUESTO, FACTURAS y lo INGRESADO al almacén.', como: [
+    'DOS PESTAÑAS por rol: «Por Presupuesto» (solo para quien vincula ítem de factura ↔ insumo del presupuesto, con auto-sugerencia por similitud) e «Insumos Comprados», donde el contador clasifica el DESTINO de cada ítem: 🏗 Obra, 🍽 Obra — gasto general, o 🏢 Empresa (general). Solo lo destinado a "Obra" cuenta contra el presupuesto.',
+    'El Ayudante de Contabilidad no cambia el destino directo: pide el cambio con "Solicitar cambio de vinculación" y lo aplica la jefe o el admin.',
+    'EXPORTAR EXCEL exporta el filtro actual (búsqueda + fechas + categoría) en 2 hojas: "Sin vincular" y "Vinculados".',
+  ] },
   'pagos': {
     titulo: 'Pagos a Personal',
     que: 'Los pagos al PERSONAL y a subcontratos: sueldos de planilla, recibos por honorarios y sus transferencias parciales, con historial por cada persona. NO es donde se pagan las facturas de proveedores.',
@@ -551,6 +555,7 @@ const AYUDA = {
       'PESTAÑA 📄 RECIBOS: todos los pagos en una sola lista estilo facturas, filtrable por EMPRESA pagadora, MES, forma de pago y búsqueda por palabras (trabajador, concepto, serie). Arriba ves el total acordado y pagado del filtro — ideal para ver, por ejemplo, "los recibos de Junio de CONSORCIO EL INCA".',
       'EMPRESA PAGADORA: los recibos nuevos de Captura Mágica ya la traen sola (el receptor del recibo). Los pagos VIEJOS nacieron sin empresa — el botón "⚠ N sin empresa — clasificar" te los muestra y les asignás la suya con el selector de la fila (una sola vez).',
       'Dentro del pago todo va separadito: 1️⃣ el DOCUMENTO del pago (recibo por honorarios o boleta/planilla firmada) y 2️⃣ cada TRANSFERENCIA con su constancia adjunta.',
+      'Cada transferencia (si no es en efectivo) pide "Sale de la cuenta": si no la sabés al registrarla, dejala en «— la elijo al conciliar —» y se completa sola al conciliar el extracto en Movimientos Bancarios. Sin esa cuenta, el pago no aparece en el estado de cuenta de la empresa.',
       'Solo aparece personal ACTIVO y que no sea de subcontratos: a la gente de un subcontrato le paga su subcontratista — el pago va al SUBCONTRATO en su pestaña (los subcontratistas sin contrato formal también aparecen ahí).',
       'El historial por persona (con Σ total pagado) queda como base de datos de todo lo pagado; el personal inactivado conserva su historial en la sección de abajo.',
       'Los recibos por honorarios subidos por Captura Mágica ya crean acá el pago del trabajador con su recibo adjunto — solo te falta agregar la(s) transferencia(s)/voucher(s) hasta cubrir el total.',
@@ -560,7 +565,7 @@ const AYUDA = {
     rol: { ayudante_contador: 'Podés registrar pagos y subir recibos por honorarios y constancias. Los recibos y constancias son material contable: solo contabilidad y admin los ven en Evidencias.' },
   },
   'cont-dashboard': { titulo: 'Dashboard Contable', que: 'Resumen financiero del grupo: ingresos, egresos y pendientes por empresa.', como: [
-    'Es la portada de contabilidad; cada indicador baja a su libro o listado.',
+    'Es la portada de contabilidad: un resumen de solo lectura. Los indicadores no llevan a su libro o listado — para el detalle, entrá por el menú de la empresa (Libro diario, Comprobantes, etc.).',
     'SI ENTRASTE DESDE UNA EMPRESA (4-sep), este tablero es SOLO de ella: el desplegable de empresa queda clavado y arriba hay un cartel que dice en cuál estás. Para ver los números del grupo, volvé al Panel de la empresa («Volver a la empresa» en ese cartel) y salí con «Volver a Empresas».',
     'COSTOS vs GASTOS (31-ago): la tarjeta "Gastos" dejó de estar en cero. Los comprobantes vinculados a "Gastos Generales de la Empresa" ahora cuentan como GASTO y salieron de "Costos" — la suma Costos + Gastos y la utilidad NO cambian, cambia el reparto entre las dos tarjetas.',
     'INGRESOS SIN SUSTENTO: cuando almacén registra un material sin factura, aparece acá para vincularlo. Al tocar "Vincular factura", arriba salen las 🎯 SUGERENCIAS: las facturas que CUADRAN con ese ingreso (mismo insumo, fecha cercana, cantidad parecida) con su % de coincidencia, el ítem exacto de la factura y el porqué — elegí la correcta con un click y el ítem queda marcado como recibido. Abajo está el resto de facturas del proveedor (con sus ítems visibles) para elegir a mano si ninguna sugerencia aplica.',
@@ -630,7 +635,7 @@ const AYUDA = {
   'intercompany': { titulo: 'Operaciones entre Empresas', que: 'Las operaciones INTERCO: ventas/compras entre empresas del propio grupo.', como: [
     'Los movimientos INTERCO se editan en Movimientos Contables, como cualquier otro. Antes esta pantalla decía lo contrario y era imposible: solo muestra las operaciones REGISTRADAS acá, y por eso 171 comprobantes marcados INTERCO quedaban sin poder editarse en ningún lado. Lo que sí se bloquea, y con razón, es un comprobante que ya sea una de las dos patas de una operación registrada en esta pantalla: ese se toca acá para que los dos lados se muevan juntos.',
     'DENTRO DE UNA EMPRESA (4-sep) se ven solo las operaciones EN LAS QUE ELLA PARTICIPA, compre o venda: una operación interna tiene dos dueños y cuenta para los dos. Al crear una nueva, la empresa del contexto viene puesta como vendedora.',
-    'DÓNDE ESTÁ (4-sep, tanda 4): se mudó del bloque general de Contabilidad al menú del trabajo, dentro de «Movimientos y contabilidad de la obra» — una jugada intercompany se ARMA para una obra concreta, no para el grupo. El panel de cada empresa la sigue mostrando (lo que ella participó), y en el bloque general quedan Consolidado y Resumen por entidad.',
+    'DÓNDE ESTÁ (4-sep, tanda 4): se mudó del bloque general de Contabilidad al menú del trabajo, dentro de «Movimientos y contabilidad de la obra» — por dónde se navega, no por qué obra es: la pantalla no filtra ni guarda ninguna obra, solo empresas. El panel de cada empresa la sigue mostrando (lo que ella participó), y en el bloque general quedan Consolidado y Resumen por entidad.',
   ] },
   'trazabilidad': {
     titulo: 'Trazabilidad de insumos (cadenas) de la obra',
@@ -650,7 +655,7 @@ const AYUDA = {
   ] },
   'consolidado': { titulo: 'Consolidado del grupo', que: 'El estado de resultados del grupo entero contra el mundo de afuera: se eliminan las facturas que las entidades del grupo se hacen entre ellas.', como: ['Se lee de izquierda a derecha: "Suma de libros" cuenta cada factura interna tantas veces como entidades la tocaron; "Eliminaciones" saca esos pares; "Consolidado" es lo que el grupo movió con clientes y proveedores de afuera.', 'Una eliminación es un PAR: el ingreso del vendedor contra el costo del comprador. Si a una operación interna le falta el lado del comprador, sale listada abajo con su número de documento — el total del grupo está bien igual, lo que falta es cargar ese libro.', 'El perímetro incluye a los consorcios: una venta de una empresa del grupo al consorcio que ejecuta la obra también se elimina.', 'MANDA EL CATÁLOGO, NO LA CASILLA: si una empresa está marcada "tercero" en Empresas, sus libros NO se consolidan y las facturas que el grupo le emitió cuentan como venta externa, aunque alguien las haya marcado "operación interna". Esas facturas se listan en el recuadro azul para que se vean. Al revés también: para meter una entidad al grupo se la marca en Empresas → Revisar clasificación, no factura por factura.', 'Si el ingreso externo es mucho menor que el costo externo, casi siempre faltan cargar las valorizaciones al cliente final — no es que el grupo haya perdido esa plata.'] },
   'cuentas-bancarias': { titulo: 'Cuentas Bancarias', que: 'Las cuentas del grupo y sus movimientos bancarios.', como: ['Las cuentas bancarias del PERSONAL las registra contabilidad (administrador, contadora y asistentes) desde el 25-set. Antes alcanzaba con el permiso de Personal.', 
-    'Mantené los saldos al día para que el flujo de caja sea confiable.',
+    'El saldo de cada cuenta NO se edita a mano: se deriva de saldo_inicial + la suma de sus movimientos bancarios. Para que sea confiable, cargá los movimientos (o concilialos) en vez de tocar el saldo.',
     'ACÁ SE CREAN LAS CUENTAS: botón "Nueva Cuenta" arriba a la derecha (y también en el estado vacío). El panel de una empresa las MUESTRA; el alta vive acá, junto con los movimientos y la conciliación.',
     'SI VENÍS DESDE UNA EMPRESA (4-sep): la lista muestra solo las suyas, el cartel de arriba dice en cuál estás y la cuenta nueva se crea a su nombre sin que puedas elegir otra por error. Se sale desde el Panel de la empresa, con «Volver a Empresas».',
     'La pestaña "Personal (trabajadores)" es otra tabla: son las cuentas de abono de la gente (sueldo, CTS) y NO entran al flujo de caja de la empresa.',
@@ -668,7 +673,10 @@ const AYUDA = {
       'Una constancia se cruza con UNA sola línea: el servidor rechaza contarla dos veces. Si te equivocaste, "Deshacer el cruce" la libera.',
     ],
   },
-  'flujo-caja': { titulo: 'Flujo de Caja / Pagos', que: 'Entradas y salidas de dinero por empresa, con cronograma de pagos.', como: ['Programá los pagos por vencer y marcalos al ejecutarlos.'] },
+  'flujo-caja': { titulo: 'Flujo de Caja / Pagos', que: 'Entradas y salidas de dinero por empresa, con cronograma de pagos.', como: [
+    'Programá los pagos por vencer con su fecha. El estado "vencido" se calcula solo — un pago programado cuya fecha ya pasó pasa a vencido sin que nadie lo toque.',
+    '"Marcar como pagado" pide primero la cuenta de origen: registra un retiro en Cuentas Bancarias y lo enlaza al movimiento contable — no es solo cambiar una etiqueta.',
+  ] },
   'flujo-proyectado': { titulo: 'Flujo de Caja Proyectado', que: 'La proyección de caja de las próximas semanas por empresa.', como: ['Se alimenta del cronograma de pagos y las cobranzas esperadas.'] },
   'plan-cuentas': {
     titulo: 'Plan de Cuentas (PCGE)',
@@ -867,7 +875,7 @@ const AYUDA = {
     'LO QUE MARCÁS GOBIERNA LAS TRES EXPORTACIONES, no solo el .zip: el Excel y el PDF también salen con la selección, y el archivo lo dice adentro («Selección: 12 de 120 comprobantes»). Un papel que sale filtrado sin decirlo se lee como el registro completo del mes.',
     'LA HOJA QUE ESTÁS MIRANDO ES EL LIBRO QUE SE GENERA: compras → RCE (080400), ventas → RVIE (140400). No hay un segundo selector de libro porque sería el mismo dato elegido dos veces. Antes de bajar el .zip podés bajar el «TXT de comprobación» para leer con qué se va a presentar. Si la empresa no tiene RUC de 11 dígitos, el archivo no se genera: SUNAT no lo acepta sin eso.',
   ] },
-  'config-sunat': { titulo: 'Configuración SUNAT', que: 'Credenciales y parámetros de conexión con SUNAT.', como: ['Solo el admin debería tocar esto; un dato mal puesto rompe las consultas.'] },
+  'config-sunat': { titulo: 'Configuración SUNAT', que: 'El certificado digital (.pfx) y las credenciales SOL para EMITIR comprobantes electrónicos propios — no afecta las consultas de RUC ni el cotejo con SUNAT, que no usan esto.', como: ['La emisión electrónica propia es un pendiente a futuro (ver la ayuda de Comprobantes): completar esto no hace que la app emita sola todavía.', 'El certificado se guarda cifrado (PBKDF2 + AES-GCM) con un "master password" que se pide cada sesión — nunca en texto plano.'] },
   'comparativo-periodos': { titulo: 'Comparativo de Periodos', que: 'Compara los números contables entre dos periodos.', como: ['Ideal para detectar saltos raros de un mes a otro.'] },
 
   // ── SSOMA / ESPECIALIDADES ───────────────────────────────────────
@@ -951,7 +959,7 @@ const AYUDA = {
   'frentes': { titulo: 'Frentes de Trabajo', que: 'Los frentes de la obra y qué personal/partidas tiene cada uno.', como: ['Asigná ingenieros y partidas a cada frente para ordenar la reportería.'] },
   'asistencia': { titulo: 'Asistencia', que: 'El control diario de asistencia del personal, con foto/lista.', como: ['Registrá la asistencia del día; la foto de la lista queda como evidencia.'] },
   'personal-contratos': { titulo: 'Contratos Laborales', que: 'Los contratos del personal y sus vigencias.', como: ['Cargá el contrato firmado y su vigencia para el control de vencimientos.'] },
-  'planillas': { titulo: 'Planillas / Sueldos', que: 'El cálculo y pago de planillas del personal.', como: ['Generá la planilla del periodo y registrá los pagos con constancia.', 'DOS VISTAS. Dentro de un TRABAJO: las planillas de ese trabajo, y acá se crean y se calculan (es donde están la asistencia y los contratos). Desde la contabilidad de una EMPRESA: TODAS las planillas donde esa empresa es la EMPLEADORA, sumando todos sus trabajos, con la columna Trabajo en cada fila — esa vista es de lectura y no tiene el botón «Nueva Planilla».'] },
+  'planillas': { titulo: 'Planillas / Sueldos', que: 'El cálculo de planillas del personal.', como: ['Generá la planilla del periodo. Hoy esta pantalla no registra el pago ni su constancia — solo el cálculo y su estado.', 'DOS VISTAS. Dentro de un TRABAJO: las planillas de ese trabajo, y acá se crean y se calculan (es donde están la asistencia y los contratos). Desde la contabilidad de una EMPRESA: TODAS las planillas donde esa empresa es la EMPLEADORA, sumando todos sus trabajos, con la columna Trabajo en cada fila — esa vista es de lectura y no tiene el botón «Nueva Planilla».'] },
   'cts': { titulo: 'CTS', que: 'El control de depósitos CTS del personal.', como: ['Calculá y registrá los depósitos semestrales con su constancia.'] },
   'gratificaciones': { titulo: 'Gratificaciones', que: 'El cálculo de gratificaciones de julio y diciembre.', como: ['Generá el cálculo del periodo y registrá el pago.'] },
   'plame': { titulo: 'PLAME / T-Registro', que: 'La información para las declaraciones laborales SUNAT.', como: ['Mantené el T-Registro al día con altas y bajas del personal.'] },

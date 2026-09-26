@@ -29,6 +29,7 @@ import { EmpresaDetalle } from "./jx-empresa-detalle.jsx";
 import { RevisionFacturasModal } from "./jx-revision-facturas.jsx";
 import { revisarLote as revisarLoteLib, resumenRevision as resumenRevisionLib, claveDescarte as claveDescarteRev } from "../lib/revision-facturas.js";
 import { ClasificarEntidadesModal } from "./jx-clasificar-entidades.jsx";
+import { VisorComprobanteModal } from "./jx-visor-comprobante.jsx";
 import { rolDeCompanyEnObra, titularContableDeObra } from "../lib/consorcio.js";
 import { comprobantesImputacionCruzada } from "../lib/imputacion-cruzada.js";
 import { impactoDeReclasificar, movimientosADesmarcar, avisoDeReclasificacion } from "../lib/reclasificar-entidad.js";
@@ -1596,7 +1597,7 @@ function MovimientosContablesPage({ showToast }) {
           const target = esDeposito ? mapDep : (esBanc ? mapBanc : (esDetr ? mapDetr : map));
           if (target.has(ev.registro_relacionado_id)) continue;
           // Solo METADATOS. El archivo (blob local o signed URL del bucket
-          // privado) lo resuelve VisorEvidenciaModal al abrirlo: firmar acá las
+          // privado) lo resuelve VisorComprobanteModal al abrirlo: firmar acá las
           // 1.302 evidencias era lo que dejaba la tabla sin ojos por minutos.
           target.set(ev.registro_relacionado_id, {
             ev,                     // la evidencia cruda: con esto se firma después
@@ -4563,7 +4564,7 @@ function MovimientosContablesPage({ showToast }) {
           es la excepción: llega con `url` ya resuelta y `_blob`, y ese objectURL
           se revoca al cerrar (lo creó quien abrió la guía, no el visor). */}
       {evidenciaModal && (
-        <VisorEvidenciaModal entry={evidenciaModal}
+        <VisorComprobanteModal entry={evidenciaModal}
           onClose={() => { guiaBlobRef.current = null; setEvidenciaModal(null); }} />
       )}
 
@@ -8053,105 +8054,9 @@ function CerrarSinFacturaModal({ mov, matName, onClose, onConfirm }) {
 }
 
 
-// Visor de PDF robusto: muchos PDFs viejos se subieron con content-type
-// genérico (octet-stream) y el iframe directo mostraba un recuadro GRIS.
-// Se re-tipa vía blob local (application/pdf) — el navegador siempre lo
-// renderiza; si ni así, queda el aviso + "Abrir en nueva pestaña".
-function PdfFrame({ url, nombre }) {
-  const [src, setSrc] = uSC(null);
-  const [err, setErr] = uSC(false);
-  uEC(() => {
-    let obj = null, cancel = false;
-    (async () => {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const buf = await resp.arrayBuffer();
-        obj = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
-        if (cancel) { URL.revokeObjectURL(obj); obj = null; return; }
-        setSrc(obj);
-      } catch { if (!cancel) setErr(true); }
-    })();
-    return () => { cancel = true; if (obj) { try { URL.revokeObjectURL(obj); } catch {} } };
-  }, [url]);
-  if (err) return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: 10, color: 'var(--tm)' }}>
-      <JxIcon name="file" size={40} />
-      <div style={{ fontSize: 12 }}>No se pudo previsualizar {nombre || 'el PDF'} acá.</div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="btn btn-amber btn-sm">Abrir en nueva pestaña</a>
-    </div>
-  );
-  if (!src) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: 'var(--tm)', fontSize: 12 }}>Cargando PDF…</div>;
-  return <iframe src={src} title={nombre || 'PDF'} style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }} />;
-}
-
-// ─── Visor de un comprobante — firma el archivo AL ABRIRLO ───────────
-// El `entry` viene de los mapas de evidencias (evidenciasPorMov y compañía),
-// que ahora guardan SOLO metadatos: `{ ev, mime, nombre, sync }`. La URL
-// mostrable (blob local o signed URL del bucket privado) se resuelve acá, en el
-// único momento en que hace falta de verdad: cuando alguien abre el documento.
-// Así el 👁 de cada fila aparece al instante en vez de esperar a que se firmen
-// las 1.302 evidencias de la base (ver el comentario del loader).
-//
-// También acepta un `entry` que YA trae `url` (la guía de remisión la abre así,
-// con `_blob`): en ese caso no firma nada y respeta el revoke de siempre.
-function VisorEvidenciaModal({ entry, onClose }) {
-  const [url, setUrl] = uSC(entry?.url || null);
-  const [error, setError] = uSC(false);
-  const propioBlobRef = uRC(null);   // objectURL creado ACÁ (hay que revocarlo)
-  uEC(() => {
-    if (entry?.url) { setUrl(entry.url); return; }
-    let cancel = false;
-    (async () => {
-      try {
-        const src = await getEvidenciaSrc(entry?.ev);
-        if (!src?.url) { if (!cancel) setError(true); return; }
-        if (cancel) { if (src.isBlob) { try { URL.revokeObjectURL(src.url); } catch {} } return; }
-        if (src.isBlob) propioBlobRef.current = src.url;
-        setUrl(src.url);
-      } catch { if (!cancel) setError(true); }
-    })();
-    return () => { cancel = true; };
-  }, [entry]);   // eslint-disable-line react-hooks/exhaustive-deps
-  // Revocar SOLO lo que creó este visor. Los objectURL que llegan de afuera
-  // (la guía, con `_blob`) los sigue administrando quien los creó.
-  uEC(() => () => {
-    if (propioBlobRef.current) { try { URL.revokeObjectURL(propioBlobRef.current); } catch {} }
-  }, []);
-  const cerrar = () => {
-    if (entry?._blob && entry?.url) { try { URL.revokeObjectURL(entry.url); } catch {} }
-    onClose?.();
-  };
-  return (
-    <Modal title={`Comprobante: ${entry?.nombre || ''}`} icon="eye" onClose={cerrar} wide elevated>
-      <div style={{ minHeight: 480, maxHeight: '70vh', background: 'var(--bg-p)', borderRadius: 6, overflow: 'hidden' }}>
-        {error ? (
-          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'60vh', gap:8, color:'var(--tm)', fontSize:12 }}>
-            <JxIcon name="file" size={40}/>
-            <div>No se pudo abrir el archivo. Si acaba de subirse, probá en un minuto.</div>
-          </div>
-        ) : !url ? (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'60vh', color:'var(--tm)', fontSize:12 }}>
-            Abriendo el comprobante…
-          </div>
-        ) : entry?.mime?.startsWith('image/') ? (
-          <img src={url} alt={entry?.nombre || ''}
-            style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}/>
-        ) : (
-          <PdfFrame url={url} nombre={entry?.nombre} />
-        )}
-      </div>
-      <div className="modal-actions">
-        {url && (
-          <a href={url} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm">
-            <JxIcon name="external" size={12}/> Abrir en nueva pestaña
-          </a>
-        )}
-        <button className="btn btn-amber btn-sm" onClick={cerrar}>Cerrar</button>
-      </div>
-    </Modal>
-  );
-}
+// El visor de un comprobante (antes duplicado acá como PdfFrame +
+// VisorEvidenciaModal) vive en jx-visor-comprobante.jsx desde el 22-set-2026,
+// compartido con Anticipos y Cotejo/Escáner SUNAT — ver VisorComprobanteModal.
 
 // ╔════════════════════════════════════════════════════════════╗
 // ║  CONTABILIDAD DEL GRUPO — el bloque principal (tanda 2D)    ║

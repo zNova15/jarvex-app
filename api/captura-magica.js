@@ -4,7 +4,9 @@
 //         tipo?: 'certificado_calidad', requisito?: { insumo, norma?, especificacion } }
 // Returns: { extracted: {...}, model, usage, engine, ... }
 //
-// MULTIPLEXADO (límite 12/12 funciones en Vercel Hobby — no crear endpoints):
+// MULTIPLEXADO (la cuenta es Pro, el tope de 12 funciones era de Hobby y no
+// aplica; se prefiere multiplexar igual: menos superficie que autenticar y
+// menos lugares donde se pueden quemar créditos de IA):
 //   - default: parser de comprobantes/guías peruanos (flujo original intacto).
 //   - tipo 'certificado_calidad' (Fase 4 Gestión Calidad): compara un
 //     certificado de calidad/ficha técnica contra el requisito del expediente
@@ -250,7 +252,7 @@ import { modeloOcr, textoPaginadoSctr } from '../lib/mistral-ocr.js';
 import { resolverOcr, resolverTexto } from '../lib/modelos-ia.js';
 
 // El híbrido encadena 2 upstreams (Mistral OCR + Claude). Damos margen explícito
-// para que el peor caso no lo mate el default de la plataforma (~10s en Hobby).
+// para que el peor caso no lo mate el default de la plataforma.
 export const maxDuration = 60;
 
 // ── Anthropic Messages con retry+backoff respetando un deadline compartido ──

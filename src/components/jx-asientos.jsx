@@ -28,38 +28,9 @@ import { getEvidenciaSrc } from "../lib/evidencias-url.js";
 import { fmtFechaLarga, ymdDe } from "../lib/fecha.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { VisorComprobanteModal } from "./jx-visor-comprobante.jsx";
 
 const { useState: uS, useMemo: uM, useEffect: uE, useRef: uR } = React;
-
-// Visor de PDF robusto (copia local del patrón de jx-contabilidad): PDFs
-// subidos con content-type genérico se re-tipan vía blob para que el iframe
-// siempre los renderice.
-function PdfFrameLD({ url, nombre }) {
-  const [src, setSrc] = uS(null);
-  const [err, setErr] = uS(false);
-  uE(() => {
-    let obj = null, cancel = false;
-    (async () => {
-      try {
-        const resp = await fetch(url);
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const buf = await resp.arrayBuffer();
-        obj = URL.createObjectURL(new Blob([buf], { type: 'application/pdf' }));
-        if (cancel) { URL.revokeObjectURL(obj); obj = null; return; }
-        setSrc(obj);
-      } catch { if (!cancel) setErr(true); }
-    })();
-    return () => { cancel = true; if (obj) { try { URL.revokeObjectURL(obj); } catch {} } };
-  }, [url]);
-  if (err) return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: 10, color: 'var(--tm)' }}>
-      <div style={{ fontSize: 12 }}>No se pudo previsualizar {nombre || 'el PDF'} acá.</div>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="btn btn-amber btn-sm">Abrir en nueva pestaña</a>
-    </div>
-  );
-  if (!src) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: 'var(--tm)', fontSize: 12 }}>Cargando PDF…</div>;
-  return <iframe src={src} title={nombre || 'PDF'} style={{ width: '100%', height: '70vh', border: 'none', background: 'white' }} />;
-}
 
 // ─── Helpers ─────────────────────────────────────────────────
 const fmtS = (n) =>
@@ -1906,21 +1877,12 @@ function LibroDiarioPage({ showToast }) {
         </div>
       )}
 
-      {/* Visor del comprobante (mismo material que el ojo 👁 de Movimientos) */}
-      {visor && window.Modal && (
-        <window.Modal title={`Comprobante: ${visor.nombre}`} icon="eye" onClose={cerrarVisor} wide>
-          <div style={{ textAlign: 'center' }}>
-            {visor.mime?.startsWith('image/') ? (
-              <img src={visor.url} alt={visor.nombre} style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 8 }} />
-            ) : (
-              <PdfFrameLD url={visor.url} nombre={visor.nombre} />
-            )}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-            <a href={visor.url} target="_blank" rel="noopener noreferrer" className="btn btn-ghost btn-sm">Abrir en pestaña</a>
-            <button className="btn btn-amber btn-sm" onClick={cerrarVisor}>Cerrar</button>
-          </div>
-        </window.Modal>
+      {/* Visor del comprobante — compartido con Movimientos/Anticipos/Cotejo
+          (jx-visor-comprobante.jsx, 22-set-2026). `cerrarVisor` ya revoca el
+          blob propio antes de limpiar `visor`; el visor comparte esa entry
+          ya resuelta, así que no vuelve a firmar nada. */}
+      {visor && (
+        <VisorComprobanteModal entry={visor} onClose={cerrarVisor} />
       )}
 
       {editando && (

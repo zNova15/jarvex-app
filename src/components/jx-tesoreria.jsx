@@ -2,6 +2,7 @@ import React from "react";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
 import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { hoyLocal } from "../lib/fecha.js";
 import {
   nombreCuenta, saldoCorrido, cuadreDeCuenta, totales, agruparPorEntidad,
   pendientesDeJarvex, sugerirCruces, parsearExtracto,
@@ -537,7 +538,7 @@ function FlujoCajaPage({ showToast }) {
   // Auto-calcular vencidos
   uE(() => {
     if (!pagos) return;
-    const hoy = new Date().toISOString().slice(0,10);
+    const hoy = hoyLocal();
     pagos.filter(p => p.estado === 'programado' && p.fecha_programada < hoy).forEach(async p => {
       try {
         await window.__db.cronograma_pagos.update(p.id, {
@@ -558,9 +559,9 @@ function FlujoCajaPage({ showToast }) {
 
   // KPIs próximas 4 semanas
   const flujoProx = uM(() => {
-    const hoy = new Date();
-    const en4Semanas = new Date(hoy.getTime() + 28*86400000).toISOString().slice(0,10);
-    const proximos = (pagos||[]).filter(p => p.estado === 'programado' && p.fecha_programada >= hoy.toISOString().slice(0,10) && p.fecha_programada <= en4Semanas);
+    const hoy = hoyLocal();
+    const en4Semanas = new Date(Date.now() + 28*86400000).toISOString().slice(0,10);
+    const proximos = (pagos||[]).filter(p => p.estado === 'programado' && p.fecha_programada >= hoy && p.fecha_programada <= en4Semanas);
     const vencidos = (pagos||[]).filter(p => p.estado === 'vencido');
     return {
       proximos: proximos.reduce((s,p) => s + Number(p.monto||0), 0),
@@ -575,7 +576,7 @@ function FlujoCajaPage({ showToast }) {
     setForm({
       company_id: companies[0].id,
       cuenta_id: '',
-      fecha_programada: new Date().toISOString().slice(0,10),
+      fecha_programada: hoyLocal(),
       monto: '',
       moneda: 'PEN',
       beneficiario: '',
@@ -632,7 +633,7 @@ function FlujoCajaPage({ showToast }) {
       await window.__db.movimientos_bancarios.add({
         id: movId,
         cuenta_id: p.cuenta_id,
-        fecha: new Date().toISOString().slice(0,10),
+        fecha: hoyLocal(),
         tipo: 'retiro',
         monto: -Math.abs(Number(p.monto)),
         descripcion: `Pago: ${p.concepto || 'Pago programado'} a ${p.beneficiario || ''}`,
@@ -1039,7 +1040,7 @@ function MovimientosBancariosPage({ showToast }) {
       await window.__db.movimientos_bancarios.add({
         id,
         cuenta_id: form.cuenta_id,
-        fecha: form.fecha || new Date().toISOString().slice(0, 10),
+        fecha: form.fecha || hoyLocal(),
         tipo: form.tipo || (signo > 0 ? 'deposito' : 'retiro'),
         monto: signo * Math.abs(monto),
         descripcion: (form.descripcion || '').trim() || null,
@@ -1195,7 +1196,7 @@ function MovimientosBancariosPage({ showToast }) {
     const cta = unaSolaCuenta?.id || cuentasDelTitular[0]?.id || '';
     if (!cta) { showToast('Esta entidad todavía no tiene cuentas bancarias', 'red'); return; }
     setForm({
-      cuenta_id: cta, fecha: new Date().toISOString().slice(0, 10),
+      cuenta_id: cta, fecha: hoyLocal(),
       sentido: 'salida', tipo: 'retiro', monto: '', descripcion: '',
       contraparte: '', referencia: '', saldo_extracto: '',
     });

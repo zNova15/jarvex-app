@@ -287,7 +287,10 @@ export function detectarAnticipos(movimientos, { companyId = null, demo = false 
  *
  * Sin UNIQUE en la tabla (mig 207, por lo de siempre: dos PCs offline), así
  * que el duplicado benigno se resuelve al leer: 'manual' pisa a 'propuesta' y,
- * a igual fuente, gana la más reciente.
+ * a igual fuente, gana la más reciente. Hoy (26-set-2026) ningún caller
+ * escribe `fuente:'propuesta'` — todos mandan 'manual' — así que el rango
+ * de abajo es defensivo por si vuelve un flujo de propuesta automática, no
+ * código muerto para borrar.
  */
 export function resolverAplicaciones(filas, { demo = false } = {}) {
   const porPar = new Map();
