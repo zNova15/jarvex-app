@@ -121,6 +121,27 @@ export async function guardarCorte({ companyId, periodo, libro, archivo, resumen
 }
 
 /**
+ * Reescribe SOLO el resumen de un corte que ya está guardado («Volver a
+ * cotejar»). Las filas del archivo no cambiaron —lo que cambió son los
+ * movimientos—, así que no se vuelven a subir: antes cada recotejo creaba un
+ * corte nuevo con todas las filas del CSV y daba de baja el anterior, y
+ * `sunat_cortes` acumulaba copias muertas del mismo archivo (tanda F).
+ */
+export async function actualizarResumenCorte(id, resumen, userId) {
+  const esPrueba = esModoPrueba();
+  const prev = await db.sunat_cortes.get(id);
+  if (!prev || prev.deleted_at) return false;
+  await db.sunat_cortes.update(id, parcheUpdate({
+    resumen: resumen || {},
+    total: resumen?.total ?? 0,
+    cuadran: resumen?.cuadran ?? 0,
+    brecha: resumen?.brecha ?? 0,
+  }, prev, esPrueba, userId));
+  avisarCambio('sunat_cortes');
+  return true;
+}
+
+/**
  * Da de baja un corte: el mes vuelve a quedar sin archivo cargado.
  *
  * Hace falta porque el corte ya no es una cuenta que se pisa sola — ahora

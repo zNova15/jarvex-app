@@ -175,3 +175,24 @@ describe('los avisos previos a confirmar', () => {
       .toMatch(/tipo de cambio/);
   });
 });
+
+describe('tanda F — el alta reconoce una operación entre empresas del grupo', () => {
+  const b = {
+    documentType: 'factura', documentNumber: 'E001-1', date: '2026-07-06', amount: 12920,
+    base: 10949.15, igv: 1970.85, noGravado: 0, currency: 'PEN', ruc: '20615646505', nombre: 'JARVEX',
+  };
+  const companies = [
+    { id: 'jarvex', ruc: '20615646505' },
+    { id: 'elinca', ruc: '20615346081' },
+  ];
+  it('si el RUC de la contraparte es de otra empresa del grupo, nace intercompany y enlazada', () => {
+    const m = movimientoDesdeCorte(b, { companyId: 'elinca', libro: 'compras', companies });
+    expect(m.is_intercompany).toBe(true);
+    expect(m.related_company_id).toBe('jarvex');
+  });
+  it('con un tercero sigue como antes', () => {
+    const m = movimientoDesdeCorte({ ...b, ruc: '20100047218' }, { companyId: 'elinca', libro: 'compras', companies });
+    expect(m.is_intercompany).toBe(false);
+    expect(m.related_company_id).toBe(null);
+  });
+});

@@ -191,6 +191,29 @@ export function partirComprobante(doc) {
 }
 
 /**
+ * El CAR (Código de Anotación de Registro) de un comprobante: la llave con la
+ * que SUNAT identifica cada fila del RVIE y del RCE (tabla 7 del Anexo 1 de la
+ * R.S. 112-2021). Son 27 caracteres: RUC del EMISOR (11) + tipo (2) + serie
+ * (4) + número a 10 dígitos. Lo dice la propia propuesta de SUNAT: la factura
+ * E001-1 de JARVEX a EL INCA trae `2061564650501E0010000000001`.
+ *
+ * Es el «dato estructurado» (campo 20) del Libro Diario de quien lleva el
+ * registro en el SIRE. Devuelve '' cuando no se puede armar con certeza (serie
+ * que no es de 4, número no numérico o de más de 10 dígitos): un CAR
+ * inventado no enlaza con nada y el validador lo rechaza.
+ */
+export function carDeComprobante({ rucEmisor, tipo, serie, numero } = {}) {
+  const ruc = String(rucEmisor || '').replace(/\D/g, '');
+  const t = String(tipo || '').padStart(2, '0');
+  const s = String(serie || '').trim().toUpperCase();
+  const n = String(numero || '').trim();
+  if (ruc.length !== 11 || !/^\d{2}$/.test(t) || t === '00') return '';
+  if (!/^[A-Z0-9]{4}$/.test(s)) return '';
+  if (!/^\d{1,10}$/.test(n) || !Number(n)) return '';
+  return `${ruc}${t}${s}${n.padStart(10, '0')}`;
+}
+
+/**
  * ¿La columna «serie o dependencia aduanera» lleva un código de la Tabla 11?
  *
  * Sí solo en las importaciones (DUA 50 y despacho simplificado 52): ahí SUNAT
@@ -215,7 +238,7 @@ export function esDependenciaAduaneraValida(codigo) {
 export default {
   TABLA_10, TABLA_2,
   nombreTabla10, nombreTabla2,
-  tipoComprobante, tipoDocIdentidad, partirComprobante,
+  tipoComprobante, tipoDocIdentidad, partirComprobante, carDeComprobante,
   esReciboHonorarios, reciboEsHonorarios,
   usaDependenciaAduanera, esDependenciaAduaneraValida,
 };

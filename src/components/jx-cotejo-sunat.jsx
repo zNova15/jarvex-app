@@ -37,13 +37,14 @@ import React from 'react';
 import { parseCsvSunat, leerArchivoSunat } from '../lib/sunat-csv.js';
 import {
   compararLibro, aplicarDecisiones, filasPendientes, exportarComparativaCsv,
-  ETIQUETA_ESTADO, ESTADOS_PENDIENTES,
+  ETIQUETA_ESTADO, ESTADOS_PENDIENTES, llaveDeMovimiento, formatoPeriodoHumano,
 } from '../lib/comparativa-sunat.js';
+import { tasaDeComprobante } from '../lib/tipo-cambio-pasada.js';
 import {
   escanear, resumirHallazgos, aplicarDecisionesEscaner, hallazgosPendientes,
   FAMILIAS,
 } from '../lib/escaner-incoherencias.js';
-import { guardarCorte, borrarCorte, decidirCotejo, decidirCotejoLote } from '../lib/cotejo-sunat-db.js';
+import { guardarCorte, actualizarResumenCorte, borrarCorte, decidirCotejo, decidirCotejoLote } from '../lib/cotejo-sunat-db.js';
 import {
   sePuedeDarDeAlta, borradorDesdeFila, movimientoDesdeCorte, avisosDelBorrador,
 } from '../lib/alta-desde-sunat.js';
@@ -206,6 +207,11 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   // volver a entrar —o entrar desde la otra PC después de sincronizar— muestra
   // exactamente lo mismo.
   const cortesHook = window.__hooks?.useSunatCortes?.() || { data: [] };
+  // La tasa de SUNAT de cada fecha (mig 222), para llevar a soles lo que
+  // JARVEX tiene en dólares sin tasa estampada: la brecha es en soles, como el
+  // archivo (regla 11; tanda F).
+  const { data: tasasTc = [] } = window.__hooks?.useTiposCambio?.() || { data: [] };
+  const tasaDe = React.useCallback((m) => tasaDeComprobante(m, tasasTc || [])?.valor || null, [tasasTc]);
   const cortes = uM(() => {
     const out = {};
     const mios = (cortesHook.data || []).filter(c =>
@@ -244,12 +250,12 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       const c = cortes[libro];
       if (!c || !c.filas.length) continue;
       const { filas, resumen } = compararLibro(c.filas, movs, {
-        companyId: company?.id, libro, periodo, companies, otrosCortes,
+        companyId: company?.id, libro, periodo, companies, otrosCortes, tasaDe,
       });
       out[libro] = { ...c, filas: aplicarDecisiones(filas, decisiones), resumen };
     }
     return out;
-  }, [cortes, movs, company?.id, periodo, companies, decisiones, otrosCortes]);
+  }, [cortes, movs, company?.id, periodo, companies, decisiones, otrosCortes, tasaDe]);
 
   const todas = uM(
     () => [...(resultados.compras?.filas || []), ...(resultados.ventas?.filas || [])],
@@ -283,13 +289,17 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
 
   const global = uM(() => {
     const pend = filasPendientes(todas);
+    // En SOLES: lo de JARVEX entra con `appSoles` (su tasa o la de su fecha).
+    // Lo que está en dólares sin tasa no se suma crudo: se cuenta y se avisa.
+    const sinTc = pend.filter(f => f.estado === 'solo_jarvex' && f.appSoles == null).length;
     return {
       total: todas.length,
       cuadran: todas.filter(f => f.estado === 'cuadra').length,
       pendientes: pend.length,
       brecha: pend.reduce((a, f) => a + (f.estado === 'solo_sunat' ? f.sunatTotal
-        : f.estado === 'solo_jarvex' ? -(f.appTotal || 0)
+        : f.estado === 'solo_jarvex' ? -(f.appSoles ?? 0)
         : f.estado === 'importe_distinto' ? f.diferencia : 0), 0),
+      sinTc,
     };
   }, [todas]);
 
@@ -318,7 +328,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       }
 
       const { resumen } = compararLibro(r.filas, movs, {
-        companyId: company?.id, libro: r.libro, periodo, companies, otrosCortes,
+        companyId: company?.id, libro: r.libro, periodo, companies, otrosCortes, tasaDe,
       });
       // Las FILAS van adentro del corte: es lo único que la app no puede
       // recalcular sola (mig 202). Guardar esto es lo que hace que la pestaña
@@ -330,7 +340,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
       }, userId);
 
       const aviso = r.avisos.length
-        ? ` ⚠️ ${r.avisos.length} línea(s) no se pudieron leer.`
+        ? ` ⚠️ ${r.avisos.length} línea(s) con problemas para leer o cruzar (ver el detalle).`
         : '';
       showToast?.(`${r.libro === 'compras' ? '🛒 Compras' : '💵 Ventas'}: ${r.filas.length} comprobantes de SUNAT, guardados.${aviso}`, r.avisos.length ? 'amber' : 'green');
     } catch (e) {
@@ -346,7 +356,9 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
   // Volver a cotejar: el archivo es el mismo, lo que cambió son los
   // movimientos. Recalcula y REESCRIBE el resumen guardado, para que el corte
   // de la base diga lo que la pantalla está mostrando y no lo de la semana
-  // pasada.
+  // pasada. Actualiza EL MISMO corte (tanda F): antes creaba uno nuevo con
+  // todas las filas del CSV y daba de baja el anterior, y cada recotejo
+  // subía el archivo entero otra vez y dejaba una copia muerta en Postgres.
   const recotejar = async (libro) => {
     const c = cortes[libro];
     if (!c || !c.filas.length || enCursoRef.current) return;
@@ -354,13 +366,9 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     setBusy(true);
     try {
       const { resumen } = compararLibro(c.filas, movs, {
-        companyId: company?.id, libro, periodo, companies, otrosCortes,
+        companyId: company?.id, libro, periodo, companies, otrosCortes, tasaDe,
       });
-      await guardarCorte({
-        companyId: company?.id, periodo, libro, archivo: c.archivo,
-        resumen, filas: c.filas, avisosDetalle: c.avisos,
-        filasArchivo: c.filasArchivo || c.filas.length, avisos: c.avisosN,
-      }, userId);
+      await actualizarResumenCorte(c.id, resumen, userId);
       showToast?.(`${libro === 'compras' ? 'Compras' : 'Ventas'}: cotejado de nuevo · ${resumen.cuadran} de ${resumen.total} cuadran.`, 'green');
     } catch (e) {
       showToast?.('No se pudo volver a cotejar: ' + (e?.message || e), 'red');
@@ -422,11 +430,25 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
     if (!puedeAlta) { showToast?.('No tenés permiso para registrar comprobantes.', 'red'); return; }
     enCursoRef.current = true;
     try {
-      const { b, libro, fila } = altaBorrador;
+      const { b, libro } = altaBorrador;
       const campos = movimientoDesdeCorte(b, {
-        companyId: company?.id, libro, periodo,
+        companyId: company?.id, libro, periodo, companies,
         obraExiste: (id) => (obrasCotejo || []).some(o => o.id === id && !o.deleted_at),
       });
+      // ¿Ya lo cargó alguien entre que se abrió la ventana y ahora? (la otra
+      // PC, o Captura Mágica en otra pestaña). El guard síncrono cubre el
+      // doble clic, no eso: se vuelve a mirar la base con la llave de SUNAT.
+      const llaveNueva = llaveDeMovimiento(campos);
+      if (llaveNueva) {
+        const yaEsta = (await window.__db.accounting_movements
+          .where('company_id').equals(company?.id || '').toArray())
+          .find(m => !m.deleted_at && llaveDeMovimiento(m) === llaveNueva);
+        if (yaEsta) {
+          setAltaBorrador(null);
+          showToast?.(`${campos.document_number} ya está registrado en ${company?.name || 'la empresa'} (se cargó mientras tanto). No se duplicó.`, 'amber');
+          return;
+        }
+      }
       const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
       const marcaModo = esPrueba ? { demo: true, sync_status: 'synced' } : { sync_status: 'pending_create' };
       const movId = window.__newId();
@@ -446,12 +468,12 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
         });
       } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'accounting_movements' } })); } catch {}
-      // Se da por vista la diferencia que acaba de resolverse: si no, la fila
-      // sigue en «por revisar» hasta que alguien vuelva a cotejar, y parece
-      // que el alta no hizo nada.
-      try { await decidir(fila, 'revisada'); } catch {}
+      // Ya NO se marca «revisada» (tanda F): el cruce se recalcula solo con el
+      // movimiento nuevo y la fila pasa a «cuadra» por su cuenta. La decisión
+      // automática quedaba pegada a la llave para siempre: si después se
+      // borraba el alta, la diferencia no volvía a aparecer como pendiente.
       setAltaBorrador(null);
-      showToast?.(`✓ ${campos.document_number} registrado en ${company?.name || 'la empresa'}, marcado «falta el comprobante». Volvé a cotejar para verlo cuadrar.`, 'green');
+      showToast?.(`✓ ${campos.document_number} registrado en ${company?.name || 'la empresa'}, marcado «falta el comprobante». En un momento la fila pasa a «Cuadra».`, 'green');
     } catch (e) {
       showToast?.('No se pudo registrar: ' + (e?.message || e), 'red');
     } finally { enCursoRef.current = false; }
@@ -547,7 +569,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                     )}
                     {c.avisosN > 0 && (
                       <div style={{ fontSize: 11, color: '#d33', fontWeight: 500 }}>
-                        ⚠️ {c.avisosN} línea(s) no se pudieron leer
+                        ⚠️ {c.avisosN} línea(s) con problemas para leer o cruzar
                       </div>
                     )}
                     <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
@@ -575,7 +597,7 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
         {['compras', 'ventas'].map(l => (cortes[l]?.avisos?.length ? (
           <details key={l} style={{ marginTop: 10, fontSize: 12 }}>
             <summary style={{ cursor: 'pointer', color: '#d33' }}>
-              {l === 'compras' ? 'Compras' : 'Ventas'}: {cortes[l].avisosN} línea(s) del archivo que no se pudieron leer
+              {l === 'compras' ? 'Compras' : 'Ventas'}: {cortes[l].avisosN} línea(s) del archivo con problemas para leer o cruzar
             </summary>
             <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
               {cortes[l].avisos.map((a, i) => (
@@ -683,6 +705,12 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
               <div style={{ fontWeight: 700, fontSize: 16, color: Math.abs(global.brecha) > 0.05 ? '#d33' : 'var(--green)' }}>
                 {fmtS(global.brecha)}
               </div>
+              {global.sinTc > 0 && (
+                <div style={{ fontSize: 10, color: 'var(--amber, #d97706)', marginTop: 2 }}
+                  title="Están en dólares y no hay tipo de cambio para su fecha: no se suman crudos a una cifra en soles.">
+                  + {global.sinTc} en dólares sin tipo de cambio, fuera de la cifra
+                </div>
+              )}
             </div>
           </div>
 
@@ -875,6 +903,13 @@ export function ComparativaSunat({ company, companies, movs, anio, mes, showToas
                       {f.estado === 'otro_periodo' && (
                         <div style={{ fontSize: 11, color: 'var(--blue)', marginTop: 4, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                           <span>📅 {f.motivoPeriodo || `Registrado en JARVEX en ${f.appFecha || 'otro mes'}`}</span>
+                        </div>
+                      )}
+                      {/* Un importe igual en otro mes que NO se tomó como el mismo
+                          papel (tanda F): se muestra la pista, no se esconde el faltante. */}
+                      {f.estado === 'solo_sunat' && f.pista && (
+                        <div style={{ fontSize: 11, color: 'var(--amber, #d97706)', marginTop: 4 }}>
+                          🔁 {f.pista}
                         </div>
                       )}
                       {f.estado === 'sunat_otro_periodo' && (

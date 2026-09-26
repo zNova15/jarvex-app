@@ -1,36 +1,37 @@
 // ─────────────────────────────────────────────────────────────
-// SUNAT PLE 5.x — Generadores de Libros Electrónicos
+// SUNAT PLE — Libro Diario (5.1) y Libro Mayor (6.1)
 //
-// Cubre los 4 libros más comunes para empresas peruanas:
-//   - Libro Diario        (LE 5.1.0)   — código libro 050100
-//   - Libro Mayor         (LE 6.1.0)   — código libro 060100
-//   - Registro de Compras (LE 8.1.0)   — código libro 080100
-//   - Registro de Ventas  (LE 14.1.0)  — código libro 140100
+// La estructura sale del ANEXO 2 de SUNAT («Estructuras e información de los
+// libros y/o registros electrónicos», planilla oficial de feb-2021, leída en
+// la tanda F del 26-set-2026). Hasta esa tanda el archivo decía «TODO:
+// validar con docs SUNAT» y ninguno de los libros podía pasar el validador:
+//   · el NOMBRE tenía 32 caracteres (faltaba un '0' del código de oportunidad);
+//   · el Diario tenía 17 campos (son 21) y el correlativo 12 caracteres (el
+//     máximo es 10);
+//   · el Mayor mandaba TOTALES por cuenta en 7 campos — el 6.1 son los mismos
+//     21 campos del Diario, movimiento por movimiento, ordenados por cuenta;
+//   · un descuadre metía una línea `# WARNING` DENTRO del .txt, y cualquier
+//     línea así invalida el archivo entero.
 //
-// Formato: txt UTF-8, líneas pipe-delimited (`|`), terminadas con \r\n.
+// ── Y LOS REGISTROS DE COMPRAS Y VENTAS YA NO VAN POR ACÁ ──────────
+// Desde 2025 el Registro de Ventas (14.1) y el de Compras (8.1) se presentan
+// SOLO por el SIRE (RVIE y RCE). Sus generadores PLE se retiraron: el que
+// sirve es el reemplazo de propuesta de `sunat-sire.js`, que se exporta desde
+// el propio Registro de Compras y Ventas.
 //
-// Filename SUNAT (PLE):
-//   LE<RUC><AAAAMM00><LIBRO><OPORT><EST><CONT>11.txt
-//   - RUC          : 11 dígitos
-//   - AAAAMM       : período (año + mes)
-//   - 00           : día (00 = mensual)
-//   - LIBRO        : 6 dígitos (050100, 060100, 080100, 140100)
-//   - OPORT        : 1 dígito (0 = único envío)
-//   - EST          : 1 dígito (1 = situación de empresa activa)
-//   - CONT         : 1 dígito (1 = con info, 0 = sin info)
-//   - 11           : indicador moneda nacional + libro electrónico
-//
-// Estados de operación por línea:
-//   M = movimiento original
-//   A = ajuste / asiento de ajuste posterior al cierre
-//   E = anulado / extorno
-//
-// TODO: validar con docs SUNAT (Resolución 286-2009/SUNAT y modificatorias).
+// Formato: .txt UTF-8, campos separados por `|`, cada línea termina en `|`.
+// Nombre (33 caracteres, «Reglas de nombres de libros» del Anexo 2):
+//   LE + RUC(11) + AAAA + MM + DD('00') + LIBRO(6) + CC('00')
+//      + O (1 = empresa operativa) + I (1 con info / 0 sin info)
+//      + M (1 = soles) + G (1 = generado por el PLE)
 // ─────────────────────────────────────────────────────────────
 
-import { desglosarIgv } from './igv-desglose.js';
-import { fmtFechaLarga, enPeriodo } from './fecha.js';
-import { notaSinEfecto } from './notas-credito.js';
+import { fmtFechaLarga } from './fecha.js';
+import { esVentaMov } from './costo-obra.js';
+import { tipoComprobante, tipoDocIdentidad, partirComprobante, carDeComprobante } from './tablas-sunat.js';
+
+export const LIBRO_DIARIO = '050100';
+export const LIBRO_MAYOR = '060100';
 
 // ─── Helpers ─────────────────────────────────────────────────
 function pad2(n)  { return String(n || 0).padStart(2, '0'); }
@@ -39,7 +40,7 @@ function pad11(s) { return String(s || '').padStart(11, '0'); }
 
 function clean(s) {
   if (s === null || s === undefined) return '';
-  return String(s).replace(/[\|\r\n\t]/g, ' ').trim();
+  return String(s).replace(/[\|\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function num(n, dec = 2) {
@@ -55,519 +56,204 @@ function r2(n) {
 }
 
 function fmtFechaSunat(d) {
-  // SUNAT pide dd/mm/aaaa en PLE. new Date('YYYY-MM-DD') parsea medianoche UTC
-  // y en Perú (UTC−5) devolvía el día ANTERIOR: TODAS las fechas de los libros
-  // salían corridas un día. fmtFechaLarga parte el string cuando es fecha suelta.
+  // SUNAT pide dd/mm/aaaa. fmtFechaLarga parte el string cuando es fecha
+  // suelta: new Date('YYYY-MM-DD') daba el día ANTERIOR en Lima.
   if (!d) return '';
   return fmtFechaLarga(d) || '';
 }
 
 function periodoSunat(periodo) {
   // periodo = { anio, mes }  →  AAAAMM00
-  const a = pad4(periodo.anio || new Date().getFullYear());
-  const m = pad2(periodo.mes  || new Date().getMonth() + 1);
-  return `${a}${m}00`;
+  return `${pad4(periodo.anio)}${pad2(periodo.mes)}00`;
 }
 
-function isInPeriodo(fecha, periodo) {
-  // Por string, no por new Date(): una factura del 01/07 caía en JUNIO (y una
-  // del 01/01, en el año anterior) porque 'YYYY-MM-DD' se parsea en UTC.
-  return enPeriodo(fecha, Number(periodo.anio), Number(periodo.mes));
-}
+/** 'YYYYMM' de una fecha 'YYYY-MM-DD…', por string. */
+const mesDe = (fecha) => String(fecha || '').slice(0, 7).replace('-', '');
 
-function buildFilename(ruc, periodo, libroCode, oport = 0, est = 1, cont = 1) {
-  // LE<RUC><AAAAMM00><LIBRO><OPORT><EST><CONT>11.txt
-  const r = pad11(ruc).slice(0, 11);
-  const p = periodoSunat(periodo);
-  return `LE${r}${p}${libroCode}${oport}${est}${cont}11.txt`;
-}
-
-// CUO (Código Único de Operación) — 9 dígitos correlativos por libro+período.
-function cuo(idx) {
-  return String(idx).padStart(9, '0');
-}
-
-// Los códigos de las Tablas 10 y 2, y el partido serie/número, viven en
-// `tablas-sunat.js` desde la tanda 4: el Registro de Compras necesita los
-// MISMOS y estaban privados acá, con solo siete de los veinte. Dos copias
-// eran la garantía de que un día el PLE dijera '00' donde el registro dice
-// '02'. `tipoCompCode` queda como adaptador del orden de argumentos que este
-// archivo ya usaba.
-import { tipoComprobante, tipoDocIdentidad, partirComprobante } from './tablas-sunat.js';
-
-function tipoCompCode(movOrDoc, fallback = '00') {
-  return tipoComprobante(movOrDoc, fallback);
-}
-
-function splitDoc(doc) {
-  const { serie, numero } = partirComprobante(doc);
-  return { serie, nro: numero };
-}
-
-// Tipo doc identidad proveedor/cliente (Tabla 2 SUNAT)
 /**
- * Documento de REFERENCIA de una nota de crédito/débito: los 4 campos que
- * SUNAT pide (fecha de emisión, tipo, serie y número del comprobante que la
- * nota modifica). Iban vacíos y SUNAT observa las notas sin referencia
- * (decisión de Gabriel 1-sep: "hacé lo que normalmente hacen en contabilidad").
- *
- * La factura original se resuelve por related_movement_id — puede ser de un
- * período ANTERIOR, así que el índice tiene que venir de TODOS los
- * movimientos, no solo de los del período que se exporta. Si no se la
- * encuentra, se devuelven los 4 campos vacíos: es preferible a inventar
- * datos, y la nota sale como salía antes.
- *
- * @param m movimiento (la nota)
- * @param movsById Map<id, movimiento> con todos los movimientos
- * @returns [fechaEmision, tipoDoc, serie, numero]
+ * El nombre del archivo, 33 caracteres.
+ * @param conInfo  true si el libro trae al menos una línea
  */
-function docReferenciaNota(m, movsById) {
-  const esNota = ['nota_credito', 'nota_debito'].includes(m?.document_type);
-  if (!esNota) return ['', '', '', ''];
-  const ref = (movsById && m.related_movement_id) ? movsById.get(m.related_movement_id) : null;
-  if (!ref) return ['', '', '', ''];
-  const d = splitDoc(ref.document_number || '');
-  if (!d.serie && !d.nro) return ['', '', '', ''];
-  return [
-    fmtFechaSunat(ref.date || ref.created_at),
-    tipoCompCode(ref.document_type || '', '01'),
-    d.serie,
-    d.nro,
-  ];
-}
-
-function tipoDocIdent(td) {
-  return tipoDocIdentidad(td);
+export function buildFilename(ruc, periodo, libroCode, conInfo = true) {
+  const r = pad11(ruc).slice(0, 11);
+  return `LE${r}${pad4(periodo.anio)}${pad2(periodo.mes)}00${libroCode}00`
+    + `1${conInfo ? '1' : '0'}11.txt`;
 }
 
 // ─────────────────────────────────────────────────────────────
-// 1. LIBRO DIARIO — LE 5.1.0  (código 050100)
+// LAS LÍNEAS DEL DIARIO — las mismas para el Diario (5.1) y el Mayor (6.1)
 // ─────────────────────────────────────────────────────────────
 //
-// Estructura por línea (campos pipe-delimited):
-//  1. Período (AAAAMM00)
-//  2. CUO (Código Único Operación) — 9 dígitos
-//  3. Correlativo del asiento contable (M+período+nro)
-//  4. Código de la cuenta contable (PCGE)
-//  5. Código de la unidad de operación (vacío si no aplica)
-//  6. Código del centro de costos (vacío si no aplica)
-//  7. Tipo de moneda (PEN)
-//  8. Tipo de comprobante de pago (Tabla 10)
-//  9. Serie del comprobante
-// 10. Número del comprobante
-// 11. Fecha del comprobante (dd/mm/aaaa)
-// 12. Fecha de vencimiento (dd/mm/aaaa)
-// 13. Glosa o descripción
-// 14. Glosa de referencia
-// 15. Debe (con 2 decimales)
-// 16. Haber (con 2 decimales)
-// 17. Estado de la operación (1=incluida, 8=incluida ajuste, 9=anulada)
+//  1 Periodo AAAAMM00          12 Número del comprobante (obligatorio)
+//  2 CUO (hasta 40)            13 Fecha contable
+//  3 Correlativo (M…, ≤ 10)    14 Fecha de vencimiento
+//  4 Cuenta contable           15 Fecha de la operación o emisión (oblig.)
+//  5 Unidad de operación       16 Glosa (obligatoria, ≤ 200)
+//  6 Centro de costos          17 Glosa referencial (≤ 200)
+//  7 Moneda de origen          18 Debe      19 Haber
+//  8 Tipo doc. del emisor      20 Dato estructurado: el CAR del comprobante
+//  9 Nro. doc. del emisor         en el RVIE/RCE (quien lleva el registro en
+// 10 Tipo de comprobante          el SIRE pone el CAR en vez de 140100&…)
+// 11 Serie                     21 Estado ('1' = operación del período)
 // ─────────────────────────────────────────────────────────────
-export function generateLibroDiarioPLE(asientos, periodo, ruc) {
-  asientos = Array.isArray(asientos) ? asientos : [];
-  periodo  = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
+
+/**
+ * Arma las líneas del libro.
+ *
+ * CONTRATO: `asientos` ya son los del período. La pantalla los elige con
+ * `declaraEnPeriodo` (un comprobante movido con «⇄ mes» se asienta en el mes
+ * en que se declara) y las salidas de inventario por su propia fecha. Acá NO
+ * se vuelve a filtrar por `fecha`: hacerlo tiraba en silencio los asientos de
+ * los comprobantes diferidos, y la pantalla mostraba N y el archivo N−1.
+ *
+ * @param opts.movsById  índice de los movimientos, para sacar del comprobante
+ *                       el tipo, la serie, el número, el emisor y el CAR
+ * @returns {{ lineas: Array<{cuo, cuenta, fecha, texto, debe, haber}>, omitidos, avisos, asientosIncluidos }}
+ */
+export function lineasDelDiario(asientos, periodo, ruc, opts = {}) {
+  const movsById = opts.movsById instanceof Map ? opts.movsById : new Map();
   const per = periodoSunat(periodo);
-  const lines = [];
-
-  let totDebe = 0, totHaber = 0;
-  let counter = 0;
+  const perMes = `${pad4(periodo.anio)}${pad2(periodo.mes)}`;
+  const rucPropio = String(ruc || '').replace(/\D/g, '');
+  const lineas = [];
+  const avisos = [];
   // Un asiento en otra moneda SIN tipo de cambio no se declara (25-set-2026):
-  // el libro se lleva en soles y el campo 7 dice PEN. Mandarlo con sus dólares
-  // sería declarar US$ 80.000 como S/ 80.000. Se cuenta para avisarlo.
+  // el libro se lleva en soles. Mandarlo con sus dólares sería declarar
+  // US$ 80.000 como S/ 80.000.
   let omitidos = 0;
+  let asientosIncluidos = 0;
+  const cuosUsados = new Map();
 
-  asientos.forEach((a) => {
-    if (!a || !isInPeriodo(a.fecha, periodo)) return;
-    if (a.sinTipoCambio) { omitidos++; return; }
-    counter++;
-    const c = cuo(counter);
-    const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
-    const fComp  = fmtFechaSunat(a.fecha);
-    const docInfo = splitDoc(a.documento || a.glosa_doc || '');
-    const tipoComp = tipoCompCode(a.documento || '', '00');
+  for (const a of Array.isArray(asientos) ? asientos : []) {
+    if (!a) continue;
+    if (a.sinTipoCambio) { omitidos++; continue; }
+    const partidas = (a.partidas || []).filter(p => r2(p.debe) !== 0 || r2(p.haber) !== 0);
+    if (!partidas.length) continue;
+    asientosIncluidos++;
 
-    (a.partidas || []).forEach((p) => {
-      const debe  = r2(p.debe || 0);
-      const haber = r2(p.haber || 0);
-      totDebe  += debe;
-      totHaber += haber;
+    const m = a.movimiento_id ? movsById.get(a.movimiento_id) : null;
+    const esSalida = !!a.esSalidaExistencia;
+    // CUO: el id del comprobante, que no cambia entre una generación y otra
+    // (un contador cambiaría si se agrega un comprobante en el medio).
+    let cuo = clean(`${a.movimiento_id || a.numero || 'AS'}${esSalida ? '-S' : ''}`).slice(0, 40);
+    const repetido = cuosUsados.get(cuo) || 0;
+    cuosUsados.set(cuo, repetido + 1);
+    if (repetido) cuo = `${cuo.slice(0, 36)}-${repetido + 1}`;
 
-      lines.push([
-        per,
-        c,
-        correl,
-        clean(p.cuenta),
-        '',                 // unidad operación
-        clean(a.centro_costo || ''),
-        'PEN',
-        tipoComp,
-        docInfo.serie,
-        docInfo.nro,
-        fComp,
-        '',                 // fecha vencimiento
-        clean(p.descripcion || a.glosa).slice(0, 200),
-        clean(a.glosa).slice(0, 200),
-        num(debe),
-        num(haber),
-        '1',                // estado: 1 = incluida M
-      ].join('|'));
+    // El comprobante: de él salen tipo, serie, número, emisor y CAR. La salida
+    // de inventario es un asiento interno: no lleva comprobante ni CAR.
+    const doc = m && !esSalida ? partirComprobante(m.document_number || '') : { serie: '', numero: '' };
+    const tipo = m && !esSalida ? tipoComprobante(m, '00') : '00';
+    const numero = /^\d+$/.test(doc.numero) ? String(Number(doc.numero)) : doc.numero;
+    const venta = m ? esVentaMov(m) : false;
+    const rucEmisor = m && !esSalida
+      ? (venta ? rucPropio : String(m.third_party_ruc || '').replace(/\D/g, ''))
+      : '';
+    const car = m && !esSalida
+      ? carDeComprobante({ rucEmisor, tipo, serie: doc.serie, numero })
+      : '';
+
+    const fecha = String(a.fecha || '').slice(0, 10);
+    if (mesDe(fecha) > perMes) {
+      avisos.push(`El asiento ${a.numero || cuo} tiene fecha ${fecha}, posterior al período: SUNAT lo rechaza.`);
+    }
+    // La fecha contable no puede pasarse del período, y la de un comprobante
+    // diferido es anterior: se asienta el primer día del mes en que se declara.
+    const fechaContable = mesDe(fecha) === perMes ? fechaSunatDe(fecha) : `01/${pad2(periodo.mes)}/${pad4(periodo.anio)}`;
+    const moneda = String(a.conversion?.moneda || 'PEN').toUpperCase();
+    const glosa = clean(a.glosa).slice(0, 200) || 'Asiento del período';
+
+    partidas.forEach((p, i) => {
+      let debe = r2(p.debe || 0);
+      let haber = r2(p.haber || 0);
+      // Debe y Haber van positivos y excluyentes: un negativo pasa al otro lado.
+      if (debe < 0) { haber += -debe; debe = 0; }
+      if (haber < 0) { debe += -haber; haber = 0; }
+      const cuenta = String(p.cuenta || '').replace(/\D/g, '');
+      if (!cuenta) {
+        avisos.push(`El asiento ${a.numero || cuo} tiene una línea sin cuenta contable: no se puede declarar.`);
+        return;
+      }
+      const campos = [
+        per,                                   // 1
+        cuo,                                   // 2
+        `M${String(i + 1).padStart(4, '0')}`,  // 3
+        cuenta,                                // 4
+        '',                                    // 5
+        clean(a.centro_costo || '').slice(0, 24), // 6
+        moneda,                                // 7
+        rucEmisor ? tipoDocIdentidad(rucEmisor) : '', // 8
+        rucEmisor,                             // 9
+        tipo,                                  // 10
+        doc.serie,                             // 11
+        numero || clean(a.numero || cuo).slice(0, 20), // 12 (obligatorio)
+        fechaContable,                         // 13
+        '',                                    // 14
+        fechaSunatDe(fecha),                   // 15
+        clean(p.descripcion || a.glosa).slice(0, 200) || glosa, // 16
+        glosa,                                 // 17
+        num(debe),                             // 18
+        num(haber),                            // 19
+        car,                                   // 20
+        '1',                                   // 21
+      ];
+      lineas.push({ cuo, cuenta, fecha, debe, haber, texto: campos.join('|') + '|' });
     });
-  });
+  }
 
-  // Línea final descriptiva (algunos validadores la aceptan como comentario)
-  // SUNAT estricta espera SOLO líneas de detalle. Si el cuadre falla,
-  // se inserta un comentario marcador para QA.
+  return { lineas, omitidos, avisos, asientosIncluidos };
+}
+
+function fechaSunatDe(ymd) {
+  return fmtFechaSunat(ymd);
+}
+
+function empaquetar(libro, lineas, periodo, ruc, extra) {
+  const totDebe = r2(lineas.reduce((s, l) => s + l.debe, 0));
+  const totHaber = r2(lineas.reduce((s, l) => s + l.haber, 0));
+  const avisos = [...extra.avisos];
+  // El descuadre se AVISA fuera del archivo: una línea que no es de detalle
+  // invalida el .txt entero (antes se escribía `# WARNING` adentro).
   const diff = r2(totDebe - totHaber);
   if (Math.abs(diff) > 0.05) {
-    lines.push(`# WARNING: descuadre Debe (${num(totDebe)}) vs Haber (${num(totHaber)}) — diff ${num(diff)}`);
+    avisos.push(`El Debe (${num(totDebe)}) y el Haber (${num(totHaber)}) no cuadran por ${num(diff)}: SUNAT exige que sumen igual.`);
   }
-
   return {
-    filename: buildFilename(ruc, periodo, '050100', 0, 1, lines.length > 0 ? 1 : 0),
-    content : lines.join('\r\n') + (lines.length ? '\r\n' : ''),
-    registros: counter,
-    totDebe : r2(totDebe),
-    totHaber: r2(totHaber),
-    omitidos,
+    filename: buildFilename(ruc, periodo, libro, lineas.length > 0),
+    content: lineas.map(l => l.texto).join('\r\n') + (lineas.length ? '\r\n' : ''),
+    registros: extra.asientosIncluidos,
+    lineas: lineas.length,
+    totDebe,
+    totHaber,
+    omitidos: extra.omitidos,
+    avisos,
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// 2. LIBRO MAYOR — LE 6.1.0  (código 060100)
+// 1. LIBRO DIARIO — LE 5.1  (código 050100)
 // ─────────────────────────────────────────────────────────────
-//
-// El Libro Mayor agrupa los movimientos por cuenta contable.
-// Estructura por línea:
-//  1. Período
-//  2. CUO
-//  3. Correlativo del asiento de origen
-//  4. Código cuenta contable (PCGE)
-//  5. Saldo deudor / acumulado debe
-//  6. Saldo acreedor / acumulado haber
-//  7. Estado de la operación (1 = incluida)
-// ─────────────────────────────────────────────────────────────
-export function generateLibroMayorPLE(asientos, periodo, ruc) {
-  asientos = Array.isArray(asientos) ? asientos : [];
-  periodo  = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
-  const per = periodoSunat(periodo);
-
-  // Agrupar por cuenta
-  const porCuenta = new Map();
-  let counter = 0;
-  let omitidos = 0;
-  asientos.forEach((a) => {
-    if (!a || !isInPeriodo(a.fecha, periodo)) return;
-    // Mismo criterio que el Libro Diario: lo que no está en soles no se declara.
-    if (a.sinTipoCambio) { omitidos++; return; }
-    counter++;
-    (a.partidas || []).forEach((p) => {
-      const k = String(p.cuenta || '').trim();
-      if (!k) return;
-      const cur = porCuenta.get(k) || { debe: 0, haber: 0, count: 0 };
-      cur.debe  += Number(p.debe  || 0);
-      cur.haber += Number(p.haber || 0);
-      cur.count++;
-      porCuenta.set(k, cur);
-    });
-  });
-
-  const lines = [];
-  const cuentas = [...porCuenta.keys()].sort();
-  cuentas.forEach((cta, i) => {
-    const v = porCuenta.get(cta);
-    lines.push([
-      per,
-      cuo(i + 1),
-      `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(i + 1).padStart(5, '0')}`,
-      clean(cta),
-      num(r2(v.debe)),
-      num(r2(v.haber)),
-      '1',
-    ].join('|'));
-  });
-
-  return {
-    filename : buildFilename(ruc, periodo, '060100', 0, 1, lines.length > 0 ? 1 : 0),
-    content  : lines.join('\r\n') + (lines.length ? '\r\n' : ''),
-    registros: cuentas.length,
-    asientosOrigen: counter,
-  };
+export function generateLibroDiarioPLE(asientos, periodo, ruc, opts = {}) {
+  const r = lineasDelDiario(asientos, periodo, ruc, opts);
+  return empaquetar(LIBRO_DIARIO, r.lineas, periodo, ruc, r);
 }
 
 // ─────────────────────────────────────────────────────────────
-// 3. REGISTRO DE COMPRAS — LE 8.1.0  (código 080100)
+// 2. LIBRO MAYOR — LE 6.1  (código 060100)
 // ─────────────────────────────────────────────────────────────
-//
-// Estructura por línea (campos típicos del PLE 8.1):
-//  1.  Período (AAAAMM00)
-//  2.  CUO
-//  3.  Correlativo registro
-//  4.  Fecha emisión comprobante (dd/mm/aaaa)
-//  5.  Fecha vencimiento o pago (dd/mm/aaaa)
-//  6.  Tipo comprobante (Tabla 10)
-//  7.  Serie comprobante
-//  8.  Año emisión DUA (vacío)
-//  9.  Número comprobante
-// 10.  Número final (rango)
-// 11.  Tipo doc identidad proveedor (Tabla 2)
-// 12.  Número doc proveedor
-// 13.  Razón social proveedor
-// 14.  Base imponible gravada (operaciones gravadas)
-// 15.  IGV de operaciones gravadas
-// 16.  Base imponible operaciones gravadas / no gravadas (otra)
-// 17.  IGV de la anterior
-// 18.  Base no gravada (no afecta crédito)
-// 19.  IGV no afecta crédito
-// 20.  Valor adquisiciones no gravadas
-// 21.  ISC
-// 22.  Otros tributos
-// 23.  Importe total
-// 24.  Moneda (PEN/USD)
-// 25.  Tipo de cambio
-// 26.  Fecha emisión doc referencia
-// 27.  Tipo doc referencia
-// 28.  Serie doc referencia
-// 29.  Número doc referencia
-// 30.  Estado (1 = incluida, 9 = anulada)
-// ─────────────────────────────────────────────────────────────
-export function generateRegistroComprasPLE(movs_cost_expense, periodo, ruc, opts = {}) {
-  // Índice de TODOS los movimientos para resolver el doc. de referencia de las
-  // notas (la factura original suele ser de otro período).
-  const movsById = opts.movsById instanceof Map ? opts.movsById : new Map();
-  const movs = Array.isArray(movs_cost_expense) ? movs_cost_expense : [];
-  periodo = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
-  const per = periodoSunat(periodo);
-  const lines = [];
-
-  let counter = 0;
-  let totBase = 0, totIgv = 0, totImp = 0;
-
-  movs.forEach((m) => {
-    if (!m || m.deleted_at) return;
-    if (m.payment_status === 'cancelled') return;
-    // Factura y nota quedan las dos vivas; la nota de una factura dada de
-    // baja no resta (ver `notas-credito.js`, 25-set-2026).
-    if (notaSinEfecto(m, movsById)) return;
-    if (!isInPeriodo(m.date || m.created_at, periodo)) return;
-    if (m.type !== 'cost' && m.type !== 'expense') return;
-
-    counter++;
-    // Desglose REAL del comprobante (IGV del propio documento, no un 18 %
-    // inventado): mismo criterio que el Libro Diario — src/lib/igv-desglose.js.
-    // El crédito fiscal que se declara acá tiene que ser el de la factura.
-    const dg       = desglosarIgv(m);
-    const total    = dg.total;
-    const igv      = dg.igv;
-    // Base GRAVADA del comprobante; lo que no paga IGV (exonerado / inafecto /
-    // ICBPER) va a su propia columna 20 ("adquisiciones no gravadas") en vez
-    // de inflar la base gravada.
-    const baseGrav = dg.baseGravada != null ? dg.baseGravada : dg.subtotal;
-    const noGrav   = r2(dg.subtotal - baseGrav);
-    const subtotal = baseGrav;
-
-    totBase += subtotal;
-    totIgv  += igv;
-    totImp  += total;
-
-    const docInfo  = splitDoc(m.document_number || '');
-    const tipoComp = tipoCompCode(m, '01');
-    const fEmi     = fmtFechaSunat(m.date || m.created_at);
-    const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
-
-    const provRuc = String(m.third_party_ruc || '');
-    const provDocTipo = tipoDocIdent(provRuc.length === 11 ? 'RUC' : 'DNI');
-    const provDoc     = clean(provRuc);
-    const provName    = clean(m.third_party_name || '').slice(0, 100);
-
-    const moneda = String(m.currency || m.moneda || 'PEN').toUpperCase();
-    const tc     = num(Number(m.tipo_cambio || 0), 3);
-    const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
-    const estado = m.payment_status === 'cancelled' ? '9' : '1';
-
-    lines.push([
-      per,
-      cuo(counter),
-      correl,
-      fEmi,
-      fVcto,
-      tipoComp,
-      docInfo.serie,
-      '',                        // año DUA
-      docInfo.nro,
-      '',                        // nro final rango
-      provDocTipo,
-      provDoc,
-      provName,
-      num(subtotal),
-      num(igv),
-      '0.00',                    // base op. gravada/no gravada
-      '0.00',                    // IGV
-      '0.00',                    // base no gravada
-      '0.00',                    // IGV no afecta crédito
-      num(noGrav),               // adquisiciones no gravadas (exonerado/inafecto del comprobante)
-      '0.00',                    // ISC
-      '0.00',                    // otros tributos
-      num(total),
-      moneda,
-      tc,
-      ...docReferenciaNota(m, movsById),   // 26-29: fecha/tipo/serie/nro del doc que la nota modifica
-      estado,
-    ].join('|'));
-  });
-
-  if (counter === 0) {
-    console.warn('[PLE compras] sin registros en período', periodo);
-  }
-
-  return {
-    filename : buildFilename(ruc, periodo, '080100', 0, 1, counter > 0 ? 1 : 0),
-    content  : lines.join('\r\n') + (lines.length ? '\r\n' : ''),
-    registros: counter,
-    totBase  : r2(totBase),
-    totIgv   : r2(totIgv),
-    totImp   : r2(totImp),
-  };
+// Los MISMOS movimientos del Diario, ordenados por cuenta (y dentro de cada
+// cuenta por fecha). No son saldos: el Anexo 2 le da al 6.1 la misma
+// estructura de 21 campos que al 5.1.
+export function generateLibroMayorPLE(asientos, periodo, ruc, opts = {}) {
+  const r = lineasDelDiario(asientos, periodo, ruc, opts);
+  const ordenadas = [...r.lineas].sort((x, y) =>
+    x.cuenta.localeCompare(y.cuenta) || x.fecha.localeCompare(y.fecha) || x.cuo.localeCompare(y.cuo));
+  const out = empaquetar(LIBRO_MAYOR, ordenadas, periodo, ruc, r);
+  return { ...out, cuentas: new Set(ordenadas.map(l => l.cuenta)).size };
 }
 
 // ─────────────────────────────────────────────────────────────
-// 4. REGISTRO DE VENTAS — LE 14.1.0  (código 140100)
-// ─────────────────────────────────────────────────────────────
-//
-// Estructura por línea:
-//  1. Período
-//  2. CUO
-//  3. Correlativo
-//  4. Fecha emisión
-//  5. Fecha vencimiento
-//  6. Tipo comprobante
-//  7. Serie
-//  8. Número
-//  9. Número final (rango)
-// 10. Tipo doc identidad cliente
-// 11. Número doc cliente
-// 12. Razón social cliente
-// 13. Valor facturado exportación
-// 14. Base imponible operación gravada
-// 15. Descuentos base imponible
-// 16. IGV / IPM
-// 17. Descuento IGV/IPM
-// 18. Operación exonerada
-// 19. Operación inafecta
-// 20. ISC
-// 21. Base imponible IVAP (arroz pilado)
-// 22. IVAP
-// 23. Otros tributos
-// 24. Importe total
-// 25. Moneda
-// 26. Tipo de cambio
-// 27. Fecha emisión doc referencia
-// 28. Tipo doc referencia
-// 29. Serie doc referencia
-// 30. Número doc referencia
-// 31. Estado (1=incluida, 8=ajuste, 9=anulada)
-// ─────────────────────────────────────────────────────────────
-export function generateRegistroVentasPLE(movs_income, periodo, ruc, opts = {}) {
-  const movsById = opts.movsById instanceof Map ? opts.movsById : new Map();
-  const movs = Array.isArray(movs_income) ? movs_income : [];
-  periodo = periodo || { anio: new Date().getFullYear(), mes: new Date().getMonth() + 1 };
-  const per = periodoSunat(periodo);
-  const lines = [];
-
-  let counter = 0;
-  let totBase = 0, totIgv = 0, totImp = 0, totExo = 0, totIna = 0;
-
-  movs.forEach((m) => {
-    if (!m || m.deleted_at) return;
-    if (m.payment_status === 'cancelled') return;
-    if (notaSinEfecto(m, movsById)) return;
-    if (!isInPeriodo(m.date || m.created_at, periodo)) return;
-    if (m.type !== 'income') return;
-
-    counter++;
-    // Desglose REAL del comprobante (ver compras, arriba).
-    const dg       = desglosarIgv(m);
-    const total    = dg.total;
-    const igv      = dg.igv;
-    const baseGrav = dg.baseGravada != null ? dg.baseGravada : dg.subtotal;
-    const inafecto  = r2(Number(m.inafecto  || 0));
-    // Lo no gravado del comprobante se declara como EXONERADO salvo que la
-    // fila traiga su propio desglose exonerado/inafecto.
-    const exonerado = m.exonerado != null
-      ? r2(Number(m.exonerado))
-      : r2(Math.max(dg.subtotal - baseGrav - inafecto, 0));
-    const subtotal = baseGrav;
-
-    totBase += subtotal;
-    totIgv  += igv;
-    totImp  += total;
-    totExo  += exonerado;
-    totIna  += inafecto;
-
-    const docInfo  = splitDoc(m.document_number || '');
-    const tipoComp = tipoCompCode(m, '01');
-    const fEmi     = fmtFechaSunat(m.date || m.created_at);
-    const fVcto    = fmtFechaSunat(m.fecha_vencimiento || m.due_date || m.date);
-
-    const cliRuc = String(m.third_party_ruc || '');
-    const cliDocTipo = tipoDocIdent(cliRuc.length === 11 ? 'RUC' : 'DNI');
-    const cliDoc     = clean(cliRuc);
-    const cliName    = clean(m.third_party_name || m.description || '').slice(0, 100);
-
-    const moneda = String(m.currency || m.moneda || 'PEN').toUpperCase();
-    const tc     = num(Number(m.tipo_cambio || 0), 3);
-    const correl = `M${pad4(periodo.anio)}${pad2(periodo.mes)}${String(counter).padStart(5, '0')}`;
-    const estado = m.payment_status === 'cancelled' ? '9' : '1';
-
-    lines.push([
-      per,
-      cuo(counter),
-      correl,
-      fEmi,
-      fVcto,
-      tipoComp,
-      docInfo.serie,
-      docInfo.nro,
-      '',                        // nro final rango
-      cliDocTipo,
-      cliDoc,
-      cliName,
-      '0.00',                    // valor facturado exportación
-      num(subtotal),
-      '0.00',                    // descuentos base
-      num(igv),
-      '0.00',                    // descuento IGV
-      num(exonerado),
-      num(inafecto),
-      '0.00',                    // ISC
-      '0.00',                    // base IVAP
-      '0.00',                    // IVAP
-      '0.00',                    // otros tributos
-      num(total),
-      moneda,
-      tc,
-      ...docReferenciaNota(m, movsById),   // 27-30: fecha/tipo/serie/nro del doc que la nota modifica
-      estado,
-    ].join('|'));
-  });
-
-  if (counter === 0) {
-    console.warn('[PLE ventas] sin registros en período', periodo);
-  }
-
-  return {
-    filename : buildFilename(ruc, periodo, '140100', 0, 1, counter > 0 ? 1 : 0),
-    content  : lines.join('\r\n') + (lines.length ? '\r\n' : ''),
-    registros: counter,
-    totBase  : r2(totBase),
-    totIgv   : r2(totIgv),
-    totImp   : r2(totImp),
-    totExo   : r2(totExo),
-    totIna   : r2(totIna),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────
-// 5. Helper de descarga
+// 3. Helper de descarga
 // ─────────────────────────────────────────────────────────────
 export function downloadPLE(filename, content) {
   try {
@@ -586,9 +272,11 @@ export function downloadPLE(filename, content) {
 }
 
 export default {
+  LIBRO_DIARIO,
+  LIBRO_MAYOR,
+  buildFilename,
+  lineasDelDiario,
   generateLibroDiarioPLE,
   generateLibroMayorPLE,
-  generateRegistroComprasPLE,
-  generateRegistroVentasPLE,
   downloadPLE,
 };

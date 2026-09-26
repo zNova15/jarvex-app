@@ -394,6 +394,13 @@ export function parseCsvSunat(texto) {
       continue;
     }
 
+    // Un número con letras no se puede cruzar (la llave compara el correlativo
+    // como número): la fila se lee igual, pero se avisa en vez de dejarla
+    // como un «Falta en JARVEX» sin explicación.
+    if (numero && !/^\d+$/.test(numero)) {
+      avisos.push({ linea: n + 1, motivo: 'numero_no_numerico', texto: lineas[n].slice(0, 200) });
+    }
+
     if (!ruc) ruc = v('ruc');
     if (!razonSocial) razonSocial = rep.titular;
     if (!periodo) periodo = v('periodo');

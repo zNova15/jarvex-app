@@ -74,7 +74,8 @@
 
 import { partirDocumento } from './serie-comprobante.js';
 import { esVentaMov } from './costo-obra.js';
-import { TIPO_CP_A_DOCUMENTO } from './sunat-csv.js';
+import { tipoComprobante } from './tablas-sunat.js';
+import { periodoDeDeclaracion, mesesEntre } from './periodo-declaracion.js';
 
 /** Dos importes son el mismo si difieren en menos de un centavo largo. */
 const TOLERANCIA = 0.05;
@@ -83,10 +84,41 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const rucLimpio = (x) => String(x ?? '').replace(/\D/g, '');
 const vivos = (arr) => (Array.isArray(arr) ? arr.filter(x => x && !x.deleted_at) : []);
 
-/** El `document_type` de la app → el tipo de SUNAT ('factura' → '01'). */
-const DOCUMENTO_A_TIPO_CP = Object.fromEntries(
-  Object.entries(TIPO_CP_A_DOCUMENTO).map(([cp, doc]) => [doc, cp]),
-);
+/**
+ * El tipo de SUNAT (Tabla 10) de un movimiento de la app.
+ *
+ * UN solo mapeo para el cotejo, el SIRE y el PLE (tanda F, 26-set-2026): hasta
+ * acá el cotejo tenía su propia tabla de cuatro entradas y mandaba todo lo
+ * demás a '01', el SIRE otra con expresiones regulares y el PLE la de
+ * `tablas-sunat.js`. Un recibo por honorarios salía '02' en el SIRE y '01' en
+ * el cotejo. Lo que no se reconoce sigue cayendo en '01', como antes.
+ */
+const tipoCpDe = (m) => tipoComprobante(m, '01');
+
+/**
+ * El importe de un movimiento EN SOLES, o null si está en otra moneda y no hay
+ * tasa. La tasa es la estampada en el comprobante o, si no tiene, la de su
+ * fecha (`tasaDe`, la misma del registro). Lo usa la brecha: SUNAT la trae en
+ * soles y sumarle dólares crudos daba un número que no era plata de nada.
+ */
+function enSoles(m, tasaDe) {
+  const monto = r2(m?.amount);
+  const moneda = String(m?.currency || 'PEN').trim().toUpperCase();
+  if (moneda === 'PEN') return monto;
+  const propia = Number(m?.tipo_cambio);
+  const tc = propia > 0 ? propia : (typeof tasaDe === 'function' ? Number(tasaDe(m)) || 0 : 0);
+  return tc > 0 ? r2(monto * tc) : null;
+}
+
+/** Los campos del lado JARVEX de una fila del cotejo: con su moneda y en soles. */
+const ladoApp = (m, tasaDe) => ({
+  appDocumento: m.document_number,
+  appFecha: m.date,
+  appTotal: r2(m.amount),
+  appMoneda: String(m.currency || 'PEN').trim().toUpperCase(),
+  appSoles: enSoles(m, tasaDe),
+  appNombre: m.third_party_name || '',
+});
 
 /**
  * La llave con la que se cruza un comprobante: tipo, serie, correlativo y el
@@ -112,7 +144,7 @@ export function llaveDeMovimiento(m) {
   const p = partirDocumento(m?.document_number);
   if (!p) return '';
   return llaveComprobante({
-    tipoCp: DOCUMENTO_A_TIPO_CP[m?.document_type] || '01',
+    tipoCp: tipoCpDe(m),
     serie: p.serie, numero: p.correlativo, ruc: m?.third_party_ruc,
   });
 }
@@ -134,9 +166,6 @@ export function movimientosDelLibro(movs, { companyId, libro }) {
     esVentaMov(m) === quiereVenta,
   );
 }
-
-/** El mes 'YYYY-MM' de una fecha 'YYYY-MM-DD'. Por string, nunca con Date. */
-const mesDe = (fecha) => String(fecha || '').slice(0, 7);
 
 /** '202607' → '2026-07'. */
 export const mesDePeriodo = (periodo) => {
@@ -213,7 +242,7 @@ const importeDe = (x) => Math.abs(r2(x));
  *
  * @returns {{diferencia:number, tipoCambio:number|null, appEnSoles:number|null}}
  */
-export function conciliarImporte(filaSunat, mov) {
+export function conciliarImporte(filaSunat, mov, tasaDe = null) {
   const sunat = importeDe(filaSunat?.total);
   const app = importeDe(mov?.amount);
   const difDirecta = r2(sunat - app);
@@ -231,6 +260,17 @@ export function conciliarImporte(filaSunat, mov) {
     const appEnSoles = r2(app * tc);
     return { diferencia: r2(sunat - appEnSoles), tipoCambio: tc, appEnSoles };
   }
+  // El archivo no trajo la tasa (o dice otra moneda) pero el comprobante de
+  // JARVEX está en dólares: se lo pasa a soles con SU tasa antes de restar.
+  // Restar dólares crudos de soles daba una diferencia que no era plata.
+  if (monedaApp !== 'PEN') {
+    const propio = enSoles(mov, tasaDe);
+    if (propio != null) {
+      const appEnSoles = Math.abs(propio);
+      const tcApp = app ? r2(appEnSoles / app * 1000) / 1000 : null;
+      return { diferencia: r2(sunat - appEnSoles), tipoCambio: tcApp, appEnSoles };
+    }
+  }
   return { diferencia: difDirecta, tipoCambio: null, appEnSoles: null };
 }
 
@@ -241,11 +281,22 @@ export function conciliarImporte(filaSunat, mov) {
  * @param movs   TODOS los movimientos vivos (no solo los del mes: hace falta
  *               ver los de otros periodos y otras empresas para poder decir
  *               «está, pero en otro lado» en vez de «falta»)
- * @param opts   { companyId, libro, periodo, companies, otrosCortes }
+ * @param opts   { companyId, libro, periodo, companies, otrosCortes, tasaDe }
+ *               `tasaDe(mov)` da el tipo de cambio de la fecha de un
+ *               comprobante que no lo trae estampado (para la brecha en soles)
  * @returns { filas: Array<diferencia>, resumen }
  */
-export function compararLibro(filas = [], movs = [], { companyId, libro, periodo, companies = [], otrosCortes = [] } = {}) {
+export function compararLibro(filas = [], movs = [], { companyId, libro, periodo, companies = [], otrosCortes = [], tasaDe = null } = {}) {
   const mes = mesDePeriodo(periodo);
+  const periodoCod = /^\d{6}$/.test(String(periodo || '')) ? String(periodo) : '';
+  // ── EL MES DEL COMPROBANTE ES EL DE DECLARACIÓN (tanda F, 26-set-2026) ──
+  // Un comprobante movido con «⇄ mes» (mig 227) o dado de alta desde SUNAT en
+  // el período en que SUNAT lo trae (`periodo_declarado`) pertenece a ESE
+  // corte, aunque su fecha de emisión sea de otro mes. Antes se miraba `date`
+  // y la BCP FI01-17943297 (diciembre, declarada en enero) volvía como
+  // «cargado en otro mes» en enero y como «SUNAT no lo tiene» en diciembre.
+  // `periodoDeDeclaracion` es la misma función que usan el registro y el SIRE.
+  const deOtroMes = (m) => !!periodoCod && periodoDeDeclaracion(m) !== periodoCod;
   const nombreEmpresa = new Map(vivos(companies).map(c => [c.id, c.name]));
 
   // Filas de SUNAT en OTROS períodos cargados para esta empresa y libro (para detectar si
@@ -356,7 +407,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       usados.add(m.id);
       // El importe se concilia con la moneda y el tipo de cambio del propio
       // archivo — ver `conciliarImporte` y el caso KOPLAST.
-      const conc = conciliarImporte(f, m);
+      const conc = conciliarImporte(f, m, tasaDe);
       const dif = conc.diferencia;
       const signoDistinto = Math.sign(r2(f.total)) !== 0
         && Math.sign(r2(m.amount)) !== 0
@@ -366,21 +417,17 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       let periodoDetectado = '';
       if (Math.abs(dif) > TOLERANCIA) estado = 'importe_distinto';
       else if (signoDistinto) estado = 'signo_distinto';
-      else if (mes && mesDe(m.date) !== mes) {
+      else if (deOtroMes(m)) {
         estado = 'otro_periodo';
-        periodoDetectado = mesDe(m.date);
-        motivoPeriodo = `Registrado en JARVEX en ${formatoPeriodoHumano(periodoDetectado)} (${m.date}) - diferido`;
+        periodoDetectado = mesDePeriodo(periodoDeDeclaracion(m));
+        motivoPeriodo = `Declarado en JARVEX en ${formatoPeriodoHumano(periodoDetectado)} (emitido el ${m.date})`;
       }
       else if (f.fecha && m.date !== f.fecha) estado = 'fecha_distinta';
       salida.push({
         ...base, estado,
         movimientoId: m.id,
         companyId: m.company_id || companyId,
-        appDocumento: m.document_number,
-        appFecha: m.date,
-        appTotal: r2(m.amount),
-        appMoneda: String(m.currency || 'PEN').trim().toUpperCase(),
-        appNombre: m.third_party_name || '',
+        ...ladoApp(m, tasaDe),
         periodoDetectado,
         motivoPeriodo,
         diferencia: dif,
@@ -399,10 +446,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         ...base, estado: 'otra_empresa',
         movimientoId: enOtra.id,
         empresaAjenaId: enOtra.company_id,
-        appDocumento: enOtra.document_number,
-        appFecha: enOtra.date,
-        appTotal: r2(enOtra.amount),
-        appNombre: enOtra.third_party_name || '',
+        ...ladoApp(enOtra, tasaDe),
         empresaAjena: nombreEmpresa.get(enOtra.company_id) || 'otra empresa',
         diferencia: 0,
       });
@@ -430,29 +474,54 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         ...base, estado: 'serie_distinta',
         movimientoId: gemelo.id,
         companyId: gemelo.company_id || companyId,
-        appDocumento: gemelo.document_number,
-        appFecha: gemelo.date,
-        appTotal: r2(gemelo.amount),
-        appNombre: gemelo.third_party_name || '',
+        ...ladoApp(gemelo, tasaDe),
         diferencia: 0,
       });
       continue;
     }
 
-    // ¿O con serie distinta Y registrado en otro período? Mismo RUC, mismo importe, en otro mes.
-    const gemeloOtroPeriodo = candidatosRucImporte.find(x => !usados.has(x.id));
+    // ¿O con serie distinta Y registrado en otro período? Mismo RUC y mismo
+    // importe, y además ALGO que diga que es el mismo papel.
+    //
+    // ── POR QUÉ NO ALCANZA RUC + IMPORTE (tanda F, 26-set-2026) ──────
+    // Antes el rescate agarraba CUALQUIER comprobante vivo de ese RUC por ese
+    // importe, de cualquier año. INTERBANK cobra S/ 85 todos los meses: si en
+    // agosto faltaba cargar la comisión, la fila de SUNAT encontraba la de
+    // julio, decía «registrado en julio» con brecha 0 y el faltante real
+    // desaparecía del «plata sin registrar». Ahora el candidato tiene que:
+    //   · estar a un mes como mucho de la fecha de SUNAT, o tener el MISMO
+    //     correlativo (FA01-888 cargada como F001-888: la serie mal tipeada), y
+    //   · no ser un comprobante que SUNAT ya trae en OTRO corte cargado: ése
+    //     ya está declarado en su mes y no puede ser, además, el de éste.
+    // Si hay importes iguales que no cumplen, no se consumen: la fila sale
+    // «Falta en JARVEX» con la pista de dónde hay uno igual.
+    const mesDeFecha = (d) => String(d || '').slice(0, 7).replace('-', '');
+    const esElMismoPapel = (x) => {
+      const dif = mesesEntre(mesDeFecha(x.date), mesDeFecha(f.fecha));
+      if (dif != null && Math.abs(dif) <= 1) return true;
+      const p = partirDocumento(x.document_number);
+      return !!p && Number(p.correlativo) === Number(f.numero);
+    };
+    const yaDeclaradoEnOtroCorte = (x) => {
+      const k = llaveDeMovimiento(x);
+      return !!k && sunatOtrosPeriodosPorLlave.has(k);
+    };
+    const libresRucImporte = candidatosRucImporte.filter(x => !usados.has(x.id) && !yaDeclaradoEnOtroCorte(x));
+    const gemeloOtroPeriodo = libresRucImporte.find(esElMismoPapel);
+    const pistaImporteRepetido = !gemeloOtroPeriodo && libresRucImporte.length
+      ? `Hay ${libresRucImporte.length === 1 ? 'uno' : libresRucImporte.length} con el mismo RUC e importe en JARVEX `
+        + `(${libresRucImporte.slice(0, 3).map(x => `${x.document_number || 's/n'} del ${x.date}`).join(', ')}): `
+        + 'si es un cargo que se repite todos los meses, el de este mes falta cargar.'
+      : '';
     if (gemeloOtroPeriodo) {
       usados.add(gemeloOtroPeriodo.id);
-      const perGemelo = mesDe(gemeloOtroPeriodo.date);
+      const perGemelo = mesDePeriodo(periodoDeDeclaracion(gemeloOtroPeriodo));
       salida.push({
         ...base,
         estado: 'otro_periodo',
         movimientoId: gemeloOtroPeriodo.id,
         companyId: gemeloOtroPeriodo.company_id || companyId,
-        appDocumento: gemeloOtroPeriodo.document_number,
-        appFecha: gemeloOtroPeriodo.date,
-        appTotal: r2(gemeloOtroPeriodo.amount),
-        appNombre: gemeloOtroPeriodo.third_party_name || '',
+        ...ladoApp(gemeloOtroPeriodo, tasaDe),
         periodoDetectado: perGemelo,
         motivoPeriodo: `Registrado en JARVEX en ${formatoPeriodoHumano(perGemelo)} (${gemeloOtroPeriodo.document_number})`,
         diferencia: 0,
@@ -475,24 +544,23 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         ...base, estado: 'ruc_distinto',
         movimientoId: otro.id,
         companyId: otro.company_id || companyId,
-        appDocumento: otro.document_number,
-        appFecha: otro.date,
-        appTotal: r2(otro.amount),
-        appMoneda: String(otro.currency || 'PEN').trim().toUpperCase(),
-        appNombre: otro.third_party_name || '',
+        ...ladoApp(otro, tasaDe),
         appRuc: rucLimpio(otro.third_party_ruc),
         diferencia: r2(f.total),
       });
       continue;
     }
 
-    salida.push({ ...base, estado: 'solo_sunat', movimientoId: null, diferencia: r2(f.total) });
+    salida.push({
+      ...base, estado: 'solo_sunat', movimientoId: null, diferencia: r2(f.total),
+      ...(pistaImporteRepetido ? { pista: pistaImporteRepetido } : {}),
+    });
   }
 
   // Lo que la app tiene en el periodo y SUNAT no trajo.
   for (const m of propios) {
     if (usados.has(m.id)) continue;
-    if (mes && mesDe(m.date) !== mes) continue;      // de otro mes: no es de este corte
+    if (mes && deOtroMes(m)) continue;      // se declara en otro mes: no es de este corte
     const p = partirDocumento(m.document_number);
     const k = llaveDeMovimiento(m);
 
@@ -507,7 +575,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
     if (hermanos.length > 1) {
       salida.push({
         llave: k, libro, companyId: m.company_id || companyId,
-        linea: null, tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
+        linea: null, tipoCp: tipoCpDe(m),
         tipoNombre: m.document_type || 'factura',
         documento: m.document_number || '',
         serie: p?.serie || '', numero: p?.correlativo || 0,
@@ -520,10 +588,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         duplicados: hermanos.length,
         duplicadosIds: hermanos.map(h => h.id),
         movimientoId: m.id,
-        appDocumento: m.document_number,
-        appFecha: m.date,
-        appTotal: r2(m.amount),
-        appNombre: m.third_party_name || '',
+        ...ladoApp(m, tasaDe),
         // No es plata que falte ni que sobre: el papel está registrado, solo
         // que más de una vez — sumarlo a la brecha inflaría el faltante.
         diferencia: 0,
@@ -538,7 +603,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         libro,
         companyId: m.company_id || companyId,
         linea: enOtroSunat.linea || null,
-        tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
+        tipoCp: tipoCpDe(m),
         tipoNombre: m.document_type || 'factura',
         documento: enOtroSunat.documento || m.document_number || '',
         serie: p?.serie || '',
@@ -556,10 +621,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         periodoDetectado: enOtroSunat.periodoCorte,
         motivoPeriodo: `SUNAT lo incluye en el período ${formatoPeriodoHumano(enOtroSunat.periodoCorte)}${enOtroSunat.archivoCorte ? ' (' + enOtroSunat.archivoCorte + ')' : ''}`,
         movimientoId: m.id,
-        appDocumento: m.document_number,
-        appFecha: m.date,
-        appTotal: r2(m.amount),
-        appNombre: m.third_party_name || '',
+        ...ladoApp(m, tasaDe),
         diferencia: 0,
       });
       continue;
@@ -581,13 +643,9 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
         sunatTotal: r2(filaOtroRuc.total), moneda: filaOtroRuc.moneda, modifica: '',
         estado: 'ruc_distinto',
         movimientoId: m.id,
-        appDocumento: m.document_number,
-        appFecha: m.date,
-        appTotal: r2(m.amount),
-        appMoneda: String(m.currency || 'PEN').trim().toUpperCase(),
-        appNombre: m.third_party_name || '',
+        ...ladoApp(m, tasaDe),
         appRuc: rucLimpio(m.third_party_ruc),
-        diferencia: -r2(m.amount),
+        diferencia: -(enSoles(m, tasaDe) ?? r2(m.amount)),
       });
       continue;
     }
@@ -597,7 +655,7 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       libro,
       companyId: m.company_id || companyId,
       linea: null,
-      tipoCp: DOCUMENTO_A_TIPO_CP[m.document_type] || '01',
+      tipoCp: tipoCpDe(m),
       tipoNombre: m.document_type || 'factura',
       documento: m.document_number || '',
       serie: p?.serie || '',
@@ -610,11 +668,10 @@ export function compararLibro(filas = [], movs = [], { companyId, libro, periodo
       modifica: '',
       estado: 'solo_jarvex',
       movimientoId: m.id,
-      appDocumento: m.document_number,
-      appFecha: m.date,
-      appTotal: r2(m.amount),
-      appNombre: m.third_party_name || '',
-      diferencia: -r2(m.amount),
+      ...ladoApp(m, tasaDe),
+      // En SOLES, como la brecha. Sin tasa queda el importe del papel y la
+      // fila lo dice (`appSoles: null`): no se suma a la brecha en soles.
+      diferencia: -(enSoles(m, tasaDe) ?? r2(m.amount)),
     });
   }
 
@@ -651,21 +708,34 @@ export const ETIQUETA_ESTADO = {
  * «cargada en otra empresa» o «con la serie distinta» NO suma: el comprobante
  * existe, el problema es dónde o cómo está escrito, y sumarla inflaría la
  * brecha con plata que sí está registrada.
+ *
+ * ── TODO EN SOLES (regla 11; tanda F, 26-set-2026) ──────────────────
+ * SUNAT trae los importes en soles; JARVEX guarda los de cada comprobante en
+ * su moneda. Antes la brecha restaba el importe crudo: una factura de KOPLAST
+ * cargada y ausente del RCE restaba US$ 19.518,72 a una brecha que la
+ * pantalla rotulaba «S/». Ahora el lado JARVEX se suma en soles (`appSoles`,
+ * con la tasa del comprobante o la de su fecha) y lo que está en dólares sin
+ * tasa NO se suma: se cuenta en `sinTipoCambio` para que la pantalla lo diga.
  */
 export function resumirComparativa(filas = []) {
   const porEstado = {};
   for (const e of ['cuadra', ...ESTADOS_PENDIENTES]) porEstado[e] = 0;
   let sunatTotal = 0, appTotal = 0, brecha = 0, sunatIgv = 0, sunatBase = 0;
-  let faltanEnApp = 0, faltanEnSunat = 0;
+  let faltanEnApp = 0, faltanEnSunat = 0, sinTipoCambio = 0;
+  // Filas armadas antes de la tanda F (o a mano) no traen `appSoles`: su
+  // `appTotal` se lee como estaba, en soles.
+  const appEnSoles = (f) => (f.appSoles !== undefined ? f.appSoles : (f.appTotal ?? null));
 
   for (const f of filas) {
     porEstado[f.estado] = (porEstado[f.estado] || 0) + 1;
     sunatTotal += f.sunatTotal || 0;
-    appTotal += f.appTotal || 0;
+    const app = appEnSoles(f);
+    if (app != null) appTotal += app;
+    else if (f.appTotal != null) sinTipoCambio += 1;
     sunatIgv += f.sunatIgv || 0;
     sunatBase += f.sunatBase || 0;
     if (f.estado === 'solo_sunat') { brecha += f.sunatTotal || 0; faltanEnApp += 1; }
-    else if (f.estado === 'solo_jarvex') { brecha -= f.appTotal || 0; faltanEnSunat += 1; }
+    else if (f.estado === 'solo_jarvex') { brecha -= app || 0; faltanEnSunat += 1; }
     else if (f.estado === 'importe_distinto') brecha += f.diferencia || 0;
   }
 
@@ -683,6 +753,9 @@ export function resumirComparativa(filas = []) {
     sunatTotal: r2(sunatTotal),
     appTotal: r2(appTotal),
     brecha: r2(brecha),
+    // Filas de JARVEX en otra moneda sin tipo de cambio: no entran a los
+    // totales en soles (sumarlas crudas sería mezclar monedas).
+    sinTipoCambio,
     // El % de comprobantes que cuadran, para poder ver si mejora mes a mes.
     pctCuadra: total ? Math.round(((porEstado.cuadra || 0) / total) * 100) : 0,
   };

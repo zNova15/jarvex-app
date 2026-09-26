@@ -127,10 +127,20 @@ export function borradorDesdeFila(fila, { periodo = '' } = {}) {
  * y del usuario.
  *
  * @param borrador  el de `borradorDesdeFila`, ya revisado/corregido a mano
- * @param opts      { companyId, libro, periodo, obraExiste }
+ * @param opts      { companyId, libro, periodo, obraExiste, companies }
+ *                  `companies`: las empresas del grupo, para reconocer una
+ *                  operación entre empresas por el RUC de la contraparte
  */
-export function movimientoDesdeCorte(borrador, { companyId, libro = 'compras', periodo = '', obraExiste } = {}) {
+export function movimientoDesdeCorte(borrador, { companyId, libro = 'compras', periodo = '', obraExiste, companies = [] } = {}) {
   const b = borrador || {};
+  // ¿La contraparte es OTRA empresa del grupo? (tanda F, 26-set-2026) Antes el
+  // alta nacía siempre como operación con terceros, y una factura de EL INCA a
+  // JARVEX dada de alta desde el corte quedaba fuera del cruce intercompany y
+  // el escáner la reclamaba. Se reconoce por RUC, que es lo único seguro.
+  const rucContraparte = rucLimpio(b.ruc);
+  const empresaGrupo = rucContraparte
+    ? (companies || []).find(c => c && !c.deleted_at && c.id !== companyId && rucLimpio(c.ruc) === rucContraparte)
+    : null;
   const esVenta = libro === 'ventas';
   const { destino_contable, obra_id } = destinoDesdeSelector(b.destinoSel, obraExiste || (() => true));
   const etiqueta = b.documentType === 'nota_credito' ? 'Nota de Crédito'
@@ -153,7 +163,8 @@ export function movimientoDesdeCorte(borrador, { companyId, libro = 'compras', p
     obra_id: obra_id || null,
     destino_contable,
     clase: esVenta ? 'venta' : 'compra',
-    is_intercompany: false,
+    is_intercompany: !!empresaGrupo,
+    related_company_id: empresaGrupo ? empresaGrupo.id : null,
     date: b.date || null,
     category: etiqueta,
     description: `${etiqueta} ${b.documentNumber} · ${b.nombre || ''}`.replace(/\s+/g, ' ').trim(),

@@ -2,10 +2,9 @@ import React from "react";
 import {
   generateLibroDiarioPLE,
   generateLibroMayorPLE,
-  generateRegistroComprasPLE,
-  generateRegistroVentasPLE,
   downloadPLE,
 } from '../lib/sunat-ple.js';
+import { enPeriodo } from '../lib/fecha.js';
 import { generatePDT601, buildPDT601Filename } from '../lib/sunat-pdt601.js';
 import { generarAsientosBatch } from '../lib/asientos.js';
 import { contextoDeAsientos } from '../lib/asientos-contexto.js';
@@ -167,6 +166,25 @@ function LibrosElectronicosPage({ showToast }) {
     [movsPeriodo, contexto, repartoDe, bancarizadoIds]
   );
 
+  // ── LOS ASIENTOS QUE VAN AL PLE DEL MES (tanda F, 26-set-2026) ────
+  // El asiento de un comprobante va en el mes en que se DECLARA (los de
+  // `movsPeriodo`), pero la salida de inventario va en SU fecha: una compra de
+  // mayo consumida en agosto es costo de agosto. Por eso las salidas se toman
+  // de toda la empresa por su propia fecha, y no las que cuelgan de los
+  // comprobantes del mes. El generador ya no vuelve a filtrar por `fecha`
+  // (tiraba en silencio los asientos de los comprobantes diferidos).
+  const movsConSalidaDelMes = uM(() => (movs || []).filter(m =>
+    m && !m.deleted_at && m.payment_status !== 'cancelled'
+    && (!companyId || m.company_id === companyId)
+    && m.existencia_salida_cuenta
+    && enPeriodo(m.existencia_salida_fecha, Number(anio), Number(mes))),
+  [movs, companyId, anio, mes]);
+  const asientosPle = uM(() => [
+    ...asientos.filter(a => !a.esSalidaExistencia),
+    ...generarAsientosBatch(movsConSalidaDelMes, { ...contexto, repartoDe, bancarizadoIds })
+      .filter(a => a.esSalidaExistencia),
+  ], [asientos, movsConSalidaDelMes, contexto, repartoDe, bancarizadoIds]);
+
   // Totales para card resumen — EN SOLES al tipo de cambio de cada comprobante
   // (regla 11: nunca soles y dólares crudos en la misma suma). Lo que no tiene
   // tasa queda afuera y se cuenta, en vez de sumarse como si fueran soles.
@@ -185,10 +203,10 @@ function LibrosElectronicosPage({ showToast }) {
       registros: movsPeriodo.length,
       ventas:    totVentas,
       compras:   totCompras,
-      asientos:  asientos.length,
+      asientos:  asientosPle.length,
       sinTc,
     };
-  }, [movsPeriodo, movsVentas, movsCompras, asientos, tasasTc]);
+  }, [movsPeriodo, movsVentas, movsCompras, asientosPle, tasasTc]);
 
   // Planilla del período seleccionado
   const planillaPeriodo = uM(() => {
@@ -205,40 +223,29 @@ function LibrosElectronicosPage({ showToast }) {
   const rucValid = String(ruc).length === 11;
 
   // ─── Descargas ──────────────────────────────────────────────
+  // Lo que el validador de SUNAT rechazaría va en el aviso, NUNCA dentro del
+  // .txt (una línea que no es de detalle invalida el archivo entero).
+  const avisarPle = (nombre, out, unidad) => {
+    const extras = [];
+    if (out.omitidos) extras.push(`${out.omitidos} asiento(s) en otra moneda sin tipo de cambio quedaron AFUERA — cargá la tasa y volvé a generarlo`);
+    extras.push(...(out.avisos || []));
+    showToast?.(`${nombre}: ${unidad}` + (extras.length ? ` · ⚠ ${extras.join(' · ')}` : ''), extras.length ? 'amber' : 'green');
+  };
+
   const handleLibroDiario = () => {
     if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateLibroDiarioPLE(asientos, periodo, ruc);
+    const out = generateLibroDiarioPLE(asientosPle, periodo, ruc, { movsById });
     if (!out.content) return showToast?.('Sin asientos en el período', 'orange');
     downloadPLE(out.filename, out.content);
-    showToast?.(`Libro Diario PLE: ${out.registros} asientos`
-      + (out.omitidos ? ` · ${out.omitidos} en otra moneda sin tipo de cambio quedaron AFUERA — cargá la tasa y volvé a generarlo` : ''),
-      out.omitidos ? 'amber' : 'green');
+    avisarPle('Libro Diario PLE', out, `${out.registros} asientos, ${out.lineas} líneas`);
   };
 
   const handleLibroMayor = () => {
     if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateLibroMayorPLE(asientos, periodo, ruc);
+    const out = generateLibroMayorPLE(asientosPle, periodo, ruc, { movsById });
     if (!out.content) return showToast?.('Sin asientos en el período', 'orange');
     downloadPLE(out.filename, out.content);
-    showToast?.(`Libro Mayor PLE: ${out.registros} cuentas`
-      + (out.omitidos ? ` · ${out.omitidos} asientos en otra moneda sin tipo de cambio quedaron AFUERA` : ''),
-      out.omitidos ? 'amber' : 'green');
-  };
-
-  const handleRegistroCompras = () => {
-    if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateRegistroComprasPLE(movsCompras, periodo, ruc, { movsById });
-    if (!out.content) return showToast?.('Sin compras en el período', 'orange');
-    downloadPLE(out.filename, out.content);
-    showToast?.(`Registro Compras PLE: ${out.registros} comprobantes`, 'green');
-  };
-
-  const handleRegistroVentas = () => {
-    if (!rucValid) return showToast?.('La empresa no tiene RUC válido', 'red');
-    const out = generateRegistroVentasPLE(movsVentas, periodo, ruc, { movsById });
-    if (!out.content) return showToast?.('Sin ventas en el período', 'orange');
-    downloadPLE(out.filename, out.content);
-    showToast?.(`Registro Ventas PLE: ${out.registros} comprobantes`, 'green');
+    avisarPle('Libro Mayor PLE', out, `${out.lineas} movimientos en ${out.cuentas} cuentas`);
   };
 
   const handlePDT601 = async () => {
@@ -286,8 +293,8 @@ function LibrosElectronicosPage({ showToast }) {
       titulo: 'Libro Diario',
       formato: 'PLE 5.1.0 — código 050100',
       color: 'var(--blue)',
-      registros: asientos.length,
-      warning: !rucValid ? 'Empresa sin RUC válido' : (asientos.length === 0 ? 'No hay asientos en el período' : null),
+      registros: asientosPle.length,
+      warning: !rucValid ? 'Empresa sin RUC válido' : (asientosPle.length === 0 ? 'No hay asientos en el período' : null),
       onDownload: handleLibroDiario,
       label: 'Asientos contables del período',
     },
@@ -296,30 +303,10 @@ function LibrosElectronicosPage({ showToast }) {
       titulo: 'Libro Mayor',
       formato: 'PLE 6.1.0 — código 060100',
       color: 'var(--purple, #8b5cf6)',
-      registros: asientos.length,
-      warning: !rucValid ? 'Empresa sin RUC válido' : (asientos.length === 0 ? 'No hay asientos en el período' : null),
+      registros: asientosPle.length,
+      warning: !rucValid ? 'Empresa sin RUC válido' : (asientosPle.length === 0 ? 'No hay asientos en el período' : null),
       onDownload: handleLibroMayor,
-      label: 'Acumulados por cuenta contable',
-    },
-    {
-      key: 'compras',
-      titulo: 'Registro de Compras',
-      formato: 'PLE 8.1.0 — código 080100',
-      color: 'var(--orange)',
-      registros: movsCompras.length,
-      warning: !rucValid ? 'Empresa sin RUC válido' : (movsCompras.length === 0 ? 'No hay compras en el período' : null),
-      onDownload: handleRegistroCompras,
-      label: 'Comprobantes de costos y gastos',
-    },
-    {
-      key: 'ventas',
-      titulo: 'Registro de Ventas',
-      formato: 'PLE 14.1.0 — código 140100',
-      color: 'var(--green)',
-      registros: movsVentas.length,
-      warning: !rucValid ? 'Empresa sin RUC válido' : (movsVentas.length === 0 ? 'No hay ventas en el período' : null),
-      onDownload: handleRegistroVentas,
-      label: 'Comprobantes de ingresos',
+      label: 'Movimientos del Diario, ordenados por cuenta',
     },
   ];
 
@@ -328,7 +315,7 @@ function LibrosElectronicosPage({ showToast }) {
       <div className="pg-hd frow-sb">
         <div>
           <div className="pg-title">Libros Electrónicos</div>
-          <div className="pg-sub">Exportación SUNAT — PLE 5.x y Planilla Mensual</div>
+          <div className="pg-sub">Registro de Compras y Ventas (SIRE) · Libro Diario y Mayor (PLE)</div>
         </div>
       </div>
       {window.EmpresaActivaBanner ? <window.EmpresaActivaBanner/> : null}
@@ -484,6 +471,19 @@ function LibrosElectronicosPage({ showToast }) {
         ))}
       </div>
 
+      {/* Compras y Ventas ya no son PLE: desde 2025 van SOLO por el SIRE. */}
+      <div className="card card-p" style={{ padding: 16, marginBottom: 16, borderLeft: '4px solid var(--orange)' }}>
+        <div style={{ fontWeight: 700, fontSize: 15 }}>Registro de Compras y Registro de Ventas</div>
+        <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 4 }}>
+          Desde 2025 SUNAT los recibe <strong>solo por el SIRE</strong> (RVIE y RCE): los .txt del PLE 8.1 y 14.1 ya no se aceptan.
+          El archivo que sirve es el reemplazo de propuesta, que se genera desde el registro con «📦 Exportar a SIRE (.zip)»
+          — {movsCompras.length} compras y {movsVentas.length} ventas en este período.
+        </div>
+        <button className="btn btn-sm" style={{ marginTop: 10 }} onClick={() => setTab('registro')}>
+          Ir al Registro de Compras y Ventas
+        </button>
+      </div>
+
       {/* Card PDT 601 — ARCHIVADA el 25-set-2026 (Gabriel, respuesta 14 de la
           revisión Ola 1: planillas con 0 filas, el PDT 601 nunca se generó).
           El generador sigue en sunat-pdt601.js; se vuelve a mostrar poniendo
@@ -533,8 +533,9 @@ function LibrosElectronicosPage({ showToast }) {
       </div>}
 
       <div style={{ marginTop: 16, fontSize: 11, color: 'var(--tm)' }}>
-        Los archivos se generan en formato pipe-delimited UTF-8 con terminación CRLF, según especificación PLE 5.x.
-        Si tu validador detecta errores, revisa el RUC, la consistencia de fechas y el cuadre Debe/Haber.
+        Estructura del Anexo 2 de SUNAT: 21 campos por línea, separados por «|» y terminados en «|», UTF-8 con CRLF.
+        Los importes van en soles; el campo 20 lleva el CAR del comprobante en el RVIE/RCE. Lo que el validador
+        rechazaría (descuadres, líneas sin cuenta) se avisa al descargar, fuera del archivo.
       </div>
       </>}
     </div>

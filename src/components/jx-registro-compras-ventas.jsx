@@ -362,9 +362,30 @@ export function RegistroComprasVentas({
     }
     setBusy(true);
     try {
+      // Los importes van en SOLES (tanda F): con la tasa estampada en el
+      // comprobante o, si no la tiene, la de SUNAT para su fecha — la misma que
+      // muestra la columna T.C. del registro. `movsById` completo para que la
+      // nota encuentre su factura aunque sea de otro mes.
+      const optsSire = {
+        seleccionadosIds: ids,
+        movsById: movsById || undefined,
+        tasaDe: (m) => tasaDe(String(m?.date || m?.created_at || '').slice(0, 10), m),
+      };
       const gen = esCompras
-        ? generateReemplazoPropuestaRCE(movsPeriodo, periodoObj, ruc, razon, { seleccionadosIds: ids })
-        : generateReemplazoPropuestaRVIE(movsPeriodo, periodoObj, ruc, razon, { seleccionadosIds: ids });
+        ? generateReemplazoPropuestaRCE(movsPeriodo, periodoObj, ruc, razon, optsSire)
+        : generateReemplazoPropuestaRVIE(movsPeriodo, periodoObj, ruc, razon, optsSire);
+
+      // Un comprobante en dólares sin tipo de cambio NO se puede declarar (el
+      // archivo va en soles), y presentar sin él es declarar de menos. No se
+      // genera nada hasta que se cargue la tasa: la pasada de tipos de cambio
+      // de esta misma pantalla lo resuelve.
+      if (gen.omitidos?.length) {
+        showToast?.(
+          `No se generó el archivo: ${gen.omitidos.length} comprobante(s) en otra moneda sin tipo de cambio `
+          + `(${gen.omitidos.slice(0, 4).map(o => o.documento || 's/n').join(', ')}${gen.omitidos.length > 4 ? '…' : ''}). `
+          + 'Cargá la tasa con la pasada de tipos de cambio y volvé a generarlo.', 'red');
+        return;
+      }
 
       if (soloTxt) {
         downloadPLE(gen.txtFilename, gen.txtContent);
@@ -373,14 +394,17 @@ export function RegistroComprasVentas({
       }
       const pkg = await buildSireZipPackage(gen);
       downloadSireZip(pkg.zipBlob, pkg.zipFilename);
-      // El generador vuelve a filtrar por su cuenta (por `type`, no por
-      // `clase`), así que se compara lo que entró con lo que salió: una fila
-      // que se cae en silencio entre la pantalla y el .zip es un comprobante
-      // que nadie declara y nadie extraña.
+      // El generador filtra con los mismos criterios que la pantalla (clase y
+      // mes de declaración), pero igual se compara lo que entró con lo que
+      // salió: una fila que se cae en silencio entre la pantalla y el .zip es
+      // un comprobante que nadie declara y nadie extraña.
       if (ids.length && pkg.registros !== ids.length) {
+        const emitidosDespues = (pkg.avisos || []).filter(a => a.motivo === 'emitido_despues');
         showToast?.(
           `⚠ ${pkg.zipFilename}: marcaste ${ids.length} comprobantes y el archivo salió con ${pkg.registros}. `
-          + 'Revisá si alguno está cargado como venta en la hoja de compras (o al revés) antes de presentarlo.',
+          + (emitidosDespues.length
+            ? `${emitidosDespues.map(a => a.documento).join(', ')} tiene(n) fecha de emisión posterior al período: SUNAT no los acepta en este mes.`
+            : 'Revisá si alguno está cargado como venta en la hoja de compras (o al revés) antes de presentarlo.'),
           'amber');
       } else {
         showToast?.(`✓ ${pkg.zipFilename} — ${pkg.registros} comprobantes listos para el SIRE.`, 'green');

@@ -575,3 +575,92 @@ describe('comprobantes en dólares: SUNAT trae soles y la app, la moneda de orig
     expect(filas[0].movimientoId).toBe('m1');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// TANDA F (26-set-2026): mes de declaración, rescate acotado, brecha en soles
+// y un solo mapeo de tipo de comprobante.
+// ═══════════════════════════════════════════════════════════════════
+describe('tanda F — el mes que cuenta es el de declaración', () => {
+  it('una factura de diciembre dada de alta en enero (periodo_declarado) cuadra en el corte de enero', () => {
+    // BCP FI01-17943297: fecha dic-2025, SUNAT la trae en el corte 202601.
+    const f = sunat('01', 'FI01', 17943297, '20100047218', 40.5, '2025-12-30');
+    const m = mov('bcp', 'FI01-17943297', '20100047218', 40.5, '2025-12-30', { periodo_declarado: '202601' });
+    const { filas } = compararLibro([f], [m], { companyId: JARVEX, libro: 'compras', periodo: '202601', companies: COMPANIES });
+    expect(filas[0].estado).not.toBe('otro_periodo');
+    expect(['cuadra', 'fecha_distinta']).toContain(filas[0].estado);
+  });
+
+  it('y en diciembre ya NO sale como «SUNAT no lo tiene»: se declara en enero', () => {
+    const m = mov('bcp', 'FI01-17943297', '20100047218', 40.5, '2025-12-30', { periodo_declarado: '202601' });
+    const { filas, resumen } = compararLibro([], [m], { companyId: JARVEX, libro: 'compras', periodo: '202512', companies: COMPANIES });
+    expect(filas).toHaveLength(0);
+    expect(resumen.brecha).toBe(0);
+  });
+});
+
+describe('tanda F — un importe repetido no esconde un faltante (INTERBANK S/ 85)', () => {
+  it('la comisión de agosto que falta NO se rescata con la de junio: sale «Falta en JARVEX» con pista', () => {
+    const agosto = sunat('01', 'FCC1', 8012345, '20100053455', 85, '2026-08-08');
+    const junio = mov('jun', 'FCC1-7801111', '20100053455', 85, '2026-06-08');
+    const { filas, resumen } = compararLibro([agosto], [junio], { companyId: JARVEX, libro: 'compras', periodo: '202608', companies: COMPANIES });
+    expect(filas[0].estado).toBe('solo_sunat');
+    expect(filas[0].pista).toMatch(/FCC1-7801111/);
+    expect(resumen.brecha).toBe(85);
+  });
+
+  it('tampoco la del mes anterior si SUNAT ya la trae en SU corte', () => {
+    const agosto = sunat('01', 'FCC1', 8012345, '20100053455', 85, '2026-08-08');
+    const julio = mov('jul', 'FCC1-7964323', '20100053455', 85, '2026-07-08');
+    const corteJulio = {
+      company_id: JARVEX, periodo: '202607', libro: 'compras',
+      filas: [sunat('01', 'FCC1', 7964323, '20100053455', 85, '2026-07-08')],
+    };
+    const { filas } = compararLibro([agosto], [julio], {
+      companyId: JARVEX, libro: 'compras', periodo: '202608', companies: COMPANIES, otrosCortes: [corteJulio],
+    });
+    expect(filas.find(x => x.documento === 'FCC1-8012345').estado).toBe('solo_sunat');
+  });
+
+  it('a un mes de distancia y sin corte de ese mes, sigue rescatando (la serie mal tipeada)', () => {
+    const agosto = sunat('01', 'FA01', 5101, '20601234567', 134, '2026-08-02');
+    const julio = mov('jul', 'F001-5999', '20601234567', 134, '2026-07-30');
+    const { filas } = compararLibro([agosto], [julio], { companyId: JARVEX, libro: 'compras', periodo: '202608', companies: COMPANIES });
+    expect(filas[0].estado).toBe('otro_periodo');
+  });
+});
+
+describe('tanda F — la brecha es en soles', () => {
+  it('una factura en dólares que SUNAT no tiene resta en SOLES, con la tasa del comprobante', () => {
+    const m = mov('kp', 'F003-3409', '20505543174', 19518.72, '2026-07-10', { currency: 'USD', tipo_cambio: 3.385 });
+    const { filas, resumen } = compararLibro([], [m], { companyId: JARVEX, libro: 'compras', periodo: '202607', companies: COMPANIES });
+    expect(filas[0].estado).toBe('solo_jarvex');
+    expect(filas[0].appMoneda).toBe('USD');
+    expect(filas[0].appSoles).toBe(66070.87);
+    expect(resumen.brecha).toBe(-66070.87);
+  });
+
+  it('sin tasa estampada usa la de su fecha; sin ninguna, no se suma y se cuenta', () => {
+    const m = mov('kp', 'F003-3409', '20505543174', 100, '2026-07-10', { currency: 'USD' });
+    const con = compararLibro([], [m], { companyId: JARVEX, libro: 'compras', periodo: '202607', companies: COMPANIES, tasaDe: () => 3.5 });
+    expect(con.resumen.brecha).toBe(-350);
+    const sin = compararLibro([], [m], { companyId: JARVEX, libro: 'compras', periodo: '202607', companies: COMPANIES });
+    expect(sin.resumen.brecha).toBe(0);
+    expect(sin.resumen.sinTipoCambio).toBe(1);
+  });
+
+  it('SUNAT en soles sin TC contra JARVEX en dólares con su tasa: cuadra en vez de «importe distinto»', () => {
+    const f = sunat('01', 'F003', 3384, '20505543174', 279600, '2026-07-01');
+    const m = mov('kp', 'F003-3384', '20505543174', 80000, '2026-07-01', { currency: 'USD', tipo_cambio: 3.495 });
+    const { filas } = compararLibro([f], [m], { companyId: JARVEX, libro: 'compras', periodo: '202607', companies: COMPANIES });
+    expect(filas[0].estado).toBe('cuadra');
+  });
+});
+
+describe('tanda F — un solo mapeo de tipo de comprobante', () => {
+  it('un recibo por honorarios cruza como 02, igual que en el SIRE y el PLE', () => {
+    const f = sunat('02', 'E001', 55, '10456789012', 1500, '2026-07-05');
+    const m = mov('rh', 'E001-55', '10456789012', 1500, '2026-07-05', { document_type: 'recibo', category: 'Recibo Honorarios' });
+    const { filas } = compararLibro([f], [m], { companyId: JARVEX, libro: 'compras', periodo: '202607', companies: COMPANIES });
+    expect(filas[0].estado).toBe('cuadra');
+  });
+});
