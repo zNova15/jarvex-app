@@ -127,8 +127,20 @@ export async function syncPendingAuditLogs() {
   }
   if (!pending.length) return 0;
 
+  // Solo se suben las filas del usuario de ESTA sesión: desde la mig 231 el
+  // server exige user_id = auth.uid(). En una PC compartida, las del usuario
+  // anterior esperan a que él vuelva a entrar (antes se reintentaban en cada
+  // ciclo y rebotaban para siempre).
+  let sesionUserId = null;
+  try {
+    const { data } = await supabase.auth.getSession();   // local: 0 red
+    sesionUserId = data?.session?.user?.id || null;
+  } catch (e) { /* sin sesión */ }
+  if (!sesionUserId) return 0;
+
   let synced = 0;
   for (const row of pending) {
+    if (row.user_id !== sesionUserId) continue;
     // Sanitizar record_id en retry: filas viejas pueden tener strings no-UUID
     // (ej: "almacenero:Obras", nombres de catálogo) que rompen el insert.
     const sanitized = sanitizeRecordId(row.record_id, row.new_data);

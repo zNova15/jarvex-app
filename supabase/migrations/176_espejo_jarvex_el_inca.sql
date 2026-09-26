@@ -1,4 +1,9 @@
 -- ═══════════════════════════════════════════════════════════════════
+-- ⛔ NO CORRER — SUPERADA (25-set-2026). Nunca se aplicó y los datos
+-- cambiaron: la E001-2 ya tiene espejo (falta solo el vínculo de vuelta,
+-- ver 232) y la E001-1 fue anulada por nota de crédito el mismo día.
+-- Correrla hoy le cargaría a EL INCA S/ 12.920 de una factura anulada.
+-- ═══════════════════════════════════════════════════════════════════
 -- 176 — EL ESPEJO DE LAS 2 OPERACIONES INTERNAS QUE FALTABAN
 --
 -- Pendiente abierto desde la tanda 3: "cargar el espejo de 4 operaciones

@@ -144,6 +144,11 @@ timeout):
   `version/sync_status/last_synced_at/idempotency_key/deleted_at`) · Dexie `db.version(N)`
   · SyncEngine (TRANSACTIONAL/MASTER_TABLES, `TABLA_TO_MODULO`, `FK_DEPS`) · hook en
   `useOfflineData.js` + registrar en `window.__hooks`.
+  **Después de aplicar la migración, correr `SELECT * FROM public.jx_invariantes_tablas();`
+  — tiene que devolver 0 filas.** Chequea lo que 15 tablas olvidaron entre la 180 y
+  la 222: el cerco `campo_cerco_*` (4 policies), los triggers que sellan `updated_at`
+  en INSERT y en UPDATE (sin ellos una fila creada offline no baja nunca por pull),
+  RLS habilitada y que `anon` no tenga privilegios (mig 231).
 
 ---
 
