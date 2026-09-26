@@ -1,5 +1,6 @@
 import React from "react";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import {
   nombreCuenta, saldoCorrido, cuadreDeCuenta, totales, agruparPorEntidad,
@@ -287,11 +288,12 @@ function CuentasPersonalSection({ showToast }) {
   const userId = auth?.profile?.id ?? 'offline';
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
-  // Las cuentas de trabajadores son dato de PERSONAL: las gestiona quien
-  // gestiona personal (RRHH/asistente) o quien gestiona cuentas (tesorero).
-  const canWrite = isAdmin
+  // Las cuentas bancarias del personal las escribe solo contabilidad (admin,
+  // contadora, asistentes): ESPEJO del cerco de la mig 233. Antes bastaba
+  // 'Personal'-w, que tiene la almacenera — el servidor ya no se lo acepta.
+  const canWrite = puedeEscribirContabilidad(myRol) && (isAdmin
     || (window.__hasPerm?.(myRol, 'Cuentas Bancarias', 'w') ?? false)
-    || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false);
+    || (window.__hasPerm?.(myRol, 'Personal', 'w') ?? false));
 
   const { obraId } = window.__useObraActiva ? window.__useObraActiva() : { obraId: null };
   const { data: personal } = window.__hooks.usePersonal(obraId);

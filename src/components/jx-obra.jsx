@@ -14,6 +14,7 @@ import {
   normalizarEstadoObra, usaEstructuraCostos, etiquetaTrabajo,
   TIPO_TRABAJO_DEFAULT, ORIGEN_DEFAULT,
 } from "../lib/tipos-trabajo.js";
+import { puedeEditarObras } from "../lib/escritura-contable.js";
 const { useState: uSO, useMemo: uMO, useEffect: uEO } = React;
 
 // Celda de plazo planificado (inicio→fin · N días) o aviso si no se importó del cronograma.
@@ -94,7 +95,10 @@ function ObrasPage({ showToast }) {
   const isAdmin = myRol === 'admin';
   const appMode = window.__useAppMode ? window.__useAppMode() : { isEdicion: true };
   const canDelete = isAdmin && (appMode.isEdicion || appMode.isPrueba);
-  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Obras', 'w') ?? false);
+  // Crear o editar una obra: solo el administrador (Gabriel, 25-set). ESPEJO
+  // del cerco de escritura de la mig 233 — antes el lápiz no tenía gate y la
+  // edición de cualquier otro rol quedaba en su dispositivo sin subir nunca.
+  const canWrite = puedeEditarObras(myRol);
   // Constituir un consorcio es un acto societario y tiene su propio gate:
   // ESPEJO de la policy "consorcios: conduccion escribe" (mig 172). Quien puede
   // editar la obra pero no el consorcio ve el panel en solo lectura — mejor eso
@@ -452,6 +456,9 @@ function ObrasPage({ showToast }) {
 
   const handleSubmitInner = async () => {
     if (busyObra) return; // doble click guard
+    // El borrador de Postulaciones abre el formulario sin pasar por el botón:
+    // el cerco va acá, antes de escribir (el servidor igual lo rechazaría).
+    if (!canWrite) { showToast('Crear o modificar obras lo hace solo el administrador', 'red'); return; }
     if (!form.nombre_obra?.trim()) { showToast('Falta el nombre de la obra', 'red'); return; }
     // ── Validaciones de sentido común ─────────────────────────
     if (form.fecha_inicio && form.fecha_fin_estimada && form.fecha_fin_estimada < form.fecha_inicio) {
@@ -655,9 +662,11 @@ function ObrasPage({ showToast }) {
                   <span className={`badge ${ESTADO_OBRA_BADGE[normalizarEstadoObra(o.estado)]||'b-gray'}`}>{ESTADO_OBRA_LBL[normalizarEstadoObra(o.estado)] || o.estado}</span>
                   <div style={{ fontSize:10, color:'var(--tm)', marginTop:3 }}>{etiquetaTrabajo(o)}</div>
                   <div style={{ display:'flex', gap:4 }}>
-                    <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
-                      <JxIcon name="edit" size={11}/>
-                    </button>
+                    {canWrite && (
+                      <button className="btn btn-ghost btn-xs" title="Editar obra" onClick={(e)=>{ e.stopPropagation(); openEditObra(o); }}>
+                        <JxIcon name="edit" size={11}/>
+                      </button>
+                    )}
                     {canDelete && (
                       <button className="btn btn-red btn-xs" title="Eliminar (solo modo edición)" onClick={(e)=>{ e.stopPropagation(); handleDeleteObra(o); }}>
                         <JxIcon name="trash" size={11}/>
@@ -1604,7 +1613,8 @@ function PartidasPage({ showToast }) {
   // Aplica la estructura de costos detectada en el Excel a la obra:
   // utilidad/gastos/IGV %, otros gastos, costo_directo y costo total.
   const aplicarCostosALaObra = async () => {
-    if (!comparativoCostos || !canWrite || !obraId) return;
+    // Escribe la obra (costo directo, márgenes, total): solo el admin (mig 233).
+    if (!comparativoCostos || !canWrite || !puedeEditarObras(myRol) || !obraId) return;
     setComparativoBusy(true);
     try {
       const c = comparativoCostos;
@@ -2472,7 +2482,8 @@ function PartidasPage({ showToast }) {
                           <span style={{ color:'var(--green)' }}>Costo Total: <strong>{fmtSoles(comparativoCostos.costoTotal)}</strong></span>
                         </div>
                       </div>
-                      <button className="btn btn-amber btn-sm" disabled={comparativoBusy || costosAplicados || !canWrite}
+                      <button className="btn btn-amber btn-sm" disabled={comparativoBusy || costosAplicados || !canWrite || !puedeEditarObras(myRol)}
+                        title={puedeEditarObras(myRol) ? undefined : 'Los datos de la obra los cambia solo el administrador'}
                         onClick={aplicarCostosALaObra}>
                         <JxIcon name={costosAplicados ? 'check' : 'dollar'} size={12}/>
                         {costosAplicados ? 'Aplicado ✓' : 'Aplicar a la obra'}

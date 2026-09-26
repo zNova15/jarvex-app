@@ -18,6 +18,7 @@ import { rankearFacturasParaIngreso, estadoRecepcionDeItems, parseNotas } from "
 import { ConsultasPanel, useConsultasResumen } from "./jx-consultas.jsx";
 import { crearConsulta } from "../lib/consultas-puente.js";
 import { coincideTokens } from "../lib/buscar-tokens.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 const { useState: uSM, useMemo: uMM, useEffect: uEM } = React;
 
 // Botón "Exportar Excel" de las páginas de movimientos: descarga el dataset
@@ -2578,7 +2579,10 @@ function ProveedoresPage({ showToast }) {
   // que también exige 'Proveedores'-w): un rol sin write NO debe poder crear un
   // proveedor que luego no puede sincronizar (quedaría PENDING eterno). Los roles
   // de solo lectura (p.ej. ayudante_contador) ven la página + "Solicitar cambio".
-  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Proveedores', 'w') ?? false);
+  // Y además el cerco de escritura de la mig 233: proveedores es dato contable,
+  // lo escriben admin/contadora/asistentes. Un rol con 'Proveedores'-w fuera
+  // de esa lista (asistente admin, jefe de compras) pasa a "Solicitar cambio".
+  const canWrite = puedeEscribirContabilidad(myRol) && (isAdmin || (window.__hasPerm?.(myRol, 'Proveedores', 'w') ?? false));
   const appMode = window.__useAppMode ? window.__useAppMode() : { isPrueba: true };
   const canDelete = canWrite && (appMode.isEdicion || appMode.isPrueba);
 

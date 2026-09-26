@@ -37,6 +37,7 @@ import {
 } from "../lib/activos-fijos.js";
 import { filtroInicialEmpresa, setEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 import { RecomendadorActivosModal } from "./jx-recomendador-activos.jsx";
 import { candidatosActivo, claveLinea, descartadosDe } from "../lib/recomendador-activos.js";
 
@@ -73,7 +74,9 @@ function ActivosFijosPage({ showToast }) {
   const auth = window.__useAuth?.();
   const rol = auth?.profile?.rol || '';
   const userId = auth?.profile?.id ?? 'offline';
-  const puedeEditar = ['admin', 'gerente', 'contador', 'ayudante_contador', 'tesorero'].includes(rol);
+  // ESPEJO del cerco de escritura (mig 233): gerente y tesorero ya no escriben
+  // el registro 7.1 — el servidor les rechazaría el alta.
+  const puedeEditar = puedeEscribirContabilidad(rol);
 
   const { data: companies } = window.__hooks.useCompanies();
   const { data: activosPesados } = window.__hooks.useActivosPesados();

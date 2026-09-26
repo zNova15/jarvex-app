@@ -20,6 +20,7 @@ import { supabase } from '../lib/supabase';
 import { uploadPendingEvidencias } from './EvidenceUploader';
 import { syncPendingAuditLogs } from '../lib/audit';
 import { syncPendingChangeRequests } from '../lib/changeRequests';
+import { puedeEmpujarTabla } from '../lib/escritura-contable';
 import { captureException, captureMessage } from '../instrument.js';
 import { trackEvent } from '../lib/posthog.js';
 import {
@@ -1168,6 +1169,14 @@ function canPushTabla(tabla) {
     const rol = window.__currentRol;
     if (!rol) return true;          // sin rol todavía: dejar pasar
     if (rol === 'admin') return true;
+    // CERCO DE ESCRITURA (mig 233): contabilidad y obras las decide el espejo
+    // del servidor, no la matriz. Así no se sube lo que la RLS va a rechazar
+    // (asistente admin, jefe de compras, gerente…) y sí sube la RECEPCIÓN de la
+    // almacenera, que antes solo llegaba si el primer sync corría antes de que
+    // se publicara su rol (el `!rol` de arriba): el server le acepta únicamente
+    // las columnas de recepción (trigger accounting_movements_solo_recepcion).
+    const cerco = puedeEmpujarTabla(tabla, rol);
+    if (cerco !== null) return cerco;
     // companies es dependencia transversal de la contabilidad: si el rol puede
     // crear movimientos contables / intercompany, debe poder subir la empresa que
     // esos referencian. La RLS del server YA permite INSERT de companies a

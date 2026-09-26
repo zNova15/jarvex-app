@@ -43,6 +43,7 @@ import { ventasSinEspejo, datosDelEspejo } from "../lib/interco-espejo.js";
 import { filtroInicialEmpresa, setEmpresaActivaId, limpiarEmpresaActiva, getEmpresaActivaId } from "../lib/empresa-activa.js";
 import { useEmpresaBloqueada } from "../hooks/useEmpresaActiva.js";
 import { requiereBancarizacion } from "../lib/tipo-cambio.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 
 // Umbral del SPOT: una operación de S/ 700 o menos NO está sujeta a detracción.
@@ -146,7 +147,8 @@ function EmpresasPage({ showToast }) {
   const myRol = auth?.profile?.rol;
   const isAdmin = myRol === 'admin';
   const userId = auth?.profile?.id ?? 'offline';
-  const canWrite = isAdmin || (window.__hasPerm?.(myRol, 'Empresas', 'w') ?? false);
+  // + cerco de escritura de la mig 233: las empresas las escribe contabilidad.
+  const canWrite = puedeEscribirContabilidad(myRol) && (isAdmin || (window.__hasPerm?.(myRol, 'Empresas', 'w') ?? false));
   const { data: companies } = window.__hooks.useCompanies();
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras?.() || { data: [] };
@@ -301,6 +303,7 @@ function EmpresasPage({ showToast }) {
     const c = companies.find(x => x.id === id);
     if (!c) return;
     window.__empresaEditarIntent = null;
+    if (!canWrite) return;   // el intent no salta el gate de escritura
     openEditar(c);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companies]);

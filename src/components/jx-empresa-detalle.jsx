@@ -79,6 +79,7 @@ import { DOCS_EMPRESA, documentosDeEmpresa, resumenDocsEmpresa, serializarMetaDo
 import { getEvidenciaSrc, abrirUrlEvidencia } from "../lib/evidencias-url.js";
 import { uploadPendingEvidencias } from "../sync/EvidenceUploader.js";
 import { MODO_PAGO_LABEL } from "../lib/pagos.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 
 const { useState: uSD, useMemo: uMD } = React;
 // El <datalist> de clasificaciones se monta UNA vez por pantalla (ver la
@@ -587,6 +588,8 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
 
   const guardarRecategorizacion = async (insumo, codigo, { silencioso = false } = {}) => {
     const showToast = silencioso ? () => {} : (window.__showToast || (() => {}));
+    // Reescribe las líneas de la factura: es escritura contable (mig 233).
+    if (!puedeEscribirContabilidad(rol)) { showToast('Re-categorizar lo hace contabilidad', 'amber'); return; }
     if (!codigo) { showToast('Elegí una clasificación', 'amber'); return; }
     const userId = window.__currentUserId || null;
     try {
@@ -711,6 +714,9 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // después del await a Dexie, y en esa ventana un segundo clic entra y
   // duplica. Acá duplicaría una transformación entera, con su valor.
   const guardarTransformacion = async (borrador) => {
+    // Una transformación mueve valor entre insumos: la registra contabilidad
+    // (cerco de escritura, mig 233). Antes no tenía gate.
+    if (!puedeEscribirContabilidad(rol)) { (window.__showToast || (() => {}))('Registrar transformaciones lo hace contabilidad', 'amber'); return false; }
     if (transfEnCursoRef.current) return false;
     transfEnCursoRef.current = true;
     const showToast = window.__showToast || (() => {});
@@ -756,6 +762,7 @@ function EmpresaDetalle({ company, obrasEjecutora = [], obras = [], consorcios =
   // hay ventas contra esas láminas — borrarla dejaría el saldo sin explicación.
   const cambiarEstadoTransf = async (t, estado) => {
     const showToast = window.__showToast || (() => {});
+    if (!puedeEscribirContabilidad(rol)) { showToast('Anular transformaciones lo hace contabilidad', 'amber'); return; }
     try {
       // `window.__currentUser` NO EXISTE — nunca lo definió nadie, así que
       // esto era siempre null y las transformaciones quedaban sin autor y con
@@ -2512,11 +2519,15 @@ function FichaEmpresa({ company, obrasDeEmpresa, evidencias = [], refreshEvidenc
         </div>
       )}
     </div>
-    <button className="btn btn-ghost btn-sm"
-      title="Abre el formulario de la empresa en el catálogo"
-      onClick={() => { window.__empresaEditarIntent = company.id; window.__navTo?.('empresas', 'general'); }}>
-      <JxIcon name="edit" size={13} /> Editar estos datos
-    </button>
+    {/* Editar la empresa es escritura contable (mig 233): antes este botón
+        no tenía gate y lo veía cualquiera que abriera la ficha. */}
+    {puedeEscribirContabilidad(window.__currentRol) && (
+      <button className="btn btn-ghost btn-sm"
+        title="Abre el formulario de la empresa en el catálogo"
+        onClick={() => { window.__empresaEditarIntent = company.id; window.__navTo?.('empresas', 'general'); }}>
+        <JxIcon name="edit" size={13} /> Editar estos datos
+      </button>
+    )}
 
     <DocumentosEmpresa company={company} evidencias={evidencias} refresh={refreshEvidencias} />
   </>);
