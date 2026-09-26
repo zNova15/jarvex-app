@@ -65,7 +65,7 @@ import {
   usePersonalContrato, usePlanillas, usePlanillaBoletas,
 } from './hooks/useOfflineData';
 import { syncAll } from './sync/SyncEngine';
-import { uploadPendingEvidencias, saveEvidenciaLocal } from './sync/EvidenceUploader';
+import { uploadPendingEvidencias, saveEvidenciaLocal, reactivarEvidenciasFallidas } from './sync/EvidenceUploader';
 import { db, newId } from './db/jarvex.db';
 import { supabase } from './lib/supabase';
 import * as fechaTZ from './lib/fecha';
@@ -426,6 +426,17 @@ function Root() {
     }
   }, [auth?.profile?.id]);
 
+  // Cambió la designación de obras (o el rol) de este usuario mientras tenía
+  // la sesión abierta: lo detecta el SyncEngine con el `__yo` de sync_pull
+  // (mig 235). Se vuelven a cargar las obras permitidas del selector sin
+  // esperar a que salga y vuelva a entrar.
+  const [obrasTick, setObrasTick] = React.useState(0);
+  React.useEffect(() => {
+    const on = () => setObrasTick(t => t + 1);
+    window.addEventListener('jx_alcance_cambio', on);
+    return () => window.removeEventListener('jx_alcance_cambio', on);
+  }, []);
+
   // ── AISLAMIENTO POR OBRA ──────────────────────────────────────────
   // window.__obrasPermitidas = Set de obra_ids asignadas (obra_usuarios) o
   // null = sin restricción (admin/gerente o sin asignaciones). Lo consumen
@@ -459,7 +470,7 @@ function Root() {
       try { window.dispatchEvent(new Event('obras_permitidas_change')); } catch {}
     });
     return () => { cancel = true; };
-  }, [auth?.profile?.id, auth?.profile?.rol]);
+  }, [auth?.profile?.id, auth?.profile?.rol, obrasTick]);
 
   // Subir evidencias PENDIENTES de forma continua. Antes SOLO se disparaba al
   // montar y al login → una foto guardada durante la sesión (ej. un ingeniero
@@ -480,7 +491,9 @@ function Root() {
       const t = e?.detail?.tabla || e?.detail?.table;
       if (!t || t === 'evidencias') kick();
     };
-    const onOnline = () => kick(500);
+    // Al volver la red, lo que falló por el corte vuelve a la cola ya (antes
+    // esperaba a que alguien recargara la app).
+    const onOnline = () => { reactivarEvidenciasFallidas().catch(() => {}).finally(() => kick(500)); };
     window.addEventListener('jx_data_changed', onData);
     window.addEventListener('online', onOnline);
     const iv = setInterval(() => { if (navigator.onLine) uploadPendingEvidencias().catch(() => {}); }, 45000);

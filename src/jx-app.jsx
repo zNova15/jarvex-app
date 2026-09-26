@@ -238,12 +238,18 @@ function LoginScreen({ onLogin }) {
   const [pass, setPass]     = uSA('');
   const [loading, setLoad]  = uSA(false);
   const [err, setErr]       = uSA(() => {
-    // Si la sesión anterior se cerró por inactividad, mostramos motivo aquí
+    // Si la sesión anterior se cerró sola, mostramos el motivo aquí
+    // (inactividad; sesión vencida o revocada; usuario desactivado — tanda E).
     try {
       const reason = sessionStorage.getItem('jx_logout_reason');
-      if (reason === 'inactivity') {
+      const MOTIVOS = {
+        inactivity: 'Tu sesión se cerró por inactividad. Volvé a iniciar sesión.',
+        sesion_vencida: 'Tu sesión se cerró (venció, o se cerró desde otra pestaña u otro equipo). Volvé a entrar: lo que cargaste en este equipo sigue guardado y se sube al entrar.',
+        desactivado: 'Tu usuario está desactivado. Si es un error, pedile al administrador que lo reactive.',
+      };
+      if (reason && MOTIVOS[reason]) {
         sessionStorage.removeItem('jx_logout_reason');
-        return 'Tu sesión se cerró por inactividad. Volvé a iniciar sesión.';
+        return MOTIVOS[reason];
       }
     } catch {}
     return '';

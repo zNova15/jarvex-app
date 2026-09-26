@@ -148,7 +148,12 @@ timeout):
   — tiene que devolver 0 filas.** Chequea lo que 15 tablas olvidaron entre la 180 y
   la 222: el cerco `campo_cerco_*` (4 policies), los triggers que sellan `updated_at`
   en INSERT y en UPDATE (sin ellos una fila creada offline no baja nunca por pull),
-  RLS habilitada y que `anon` no tenga privilegios (mig 231).
+  RLS habilitada y que `anon` no tenga privilegios (mig 231), y el cerco
+  `activo_cerco` (mig 235: un usuario desactivado no lee ni escribe nada). Una
+  tabla nueva lleva `CREATE POLICY activo_cerco … AS RESTRICTIVE FOR ALL TO
+  authenticated USING ((SELECT public.jx_usuario_activo())) WITH CHECK (…igual…)`.
+  En Dexie, la tabla va en una `db.version(N)` NUEVA (la más alta + 1): nunca
+  en un número que ya existe (lo verifica `dexie-versiones.test.js`).
 
 ---
 

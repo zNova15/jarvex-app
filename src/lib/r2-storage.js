@@ -30,24 +30,32 @@ async function accessToken() {
   } catch { return null; }
 }
 
-// Pide al endpoint una URL prefirmada. Devuelve la URL (string) o null si algo
-// falla (para que el caller decida el fallback). Nunca tira.
+// Pide al endpoint una URL prefirmada. Devuelve { url } o { url:null, status,
+// error } si algo falla (para que el caller decida el fallback). Nunca tira.
 // Un 404 significa "el objeto no está en R2" (evidencia aún no migrada) → null
-// → el caller cae a Supabase. 503 = R2 no configurado. 401/403 = sesión o
+// → el caller cae a Supabase. 503 = R2 no configurado. 401 = sesión, 403 =
 // permiso. En todos los casos el caller decide, acá nunca se rompe.
-async function firmar(action, path, extra) {
+// El status viaja (tanda E): el subidor distingue una sesión vencida o un
+// corte de la red de un rechazo de verdad, y solo este último cuenta.
+async function firmarDetalle(action, path, extra) {
   const token = await accessToken();
-  if (!token) return null;
+  if (!token) return { url: null, status: 401, error: 'sin sesión' };
   try {
     const resp = await fetch('/api/r2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ action, path, ...(extra || {}) }),
     });
-    if (!resp.ok) return null;
     const data = await resp.json().catch(() => null);
-    return data?.url || null;
-  } catch { return null; }
+    if (!resp.ok) return { url: null, status: resp.status, error: data?.error || `HTTP ${resp.status}` };
+    return { url: data?.url || null, status: resp.status, error: data?.url ? null : 'respuesta sin url' };
+  } catch (e) {
+    return { url: null, status: 0, error: `error de red: ${e?.message || e}` };
+  }
+}
+
+async function firmar(action, path, extra) {
+  return (await firmarDetalle(action, path, extra)).url;
 }
 
 // URL prefirmada de LECTURA (7 días) para un path del bucket, o null si falla.
@@ -56,13 +64,16 @@ export async function getR2SignedGetUrl(path) {
   return firmar('sign_get', path);
 }
 
-// Sube un blob a R2 en `path`. Devuelve { ok } o { ok:false, error }.
+// Sube un blob a R2 en `path`. Devuelve { ok } o { ok:false, error, status, etapa }.
 // Pide una URL prefirmada de PUT y hace el PUT directo al bucket.
 // Manda tipo y tamaño al firmar para que el servidor los valide (sin eso se
 // podía dejar cualquier objeto de hasta 5 GB en el bucket).
 export async function uploadToR2(path, blob, contentType) {
-  const url = await firmar('sign_put', path, { contentType, size: blob?.size });
-  if (!url) return { ok: false, error: 'No se pudo firmar la subida a R2' };
+  const firma = await firmarDetalle('sign_put', path, { contentType, size: blob?.size });
+  const url = firma.url;
+  if (!url) {
+    return { ok: false, etapa: 'firma', status: firma.status, error: `No se pudo firmar la subida a R2 (${firma.error})` };
+  }
   try {
     const resp = await fetch(url, {
       method: 'PUT',
@@ -76,9 +87,9 @@ export async function uploadToR2(path, blob, contentType) {
         'Cache-Control': 'public, max-age=2592000, immutable',
       },
     });
-    if (!resp.ok) return { ok: false, error: `PUT a R2 falló: HTTP ${resp.status}` };
+    if (!resp.ok) return { ok: false, etapa: 'put', status: resp.status, error: `PUT a R2 falló: HTTP ${resp.status}` };
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: `PUT a R2 error de red: ${e?.message || e}` };
+    return { ok: false, etapa: 'put', status: 0, error: `PUT a R2 error de red: ${e?.message || e}` };
   }
 }

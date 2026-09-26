@@ -59,7 +59,9 @@ function registrar(tabla, filasTraidas, filasLocales) {
 
 // Punto de entrada para el SyncEngine: llamar solo cuando el pull fue
 // incremental (lastSync no era null — un full pull baja todo por diseño y no
-// dice nada sobre una bomba).
+// dice nada sobre una bomba). Desde la tanda E también lo llama el pull por
+// RPC (antes solo la ruta legacy: justo la puerta por la que el RPC re-bajaba
+// los bloques de sellos iguales no se medía).
 export function medirCicloIncremental(tabla, filasTraidas, filasLocales) {
   return registrar(tabla, filasTraidas, filasLocales);
 }
@@ -91,7 +93,47 @@ export function haySospechaActiva() {
   return false;
 }
 
+// ── FRENO (tanda E, 26-set-2026) ───────────────────────────────────────
+// Hasta acá el techo solo AVISABA: ante la señal exacta del 9-set la app
+// seguía bajando igual, ciclo tras ciclo. Un pico aislado es normal (un
+// import grande, alguien que reclasificó 3.000 insumos); lo que no es normal
+// es que la MISMA tabla traiga una fracción grande en varios ciclos
+// SEGUIDOS — con el cursor compuesto cada ciclo parte de donde terminó el
+// anterior, así que eso solo pasa si algo en el servidor re-sella las filas
+// una y otra vez. Ahí la tabla se deja de pedir un rato: no se pierde nada
+// (el cursor queda quieto y la retoma después), y se corta la sangría hasta
+// que alguien mire.
+export const CICLOS_SOSPECHOSOS_PARA_FRENAR = 5;
+export const FRENO_MS = 10 * 60_000;
+const _frenadas = new Map(); // tabla -> timestamp hasta el que no se pide
+
+/**
+ * ¿Hay que frenar esta tabla? Mira sus últimas N mediciones. Si frena,
+ * devuelve true UNA vez (para avisar) y deja la tabla frenada FRENO_MS.
+ */
+export function evaluarFreno(tabla, ahora = Date.now()) {
+  const lista = _historial.get(tabla) || [];
+  if (lista.length < CICLOS_SOSPECHOSOS_PARA_FRENAR) return false;
+  const ultimas = lista.slice(-CICLOS_SOSPECHOSOS_PARA_FRENAR);
+  if (!ultimas.every(e => e.sospechoso)) return false;
+  if (tablaFrenada(tabla, ahora)) return false;
+  _frenadas.set(tabla, ahora + FRENO_MS);
+  // Se vacía el historial: al volver, la tabla tiene que juntar otra vez N
+  // ciclos seguidos para frenar de nuevo (y no quedar frenada para siempre
+  // por lo que pasó antes del freno).
+  _historial.set(tabla, []);
+  return true;
+}
+
+export function tablaFrenada(tabla, ahora = Date.now()) {
+  const hasta = _frenadas.get(tabla);
+  if (!hasta) return false;
+  if (hasta <= ahora) { _frenadas.delete(tabla); return false; }
+  return true;
+}
+
 // Solo para tests — vuelve el módulo a su estado inicial entre casos.
 export function _resetParaTests() {
   _historial.clear();
+  _frenadas.clear();
 }

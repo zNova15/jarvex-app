@@ -917,9 +917,11 @@ function PlantillasModal({ obraId, onClose, showToast, embedded = false }) {
       }
       if (def.cargaActivos) {
         try {
+          // activos_pesados indexa obra_actual_id, NO obra_id: el .where('obra_id')
+          // lanzaba SchemaError, el catch mudo lo tragaba y la plantilla salía
+          // siempre sin máquinas (tanda E). Es una tabla chica: filtro en memoria.
           const maquinarias = await window.__db.activos_pesados
-            ?.where('obra_id').equals(obraId)
-            .filter(a => !a.deleted_at)
+            ?.filter(a => !a.deleted_at && a.obra_actual_id === obraId)
             .toArray();
           args.maquinarias = maquinarias || [];
         } catch {}

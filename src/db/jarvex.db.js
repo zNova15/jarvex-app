@@ -123,6 +123,33 @@ export const db = new Dexie('JarvexDB');
 // `etapa` porque la lista filtra por ahí (lo que está en juego vs lo cerrado)
 // y `licitacion_id` porque los requisitos siempre se leen de a una postulación.
 // Aditivo.
+// Versión 68: TRES TABLAS QUE SE HABÍAN COLADO EN VERSIONES VIEJAS (tanda E,
+// 26-set-2026). `tipos_cambio` (mig 222) se declaró como una SEGUNDA
+// db.version(60) y `clasificaciones` / `clasificacion_terminos` (mig 205)
+// como una segunda db.version(47): números que los equipos ya tenían
+// instalados. Funcionaba solo porque Dexie 4 detecta «el esquema creció sin
+// subir la versión», agrega lo que falta y sube el número nativo por su
+// cuenta (671, 672…) con un warning en cada arranque. Un cambio de Dexie o
+// alguien que «ordene» el archivo dejaba esas tablas sin crear en los equipos
+// viejos (NotFoundError en el tipo de cambio y en Clasificación). Declaradas
+// acá, en una versión nueva: donde ya existen no cambia nada (mismo índice),
+// y donde no, se crean. Nunca volver a usar un número de versión que ya
+// existe: lo verifica dexie-versiones.test.js.
+//
+// tipos_cambio: una fila por día con la tasa que publicó SUNAT. Se indexa
+// `fecha` porque la única pregunta es «¿tengo la de ESTE día?», y
+// `[fecha+moneda]` para cuando haya más de una moneda. Sin company_id: la
+// tasa es del país, no de la empresa.
+// clasificaciones / clasificacion_terminos: SOLO las que crea Gabriel y los
+// términos que le agrega al diccionario; la base oficial (82 códigos IUPC +
+// 938 términos del Anexo 2 INEI + las 13 del árbol de servicios) viaja en el
+// bundle y NO se replica — ver el encabezado de la mig 205.
+db.version(68).stores({
+  tipos_cambio:           'id, fecha, moneda, [fecha+moneda], fuente, deleted_at, sync_status',
+  clasificaciones:        'id, codigo, arbol, company_id, activo, deleted_at, sync_status',
+  clasificacion_terminos: 'id, norm, clasificacion_codigo, company_id, deleted_at, sync_status',
+});
+
 // Versión 67: LAS RECOMENDACIONES DE IA DEJAN DE VIVIR EN UN NAVEGADOR
 // (mig 217). Estaban en localStorage, que está atado al navegador Y al
 // dominio: lo que recorrió Gabriel en su PC no existía en la de la Contadora
@@ -202,15 +229,6 @@ db.version(60).stores({
 // una entidad contra la familia canónica del grupo (que GASOMI le diga
 // «FIERROS Y ACEROS» y EL INCA «MATERIAL DE FIERRO» a lo mismo se decide una
 // vez). Re-declara las dos tablas de la v58 sumando el índice; aditivo.
-// Versión 60: EL TIPO DE CAMBIO POR FECHA (mig 222, tanda 7). Una fila por día
-// con la tasa que publicó SUNAT. Se indexa `fecha` porque la única pregunta que
-// se le hace es «¿tengo la de ESTE día?», y `[fecha+moneda]` para cuando haya
-// más de una moneda. No tiene company_id: la tasa es del país, no de la
-// empresa. Aditivo.
-db.version(60).stores({
-  tipos_cambio: 'id, fecha, moneda, [fecha+moneda], fuente, deleted_at, sync_status',
-});
-
 db.version(59).stores({
   catalogo_insumos:       'id, norm, familia, tipo, origen, activo, company_id, [company_id+norm], deleted_at, sync_status',
   catalogo_disgregacion:  'id, padre_norm, hijo_norm, company_id, deleted_at, sync_status',
@@ -304,17 +322,6 @@ db.version(47).stores({
   guia_factura: 'id, guia_id, accounting_movement_id, deleted_at, sync_status',
 });
 
-// Versión 47 (mig 205): las clasificaciones dejan de ser solo código. Acá
-// viven SOLO las que crea Gabriel y los términos que le agrega al diccionario;
-// la base oficial (82 códigos IUPC + 938 términos del Anexo 2 INEI + las 13 del
-// árbol de servicios) viaja en el bundle y NO se replica — ver el encabezado de
-// la mig 205, que explica por qué (egress, es la ley, y un device recién
-// instalado tiene que clasificar bien antes del primer sync).
-db.version(47).stores({
-  clasificaciones: 'id, codigo, arbol, company_id, activo, deleted_at, sync_status',
-  clasificacion_terminos: 'id, norm, clasificacion_codigo, company_id, deleted_at, sync_status',
-});
-
 db.version(46).stores({
   app_config: 'id, clave, deleted_at, sync_status',
 });
@@ -398,8 +405,9 @@ db.version(34).stores({
   reportes_dia: 'id, obra_id, fecha, responsable_id, deleted_at, sync_status',
 });
 
-// Versión 33: órdenes de compra/servicio intercompany (Fase 4). Borrador de la
-// contadora jefe → aprobación del admin → lista para emitir. Aditivo.
+// Versión 33: quedó VACÍA. La tabla de órdenes intercompany (Fase 4) que iba
+// a crear no llegó a existir, ni acá ni en la base (revisión del 25-set). La
+// declaración se conserva porque hay equipos que ya pasaron por este número.
 db.version(33).stores({
 });
 

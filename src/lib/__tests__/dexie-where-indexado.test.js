@@ -27,33 +27,52 @@ import { readFileSync, readdirSync } from 'node:fs';
 
 const dbUrl = new URL('../../db/jarvex.db.js', import.meta.url);
 const compsUrl = new URL('../../components/', import.meta.url);
+const libUrl = new URL('../', import.meta.url);
+const hooksUrl = new URL('../../hooks/', import.meta.url);
 
 /**
- * Índices de Dexie por tabla, tomando la ÚLTIMA declaración de cada una — que
- * es la versión vigente del esquema (db.version(N) las va redefiniendo).
+ * Índices VIGENTES de Dexie por tabla: se recorren los bloques
+ * db.version(N).stores({...}) de la versión más baja a la más alta y cada
+ * declaración pisa a la anterior — lo mismo que hace Dexie. (Hasta la tanda E
+ * se tomaba la última declaración EN EL ORDEN DEL ARCHIVO, que está escrito de
+ * la versión más nueva a la más vieja: o sea, la más VIEJA.)
  */
 function indicesPorTabla() {
-  const src = readFileSync(dbUrl, 'utf8');
+  const src = readFileSync(dbUrl, 'utf8').replace(/\r\n/g, '\n');
+  const bloques = [];
+  for (const m of src.matchAll(/db\.version\((\d+)\)\.stores\(\{([\s\S]*?)\n\}\);/g)) {
+    bloques.push({ v: Number(m[1]), cuerpo: m[2] });
+  }
+  bloques.sort((a, b) => a.v - b.v);
   const idx = new Map();
-  for (const m of src.matchAll(/^\s{2}([a-z_]+):\s*'([^']*)'/gm)) {
-    const campos = m[2].split(',')
-      .map(c => c.trim().replace(/^[&*]/, ''))   // & = único, * = multiEntry
-      .filter(Boolean);
-    idx.set(m[1], new Set(campos));
+  for (const { cuerpo } of bloques) {
+    for (const m of cuerpo.matchAll(/^\s{2}([a-z_]+):\s*'([^']*)'/gm)) {
+      const campos = m[2].split(',')
+        .map(c => c.trim().replace(/^[&*]/, ''))   // & = único, * = multiEntry
+        .filter(Boolean);
+      idx.set(m[1], new Set(campos));
+    }
   }
   return idx;
 }
 
-/** Cada `__db.<tabla>.where('<campo>')` del código de pantallas. */
+/**
+ * Cada `__db.<tabla>.where('<campo>')` / `db.<tabla>.where('<campo>')` del
+ * código de pantallas, librerías y hooks. Tolera el encadenado opcional
+ * (`?.where(`): así se escondía el de activos_pesados que dejaba vacía la
+ * plantilla de maquinaria (tanda E).
+ */
 function consultasWhere() {
-  const archivos = readdirSync(compsUrl).filter(f => f.endsWith('.jsx'));
   const out = [];
-  for (const f of archivos) {
-    const src = readFileSync(new URL(f, compsUrl), 'utf8');
-    // Tolera saltos de línea entre la tabla y el .where(...) encadenado.
-    for (const m of src.matchAll(/__db\s*\.\s*([a-z_]+)\s*(?:\n\s*)?\.\s*where\(\s*'([^']+)'/g)) {
-      const linea = src.slice(0, m.index).split('\n').length;
-      out.push({ archivo: f, linea, tabla: m[1], campo: m[2] });
+  for (const dirUrl of [compsUrl, libUrl, hooksUrl]) {
+    const archivos = readdirSync(dirUrl).filter(f => /\.(jsx?|mjs)$/.test(f));
+    for (const f of archivos) {
+      const src = readFileSync(new URL(f, dirUrl), 'utf8');
+      // Tolera saltos de línea entre la tabla y el .where(...) encadenado.
+      for (const m of src.matchAll(/(?:__db|\bdb)\s*\??\.\s*([a-z_]+)\s*(?:\r?\n\s*)?\??\.\s*where\(\s*'([^']+)'/g)) {
+        const linea = src.slice(0, m.index).split('\n').length;
+        out.push({ archivo: f, linea, tabla: m[1], campo: m[2] });
+      }
     }
   }
   return out;
@@ -65,6 +84,12 @@ describe('Dexie — todo .where() usa un campo indexado', () => {
     expect(idx.size, 'no se pudieron leer los índices de jarvex.db.js').toBeGreaterThan(20);
     expect(idx.get('accounting_movements'), 'falta accounting_movements').toBeTruthy();
     expect(consultasWhere().length, 'no se encontró ni un .where() en los componentes').toBeGreaterThan(10);
+    // La versión VIGENTE, no la primera: pagos_partes se re-indexó por
+    // cuenta_id en la v57, y tipos_cambio vive en la v68.
+    expect(idx.get('pagos_partes')?.has('cuenta_id'), 'se leyó un esquema viejo').toBe(true);
+    expect(idx.get('tipos_cambio')?.has('fecha'), 'falta tipos_cambio').toBe(true);
+    // El encadenado opcional también se ve (así se escondía activos_pesados).
+    expect(consultasWhere().some(q => q.archivo.endsWith('.js')), 'no se leyeron las librerías').toBe(true);
   });
 
   it('ninguna pantalla busca por un campo que su tabla no indexa', () => {

@@ -1,3 +1,4 @@
+import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { db } from '../db/jarvex.db';
 import { registrarSiEsRestriccion, esErrorDeServicioRestringido } from './servicio-restringido';
@@ -5,10 +6,34 @@ import { registrarSiEsRestriccion, esErrorDeServicioRestringido } from './servic
 const AUTH_KEY = 'current_session';
 const PROFILE_KEY = 'current_profile';
 
+// Motivo por el que se cerró la sesión, para que la pantalla de ingreso lo
+// diga (jx-app.jsx lo lee de sessionStorage). Uno solo a la vez.
+export const MOTIVOS_SALIDA = Object.freeze({
+  INACTIVIDAD: 'inactivity',
+  SESION_VENCIDA: 'sesion_vencida',
+  DESACTIVADO: 'desactivado',
+});
+export function marcarMotivoSalida(motivo) {
+  try { sessionStorage.setItem('jx_logout_reason', motivo); } catch {}
+}
+
+// Mensaje para una cuenta dada de baja desde Administración (mig 235).
+export const MENSAJE_DESACTIVADO =
+  'Tu usuario está desactivado. Si es un error, pedile al administrador que lo reactive.';
+
 // ── Guardar sesión en IndexedDB para uso offline ──────────────────────
 
+// Solo lo que el modo sin conexión necesita: QUIÉN es y hasta cuándo vale.
+// Antes se guardaba la sesión entera —access y refresh token— en IndexedDB,
+// una copia en claro de un secreto que nadie usaba para renovar nada (la
+// sesión viva la maneja supabase-js en su propio storage).
+function sesionParaCache(session) {
+  if (!session) return null;
+  return { user: session.user ?? null, expires_at: session.expires_at ?? null };
+}
+
 async function cacheSession(session, profile) {
-  await db.auth_cache.put({ key: AUTH_KEY, value: session });
+  await db.auth_cache.put({ key: AUTH_KEY, value: sesionParaCache(session) });
   if (profile) {
     await db.auth_cache.put({ key: PROFILE_KEY, value: profile });
   }
@@ -42,9 +67,19 @@ export async function login(email, password) {
       .eq('id', data.user.id)
       .single();
 
+    // Cuenta dada de baja: Auth deja entrar (la contraseña es buena), pero la
+    // RLS ya no le muestra nada (mig 235). Mejor decirlo en la puerta.
+    if (profileData && profileData.activo === false) {
+      try { await supabase.auth.signOut(); } catch {}
+      const e = new Error(MENSAJE_DESACTIVADO);
+      e.desactivado = true;
+      throw e;
+    }
+
     await cacheSession(data.session, profileData);
     return { session: data.session, profile: profileData, offline: false };
   } catch (err) {
+    if (err?.desactivado) throw err;
     // Si no hay internet, intentar con sesión cacheada
     if (!navigator.onLine) {
       const cachedSession = await getCachedSession();
@@ -109,13 +144,41 @@ export async function logout() {
 
 export async function getCurrentUser() {
   if (navigator.onLine) {
-    const { data: { session } } = await supabase.auth.getSession();
+    let session = null;
+    let errSesion = null;
+    try {
+      const r = await supabase.auth.getSession();
+      session = r?.data?.session ?? null;
+      errSesion = r?.error ?? null;
+    } catch (e) { errSesion = e; }
+
+    // SIN SESIÓN EN SUPABASE, CON CONEXIÓN (tanda E). Antes se caía al perfil
+    // cacheado y el usuario entraba «sin conexión» con los datos a la vista y
+    // el sync apagado en silencio — así quedaba una sesión revocada (los
+    // refresh_token_reuse de los logs) o un token que no se pudo renovar.
+    // Ahora: sin sesión y sin error de RED = la sesión terminó → a la pantalla
+    // de ingreso, diciendo por qué. Con error de red (no se pudo renovar por
+    // la conexión) sí se sigue con el caché: para eso existe el modo offline.
+    if (!session && !(errSesion && isAuthRetryableFetchError(errSesion))) {
+      const habiaPerfil = await getCachedProfile().catch(() => null);
+      if (habiaPerfil) marcarMotivoSalida(MOTIVOS_SALIDA.SESION_VENCIDA);
+      try { await clearCachedSession(); } catch {}
+      return null;
+    }
+
     if (session) {
       const { data: profile, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', session.user.id)
         .single();
+
+      // Dado de baja mientras tenía la sesión abierta (mig 235): afuera ya.
+      if (profile && profile.activo === false) {
+        marcarMotivoSalida(MOTIVOS_SALIDA.DESACTIVADO);
+        await logout();
+        return null;
+      }
 
       // ANTES: se devolvía `profile` tal cual viniera. Si la consulta fallaba
       // —el 402 del 9-set, pero también una RLS transitoria o un corte de red a

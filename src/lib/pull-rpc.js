@@ -17,22 +17,52 @@
 // RPC, vuelve {trunc:true} y cae al full pull legacy paginado.
 export const EPOCH_WATERMARK = '2020-01-01T00:00:00+00:00';
 
-// candidatas: [{ key, tabla, watermark, localCount, excluida, sinServer }]
-// → { entries: [{k,t,w}], legacy: [key...] }
-//   · excluida (sync por rol) o sinServer → no va a ningún lado.
-//   · watermark + datos locales → incremental normal vía RPC.
+// ── CURSOR COMPUESTO EN EL RPC (tanda E, 26-set-2026) ─────────────────────
+// Hasta la mig 231 el RPC filtraba `updated_at >= w` sin id: cada bloque de
+// filas con el mismo sello (un pushCreatesBatch de 200 filas comparte el
+// `now()` de su transacción) volvía a viajar ENTERO en cada ciclo, a cada
+// dispositivo, y el techo de pull no lo veía porque solo medía la ruta legacy.
+// Es la forma exacta del corte por egress del 9-sep, por otra puerta.
+//
+// Ahora toda entrada incremental lleva `i` y el RPC filtra
+// (updated_at, id) > (w, i): lo posterior al sello MÁS lo del mismo sello que
+// todavía no se vio. Si el watermark se grabó sin id (versiones viejas), el id
+// más chico posible hace que la comparación sea exactamente el `>=` de antes
+// — una sola vez, porque ese ciclo ya graba el id del borde.
+// Todas las tablas de public tienen id uuid (medido el 26-set); si alguna no
+// lo tuviera, el cast falla adentro del RPC, vuelve {err} y cae a legacy.
+export const ID_MINIMO = '00000000-0000-0000-0000-000000000000';
+
+// Marca de "vacía verificada" para un watermark nulo (no se puede usar null
+// como valor en el mapa: se confundiría con "sin marca").
+export const SIN_WATERMARK = '∅';
+
+// candidatas: [{ key, tabla, watermark, watermarkId, localCount, vaciaEn,
+//                excluida, sinServer }]
+//   vaciaEn: el watermark (o SIN_WATERMARK) con el que un full pull de esta
+//            clave ya volvió VACÍO. Ver marcaVaciaCoincide.
+// → { entries: [{k,t,w,i?}], legacy: [key...] }
+//   · excluida (sync por rol o frenada) o sinServer → no va a ningún lado.
+//   · watermark + datos locales → incremental por cursor compuesto (con `i`).
 //   · sin watermark y SIN datos locales → primer pull vía RPC desde el epoch.
 //   · watermark con Dexie vacío (recovery) o datos locales sin watermark
 //     (full pull con reconcile sweep) → pull legacy: esa lógica vive allá.
+//     SALVO que ese mismo full pull ya se hizo con este watermark y volvió
+//     vacío: entonces la tabla está al día (solo tiene filas borradas en el
+//     server, o solo filas de modo prueba en local) y mandarla otra vez a
+//     legacy era el bucle de 1-2 GET vacíos por tabla por ciclo, para siempre,
+//     que se veía en los logs (~40 tablas de módulos probados y limpiados).
 export function planPullRpc(candidatas) {
   const entries = [];
   const legacy = [];
   for (const c of candidatas || []) {
     if (!c || !c.key || !c.tabla) continue;
     if (c.excluida || c.sinServer) continue;
-    if (c.watermark && c.localCount > 0) {
-      entries.push({ k: c.key, t: c.tabla, w: c.watermark });
-    } else if (!c.watermark && !(c.localCount > 0)) {
+    const hayLocal = c.localCount > 0;
+    const vaciaVerificada = marcaVaciaCoincide(c.vaciaEn, c.watermark);
+    if (c.watermark && (hayLocal || vaciaVerificada)) {
+      entries.push({ k: c.key, t: c.tabla, w: c.watermark, i: c.watermarkId || ID_MINIMO });
+    } else if (!c.watermark && (!hayLocal || vaciaVerificada)) {
       entries.push({ k: c.key, t: c.tabla, w: EPOCH_WATERMARK });
     } else {
       legacy.push(c.key);
@@ -41,9 +71,19 @@ export function planPullRpc(candidatas) {
   return { entries, legacy };
 }
 
-// entries: las [{k,t,w}] que se ENVIARON. resp: el jsonb devuelto por el RPC.
-// → { aplicar: [{key, rows}], fallback: [key...], sinCambios: [key...] }
-//   · rows array con filas → aplicar.
+// ¿La marca de "vacía" corresponde al watermark actual? Un watermark que se
+// movió desde entonces (llegaron filas, se borraron) invalida la marca.
+export function marcaVaciaCoincide(vaciaEn, watermark) {
+  if (vaciaEn == null) return false;
+  return vaciaEn === (watermark || SIN_WATERMARK);
+}
+
+// entries: las [{k,t,w,i?}] que se ENVIARON. resp: el jsonb devuelto por el RPC.
+// → { aplicar: [{key, rows, mas}], fallback: [key...], sinCambios: [key...] }
+//   · rows array con filas → aplicar. `mas` = la página del cursor compuesto
+//     vino llena: hay más filas detrás de la última (el SyncEngine pide otra
+//     ronda desde ahí; si no alcanza el ciclo, sigue el próximo — keyset no
+//     pierde nada).
 //   · rows array vacío → sinCambios (la tabla está al día; NO hay que hacer nada
 //     y el watermark no se mueve — misma semántica que "0 registros nuevos").
 //   · trunc / err / skip / clave ausente / forma inválida → fallback (legacy).
@@ -59,7 +99,7 @@ export function interpretarRespuestaPull(entries, resp) {
   for (const e of lista) {
     const val = resp[e.k];
     if (val && Array.isArray(val.rows)) {
-      if (val.rows.length) aplicar.push({ key: e.k, rows: val.rows });
+      if (val.rows.length) aplicar.push({ key: e.k, rows: val.rows, mas: val.mas === true });
       else sinCambios.push(e.k);
     } else {
       fallback.push(e.k);
@@ -68,8 +108,21 @@ export function interpretarRespuestaPull(entries, resp) {
   return { aplicar, fallback, sinCambios };
 }
 
+// Error GLOBAL del RPC que no es de una tabla. `usuario_inactivo` lo manda la
+// mig 235 cuando profiles.activo = false (o el JWT no tiene perfil).
+export function errorGlobalDelPull(resp) {
+  if (resp && typeof resp === 'object' && !Array.isArray(resp) && typeof resp.__err === 'string') {
+    return resp.__err;
+  }
+  return null;
+}
+
 // Claves compuestas para distinguir el pull MASTER del TRANSACCIONAL de una
-// misma tabla (ambos loops existen hoy y usan watermarks distintos).
+// misma tabla. Desde la tanda E cada tabla viaja UNA sola vez por ciclo: las
+// que están en MASTER_TABLES por la clave m:, y solo las transaccional-only
+// (movimientos_materiales/herramientas, asistencia, avance_obra, incidencias,
+// evidencias) por la t:. Antes las 109 tablas que figuraban en las dos listas
+// se pedían dos veces, con dos watermarks.
 export const KEY_MASTER = (tabla) => `m:${tabla}`;
 export const KEY_TX = (tabla) => `t:${tabla}`;
 export function tablaDeKey(key) {

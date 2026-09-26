@@ -1,6 +1,11 @@
 import { db, SYNC_STATUS, UPLOAD_STATUS, getLastSync, getLastSyncId, setLastSync } from '../db/jarvex.db';
 import { filtroIncremental, idDelBorde } from './cursor-incremental';
-import { medirCicloIncremental, saludDelTecho, haySospechaActiva } from './techo-pull';
+import {
+  medirCicloIncremental, saludDelTecho, haySospechaActiva, evaluarFreno, tablaFrenada,
+} from './techo-pull';
+import {
+  firmaAlcance, decidirPorUsuario, decidirPorAlcance, tablasQueElRolNoLee, filaDescartable,
+} from '../lib/alcance-sync';
 import {
   hayServicioRestringido, registrarSiEsRestriccion, limpiarServicioRestringido,
 } from '../lib/servicio-restringido';
@@ -24,7 +29,7 @@ import { puedeEmpujarTabla } from '../lib/escritura-contable';
 import { captureException, captureMessage } from '../instrument.js';
 import { trackEvent } from '../lib/posthog.js';
 import {
-  planPullRpc, interpretarRespuestaPull,
+  planPullRpc, interpretarRespuestaPull, errorGlobalDelPull, ID_MINIMO, SIN_WATERMARK,
   KEY_MASTER, KEY_TX, tablaDeKey, esKeyMaster,
 } from '../lib/pull-rpc';
 
@@ -494,6 +499,203 @@ function emit(state) {
   listeners.forEach(cb => cb(state));
 }
 
+// ── SESIÓN (tanda E, 26-set-2026) ───────────────────────────────────────
+// La sesión se lee de supabase-js (getSession es local: lee el storage y solo
+// va a la red si el token venció y hay que renovarlo). Nadie en la app
+// escuchaba cuando se caía: el sync volvía en silencio, el push salía con la
+// anon key y un 42501 lo congelaba como «bloqueado por RLS», y el subidor de
+// evidencias quemaba sus reintentos. Ahora cada punto que escribe o baja
+// pregunta primero, y si no hay sesión lo AVISA (useAuth decide qué hacer).
+async function sesionActual() {
+  try { return (await supabase.auth.getSession())?.data?.session || null; }
+  catch { return null; }
+}
+
+let _ultimoAvisoSinSesion = 0;
+function avisarSinSesion() {
+  emit({ syncing: false, sinSesion: true, phase: null, current: 0, total: 0 });
+  const ahora = Date.now();
+  if (ahora - _ultimoAvisoSinSesion < 30_000) return;
+  _ultimoAvisoSinSesion = ahora;
+  try { window.dispatchEvent(new CustomEvent('jx_sin_sesion')); } catch {}
+}
+
+class UsuarioInactivoError extends Error {
+  constructor() { super('usuario_inactivo'); this.name = 'UsuarioInactivoError'; }
+}
+class SinSesionError extends Error {
+  constructor(msg) { super(msg || 'sin_sesion'); this.name = 'SinSesionError'; }
+}
+
+// ── UNA SOLA PESTAÑA SINCRONIZA A LA VEZ ──────────────────────────────────
+// La PWA instalada + una pestaña del navegador (o dos pestañas) comparten el
+// mismo IndexedDB, y cada una corría su ciclo completo encima del otro: los
+// mismos INSERT dos veces (el segundo 23505 → verificación), los mismos PATCH
+// (el 409 esporádico) y el doble de requests. Con Web Locks, si otra pestaña
+// está en pleno ciclo, esta lo salta (ifAvailable): el trabajo es el mismo
+// porque la base local es la misma. Sin navigator.locks (WebView viejo, tests)
+// corre como siempre.
+async function conCandadoDePestanas(nombre, fn) {
+  const locks = (typeof navigator !== 'undefined' && navigator.locks) || null;
+  if (!locks || typeof locks.request !== 'function') return fn();
+  let corrio = false;
+  let res;
+  await locks.request(nombre, { ifAvailable: true }, async (lock) => {
+    if (!lock) return;
+    corrio = true;
+    res = await fn();
+  });
+  return corrio ? res : { estado: 'otra_pestana' };
+}
+
+// ── EL PUSH, DE A UNO ─────────────────────────────────────────────────────
+// Tres disparadores empujaban lo pendiente: el ciclo (syncAll), el «push
+// agresivo» tras cada escritura local (jx_data_changed, 1,5 s) y el «Forzar
+// resync». Solo el primero respetaba `syncInProgress`, así que los otros dos
+// podían procesar la misma tabla a la vez. Ahora todos pasan por acá: si ya
+// hay un push corriendo, se engancha a ese y se pide UNA pasada más al
+// terminar (para lo que se escribió mientras tanto).
+let _pushEnCurso = null;
+let _pushOtraVez = false;
+function pushSerializado() {
+  if (_pushEnCurso) { _pushOtraVez = true; return _pushEnCurso; }
+  _pushEnCurso = (async () => {
+    try {
+      do {
+        _pushOtraVez = false;
+        await pushPendingOperations();
+      } while (_pushOtraVez);
+    } finally {
+      _pushEnCurso = null;
+    }
+  })();
+  return _pushEnCurso;
+}
+
+/**
+ * Antes de cerrar sesión: intenta subir lo pendiente (con tope de tiempo) y
+ * cuenta lo que quedó. Lo usa useAuth para no cerrar a ciegas en una PC
+ * compartida. Nunca tira.
+ * → { registros, evidencias }
+ */
+export async function subirAntesDeSalir(timeoutMs = 15_000) {
+  try {
+    if (navigator.onLine && (await sesionActual())) {
+      let timer = null;
+      await Promise.race([
+        (async () => {
+          await pushSerializado();
+          await pushPendingAuditLogs();
+          await pushPendingChangeRequests();
+          await uploadPendingEvidencias();
+        })().catch(() => {}),
+        new Promise(r => { timer = setTimeout(r, timeoutMs); }),
+      ]);
+      clearTimeout(timer);
+    }
+  } catch {}
+  let registros = 0, evidencias = 0;
+  try { registros = await getPendingCount(); } catch {}
+  try {
+    evidencias = await db.evidencias.where('sync_status').equals(UPLOAD_STATUS.PENDING)
+      .filter(e => e.demo !== true).count();
+  } catch {}
+  return { registros, evidencias };
+}
+
+// ── ALCANCE DEL DISPOSITIVO (quién, con qué rol y qué obras) ─────────────
+// Ver src/lib/alcance-sync.js. Se guarda en sync_metadata como una fila más.
+const ALCANCE_KEY = '_alcance';
+async function leerAlcanceGuardado() {
+  try { return await db.sync_metadata.get(ALCANCE_KEY); } catch { return null; }
+}
+async function guardarAlcance(patch) {
+  try {
+    const prev = await leerAlcanceGuardado();
+    await db.sync_metadata.put({ ...(prev || {}), ...patch, tabla: ALCANCE_KEY });
+  } catch (e) {
+    console.warn('[SyncEngine] no se pudo guardar el alcance:', e?.message || e);
+  }
+}
+
+// Todas las tablas que baja el pull, con la clave de su watermark.
+function tablasDePull() {
+  return [
+    ...MASTER_TABLES.map(({ tabla }) => ({ tabla, wm: tabla })),
+    ...transactionalOnlyTables().map(tabla => ({ tabla, wm: `${tabla}_pull` })),
+  ];
+}
+
+// Resetea TODOS los cursores de pull: el próximo ciclo es un full pull (con
+// reconcile sweep, que además quita lo que ya no corresponde ver). No borra
+// datos locales.
+async function resetearCursores() {
+  for (const { wm } of tablasDePull()) {
+    try { await setLastSync(wm, null); } catch {}
+  }
+  await limpiarVacias();
+}
+
+// Borra lo que este dispositivo bajó del servidor (se vuelve a bajar), NUNCA
+// lo pendiente de subir, lo que espera un conflicto ni lo de modo prueba.
+async function descartarSincronizado(tablas) {
+  let total = 0;
+  for (const tabla of tablas) {
+    if (!db[tabla]) continue;
+    try {
+      const ids = await db[tabla].filter(filaDescartable).primaryKeys();
+      if (ids.length) { await db[tabla].bulkDelete(ids); total += ids.length; }
+    } catch (e) {
+      console.warn(`[SyncEngine] no se pudo vaciar ${tabla}:`, e?.message || e);
+    }
+  }
+  return total;
+}
+
+// ¿Entró otra persona en este dispositivo? (PC compartida por turnos). Se
+// borran los datos del anterior y se resetean los cursores ANTES del pull del
+// nuevo: si no, heredaba lo que bajó el otro y un cursor avanzado bajo otra RLS.
+async function revisarUsuarioDelDispositivo(uid) {
+  const guardado = await leerAlcanceGuardado();
+  const d = decidirPorUsuario(guardado, uid);
+  if (d === 'mismo') return;
+  if (d === 'otro') {
+    const n = await descartarSincronizado(tablasDePull().map(t => t.tabla));
+    await resetearCursores();
+    await guardarAlcance({ uid, firma: null });
+    _rolLimpiado = null;
+    console.warn(`[SyncEngine] otro usuario en este dispositivo: ${n} filas del anterior descartadas, cursores reseteados (full pull)`);
+    return;
+  }
+  await guardarAlcance({ uid });
+}
+
+// ¿Cambió lo que el servidor le deja ver (rol u obras)? Devuelve true si
+// reseteó los cursores: el que llama corta el pull de este ciclo y pide otro.
+async function revisarAlcance(yo) {
+  const firma = firmaAlcance(yo);
+  const guardado = await leerAlcanceGuardado();
+  const d = decidirPorAlcance(guardado, firma);
+  if (d === 'igual') return false;
+  await guardarAlcance({ firma });
+  if (d === 'primera') return false;
+  await resetearCursores();
+  try { window.dispatchEvent(new CustomEvent('jx_alcance_cambio', { detail: { yo } })); } catch {}
+  return true;
+}
+
+// Tablas que el rol no puede leer (cerco de lectura del server) o que no baja
+// (PULL_SCOPE_POR_ROL): su copia local no se actualiza nunca más, así que se
+// vacía. Una vez por rol y por carga de página.
+let _rolLimpiado = null;
+async function limpiarFueraDeAlcance(rol) {
+  if (!rol || _rolLimpiado === rol) return;
+  _rolLimpiado = rol;
+  const tablas = tablasDePull().map(t => t.tabla).filter(t => tablaExcluidaPorRol(t));
+  const n = await descartarSincronizado(tablas);
+  if (n) console.info(`[SyncEngine] ${n} filas de tablas que el rol ${rol} no lee, descartadas del dispositivo`);
+}
+
 /**
  * Resincronización forzada total: wipea las tablas que tenemos cacheadas
  * en Dexie y vuelve a bajar TODO del server. Es la opción nuclear cuando
@@ -511,11 +713,14 @@ export async function forceFullResync() {
   if (navigator.onLine) {
     try {
       emit({ syncing: true, error: null });
-      await pushPendingOperations();
+      await pushSerializado();
     } catch (e) {
       console.warn('[forceFullResync] push falló (continuamos):', e?.message);
     }
   }
+  // Las marcas de «vacía verificada» valen para un watermark que se va a
+  // borrar: sin limpiarlas, una tabla con datos podría saltarse el full pull.
+  await limpiarVacias();
 
   // 2) Borrar las tablas master en Dexie + resetear lastSync por tabla
   // para que el próximo pull traiga TODO desde 0.
@@ -601,6 +806,7 @@ export async function forceFullResync() {
   try {
     await pullMasterTables();
     await pullTransactionalChanges();
+    await guardarVacias();
     emit({ syncing: false, lastSync: new Date(), error: null });
     try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { source: 'force-resync' } })); } catch {}
   } catch (e) {
@@ -778,7 +984,7 @@ export async function retryAllFailed() {
         let tieneBlob = false;
         try { tieneBlob = !!(await db.evidencias_blobs.get(r.blob_ref || r.id))?.blob; } catch {}
         if (!tieneBlob) continue; // sin archivo local no hay nada que re-subir
-        await db.evidencias.update(r.id, { sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0 });
+        await db.evidencias.update(r.id, { sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0, _intentos_subida: 0, _proximo_intento: 0 });
         huboEvidencias = true;
         total++;
         continue;
@@ -981,7 +1187,10 @@ function tablaExcluidaPorRol(tabla) {
     const rol = (typeof window !== 'undefined' && window.__currentRol) || null;
     if (!rol) return false;
     const excl = PULL_SCOPE_POR_ROL[rol];
-    return !!(excl && excl.has(tabla));
+    if (excl && excl.has(tabla)) return true;
+    // Cerco de LECTURA del servidor (mig 234): pedirla es una consulta que
+    // vuelve vacía siempre. Ver alcance-sync.js.
+    return tablasQueElRolNoLee(rol).includes(tabla);
   } catch { return false; }
 }
 
@@ -1059,29 +1268,56 @@ export async function getPendingDetails() {
 let _lastSyncOkAt = 0;   // para throttlear el sync por focus (ver abajo)
 let _lastPullEventAt = 0; // throttle del evento jx_sync_pull (max 1/min)
 
+// Devuelve { estado }: 'ok' | 'error' | 'sin_sesion' | 'omitido' |
+// 'otra_pestana'. El reloj periódico lo usa para el backoff (antes syncAll
+// nunca tiraba ni devolvía nada, así que el backoff por fallos era código
+// muerto: un servidor caído recibía un ciclo completo cada 30 s).
+let _resyncPedido = false;
 export async function syncAll() {
-  if (syncInProgress || !navigator.onLine) return;
+  if (syncInProgress || !navigator.onLine) return { estado: 'omitido' };
   // Servicio restringido (402): el servidor rechaza TODO. Seguir sincronizando
   // es golpear una puerta cerrada cada 30 s, y encima cada intento fallido
   // consume cuota. Se reintenta espaciado (SONDEO_RESTRINGIDO_MS) para notar
   // solo el momento en que el servicio vuelve. Ver src/lib/servicio-restringido.js.
-  if (hayServicioRestringido() && !tocaSondearElServicio()) return;
-  // Sin sesión no hay nada que sincronizar: antes una pestaña deslogueada o
-  // abandonada seguía consultando ~84 tablas maestras cada ciclo con la anon
-  // key (todas rechazadas o vacías por RLS). getSession() es local: 0 red.
-  try {
-    const sess = (await supabase.auth.getSession())?.data?.session;
-    if (!sess) return;
-  } catch { return; }
+  if (hayServicioRestringido() && !tocaSondearElServicio()) return { estado: 'omitido' };
+  // El flag se toma ANTES del primer await: con el chequeo de sesión en el
+  // medio, dos disparos en el mismo tick (montar + login) pasaban los dos.
   syncInProgress = true;
-  emit({ syncing: true, error: null });
+  try {
+    // Sin sesión no hay nada que sincronizar: antes una pestaña deslogueada o
+    // abandonada seguía consultando ~84 tablas maestras cada ciclo con la anon
+    // key (todas rechazadas o vacías por RLS). Ahora además se AVISA: con el
+    // usuario adentro, es una sesión que se cayó y useAuth pide volver a entrar.
+    const sess = await sesionActual();
+    if (!sess) { avisarSinSesion(); return { estado: 'sin_sesion' }; }
+    // Sin rol publicado todavía (el primer disparo al montar llega antes que
+    // el perfil): canPushTabla dejaba pasar TODO y PULL_SCOPE_POR_ROL no
+    // filtraba nada. El perfil dispara su propio sync apenas llega.
+    if (typeof window === 'undefined' || !window.__currentRol) return { estado: 'omitido' };
+    return await conCandadoDePestanas('jx_sync', () => cicloDeSync(sess));
+  } finally {
+    syncInProgress = false;
+    if (_resyncPedido) {
+      _resyncPedido = false;
+      setTimeout(() => { syncAll().catch(() => {}); }, 1500);
+    }
+  }
+}
+
+async function cicloDeSync(sess) {
+  emit({ syncing: true, error: null, sinSesion: false });
 
   console.log('[SyncEngine] === syncAll() iniciado ===');
   const t0 = performance.now();
 
   try {
+    // ¿Es la misma persona que sincronizó la última vez en este equipo? Si
+    // no, se descarta lo del anterior ANTES de subir o bajar nada.
+    await revisarUsuarioDelDispositivo(sess.user?.id);
+    await limpiarFueraDeAlcance(window.__currentRol);
+
     console.log('[SyncEngine] 1/4 push de operaciones pendientes…');
-    await pushPendingOperations();
+    await pushSerializado();
 
     console.log('[SyncEngine] 2/4 push de audit logs…');
     await pushPendingAuditLogs();
@@ -1108,8 +1344,21 @@ export async function syncAll() {
       // polls agresivos.
       try { window.dispatchEvent(new CustomEvent('jx_sync_pull')); } catch {}
     }
-    emit({ syncing: false, pending, failed, lastSync: new Date(), error: null, phase: null, current: 0, total: 0 });
+    emit({ syncing: false, pending, failed, lastSync: new Date(), error: null, sinSesion: false, phase: null, current: 0, total: 0 });
+    return { estado: 'ok' };
   } catch (err) {
+    // Usuario desactivado (mig 235): no es un error del sync, es la orden de
+    // salir. useAuth cierra la sesión y lo dice en la pantalla de ingreso.
+    if (err instanceof UsuarioInactivoError) {
+      emit({ syncing: false, error: null, phase: null, current: 0, total: 0 });
+      try { window.dispatchEvent(new CustomEvent('jx_usuario_inactivo')); } catch {}
+      return { estado: 'sin_sesion' };
+    }
+    // La sesión se cayó a mitad del ciclo: tampoco es un error del sync.
+    if (err instanceof SinSesionError) {
+      avisarSinSesion();
+      return { estado: 'sin_sesion' };
+    }
     console.error('[SyncEngine] ✗ Error en syncAll:', err);
     registrarSiEsRestriccion(err);
     emit({ syncing: false, error: err.message, phase: null, current: 0, total: 0 });
@@ -1118,8 +1367,7 @@ export async function syncAll() {
       tags: { module: 'sync-engine', operation: 'syncAll' },
       level: 'error',
     });
-  } finally {
-    syncInProgress = false;
+    return { estado: 'error', error: err?.message };
   }
 }
 
@@ -2405,6 +2653,7 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
     try {
       let lastSync = await getLastSync(tabla);
       let lastSyncId = await getLastSyncId(tabla);
+      const wmGuardado = lastSync; // antes del recovery: es contra el que se marca «vacía»
       const eraIncremental = lastSync != null; // para el techo de pull, más abajo
       let localCountAntes = 0;
       // Auto-recovery: si Dexie tiene 0 records pero hay lastSync grabado,
@@ -2473,15 +2722,10 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
             console.warn(`[SyncEngine] pull ${tabla} ERROR:`, error2.message);
             continue;
           }
-          if (data2?.length) {
-            await db[tabla].bulkPut(data2);
-            // Watermark = MAX(updated_at) traído (no el reloj del cliente).
-            let maxUpd2 = null;
-            for (const r of data2) {
-              if (r.updated_at && (!maxUpd2 || r.updated_at > maxUpd2)) maxUpd2 = r.updated_at;
-            }
-            if (maxUpd2) await setLastSync(tabla, maxUpd2, idDelBorde(data2, maxUpd2));
-          }
+          // Por la misma aplicación que el resto (antes era un bulkPut crudo
+          // que pisaba las ediciones locales pendientes de esta tabla).
+          if (data2?.length) await aplicarPullMaster(tabla, data2, lastSync);
+          else if (!lastSync) marcarVacia(KEY_MASTER(tabla), wmGuardado);
           continue;
         }
         // El 402 del servicio restringido entra por acá, tabla por tabla, y
@@ -2499,6 +2743,11 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
       if (eraIncremental && (data || []).length) {
         medirCicloIncremental(tabla, data.length, localCountAntes);
       }
+      // Full pull o recovery que volvió VACÍO: se anota contra el watermark
+      // guardado. El plan del RPC ya no la vuelve a mandar acá mientras ese
+      // watermark no se mueva (era el bucle de 1-2 GET vacíos por tabla y por
+      // ciclo, para siempre, de las tablas con solo filas borradas).
+      if (!lastSync && !(data || []).length) marcarVacia(KEY_MASTER(tabla), wmGuardado);
       await aplicarPullMaster(tabla, data || [], lastSync);
     } catch (e) {
       console.warn(`[SyncEngine] pull ${tabla} excepción:`, e?.message || e);
@@ -2509,7 +2758,7 @@ async function pullMasterTables({ soloTablas = null, saltarReparaciones = false 
 // Aplica a Dexie el resultado de un pull MASTER (venga del REST por-tabla o del
 // RPC consolidado de fase 2). `lastSync` nulo = era un full pull (corre el
 // reconcile sweep); no nulo = incremental. Avanza el watermark a MAX(updated_at).
-async function aplicarPullMaster(tabla, dataArr, lastSync) {
+async function aplicarPullMaster(tabla, dataArr, lastSync, { reconciliar = !lastSync } = {}) {
       // ── RECONCILE SWEEP en FULL PULL ──
       // Caso típico: PC1 borró 100 partidas, PC2 hizo sync con código viejo
       // ANTES de este fix (lastSync se actualizó a un momento posterior al
@@ -2527,7 +2776,9 @@ async function aplicarPullMaster(tabla, dataArr, lastSync) {
       // (RLS transitoria, red, permiso) y NO significa "el server no tiene nada".
       // Sin este guard, un fetch vacío borraría TODOS los SYNCED locales de la
       // tabla. Si de verdad se borró todo, llegará por tombstones/incremental.
-      if (!lastSync && dataArr.length) {
+      // `reconciliar` va explícito: solo tiene sentido con el conjunto COMPLETO
+      // de filas vivas del server. Una página del cursor compuesto no lo es.
+      if (reconciliar && dataArr.length) {
         try {
           const serverIds = new Set(dataArr.map(r => r.id));
           const localesSynced = await db[tabla]
@@ -2574,16 +2825,29 @@ async function aplicarPullMaster(tabla, dataArr, lastSync) {
         try {
           const locs = await db[tabla].where('id').anyOf(vivosIds).toArray();
           for (const l of locs) {
+            // CONFLICT también: pisarla con la versión del server borraba en
+            // silencio la edición que la bandeja de conflictos le pide resolver
+            // al usuario (el pull transaccional ya la respetaba).
             if (l.sync_status === SYNC_STATUS.PENDING_CREATE ||
                 l.sync_status === SYNC_STATUS.PENDING_UPDATE ||
                 l.sync_status === SYNC_STATUS.PENDING_DELETE ||
-                l.sync_status === SYNC_STATUS.FAILED) {
+                l.sync_status === SYNC_STATUS.FAILED ||
+                l.sync_status === SYNC_STATUS.CONFLICT) {
               pendLocal.add(l.id);
             }
           }
         } catch {}
         const vivosAplicar = pendLocal.size ? vivos.filter(r => !pendLocal.has(r.id)) : vivos;
-        if (vivosAplicar.length) await db[tabla].bulkPut(vivosAplicar);
+        // Se sella `synced`, como ya hacía el pull transaccional. Solo 11 tablas
+        // tienen sync_status en el servidor: las filas de las otras llegaban SIN
+        // estado, y el reconcile sweep (que busca las `synced`) nunca las veía —
+        // una fila borrada en el server quedaba viva acá aunque se hiciera un
+        // full pull. Mientras cada tabla viajaba también por el pull
+        // transaccional, algunas se sellaban por ese lado; desde la tanda E cada
+        // tabla viaja una sola vez.
+        if (vivosAplicar.length) {
+          await db[tabla].bulkPut(vivosAplicar.map(r => ({ ...r, sync_status: SYNC_STATUS.SYNCED })));
+        }
         if (pendLocal.size) console.log(`[SyncEngine] pull ${tabla}: ${pendLocal.size} registros con cambios locales preservados (no pisados)`);
       }
       if (tombstones.length) {
@@ -2597,7 +2861,8 @@ async function aplicarPullMaster(tabla, dataArr, lastSync) {
           for (const l of locales) {
             if (l.sync_status === SYNC_STATUS.PENDING_CREATE ||
                 l.sync_status === SYNC_STATUS.PENDING_UPDATE ||
-                l.sync_status === SYNC_STATUS.PENDING_DELETE) {
+                l.sync_status === SYNC_STATUS.PENDING_DELETE ||
+                l.sync_status === SYNC_STATUS.CONFLICT) {
               localesPendientes.add(l.id);
             }
           }
@@ -2692,13 +2957,51 @@ function tableSkipsCreatedBy(tabla) {
 // forzar un full re-pull que ya se auto-corrige con la lógica nueva (watermark =
 // max updated_at). No borra datos locales: el full pull re-aplica (put) sobre lo
 // existente y el guard por-registro preserva ediciones locales sin sincronizar.
-// Tablas que SOLO son transaccionales (pull incremental por watermark), no
-// MASTER (pull completo cada sync). Son las ÚNICAS vulnerables al watermark
-// envenenado: las que están también en MASTER se re-bajan enteras cada sync y
-// nunca quedan "ciegas". En la práctica: movimientos_materiales,
+// Tablas que SOLO son transaccionales: movimientos_materiales,
 // movimientos_herramientas, asistencia, avance_obra, incidencias, evidencias.
+// Desde la tanda E son las ÚNICAS que baja el pull transaccional (clave t:);
+// todas las demás viajan una sola vez, por el pull MASTER (clave m:). Antes
+// las 109 que estaban en las dos listas se pedían dos veces por ciclo con dos
+// watermarks distintos. (El comentario viejo decía que las MASTER «se re-bajan
+// enteras cada sync» — no es así desde que son incrementales; lo que las
+// re-baja enteras es un reset de cursores, ver alcance-sync.js.)
+let _txOnly = null;
 function transactionalOnlyTables() {
-  return TRANSACTIONAL_TABLES.filter(t => !MASTER_TABLES.some(m => m.tabla === t));
+  if (!_txOnly) {
+    const master = new Set(MASTER_TABLES.map(m => m.tabla));
+    _txOnly = TRANSACTIONAL_TABLES.filter(t => !master.has(t));
+  }
+  return _txOnly;
+}
+
+// ── «VACÍA VERIFICADA» ─────────────────────────────────────────────────────
+// Clave de pull (m:tabla / t:tabla) → watermark con el que un full pull o un
+// recovery de esa clave ya volvió sin filas vivas. Ver planPullRpc: mientras
+// el watermark no se mueva, la tabla va al RPC como cualquier otra en vez de
+// repetir el full pull vacío en cada ciclo. Una fila en sync_metadata.
+const VACIAS_KEY = '_pull_vacias';
+let _vacias = {};
+let _vaciasCambio = false;
+async function cargarVacias() {
+  try { _vacias = (await db.sync_metadata.get(VACIAS_KEY))?.mapa || {}; }
+  catch { _vacias = {}; }
+  _vaciasCambio = false;
+}
+function marcarVacia(key, watermark) {
+  const v = watermark || SIN_WATERMARK;
+  if (_vacias[key] === v) return;
+  _vacias[key] = v;
+  _vaciasCambio = true;
+}
+async function guardarVacias() {
+  if (!_vaciasCambio) return;
+  try { await db.sync_metadata.put({ tabla: VACIAS_KEY, mapa: _vacias }); _vaciasCambio = false; }
+  catch (e) { console.warn('[SyncEngine] no se pudieron guardar las tablas vacías:', e?.message || e); }
+}
+async function limpiarVacias() {
+  _vacias = {};
+  _vaciasCambio = false;
+  try { await db.sync_metadata.delete(VACIAS_KEY); } catch {}
 }
 
 // v2 (ago-2026): re-disparo tras el fix de paginación de fetchAllRows. Los devices
@@ -2847,12 +3150,15 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
   }
   let cacheChanged = false;
 
-  for (const tabla of TRANSACTIONAL_TABLES) {
+  // Solo las transaccional-only: las demás ya las bajó el pull MASTER (una
+  // tabla, un watermark, una consulta por ciclo).
+  for (const tabla of transactionalOnlyTables()) {
    if (soloTablas && !soloTablas.has(tabla)) continue; // fase 2: ya lo resolvió el RPC
    if (tablaExcluidaPorRol(tabla)) continue;   // sync por rol (ver PULL_SCOPE_POR_ROL)
    try {
     let lastSync = await getLastSync(`${tabla}_pull`);
     let lastSyncId = await getLastSyncId(`${tabla}_pull`);
+    const wmGuardado = lastSync; // antes del recovery (ver «vacía verificada»)
     const eraIncremental = lastSync != null; // para el techo de pull, más abajo
     let localCountAntes = 0;
 
@@ -2916,13 +3222,32 @@ async function pullTransactionalChanges({ soloTablas = null, saltarReparaciones 
       ({ data, error } = await fetchAllRows(baseQuery));
     }
 
-    if (error || !data?.length) continue;
+    // Antes el error se tragaba sin rastro (la ruta master sí lo registraba):
+    // un RLS roto, un timeout o el 402 en movimientos_materiales, asistencia
+    // o evidencias dejaban el ciclo «OK» sin que nadie se enterara.
+    if (error) {
+      registrarSiEsRestriccion(error);
+      console.warn(`[SyncEngine] pull tx ${tabla} ERROR:`, error.message, '— posible causa: RLS o permisos');
+      continue;
+    }
+    if (!data?.length) {
+      if (!lastSync) marcarVacia(KEY_TX(tabla), wmGuardado);
+      continue;
+    }
 
     // Techo de pull (ver bloque equivalente en pullMasterTables, y
     // src/sync/techo-pull.js).
     if (eraIncremental) medirCicloIncremental(tabla, data.length, localCountAntes);
 
     await aplicarPullTx(tabla, data, lastSync);
+    // Full pull o recovery que trajo SOLO filas borradas: la tabla sigue vacía
+    // acá y el próximo ciclo volvería al recovery. Se marca contra el
+    // watermark nuevo.
+    if (!lastSync) {
+      try {
+        if ((await db[tabla].count()) === 0) marcarVacia(KEY_TX(tabla), await getLastSync(`${tabla}_pull`));
+      } catch {}
+    }
    } catch (e) {
      // Aislar el error por-tabla: antes un throw de Dexie en una tabla temprana
      // (ej. durante el upgrade a v21 que solapa el primer sync) abortaba TODO el
@@ -2992,18 +3317,51 @@ async function aplicarPullTx(tabla, data, lastSync) {
 // Un solo request RPC (sync_pull, mig 152) responde el incremental de TODAS las
 // tablas al día, en lugar de ~90-190 GETs por ciclo (uno por tabla, casi todos
 // vacíos). Los casos especiales (full pull con datos locales, recovery, tabla
-// truncada, error, tabla sin updated_at) caen al pull legacy por-tabla de
-// siempre — el RPC solo puede AHORRAR requests, nunca dejar una tabla sin
-// sincronizar. Escapes: localStorage.jx_pull_rpc_off = '1' (apaga el RPC) y
-// auto-apagado de la sesión si el server aún no tiene la función (PGRST202).
+// truncada, error de UNA tabla, tabla sin updated_at) caen al pull legacy
+// por-tabla de siempre. Escapes: localStorage.jx_pull_rpc_off = '1' (apaga el
+// RPC) y auto-apagado de la sesión si el server no tiene la función.
+//
+// Tanda E (26-set-2026):
+//   · cursor compuesto: cada entrada incremental lleva `i` (mig 231) y el RPC
+//     devuelve la página siguiente a (updated_at, id). Si vino llena (`mas`),
+//     se pide otra ronda solo para esas tablas, hasta RPC_PULL_MAX_RONDAS; lo
+//     que no alcance sigue el ciclo que viene. Ya no se re-baja el bloque de
+//     sellos iguales ni se arma y descarta una página de 500 (`trunc`).
+//   · una sola entrada por tabla (ver transactionalOnlyTables).
+//   · lo que trae el RPC también pasa por el techo de pull (y su freno).
+//   · un error GLOBAL del RPC ya no manda las ~117 tablas a GET individuales:
+//     con la sesión caída eran 117 GET con la anon key; con el server enfermo,
+//     117 golpes más a la puerta que no responde. Se corta el pull del ciclo.
+//   · la respuesta dice quién es el usuario (`__yo`, mig 235): si cambió su
+//     rol o sus obras, se resetean los cursores; si está desactivado, se sale.
 const RPC_PULL_MAX_FILAS = 500;
-let _rpcPullNoDisponible = false; // la mig 152 aún no corrió en el server
+const RPC_PULL_MAX_RONDAS = 20;
+let _rpcPullNoDisponible = false; // el server no tiene la función (o no deja ejecutarla)
 
 function rpcPullActivo() {
   try {
     if (typeof localStorage !== 'undefined' && localStorage.getItem('jx_pull_rpc_off')) return false;
   } catch {}
   return !_rpcPullNoDisponible;
+}
+
+function esFuncionAusente(error) {
+  const msg = String(error?.message || '').toLowerCase();
+  return error?.code === 'PGRST202' || msg.includes('could not find the function');
+}
+
+async function llamarSyncPull(entries) {
+  try {
+    const { data, error, status } = await supabase.rpc('sync_pull', {
+      p_entries: entries, p_limit: RPC_PULL_MAX_FILAS,
+    });
+    if (!error) return { data, error: null };
+    // Copia explícita: PostgrestError puede ser una instancia de Error y el
+    // spread perdería `message` (no es enumerable).
+    return { data: null, error: { message: error.message, code: error.code, details: error.details, status } };
+  } catch (e) {
+    return { data: null, error: { message: e?.message || String(e) } };
+  }
 }
 
 async function pullConsolidado() {
@@ -3021,81 +3379,129 @@ async function pullConsolidado() {
   await limpiarFantasmas();
   await repairPersonalChecksOnce();
   await repairAccountingPaymentStatusOnce();
+  await cargarVacias();
 
   const contar = async (tabla) => {
     try { return db[tabla] ? await db[tabla].count() : 0; } catch { return 0; }
   };
   const candidatas = [];
-  for (const { tabla } of MASTER_TABLES) {
+  const agregar = async (key, tabla, wmKey) => {
+    let meta = null;
+    try { meta = await db.sync_metadata.get(wmKey); } catch {}
     candidatas.push({
-      key: KEY_MASTER(tabla), tabla,
-      watermark: await getLastSync(tabla),
+      key, tabla,
+      watermark: meta?.last_synced_at ?? null,
+      watermarkId: meta?.last_synced_id ?? null,
       localCount: await contar(tabla),
-      excluida: tablaExcluidaPorRol(tabla),
+      vaciaEn: _vacias[key],
+      // Frenada por el techo: se saltea como una excluida (el cursor queda
+      // quieto y la retoma cuando vence el freno).
+      excluida: tablaExcluidaPorRol(tabla) || tablaFrenada(tabla),
       sinServer: TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla),
     });
-  }
-  for (const tabla of TRANSACTIONAL_TABLES) {
-    candidatas.push({
-      key: KEY_TX(tabla), tabla,
-      watermark: await getLastSync(`${tabla}_pull`),
-      localCount: await contar(tabla),
-      excluida: tablaExcluidaPorRol(tabla),
-      sinServer: TABLAS_NO_EN_SERVER.has(tabla) || _tablasCon404.has(tabla),
-    });
-  }
+  };
+  for (const { tabla } of MASTER_TABLES) await agregar(KEY_MASTER(tabla), tabla, tabla);
+  for (const tabla of transactionalOnlyTables()) await agregar(KEY_TX(tabla), tabla, `${tabla}_pull`);
 
   const { entries, legacy } = planPullRpc(candidatas);
+  const porKey = new Map(candidatas.map(c => [c.key, c]));
   const fallbackKeys = [];
-  let conCambios = 0, alDia = 0;
+  const traidas = new Map(); // key → filas que trajo el RPC en este ciclo (techo)
+  let conCambios = 0, alDia = 0, rondas = 0;
+  let pendientes = entries;
 
-  if (entries.length) {
-    let resp = null;
-    try {
-      const { data, error } = await supabase.rpc('sync_pull', {
-        p_entries: entries, p_limit: RPC_PULL_MAX_FILAS,
-      });
-      if (error) {
-        const msg = String(error.message || '').toLowerCase();
-        if (error.code === 'PGRST202' || msg.includes('could not find the function')) {
-          _rpcPullNoDisponible = true;
-          console.warn('[SyncEngine] sync_pull no existe en el server (mig 152 pendiente) — pull legacy.');
-        } else {
-          console.warn('[SyncEngine] sync_pull ERROR — este ciclo va por legacy:', error.message);
-        }
-      } else {
-        resp = data;
+  while (pendientes.length && rondas < RPC_PULL_MAX_RONDAS) {
+    rondas++;
+    const { data, error } = await llamarSyncPull(pendientes);
+
+    if (error) {
+      // Sin sesión no es un error del server: la anon key ni siquiera puede
+      // ejecutar la función desde la mig 231.
+      if (!(await sesionActual())) throw new SinSesionError('la sesión se cerró durante el pull');
+      if (esFuncionAusente(error) || error.code === '42501') {
+        _rpcPullNoDisponible = true;
+        console.warn('[SyncEngine] sync_pull no disponible para esta sesión — pull legacy.', error.message);
+        if (rondas === 1) fallbackKeys.push(...pendientes.map(e => e.k));
+        break;
       }
-    } catch (e) {
-      console.warn('[SyncEngine] sync_pull excepción — este ciclo va por legacy:', e?.message || e);
+      if (esErrorSesion(error) || error.status === 401) throw new SinSesionError(error.message);
+      if (rondas === 1) throw new Error(`sync_pull falló: ${error.message || 'sin detalle'}`);
+      console.warn(`[SyncEngine] sync_pull falló en la ronda ${rondas} — lo que falta sigue el próximo ciclo:`, error.message);
+      break;
     }
 
-    const r = interpretarRespuestaPull(entries, resp);
+    const errGlobal = errorGlobalDelPull(data);
+    if (errGlobal === 'usuario_inactivo') throw new UsuarioInactivoError();
+    if (rondas === 1 && !errGlobal && await revisarAlcance(data?.__yo)) {
+      _resyncPedido = true;
+      console.warn('[SyncEngine] cambió el alcance del usuario (rol u obras): cursores reseteados, el próximo ciclo re-baja todo');
+      return;
+    }
+    if (errGlobal) {
+      console.warn(`[SyncEngine] sync_pull respondió ${errGlobal} — esta ronda va por legacy`);
+      if (rondas === 1) fallbackKeys.push(...pendientes.map(e => e.k));
+      break;
+    }
+
+    const r = interpretarRespuestaPull(pendientes, data);
     fallbackKeys.push(...r.fallback);
-    alDia = r.sinCambios.length;
-    for (const { key, rows } of r.aplicar) {
+    if (rondas === 1) alDia = r.sinCambios.length;
+    const siguientes = [];
+    for (const { key, rows, mas } of r.aplicar) {
       const tabla = tablaDeKey(key);
+      const wmKey = esKeyMaster(key) ? tabla : `${tabla}_pull`;
       try {
-        if (esKeyMaster(key)) {
-          await aplicarPullMaster(tabla, rows, await getLastSync(tabla));
-        } else {
-          await aplicarPullTx(tabla, rows, await getLastSync(`${tabla}_pull`));
+        const lastSync = await getLastSync(wmKey);
+        if (esKeyMaster(key)) await aplicarPullMaster(tabla, rows, lastSync);
+        else await aplicarPullTx(tabla, rows, lastSync);
+        if (rondas === 1) conCambios++;
+        traidas.set(key, (traidas.get(key) || 0) + rows.length);
+        // Trajo solo filas borradas y la tabla sigue vacía: se anota, para
+        // que el próximo ciclo no la mande al recovery legacy.
+        if (rows.every(x => x?.deleted_at)) {
+          try {
+            if ((await db[tabla].count()) === 0) marcarVacia(key, await getLastSync(wmKey));
+          } catch {}
         }
-        conCambios++;
+        if (mas) {
+          const meta = await db.sync_metadata.get(wmKey);
+          if (meta?.last_synced_at) {
+            siguientes.push({ k: key, t: tabla, w: meta.last_synced_at, i: meta.last_synced_id || ID_MINIMO });
+          }
+        }
       } catch (e) {
         console.warn(`[SyncEngine] aplicar RPC ${key} falló → legacy:`, e?.message || e);
         fallbackKeys.push(key);
       }
     }
-    console.log(`[SyncEngine] pull RPC: ${entries.length} tablas en 1 request · ${conCambios} con cambios · ${alDia} al día · ${fallbackKeys.length} a legacy`);
+    pendientes = siguientes;
+  }
+  if (pendientes.length) {
+    console.log(`[SyncEngine] pull RPC: ${pendientes.length} tabla(s) con más filas después de ${rondas} rondas — siguen el próximo ciclo`);
   }
 
+  // TECHO DE PULL, también para lo que trajo el RPC (antes solo se medía la
+  // ruta legacy). Solo los incrementales: un primer pull baja todo por diseño.
+  for (const [key, n] of traidas) {
+    const c = porKey.get(key);
+    if (!c?.watermark) continue;
+    medirCicloIncremental(c.tabla, n, c.localCount);
+    if (evaluarFreno(c.tabla)) {
+      const msg = `[SyncEngine] techo de pull: "${c.tabla}" trajo una fracción sospechosa de sus filas en varios ciclos seguidos — se deja de pedir 10 min. Revisar si algo en el servidor re-sella updated_at en masa (la forma del corte del 9-set).`;
+      console.error(msg);
+      captureMessage(msg, 'error');
+    }
+  }
+
+  console.log(`[SyncEngine] pull RPC: ${entries.length} tablas en ${rondas} request(s) · ${conCambios} con cambios · ${alDia} al día · ${fallbackKeys.length} a legacy`);
+
   // Legacy: full pulls/recovery del plan + lo que el RPC no pudo resolver.
-  const pendientes = [...legacy, ...fallbackKeys];
-  const masterLegacy = new Set(pendientes.filter(esKeyMaster).map(tablaDeKey));
-  const txLegacy = new Set(pendientes.filter(k => !esKeyMaster(k)).map(tablaDeKey));
-  await pullMasterTables({ soloTablas: masterLegacy, saltarReparaciones: true });
-  await pullTransactionalChanges({ soloTablas: txLegacy, saltarReparaciones: true });
+  const pendLegacy = [...legacy, ...fallbackKeys];
+  const masterLegacy = new Set(pendLegacy.filter(esKeyMaster).map(tablaDeKey));
+  const txLegacy = new Set(pendLegacy.filter(k => !esKeyMaster(k)).map(tablaDeKey));
+  if (masterLegacy.size) await pullMasterTables({ soloTablas: masterLegacy, saltarReparaciones: true });
+  if (txLegacy.size) await pullTransactionalChanges({ soloTablas: txLegacy, saltarReparaciones: true });
+  await guardarVacias();
 }
 
 // ── Conflictos ────────────────────────────────────────────────────────
@@ -3144,18 +3550,23 @@ function esErrorSesion(error) {
   return code === 'PGRST301' || msg.includes('jwt expired') || msg.includes('jwt is expired');
 }
 
-// Ante sesión expirada durante el push, intentamos renovar el token una vez
-// por minuto — el siguiente ciclo de sync reintenta con la sesión fresca.
+// Ante sesión expirada durante el push, se deja que supabase-js la renueve
+// (una vez por minuto como mucho) — el siguiente ciclo reintenta con la sesión
+// fresca. getSession() y NO refreshSession(): la segunda rota el token aunque
+// no haya vencido, y con dos pestañas (o la PWA + el navegador) en un equipo
+// sin Web Locks, dos rotaciones del mismo refresh token son exactamente el
+// «refresh_token_reuse» que revoca la sesión entera (11 por día en los logs).
 let _ultimoRefreshSesion = 0;
 async function intentarRefreshSesion() {
   const now = Date.now();
   if (now - _ultimoRefreshSesion < 60000) return;
   _ultimoRefreshSesion = now;
   try {
-    await supabase.auth.refreshSession();
-    console.warn('[SyncEngine] sesión expirada durante el push — token renovado, se reintenta en el próximo ciclo');
+    const { data, error } = await supabase.auth.getSession();
+    if (data?.session) console.warn('[SyncEngine] sesión expirada durante el push — renovada, se reintenta en el próximo ciclo');
+    else if (error) console.warn('[SyncEngine] no se pudo renovar la sesión:', error.message);
   } catch (e) {
-    console.warn('[SyncEngine] refreshSession falló:', e?.message || e);
+    console.warn('[SyncEngine] renovar sesión falló:', e?.message || e);
   }
 }
 
@@ -3179,10 +3590,20 @@ function emitirEventoRLS(tabla, operacion, error) {
 const _rlsLogged = new Set();
 
 async function handleSyncError(tabla, record, operacion, error) {
+  // SESIÓN ANTES QUE RLS (tanda E). Si la sesión se cayó a mitad del ciclo,
+  // supabase-js manda la anon key y el INSERT vuelve 42501 «new row violates
+  // row-level security»: el registro quedaba FAILED para siempre, con el
+  // cartel de «requiere intervención humana», por un token vencido. Un error
+  // de sesión no es del registro: no se cuenta el intento ni se lo toca.
+  const sinSesion = !(await sesionActual());
+  if (sinSesion || esErrorSesion(error)) {
+    intentarRefreshSesion();
+    console.warn(`[SyncEngine] ${tabla}/${operacion}: sin sesión válida — se reintenta cuando vuelva (no cuenta como intento)`);
+    if (sinSesion) avisarSinSesion();
+    return;
+  }
   const retries = (record._sync_retries ?? 0) + 1;
-  const esSesion = esErrorSesion(error);
-  if (esSesion) intentarRefreshSesion();
-  const isRLS = !esSesion && esErrorRLS(error);
+  const isRLS = esErrorRLS(error);
   // Si es RLS, marcamos como FAILED inmediatamente — reintentar 5 veces no
   // va a cambiar nada y solo gasta cuota Supabase.
   const newStatus = isRLS || retries >= 5 ? SYNC_STATUS.FAILED : record.sync_status;
@@ -3229,11 +3650,9 @@ async function handleSyncError(tabla, record, operacion, error) {
 }
 
 // ── Auto-sync al recuperar internet ──────────────────────────────────
-
-window.addEventListener('online', () => {
-  console.log('[SyncEngine] Online — syncing...');
-  setTimeout(syncAll, 1000); // pequeño delay para estabilizar la conexión
-});
+// (Un solo listener: había dos `online` → dos syncAll a los 500 y 1000 ms;
+// el que queda está abajo, junto al reloj periódico, y además resetea el
+// backoff.)
 
 // ── Push agresivo al crear/editar localmente ─────────────────────────
 // Cuando un componente UI escribe a Dexie, emite 'jx_data_changed'.
@@ -3241,6 +3660,18 @@ window.addEventListener('online', () => {
 // inmediato (debounced 1.5s) para que el record llegue al server YA, no
 // 30s después. Esto es lo que hace que "agregar material → otro device
 // lo ve" se sienta instantáneo.
+//
+// Tanda E: con las mismas compuertas que el ciclo (sesión, rol, una pestaña a
+// la vez) y por el push serializado. Antes salía sin mirar la sesión — con la
+// sesión caída empujaba con la anon key — y en paralelo al push del ciclo.
+async function pushAgresivo() {
+  if (!navigator.onLine || typeof window === 'undefined' || !window.__currentRol) return;
+  if (!(await sesionActual())) return;
+  // El ciclo de ESTA pestaña ya tiene el candado: se engancha a su push.
+  if (syncInProgress) return pushSerializado();
+  return conCandadoDePestanas('jx_sync', () => pushSerializado());
+}
+
 let _pushDebounceId = null;
 window.addEventListener('jx_data_changed', (e) => {
   // Solo nos interesan cambios LOCALES (source !== 'realtime'), porque
@@ -3250,21 +3681,23 @@ window.addEventListener('jx_data_changed', (e) => {
   if (!navigator.onLine) return; // si está offline, esperamos al evento online
   clearTimeout(_pushDebounceId);
   _pushDebounceId = setTimeout(() => {
-    pushPendingOperations().catch(err => {
+    pushAgresivo().catch(err => {
       console.warn('[SyncEngine] push agresivo falló:', err?.message);
     });
   }, 1500);
 });
 
-// ── Sync periódico cada 60s como respaldo del realtime ──────────────
+// ── Sync periódico como respaldo del realtime ────────────────────────
 // Aunque tenemos suscripciones realtime para obras/materiales/etc, hay
 // casos en que el canal pierde mensajes (reconexión, latencia, sleep
-// del navegador). Este intervalo asegura que como mucho cada minuto
-// veamos lo que el resto del equipo ha hecho.
+// del navegador). Este reloj asegura que con el usuario activo veamos cada
+// 30 s lo que el resto del equipo hizo.
 //
 // Backoff exponencial: si syncAll falla N veces seguidas, esperamos más entre
-// intentos (60s → 120s → 240s → ... → tope 600s). En cuanto un sync funciona,
-// volvemos a 60s. Esto evita saturar la red cuando hay problemas de conectividad.
+// intentos (30s → 60s → 120s → ... → tope 600s). En cuanto un sync funciona,
+// volvemos al ritmo normal. (Hasta la tanda E era código muerto: syncAll nunca
+// tiraba, así que el contador de fallos no subía nunca. Ahora mira el estado
+// que devuelve.)
 let _periodicId = null;
 let _syncFailures = 0;
 // Polling de fallback. Realtime cubre la mayoría de los casos en vivo;
@@ -3276,20 +3709,26 @@ const MAX_INTERVAL_MS = 600_000;
 
 // ── Backoff por INACTIVIDAD (ahorro de consumo Supabase, ago-2026) ──
 // Con el usuario activo se mantiene el ritmo de 30 s. Si nadie toca la app,
-// el polling afloja: cada ciclo son ~147 consultas (una por tabla), así que
-// una pestaña abierta sin uso pasaba de ~17.600 req/h a ~1.700 req/h con esto.
-// Cualquier interacción (click/tecla), una escritura local (jx_data_changed) o
-// volver a la pestaña reactivan el ritmo de 30 s Y adelantan el próximo tick,
-// así que el usuario nunca percibe la espera larga. Realtime sigue empujando
-// los cambios en vivo de las tablas suscritas, independiente de este timer.
+// el polling afloja. Cualquier interacción (click/tecla), una escritura local
+// (jx_data_changed) o volver a la pestaña reactivan el ritmo de 30 s Y
+// adelantan el próximo tick, así que el usuario nunca percibe la espera
+// larga. Realtime sigue empujando los cambios en vivo de las tablas
+// suscritas, independiente de este timer.
+//
+// Y a las 2 h sin nadie, el reloj SE DETIENE (Gabriel, respuesta 11 de la
+// revisión, 25-set). Medido: una pestaña visible y quieta toda la noche
+// sincronizaba cada 5 min — 282 ciclos en 22 h, el mayor consumidor del
+// sistema era una pantalla que nadie miraba. Vuelve con el primer toque.
 const IDLE_NIVELES = [
   { idleMs: 3 * 60_000,  delay: 120_000 },  // 3 min sin actividad → cada 2 min
   { idleMs: 15 * 60_000, delay: 300_000 },  // 15 min sin actividad → cada 5 min
 ];
+export const IDLE_CORTE_MS = 2 * 60 * 60_000; // 2 h sin actividad → no se sincroniza
 let _lastActivity = Date.now();
 
 function delayPorInactividad() {
   const idle = Date.now() - _lastActivity;
+  if (idle >= IDLE_CORTE_MS) return null;
   let d = MIN_INTERVAL_MS;
   for (const n of IDLE_NIVELES) if (idle >= n.idleMs) d = n.delay;
   return d;
@@ -3298,6 +3737,14 @@ function delayPorInactividad() {
 function marcarActividad() {
   const idleAntes = Date.now() - _lastActivity;
   _lastActivity = Date.now();
+  // Si el reloj estaba detenido por el corte de 2 h, arranca de nuevo con un
+  // sync YA (el usuario que vuelve tiene que ver datos frescos).
+  if (!_periodicId && idleAntes >= IDLE_CORTE_MS) {
+    console.log('[SyncEngine] actividad después del corte por inactividad — sync reanudado');
+    setTimeout(() => { syncAll().catch(() => {}); }, 300);
+    scheduleNextSync();
+    return;
+  }
   // Si veníamos de inactividad larga, el próximo tick puede estar a minutos:
   // lo adelantamos para que el usuario que "vuelve" vea datos frescos ya.
   if (idleAntes >= IDLE_NIVELES[0].idleMs && _periodicId) {
@@ -3307,6 +3754,18 @@ function marcarActividad() {
   }
 }
 
+// jx_data_changed también lo disparan el realtime, el pull, las reparaciones
+// y el subidor: eso no es una persona usando la app, y contarlo como actividad
+// mantenía despierto el reloj toda la noche.
+const FUENTES_DEL_SISTEMA = new Set([
+  'realtime', 'pull', 'evidence-upload', 'limpieza_fantasmas',
+  'repair_payment_status', 'force-resync',
+]);
+function actividadPorDatos(e) {
+  if (FUENTES_DEL_SISTEMA.has(e?.detail?.source)) return;
+  marcarActividad();
+}
+
 function nextSyncDelay() {
   if (_syncFailures === 0) return delayPorInactividad();
   return Math.min(MIN_INTERVAL_MS * Math.pow(2, _syncFailures), MAX_INTERVAL_MS);
@@ -3314,6 +3773,12 @@ function nextSyncDelay() {
 
 function scheduleNextSync() {
   if (_periodicId) clearTimeout(_periodicId);
+  _periodicId = null;
+  const delay = nextSyncDelay();
+  if (delay == null) {
+    console.log('[SyncEngine] 2 h sin actividad — sync periódico detenido hasta que alguien toque la pantalla');
+    return;
+  }
   _periodicId = setTimeout(async () => {
     _periodicId = null;
     if (!navigator.onLine) {
@@ -3324,15 +3789,15 @@ function scheduleNextSync() {
       scheduleNextSync();
       return;
     }
-    try {
-      await syncAll();
-      _syncFailures = 0;
-    } catch (e) {
+    let res = null;
+    try { res = await syncAll(); } catch { res = { estado: 'error' }; }
+    if (res?.estado === 'ok') _syncFailures = 0;
+    else if (res?.estado === 'error') {
       _syncFailures = Math.min(_syncFailures + 1, 5);
       console.warn('[SyncEngine] sync failed, backoff:', _syncFailures, 'next in', nextSyncDelay() / 1000, 's');
     }
     scheduleNextSync();
-  }, nextSyncDelay());
+  }, delay);
 }
 
 function startPeriodicSync() {
@@ -3346,13 +3811,13 @@ if (typeof window !== 'undefined') {
   // Actividad del usuario / escrituras locales → ritmo de 30 s (ver IDLE_NIVELES)
   window.addEventListener('pointerdown', marcarActividad, { passive: true });
   window.addEventListener('keydown', marcarActividad, { passive: true });
-  window.addEventListener('jx_data_changed', marcarActividad);
+  window.addEventListener('jx_data_changed', actividadPorDatos);
   // Re-sincronizar cuando el usuario vuelve a la pestaña tras estar en otra
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && navigator.onLine) {
       marcarActividad();
       // Solo si el último sync exitoso ya está "viejo": un alt-tab rápido no
-      // amerita otras ~147 consultas (realtime cubre lo urgente en vivo).
+      // amerita otro ciclo completo (realtime cubre lo urgente en vivo).
       if (Date.now() - _lastSyncOkAt > 120_000) setTimeout(syncAll, 500);
     }
   });

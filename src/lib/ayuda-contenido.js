@@ -37,6 +37,10 @@ const AYUDA = {
       'Si sos personal de obra (almacenera, ingeniero, prevencionista…) no pasás por esta pantalla: entrás directo a tu trabajo, o a la lista si tenés más de uno asignado.',
       'Si te falta un bloque que necesitás, pedile acceso al administrador.',
       'Arriba a la derecha cambiás entre tema oscuro y claro. La elección es tuya y queda guardada en ese dispositivo (también está en Mi Perfil, abajo en el menú lateral).',
+      'SI LA SESIÓN SE CIERRA SOLA (26-set): cuando vence, se cierra desde otra pestaña u otro equipo, o el administrador desactiva tu usuario, la app te lleva a la pantalla de ingreso y te dice por qué. Lo que cargaste en este equipo NO se pierde: queda guardado y se sube apenas vuelvas a entrar.',
+      'AL CERRAR SESIÓN la app primero intenta subir lo que falta. Si algo no pudo subir (sin conexión, o el servidor no respondió) te avisa cuántos registros o fotos quedaron y te pregunta si cerrar igual — no se borran, quedan en el equipo.',
+      'PC COMPARTIDA: si en este equipo entra otra persona, la app descarta lo que había bajado la anterior (nunca lo que quedó sin subir) y baja lo que le toca a la nueva. La primera sincronización de esa persona tarda un poco más.',
+      'Si dejás la app abierta MÁS DE 2 HORAS sin tocarla, deja de sincronizar (así una pantalla olvidada toda la noche no consume). Vuelve sola apenas tocás la pantalla o una tecla.',
     ],
   },
   'contabilidad': {
@@ -276,6 +280,7 @@ const AYUDA = {
       'Subí archivos con "Subir Archivo" eligiendo el tipo correcto — de eso depende quién puede verlo.',
       'LAS FOTOS SE ACHICAN SOLAS AL CAPTURAR (4-sep): antes de guardarse, cada foto se reescala a 1600 px y se comprime apuntando a 400 KB — la app va bajando la calidad hasta llegar, así que una foto simple queda nítida y una llena de texto se aprieta más. Se lee igual un RUC, un importe o un metrado. Sirve para dos cosas concretas: el almacenamiento del servidor deja de llenarse (era el 13 % con solo 67 fotos de avance) y subir desde obra con señal mala tarda un tercio. Los PDF NO se tocan: se suben tal cual llegan del proveedor.',
       'FOTOS DE IPHONE ANTIGUAS (.heic): si una foto vieja no se ve en la PC, el admin puede convertirlas todas a JPEG desde el badge de sincronización → "Mantenimiento: fotos HEIC antiguas" (correrlo en Safari; las nuevas ya se convierten solas al capturar).',
+      'SI SE CORTA INTERNET MIENTRAS SUBEN (26-set): las fotos esperan y reintentan solas, cada vez más espaciado, y de nuevo apenas vuelve la conexión. Un corte ya no las deja «fallidas». Solo quedan fallidas si el servidor las RECHAZA (tipo o tamaño de archivo no permitido, permisos): el motivo se ve en el detalle de sincronización y «Reintentar» las vuelve a mandar.',
     ],
     rol: {
       almacenero: 'Ves lo de almacén, EPP y asistencia. Las guías de remisión y facturas son de contabilidad — no aparecen acá.',
@@ -283,7 +288,7 @@ const AYUDA = {
       ayudante_contador: 'Ves también todo lo contable: facturas, comprobantes, bancarizaciones, guías, recibos, pagos y constancias de detracción.',
     },
   },
-  'plantillas': { titulo: 'Plantillas', que: 'Formatos descargables de la obra (actas, formatos de registro) listos para imprimir o firmar.', como: ['Descargá la plantilla, completala/firmala y subila como evidencia del tipo que corresponda.'] },
+  'plantillas': { titulo: 'Plantillas', que: 'Formatos descargables de la obra (actas, formatos de registro) listos para imprimir o firmar.', como: ['Descargá la plantilla, completala/firmala y subila como evidencia del tipo que corresponda.', 'El «Parte diario de maquinaria» trae las máquinas que están en la obra (26-set: antes salía siempre sin máquinas por un error al buscarlas).'] },
 
   // ── COMPRAS / LOGÍSTICA ──────────────────────────────────────────
   'solicitud-residente': {
@@ -949,6 +954,8 @@ const AYUDA = {
       'Al crear un usuario definí email, contraseña (mín. 8), ROL y al menos 1 obra (salvo admin).',
       'El usuario solo ve datos de sus obras asignadas — "Editar obras" para cambiarlas después.',
       '"Cambiar rol" actualiza también el rol en sus obras asignadas.',
+      'CAMBIOS QUE LLEGAN SOLOS (26-set): si le cambiás el ROL o las OBRAS a alguien que tiene la app abierta, en su próxima sincronización (menos de un minuto si la está usando) su equipo vuelve a bajar lo que ahora le corresponde —incluido el histórico de la obra nueva— y deja de mostrar lo que ya no ve. No hace falta que cierre y vuelva a entrar.',
+      'DESACTIVAR ES AL INSTANTE (26-set): un usuario desactivado deja de ver y de poder cambiar datos en el servidor en ese mismo momento, y su app lo saca a la pantalla de ingreso en la sincronización siguiente, con el aviso «Tu usuario está desactivado». Si vuelve a intentar entrar, se le dice lo mismo. Lo que haya dejado sin subir en su equipo no llega al servidor mientras siga desactivado.',
     ],
   },
   'roles': { titulo: 'Roles y Permisos', que: 'La matriz de qué módulos ve y edita cada rol.', como: ['Cambiá con cuidado: un permiso de más expone información sensible.'] },

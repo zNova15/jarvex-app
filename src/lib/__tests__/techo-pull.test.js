@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   medirCicloIncremental, saludDelTecho, haySospechaActiva,
   UMBRAL_SOSPECHOSO_PCT, _resetParaTests,
+  evaluarFreno, tablaFrenada, CICLOS_SOSPECHOSOS_PARA_FRENAR, FRENO_MS,
 } from '../../sync/techo-pull';
 
 beforeEach(() => { _resetParaTests(); });
@@ -100,5 +101,35 @@ describe('haySospechaActiva — la bandera que mira la UI', () => {
     expect(haySospechaActiva()).toBe(true);
     medirCicloIncremental('recuperada', 1, 100);  // el ciclo siguiente, normal
     expect(haySospechaActiva()).toBe(false);
+  });
+});
+
+describe('freno — la señal del 9-set ya no solo avisa (tanda E)', () => {
+  it('un pico aislado NO frena (un import grande es legítimo)', () => {
+    medirCicloIncremental('catalogo', 3000, 3500);
+    expect(evaluarFreno('catalogo', 0)).toBe(false);
+    expect(tablaFrenada('catalogo', 0)).toBe(false);
+  });
+
+  it('N ciclos seguidos sospechosos → frena, avisa UNA vez y suelta a los 10 min', () => {
+    for (let i = 0; i < CICLOS_SOSPECHOSOS_PARA_FRENAR; i++) medirCicloIncremental('bomba', 6722, 6722);
+    expect(evaluarFreno('bomba', 1000)).toBe(true);
+    expect(tablaFrenada('bomba', 1000 + FRENO_MS - 1)).toBe(true);
+    expect(evaluarFreno('bomba', 2000)).toBe(false); // ya estaba frenada: no vuelve a avisar
+    expect(tablaFrenada('bomba', 1000 + FRENO_MS)).toBe(false);
+  });
+
+  it('un ciclo normal en el medio corta la racha', () => {
+    for (let i = 0; i < CICLOS_SOSPECHOSOS_PARA_FRENAR - 1; i++) medirCicloIncremental('racha', 90, 100);
+    medirCicloIncremental('racha', 1, 100);
+    medirCicloIncremental('racha', 90, 100);
+    expect(evaluarFreno('racha', 0)).toBe(false);
+  });
+
+  it('después del freno la racha empieza de cero', () => {
+    for (let i = 0; i < CICLOS_SOSPECHOSOS_PARA_FRENAR; i++) medirCicloIncremental('otra', 90, 100);
+    expect(evaluarFreno('otra', 0)).toBe(true);
+    medirCicloIncremental('otra', 90, 100);
+    expect(evaluarFreno('otra', FRENO_MS + 1)).toBe(false);
   });
 });

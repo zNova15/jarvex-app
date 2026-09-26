@@ -4,8 +4,50 @@ import { optimizarImagenEvidencia } from '../lib/optimizar-imagen';
 import { evaluarCalidadComprobante } from '../lib/calidad-foto';
 import { captureException } from '../instrument.js';
 import { uploadToR2, r2WriteEnabled } from '../lib/r2-storage';
+import {
+  MAX_REINTENTOS, clasificarFalloSubida, esRechazoRLS, esperaAntesDelIntento, leTocaSubir,
+} from '../lib/subida-evidencia';
+import { hoyLocal } from '../lib/fecha';
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = MAX_REINTENTOS;
+
+// Registra un fallo según su tipo (ver src/lib/subida-evidencia.js). Devuelve
+// la clase del fallo: 'sesion' corta la pasada entera.
+async function registrarFallo(evidencia, etapa, err, extra = {}) {
+  const clase = clasificarFalloSubida({ etapa, status: err?.status, code: err?.code, message: err?.message });
+  const intentos = (evidencia._intentos_subida ?? 0) + 1;
+  const patch = {
+    ...extra,
+    _intentos_subida: intentos,
+    _proximo_intento: Date.now() + esperaAntesDelIntento(intentos),
+    _last_error_clase: clase,
+  };
+  if (clase === 'definitivo') {
+    const retries = (evidencia.upload_retries ?? 0) + 1;
+    const alcanzoTope = retries >= MAX_RETRIES;
+    patch.upload_retries = retries;
+    patch.sync_status = alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING;
+    patch._last_error_is_rls = etapa === 'metadata' && esRechazoRLS(err);
+    if (alcanzoTope) {
+      try { captureException(new Error(err?.message || 'subida de evidencia rechazada'), { tags: { area: 'evidencias-storage', etapa }, extra: { id: evidencia.id, tipo: evidencia.tipo_evidencia, status: err?.status } }); } catch {}
+    }
+  } else if (clase === 'sesion') {
+    // La foto no tiene la culpa: ni cuenta ni espera. Se reintenta apenas
+    // haya sesión.
+    patch._proximo_intento = 0;
+    patch._intentos_subida = evidencia._intentos_subida ?? 0;
+  }
+  try { await db.evidencias.update(evidencia.id, patch); } catch {}
+  return clase;
+}
+
+let _ultimaVerificacionSesion = 0;
+function pedirVerificarSesion() {
+  const ahora = Date.now();
+  if (ahora - _ultimaVerificacionSesion < 60_000) return;
+  _ultimaVerificacionSesion = ahora;
+  try { window.dispatchEvent(new CustomEvent('jx_verificar_sesion')); } catch {}
+}
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024; // 8 MB
 // Un DOCUMENTO (PDF) puede pesar más que una foto: el CV real de un
 // profesional con sus 31 constancias escaneadas adentro pesa 18 MB (medido el
@@ -57,9 +99,11 @@ async function compressImage(blob) {
 
 // ── Upload de una evidencia al Storage de Supabase ────────────────────
 
+// Devuelve 'ok' | 'sesion' | 'transitorio' | 'definitivo' | 'espera' | undefined.
 export async function uploadEvidencia(evidenciaId) {
   const evidencia = await db.evidencias.get(evidenciaId);
   if (!evidencia) return;
+  if (!leTocaSubir(evidencia)) return 'espera';
 
   // El blob puede vivir bajo OTRA clave (blob_ref): las evidencias "espejo" de
   // Captura Mágica comparten un mismo blob. Antes se buscaba solo por el id
@@ -88,7 +132,9 @@ export async function uploadEvidencia(evidenciaId) {
   // y, como la subida no tiene fallback, la evidencia quedaba FAILED.
   const ext = ((evidencia.nombre_archivo || '').split('.').pop() || '')
     .toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin';
-  const yyyy_mm = new Date().toISOString().slice(0, 7);
+  // Mes de Lima (regla 7): entre las 19:00 y las 24:00 del último día del mes
+  // el reloj UTC ya está en el mes siguiente. Es solo la carpeta.
+  const yyyy_mm = hoyLocal().slice(0, 7);
   // Sin obra (fotos del portal de campo, que la asigna contabilidad después):
   // carpeta fija 'captura-campo' — tiene su propia política de subida (mig 158).
   const storagePath = `${evidencia.obra_id || 'captura-campo'}/${yyyy_mm}/${evidenciaId}.${ext}`;
@@ -100,11 +146,12 @@ export async function uploadEvidencia(evidenciaId) {
   // re-firme (R2 o Supabase, según el flag de lectura).
   let publicUrl;
   let uploadError = null;
+  let etapaError = 'storage';
   if (r2WriteEnabled()) {
     const contentType = fileBlob.type || 'application/octet-stream';
     const r = await uploadToR2(storagePath, fileBlob, contentType);
     if (r.ok) publicUrl = `/evidencias/${storagePath}`;
-    else uploadError = { message: r.error };
+    else { uploadError = { message: r.error, status: r.status }; etapaError = r.etapa || 'put'; }
   } else {
     // upsert:true → re-subir el mismo path es idempotente (no 409 en reintentos).
     const { error } = await supabase.storage
@@ -117,22 +164,16 @@ export async function uploadEvidencia(evidenciaId) {
         // el default de 1 hora y el HTTP cache del navegador re-validaba/re-bajaba.
         cacheControl: '2592000',
       });
-    uploadError = error;
+    uploadError = error ? { message: error.message || String(error), status: Number(error.status ?? error.statusCode) || 0 } : null;
     if (!error) {
       publicUrl = supabase.storage.from('evidencias').getPublicUrl(storagePath).data.publicUrl;
     }
   }
 
   if (uploadError) {
-    const retries = (evidencia.upload_retries ?? 0) + 1;
-    const alcanzoTope = retries >= MAX_RETRIES;
-    await db.evidencias.update(evidenciaId, {
-      upload_retries: retries,
-      sync_status: alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
+    return registrarFallo(evidencia, etapaError, uploadError, {
       _last_error: `Subida de archivo al Storage falló: ${uploadError.message || uploadError}`,
     });
-    if (alcanzoTope) { try { captureException(uploadError, { tags:{ area:'evidencias-storage' }, extra:{ id: evidenciaId, tipo: evidencia.tipo_evidencia } }); } catch {} }
-    return;
   }
 
   // Sincronizar metadata al servidor. CRÍTICO: si esto falla NO borramos el blob
@@ -140,22 +181,18 @@ export async function uploadEvidencia(evidenciaId) {
   // — exactamente el bug que dejó la metadata fuera del server). Reintentamos.
   const metaRes = await upsertMetadataEvidencia(evidencia, publicUrl);
   if (!metaRes.ok) {
-    const retries = (evidencia.upload_retries ?? 0) + 1;
-    const alcanzoTope = retries >= MAX_RETRIES;
-    await db.evidencias.update(evidenciaId, {
-      url_archivo: publicUrl, // el blob ya está en Storage
-      upload_retries: retries,
-      sync_status: alcanzoTope ? UPLOAD_STATUS.FAILED : UPLOAD_STATUS.PENDING,
-      // Motivo VISIBLE (antes era un console.warn silencioso). El fallo típico es
-      // RLS de la tabla evidencias o el CHECK de tipo_evidencia (mig 080) → la
-      // usuaria/el admin necesitan saberlo para corregir, no que se pierda callado.
-      _last_error: `Metadata no entró al servidor: ${metaRes.error}`,
-      _last_error_is_rls: /row-level security|violates row-level security|42501/i.test(metaRes.error || ''),
-    });
-    return;
+    // Motivo VISIBLE (antes era un console.warn silencioso). El fallo típico es
+    // RLS de la tabla evidencias o el CHECK de tipo_evidencia (mig 080) → la
+    // usuaria/el admin necesitan saberlo para corregir, no que se pierda callado.
+    return registrarFallo(evidencia, 'metadata',
+      { message: metaRes.error, code: metaRes.code, status: metaRes.status },
+      { url_archivo: publicUrl, // el blob ya está en Storage
+        _last_error: `Metadata no entró al servidor: ${metaRes.error}` });
   }
-  // Éxito: limpiar cualquier error previo.
-  if (evidencia._last_error) { try { await db.evidencias.update(evidenciaId, { _last_error: null, _last_error_is_rls: false }); } catch {} }
+  // Éxito: limpiar cualquier error previo y la espera.
+  if (evidencia._last_error || evidencia._intentos_subida) {
+    try { await db.evidencias.update(evidenciaId, { _last_error: null, _last_error_is_rls: false, _intentos_subida: 0, _proximo_intento: 0, _last_error_clase: null }); } catch {}
+  }
 
   // Actualizar local
   await db.evidencias.update(evidenciaId, {
@@ -200,6 +237,7 @@ export async function uploadEvidencia(evidenciaId) {
   } catch {
     // ante la duda, conservar el blob (se limpia en un próximo pase)
   }
+  return 'ok';
 }
 
 // Columnas REALES de public.evidencias (allowlist). Usamos allowlist en vez de
@@ -224,10 +262,10 @@ async function upsertMetadataEvidencia(evidencia, url) {
   serverRecord.url_archivo = url ?? evidencia.url_archivo ?? null;
   serverRecord.local_path_temporal = null;
   serverRecord.sync_status = 'uploaded';
-  const { error } = await supabase.from('evidencias').upsert(serverRecord);
+  const { error, status } = await supabase.from('evidencias').upsert(serverRecord);
   if (error) {
     console.warn('[EvidenceUploader] upsert metadata falló:', error.message || error);
-    return { ok: false, error: error.message || String(error) };
+    return { ok: false, error: error.message || String(error), code: error.code || null, status: status || 0 };
   }
   return { ok: true, error: null };
 }
@@ -263,27 +301,50 @@ async function recuperarMetadataSubidas() {
   }
 }
 
-// Reactiva (una vez por sesión) las evidencias 'failed' cuyo blob aún existe en
-// IndexedDB → las vuelve 'pending' con retries=0 para que se reintenten. Sin blob
-// no hay nada que recuperar (se quedan 'failed'). Recupera fotos perdidas por la
-// RLS de Storage que bloqueaba a los ingenieros (ver mig 104).
-let _reactivacionFallidasHecha = false;
-async function reactivarFallidasConBlob() {
-  if (_reactivacionFallidasHecha) return;
-  _reactivacionFallidasHecha = true;
+// Reactiva las evidencias 'failed' cuyo blob aún existe en IndexedDB → las
+// vuelve 'pending' con retries=0 para que se reintenten. Sin blob no hay nada
+// que recuperar (se quedan 'failed'). Recupera fotos perdidas por la RLS de
+// Storage que bloqueaba a los ingenieros (ver mig 104).
+//
+// Tanda E: antes corría UNA vez por carga de página, así que una foto que
+// fallaba a media mañana esperaba a que alguien recargara la app. Ahora corre
+// cada media hora y cada vez que vuelve la conexión (reactivarEvidenciasFallidas,
+// desde main.jsx). Las rechazadas por la RLS se dejan: reintentarlas no cambia
+// nada hasta que alguien toque permisos (el botón «Reintentar» del modal de
+// sincronización las sigue reactivando a mano).
+const REACTIVAR_CADA_MS = 30 * 60_000;
+let _ultimaReactivacion = 0;
+async function reactivarFallidasConBlob({ forzar = false } = {}) {
+  const ahora = Date.now();
+  if (!forzar && ahora - _ultimaReactivacion < REACTIVAR_CADA_MS) return;
+  _ultimaReactivacion = ahora;
   try {
     const fallidas = await db.evidencias
       .where('sync_status').equals(UPLOAD_STATUS.FAILED)
+      .filter(e => !e._last_error_is_rls && e.demo !== true)
       .toArray();
     for (const ev of fallidas) {
       const blobEntry = await db.evidencias_blobs.get(ev.blob_ref || ev.id);
       if (blobEntry?.blob) {
-        await db.evidencias.update(ev.id, { sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0 });
+        await db.evidencias.update(ev.id, {
+          sync_status: UPLOAD_STATUS.PENDING, upload_retries: 0, _intentos_subida: 0, _proximo_intento: 0,
+        });
       }
     }
   } catch (e) {
     console.warn('[EvidenceUploader] reactivar fallidas:', e?.message || e);
   }
+}
+
+/** Al volver la conexión: lo que falló por un corte merece otra vuelta ya. */
+export async function reactivarEvidenciasFallidas() {
+  await reactivarFallidasConBlob({ forzar: true });
+  try {
+    // Las que esperaban por un corte de red tampoco tienen por qué seguir esperando.
+    await db.evidencias.where('sync_status').equals(UPLOAD_STATUS.PENDING)
+      .filter(e => (Number(e._proximo_intento) || 0) > Date.now() && e._last_error_clase === 'transitorio')
+      .modify({ _proximo_intento: 0 });
+  } catch {}
 }
 
 // ── Upload de todas las evidencias pendientes ─────────────────────────
@@ -299,23 +360,31 @@ export async function uploadPendingEvidencias() {
   if (_uploadingPending) return;
   _uploadingPending = true;
   try {
+    // Sin sesión no se intenta: cada firma volvía 401 y sumaba un intento, y a
+    // los ~4 min todas las fotos del dispositivo quedaban 'failed'.
+    let sesion = null;
+    try { sesion = (await supabase.auth.getSession())?.data?.session || null; } catch {}
+    if (!sesion) return;
+
     // Recuperar evidencias que quedaron 'failed' pero cuyo blob SIGUE en IndexedDB
     // (el blob solo se borra tras subir blob+metadata OK). Caso real: los ingenieros
     // no podían subir a Storage por la RLS (mig 104) → sus fotos de avance quedaron
     // 'failed' localmente. Tras el fix, reactivarlas para que se suban al fin.
     await reactivarFallidasConBlob();
 
+    const ahora = Date.now();
     const pending = await db.evidencias
       .where('sync_status').equals(UPLOAD_STATUS.PENDING)
+      .filter(e => leTocaSubir(e, ahora))
       .toArray();
 
     let subidas = 0;
     for (const ev of pending) {
-      await uploadEvidencia(ev.id);
-      try {
-        const post = await db.evidencias.get(ev.id);
-        if (post?.sync_status === UPLOAD_STATUS.UPLOADED) subidas++;
-      } catch {}
+      const r = await uploadEvidencia(ev.id);
+      if (r === 'ok') subidas++;
+      // Sesión vencida o revocada: las demás fallarían igual. Se corta la
+      // pasada y se le pide a useAuth que la verifique.
+      if (r === 'sesion') { pedirVerificarSesion(); break; }
     }
     // Avisar a los visores abiertos (source propio para que el trigger de main.jsx
     // no re-dispare en bucle). Sin esto, tras subir en segundo plano la foto seguía
@@ -374,6 +443,10 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
     throw new Error(`Archivo muy grande (${(blob.size / 1024 / 1024).toFixed(1)} MB). Máximo ${tope / 1024 / 1024} MB.`);
   }
 
+  // Fila y archivo en UNA transacción: si la app se cerraba entre los dos
+  // put, quedaba una fila 'pending_upload' sin blob que el subidor marcaba
+  // 'failed' («blob ausente») para siempre.
+  await db.transaction('rw', db.evidencias, db.evidencias_blobs, async () => {
   await db.evidencias.put({
     id,
     obra_id,
@@ -386,7 +459,9 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
     url_archivo: null,
     local_path_temporal: `idb://evidencias_blobs/${id}`,
     subido_por: created_by,
-    fecha: fecha ?? new Date().toISOString().slice(0, 10),
+    // Día de Lima (regla 7): con el UTC, una foto guardada después de las
+    // 19:00 quedaba fechada al día siguiente.
+    fecha: fecha ?? hoyLocal(),
     observaciones,
     // Modo PRUEBA (demo:true): la evidencia queda SOLO local — no debe subir
     // al Storage/BD reales apuntando a un registro demo (fuga demo→real).
@@ -403,4 +478,5 @@ export async function saveEvidenciaLocal({ id, obra_id, tipo_evidencia, modulo_r
   });
 
   await db.evidencias_blobs.put({ id, blob });
+  });
 }

@@ -1,7 +1,11 @@
-import { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { getCurrentUser, login as authLogin, logout as authLogout } from '../lib/auth';
+import { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react';
+import { isAuthRetryableFetchError } from '@supabase/supabase-js';
+import {
+  getCurrentUser, login as authLogin, logout as authLogout, marcarMotivoSalida, MOTIVOS_SALIDA,
+} from '../lib/auth';
+import { supabase } from '../lib/supabase';
 import { db } from '../db/jarvex.db';
-import { syncAll } from '../sync/SyncEngine';
+import { syncAll, subirAntesDeSalir } from '../sync/SyncEngine';
 import { identifyUser, resetUser } from '../lib/posthog.js';
 import { hayTrabajoEnCurso, trabajosEnCurso } from '../lib/sesion-ocupada.js';
 import { hayServicioRestringido } from '../lib/servicio-restringido.js';
@@ -71,6 +75,17 @@ function publicarSesion(profile) {
   } catch {}
 }
 
+// Texto del aviso antes de cerrar sesión con trabajo sin subir.
+export function mensajePendientesAlSalir({ registros = 0, evidencias = 0 } = {}) {
+  const partes = [];
+  if (registros > 0) partes.push(`${registros} ${registros === 1 ? 'registro' : 'registros'}`);
+  if (evidencias > 0) partes.push(`${evidencias} ${evidencias === 1 ? 'foto o documento' : 'fotos o documentos'}`);
+  if (!partes.length) return null;
+  return `Quedan ${partes.join(' y ')} sin subir al servidor (sin conexión o el servidor no respondió).\n\n` +
+    'No se pierden: quedan guardados en este equipo y se suben apenas alguien vuelva a entrar en él con conexión.\n\n' +
+    '¿Cerrar sesión igual?';
+}
+
 export function useAuthProvider() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
@@ -78,6 +93,12 @@ export function useAuthProvider() {
   const [loading, setLoading] = useState(true);
   // Tick interno para re-render cuando cambia el role override o el modo
   const [overrideTick, setOverrideTick] = useState(0);
+  // Espejos síncronos para los listeners de abajo (se registran una vez).
+  const profileRef = useRef(null);
+  const offlineRef = useRef(false);
+  const saliendoRef = useRef(false);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
+  useEffect(() => { offlineRef.current = offline; }, [offline]);
   useEffect(() => {
     const onChange = () => setOverrideTick(t => t + 1);
     window.addEventListener('app_mode_change', onChange);
@@ -181,19 +202,123 @@ export function useAuthProvider() {
     return result;
   }
 
-  async function logout() {
-    await authLogout();
-    setUser(null);
-    setProfile(null);
-    setOffline(false);
-    // PostHog: limpiar identidad anónima al cerrar sesión.
-    try { resetUser(); } catch {}
+  // Cierre común (manual, por inactividad, sesión vencida, usuario
+  // desactivado). NUNCA borra los datos locales: lo pendiente de subir se
+  // queda en el dispositivo. Si entra otra persona, el SyncEngine descarta
+  // lo sincronizado del anterior antes de su primer pull (alcance-sync.js).
+  const cerrarSesion = useCallback(async (motivo) => {
+    if (saliendoRef.current) return;
+    saliendoRef.current = true;
     try {
-      localStorage.removeItem('jx_user_role');
-      localStorage.removeItem('jx_user_role_real');
-      localStorage.removeItem('jx_role_override');
-    } catch {}
+      if (motivo) marcarMotivoSalida(motivo);
+      try { await authLogout(); } catch {}
+    } finally {
+      setUser(null);
+      setProfile(null);
+      setOffline(false);
+      // PostHog: limpiar identidad anónima al cerrar sesión.
+      try { resetUser(); } catch {}
+      try {
+        localStorage.removeItem('jx_user_role');
+        localStorage.removeItem('jx_user_role_real');
+        localStorage.removeItem('jx_role_override');
+      } catch {}
+      saliendoRef.current = false;
+    }
+  }, []);
+
+  // Cerrar sesión a pedido (menú) o por inactividad. Antes de salir intenta
+  // subir lo pendiente; si algo no pudo subir y quien cierra es una persona,
+  // se le pregunta — en una PC compartida es la última oportunidad de verlo.
+  async function logout({ preguntar = true } = {}) {
+    let quedan = { registros: 0, evidencias: 0 };
+    try { quedan = await subirAntesDeSalir(); } catch {}
+    const aviso = mensajePendientesAlSalir(quedan);
+    if (preguntar && aviso) {
+      let seguir = true;
+      try { seguir = window.confirm(aviso); } catch {}
+      if (!seguir) return false;
+    }
+    await cerrarSesion(null);
+    return true;
   }
+
+  // ── LA SESIÓN SE CAE SOLA (tanda E, 26-set-2026) ────────────────────
+  // Nadie escuchaba a supabase-js. Cuando la sesión se revocaba (los 11
+  // refresh_token_reuse por día de los logs) o el token no se podía renovar,
+  // la app seguía «adentro» con el sync apagado en silencio y el subidor
+  // quemando los reintentos de las fotos. Ahora:
+  //   · SIGNED_OUT que no pedimos → a la pantalla de ingreso, diciendo por qué;
+  //   · el SyncEngine avisa si un ciclo no encontró sesión (jx_sin_sesion) o
+  //     si el servidor dice que el usuario está desactivado
+  //     (jx_usuario_inactivo, mig 235);
+  //   · el subidor avisa si /api/r2 le devuelve 401 (jx_verificar_sesion):
+  //     PostgREST puede seguir aceptando el JWT de una sesión ya revocada
+  //     hasta que vence, pero Auth no — se pregunta a Auth.
+  // Nada de esto borra los datos del dispositivo.
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event !== 'SIGNED_OUT') return;
+      if (saliendoRef.current || !profileRef.current) return;
+      // Fuera del callback: supabase-js pide no llamar a auth adentro (lock).
+      setTimeout(() => { cerrarSesion(MOTIVOS_SALIDA.SESION_VENCIDA); }, 0);
+    });
+
+    const verificarSinSesion = async () => {
+      if (!profileRef.current || saliendoRef.current || !navigator.onLine) return;
+      try {
+        const { data: d, error } = await supabase.auth.getSession();
+        if (d?.session) return;
+        if (error && isAuthRetryableFetchError(error)) return; // la red, no la sesión
+        cerrarSesion(MOTIVOS_SALIDA.SESION_VENCIDA);
+      } catch {}
+    };
+    const alInactivo = () => {
+      if (!profileRef.current) return;
+      cerrarSesion(MOTIVOS_SALIDA.DESACTIVADO);
+    };
+    const verificarConAuth = async () => {
+      if (!profileRef.current || saliendoRef.current || !navigator.onLine) return;
+      try {
+        const { data: d, error } = await supabase.auth.getUser();
+        if (d?.user) return;
+        if (!error || isAuthRetryableFetchError(error)) return;
+        const st = Number(error.status) || 0;
+        if (st === 401 || st === 403 || /session.*not.*found|invalid.*jwt|jwt.*expired/i.test(error.message || '')) {
+          cerrarSesion(MOTIVOS_SALIDA.SESION_VENCIDA);
+        }
+      } catch {}
+    };
+    // Cambió el rol o las obras del usuario (lo detecta el SyncEngine con el
+    // `__yo` de sync_pull): se relee el perfil para que el menú y los permisos
+    // de la pantalla sigan al servidor sin tener que salir y volver a entrar.
+    const releerPerfil = async () => {
+      if (!profileRef.current || saliendoRef.current) return;
+      try {
+        const r = await getCurrentUser();
+        if (!r) { cerrarSesion(null); return; }  // getCurrentUser ya dejó el motivo
+        if (r.profile && !rolEsValido(r.profile.rol)) { cerrarSesion(null); return; }
+        if (r.profile) { setProfile(r.profile); setOffline(!!r.offline); }
+      } catch {}
+    };
+    // Entró sin conexión con el perfil guardado: al volver la red, se confirma
+    // contra el servidor (sesión y perfil).
+    const alVolverLaRed = () => { if (offlineRef.current) releerPerfil(); };
+
+    window.addEventListener('jx_sin_sesion', verificarSinSesion);
+    window.addEventListener('jx_usuario_inactivo', alInactivo);
+    window.addEventListener('jx_verificar_sesion', verificarConAuth);
+    window.addEventListener('jx_alcance_cambio', releerPerfil);
+    window.addEventListener('online', alVolverLaRed);
+    return () => {
+      data?.subscription?.unsubscribe?.();
+      window.removeEventListener('jx_sin_sesion', verificarSinSesion);
+      window.removeEventListener('jx_usuario_inactivo', alInactivo);
+      window.removeEventListener('jx_verificar_sesion', verificarConAuth);
+      window.removeEventListener('jx_alcance_cambio', releerPerfil);
+      window.removeEventListener('online', alVolverLaRed);
+    };
+  }, [cerrarSesion]);
 
   // Copiar a localStorage el timeout configurado en app_config (llega por el
   // sync) — de ahí lo lee síncrono el timer de abajo. Se ignoran filas demo
@@ -278,8 +403,9 @@ export function useAuthProvider() {
       }
 
       console.log('[useAuth] Sesión cerrada por inactividad');
-      try { sessionStorage.setItem('jx_logout_reason', 'inactivity'); } catch {}
-      logout();
+      marcarMotivoSalida(MOTIVOS_SALIDA.INACTIVIDAD);
+      // Sin preguntar (no hay nadie mirando), pero intentando subir antes.
+      logout({ preguntar: false });
     }
     function reset() {
       if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
