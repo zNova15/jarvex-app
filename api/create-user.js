@@ -21,13 +21,16 @@
 // Solo lo puede invocar un admin: validamos pasando el JWT del solicitante en
 // el header Authorization. Si su perfil no tiene rol='admin' rechazamos.
 
-const ROLES_VALIDOS = new Set([
-  'admin','gerente','ingeniero_residente','ingeniero','supervisor','almacenero',
-  'asistente_admin','contador','ayudante_contador','tesorero','jefe_compras','rrhh',
-  'prevencionista','maestro_obra','solo_lectura',
-  'ing_ambiental','ing_calidad','ing_social',
-  'campo',   // cuenta compartida del portal de captura de campo (mig 155)
-]);
+import { requireAuth, rateLimit, detalleDev } from '../lib/api-helpers.js';
+import { ROLES_CANONICOS } from '../lib/roles.js';
+
+// Antes era una lista propia (4ª copia divergente en el repo) sin
+// 'licitaciones' — el desplegable del admin la ofrece y el server la
+// degradaba a 'solo_lectura' en silencio (25-set-2026). Ahora es el canon
+// compartido con api/asistente-solicitud.js.
+const ROLES_VALIDOS = new Set(ROLES_CANONICOS);
+
+export const maxDuration = 60;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -46,57 +49,67 @@ export default async function handler(req, res) {
   }
 
   const body = req.body || {};
-  // Este endpoint maneja DOS acciones (fusionadas para no pasar el límite de 12
-  // funciones serverless del plan Vercel): 'create' (default) crea un usuario;
-  // 'set_password' fija la contraseña de un usuario existente (reset por admin).
-  const action = body.action === 'set_password' ? 'set_password' : 'create';
+  // Este endpoint maneja TRES acciones (fusionadas para no pasar el límite de
+  // funciones serverless): 'create' (default) crea un usuario; 'set_password'
+  // fija la contraseña de un usuario existente (reset por admin); 'set_ban'
+  // revoca/restaura su acceso a Supabase Auth al desactivarlo/reactivarlo
+  // desde Administración (tanda G, 26-set-2026).
+  const action = ['set_password', 'set_ban'].includes(body.action) ? body.action : 'create';
 
-  // ── 1. Validar que el solicitante es admin (común a ambas acciones) ──
-  const authHeader = req.headers.authorization || req.headers.Authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Falta token Authorization Bearer' });
-  }
-  const callerToken = authHeader.slice(7);
-
+  // ── 1. Validar que el solicitante es admin (común a las tres acciones) ──
+  let callerProfile;
   try {
-    const callerResp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        apikey: SERVICE_ROLE,
-        Authorization: `Bearer ${callerToken}`,
-      },
-    });
-    if (!callerResp.ok) {
-      return res.status(401).json({ error: 'Token inválido o expirado' });
-    }
-    const caller = await callerResp.json();
-    const callerId = caller?.id;
-    if (!callerId) {
-      return res.status(401).json({ error: 'No se pudo identificar al usuario' });
-    }
-    // Buscar perfil del solicitante
-    const profResp = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${callerId}&select=rol,activo`, {
-      headers: {
-        apikey: SERVICE_ROLE,
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-      },
-    });
-    const profArr = await profResp.json();
-    const callerProfile = Array.isArray(profArr) ? profArr[0] : null;
-    // admin: todo. contador (Contadora Jefe): SOLO set_password y SOLO sobre la
-    // cuenta compartida del portal de campo (se verifica el target más abajo).
-    const rolOk = callerProfile && (
-      callerProfile.rol === 'admin' ||
-      (callerProfile.rol === 'contador' && action === 'set_password')
-    );
-    if (!rolOk) {
-      return res.status(403).json({ error: 'Solo un administrador puede hacer esto' });
-    }
-    if (callerProfile.activo === false) {
-      return res.status(403).json({ error: 'Tu cuenta está inactiva' });
-    }
-    req._callerRol = callerProfile.rol;
+    const ctx = await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 20 });
+    callerProfile = ctx.profile;
   } catch (e) {
-    return res.status(502).json({ error: 'Error validando admin', detail: e.message });
+    const status = e?._httpError ? e.status : 502;
+    return res.status(status).json({ error: e?.message || 'Error validando admin' });
+  }
+  // admin: todo. contador (Contadora Jefe): SOLO set_password y SOLO sobre la
+  // cuenta compartida del portal de campo (se verifica el target más abajo).
+  const rolOk = callerProfile && (
+    callerProfile.rol === 'admin' ||
+    (callerProfile.rol === 'contador' && action === 'set_password')
+  );
+  if (!rolOk) {
+    return res.status(403).json({ error: 'Solo un administrador puede hacer esto' });
+  }
+  req._callerRol = callerProfile.rol;
+
+  // ── Acción 'set_ban': revocar/restaurar el acceso a Auth de un usuario ──
+  // Al desactivar (mig 235 + RLS ya le cortan la lectura/escritura de datos al
+  // instante), pero su JWT sigue siendo válido para Supabase Auth hasta que
+  // expire y puede seguir renovándolo — Gabriel pidió que quede fuera "al
+  // instante" (respuesta 10, revisión Ola 1). `ban_duration` de la Admin API
+  // le impide sacar un token NUEVO; el que ya tenía en el navegador de todos
+  // modos deja de servir para nada porque RLS y requireAuth ya lo bloquean.
+  if (action === 'set_ban') {
+    const { user_id, activo } = body;
+    if (!user_id || typeof activo !== 'boolean') {
+      return res.status(422).json({ error: 'user_id y activo (boolean) requeridos' });
+    }
+    try {
+      const banResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
+        method: 'PUT',
+        headers: {
+          apikey: SERVICE_ROLE,
+          Authorization: `Bearer ${SERVICE_ROLE}`,
+          'Content-Type': 'application/json',
+        },
+        // 'none' desbanea; '876000h' (100 años) es como la Admin API de
+        // Supabase documenta un baneo permanente (no acepta la palabra
+        // "permanente" directamente).
+        body: JSON.stringify({ ban_duration: activo ? 'none' : '876000h' }),
+      });
+      if (!banResp.ok) {
+        const errBody = await banResp.json().catch(() => ({}));
+        return res.status(banResp.status).json({ error: 'No se pudo actualizar el acceso a Auth', ...detalleDev(errBody?.msg || errBody?.error || `HTTP ${banResp.status}`) });
+      }
+    } catch (e) {
+      return res.status(502).json({ error: 'Error en Admin API', ...detalleDev(e.message) });
+    }
+    return res.status(200).json({ ok: true, user_id, activo });
   }
 
   // ── Acción 'set_password': fijar la contraseña de un usuario existente ──
@@ -147,7 +160,7 @@ export default async function handler(req, res) {
         });
         if (!rpcResp.ok) {
           const errBody = await rpcResp.json().catch(() => ({}));
-          return res.status(rpcResp.status).json({ error: 'No se pudo fijar el PIN', detail: errBody?.message || `HTTP ${rpcResp.status}` });
+          return res.status(rpcResp.status).json({ error: 'No se pudo fijar el PIN', ...detalleDev(errBody?.message || `HTTP ${rpcResp.status}`) });
         }
       } else {
         const updResp = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${user_id}`, {
@@ -162,11 +175,11 @@ export default async function handler(req, res) {
         if (!updResp.ok) {
           const errBody = await updResp.json().catch(() => ({}));
           const msg = errBody?.msg || errBody?.error_description || errBody?.error || `HTTP ${updResp.status}`;
-          return res.status(updResp.status).json({ error: 'No se pudo actualizar la contraseña', detail: msg });
+          return res.status(updResp.status).json({ error: 'No se pudo actualizar la contraseña', ...detalleDev(msg) });
         }
       }
     } catch (e) {
-      return res.status(502).json({ error: 'Error en Admin API', detail: e.message });
+      return res.status(502).json({ error: 'Error en Admin API', ...detalleDev(e.message) });
     }
     return res.status(200).json({
       ok: true,
@@ -218,7 +231,7 @@ export default async function handler(req, res) {
       const yaExiste = createResp.status === 422 || createResp.status === 400 ||
         /already.*registered|already.*exists|duplicate|email_exists/i.test(msg);
       if (!yaExiste) {
-        return res.status(createResp.status).json({ error: 'Error creando usuario', detail: msg });
+        return res.status(createResp.status).json({ error: 'Error creando usuario', ...detalleDev(msg) });
       }
       // ── Fallback: usuario ya existe → buscarlo y auto-confirmarlo ──
       const listResp = await fetch(
@@ -226,7 +239,7 @@ export default async function handler(req, res) {
         { headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${SERVICE_ROLE}` } }
       );
       if (!listResp.ok) {
-        return res.status(409).json({ error: 'Usuario ya existe pero no se pudo recuperar', detail: msg });
+        return res.status(409).json({ error: 'Usuario ya existe pero no se pudo recuperar', ...detalleDev(msg) });
       }
       const listData = await listResp.json();
       const existing = (listData?.users || []).find(u => u.email?.toLowerCase() === email.toLowerCase());
@@ -253,7 +266,7 @@ export default async function handler(req, res) {
       });
       if (!updResp.ok) {
         const updErr = await updResp.json().catch(()=>({}));
-        return res.status(502).json({ error: 'No se pudo confirmar usuario existente', detail: updErr?.msg || updErr?.error || 'unknown' });
+        return res.status(502).json({ error: 'No se pudo confirmar usuario existente', ...detalleDev(updErr?.msg || updErr?.error || 'unknown') });
       }
       wasUpdated = true;
     }
@@ -261,7 +274,7 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'Supabase no devolvió ID del usuario' });
     }
   } catch (e) {
-    return res.status(502).json({ error: 'Error en Admin API', detail: e.message });
+    return res.status(502).json({ error: 'Error en Admin API', ...detalleDev(e.message) });
   }
 
   // ── 3. Upsert profile (con service role, bypass RLS) ────────

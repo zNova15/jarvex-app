@@ -467,6 +467,24 @@ function UsuariosPage({ showToast }) {
       const newVal = !(u.activo !== false);
       const { error } = await sb.from('profiles').update({ activo: newVal }).eq('id', u.id);
       if (error) throw error;
+      // Mig 235 (RLS) y requireAuth ya le cortan a la persona la lectura y
+      // escritura de datos al instante, pero su JWT de Supabase Auth seguía
+      // siendo válido y renovable indefinidamente — quedaba "adentro" de Auth
+      // aunque no pudiera hacer nada. Revocar acá cierra ese resquicio (tanda
+      // G, 26-set-2026, respuesta 10 de Gabriel: "tiene que quedar afuera al
+      // instante"). Si esto falla no se revierte el cambio en profiles: el
+      // cerco de datos ya es la barrera real.
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        const token = session?.access_token;
+        if (token) {
+          await fetch('/api/create-user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'set_ban', user_id: u.id, activo: newVal }),
+          });
+        }
+      } catch { /* el cerco de RLS/requireAuth ya bloquea los datos igual */ }
       showToast?.(newVal ? 'Usuario activado' : 'Usuario desactivado', 'green');
       reload();
     } catch (e) { showToast?.('Error: ' + (e.message||e),'red'); }

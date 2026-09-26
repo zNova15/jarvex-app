@@ -92,8 +92,18 @@ export function fileABase64(file) {
   });
 }
 
+// Espejo de MAX_BASE64_BYTES en api/captura-magica.js (4 MB de base64, ≈3 MB
+// binario) — el límite real de body de Vercel es ~4,5 MB. Sin este chequeo,
+// un paquete SCTR (cotización + constancia + voucher + factura escaneados)
+// pasaba de largo el input del navegador y moría en un 413 en texto plano que
+// `apiParse` traducía a "HTTP 413" sin explicar qué pasó (25-set-2026).
+const MAX_ARCHIVO_BYTES = 3 * 1024 * 1024;
+
 /** Manda el paquete PDF a la IA. Devuelve { secciones, certificado, confianza, advertencias }. */
 export async function analizarPaqueteSctr(file) {
+  if (file && file.size > MAX_ARCHIVO_BYTES) {
+    throw new Error(`El paquete SCTR pesa más de ${MAX_ARCHIVO_BYTES / 1024 / 1024} MB — comprimilo o escaneá a menor resolución antes de subirlo.`);
+  }
   const { apiFetch, apiParse } = await import('./api-client');
   const base64 = await fileABase64(file);
   const resp = await apiFetch('/api/captura-magica', {

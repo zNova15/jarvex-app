@@ -218,6 +218,10 @@ function CalidadPage({ showToast }) {
 
   const analizarIA = async () => {
     if (!formCert.archivo) { toast('Adjuntá el certificado (PDF o foto) para analizarlo', 'red'); return; }
+    // Espejo de MAX_BASE64_BYTES en api/captura-magica.js: sin este chequeo el
+    // archivo pasaba de largo hasta la IA y moría en un 413 de la plataforma
+    // (el tope de 8MB de abajo es para el guardado en R2, no para esta llamada).
+    if (formCert.archivo.size > 3 * 1024 * 1024) { toast('El archivo pesa más de 3 MB — comprimilo antes de analizarlo con IA', 'red'); return; }
     setAnalizando(true); setIa(null);
     try {
       const base64 = await fileToBase64(formCert.archivo);

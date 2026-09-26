@@ -40,10 +40,7 @@ async function getAuthHeaders() {
   }
 }
 
-// Fetch contra /api/* con auth + timeout configurable.
-export async function apiFetch(path, opts = {}) {
-  const { timeout = DEFAULT_TIMEOUT_MS, ...rest } = opts;
-  const authHeaders = await getAuthHeaders();
+async function fetchConTimeout(path, rest, timeout, authHeaders) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
@@ -58,6 +55,44 @@ export async function apiFetch(path, opts = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Tanda G (26-set-2026): un 401 de /api/* significa un JWT que Supabase ya no
+// reconoce (revocado por reuso de refresh token, cuenta desactivada, o
+// simplemente venció) — antes el cliente lo mandaba igual en cada clic y la
+// persona veía "Token inválido o expirado" en rojo sin saber qué hacer (7
+// casos medidos en un día, ola1-api.md). Un solo intento de refrescar la
+// sesión y reintentar; si el refresh también falla, la sesión ya terminó de
+// verdad → logout con motivo para que la pantalla de ingreso lo diga.
+async function reintentarTrasRefrescar(path, rest, timeout) {
+  try {
+    const sb = await getSupabase();
+    if (!sb) return null;
+    const { data, error } = await sb.auth.refreshSession();
+    const token = data?.session?.access_token;
+    if (error || !token) throw error || new Error('refresh sin sesión');
+    return await fetchConTimeout(path, rest, timeout, { Authorization: `Bearer ${token}` });
+  } catch {
+    try {
+      const { marcarMotivoSalida, MOTIVOS_SALIDA, logout } = await import('./auth.js');
+      marcarMotivoSalida(MOTIVOS_SALIDA.SESION_VENCIDA);
+      await logout();
+    } catch { /* mejor esfuerzo: si ni el logout anda, seguimos con el 401 original */ }
+    return null;
+  }
+}
+
+// Fetch contra /api/* con auth + timeout configurable. Reintenta UNA vez tras
+// refrescar la sesión si el server responde 401.
+export async function apiFetch(path, opts = {}) {
+  const { timeout = DEFAULT_TIMEOUT_MS, ...rest } = opts;
+  const authHeaders = await getAuthHeaders();
+  const resp = await fetchConTimeout(path, rest, timeout, authHeaders);
+  if (resp.status === 401) {
+    const reintento = await reintentarTrasRefrescar(path, rest, timeout);
+    if (reintento) return reintento;
+  }
+  return resp;
 }
 
 // ── Parseo SEGURO de la respuesta de un endpoint /api/* ──────────────

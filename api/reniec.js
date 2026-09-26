@@ -18,14 +18,21 @@
 // existe (autoritativo, no se sigue probando). La respuesta normalizada
 // siempre tiene los mismos campos; lo que el proveedor no provee viene null.
 
-import { requireAuth, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from '../lib/api-helpers.js';
+import { requireAuth, requireRoleExcept, rateLimit, sanitizeError, isValidDNI, setCorsHeaders } from '../lib/api-helpers.js';
+
+// Mismo criterio que sunat.js: sin esto cualquier sesión activa —incluida la
+// cuenta compartida 'campo'— podía agotar la cuota free de Decolecta.
+const ROLES_EXCLUIDOS = ['campo', 'solo_lectura'];
+
+export const maxDuration = 60;
 
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
 
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRoleExcept(ctx, ROLES_EXCLUIDOS);
     rateLimit(req, { windowMs: 60_000, max: 30 });
 
     const { dni } = req.query || {};
@@ -71,7 +78,10 @@ export default async function handler(req, res) {
           last = { id: p.id, status: 404, gratis: !p.token };
           continue;
         }
-        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
+        // Sin distinguir Authorization, `s-maxage` serviría un DNI ajeno desde
+        // el CDN a cualquiera que pegue la misma query — PII (nombre, apellidos,
+        // fecha de nacimiento). No se cachea en el borde.
+        res.setHeader('Cache-Control', 'private, no-store');
         return res.status(200).json(norm);
       }
       if (upstream.status === 404) {

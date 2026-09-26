@@ -48,6 +48,9 @@
 //     (fase final), para ahorrar una operación clase B por firma.
 
 import crypto from 'node:crypto';
+import { requireAuth, rateLimit, httpError, detalleDev } from '../lib/api-helpers.js';
+
+export const maxDuration = 60;
 
 // TTL de la URL prefirmada. GET: 7 días (calza con la caché `jx_signed_urls`
 // del cliente + el Service Worker, que cachea 30 días → egress mínimo). 7 días
@@ -165,40 +168,20 @@ export default async function handler(req, res) {
   });
 
   // ── 1. Validar que el solicitante es un usuario logueado y activo ──
-  const authHeader = req.headers.authorization || req.headers.Authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Falta token Authorization Bearer' });
-  }
-  const callerToken = authHeader.slice(7);
-  let callerId = null;
-  let callerRol = null;
+  // FALLA CERRADO: sin fila de perfil no se sirve nada (requireAuth ya corta
+  // `activo===false`; acá se agrega el caso "sin perfil", que r2 trataba
+  // distinto). requireAuth cachea 60s por token (ráfagas de firmas para una
+  // galería de fotos no repiten /auth/v1/user + profiles en cada una).
+  let callerId, callerRol;
   try {
-    const callerResp = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: SERVICE_ROLE, Authorization: `Bearer ${callerToken}` },
-    });
-    if (!callerResp.ok) {
-      return res.status(401).json({ error: 'Token inválido o expirado' });
-    }
-    const caller = await callerResp.json();
-    callerId = caller?.id;
-    if (!callerId) return res.status(401).json({ error: 'No se pudo identificar al usuario' });
-
-    // Perfil: FALLA CERRADO. `activo` es la única barrera contra una cuenta dada
-    // de baja (Auth le sigue refrescando el token), así que un error de red o de
-    // permisos NO puede degradar en "lo dejamos pasar". Verificado el 5-sep-2026:
-    // los 17 usuarios de Auth tienen fila en profiles, así que exigirla no deja
-    // a nadie afuera.
-    const profResp = await fetch(`${SUPABASE_URL}/rest/v1/profiles?id=eq.${callerId}&select=rol,activo`, { headers: sbHeaders });
-    if (!profResp.ok) {
-      return res.status(502).json({ error: 'No se pudo validar el perfil' });
-    }
-    const profArr = await profResp.json().catch(() => null);
-    const prof = Array.isArray(profArr) ? profArr[0] : null;
-    if (!prof) return res.status(403).json({ error: 'Tu usuario no tiene perfil' });
-    if (prof.activo === false) return res.status(403).json({ error: 'Tu cuenta está inactiva' });
-    callerRol = prof.rol || null;
+    const ctx = await requireAuth(req);
+    rateLimit(req, { windowMs: 60_000, max: 120 });
+    if (!ctx.profile) throw httpError(403, 'Tu usuario no tiene perfil');
+    callerId = ctx.user_id;
+    callerRol = ctx.profile.rol || null;
   } catch (e) {
-    return res.status(502).json({ error: 'Error validando sesión', detail: e.message });
+    const status = e?._httpError ? e.status : 502;
+    return res.status(status).json({ error: e?.message || 'Error validando sesión' });
   }
 
   // ── 2. Validar acción y path ──
@@ -277,6 +260,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ url: firmar('PUT', path, PUT_EXPIRES), expiresIn: PUT_EXPIRES });
   } catch (e) {
-    return res.status(500).json({ error: 'No se pudo firmar la URL', detail: e.message });
+    return res.status(500).json({ error: 'No se pudo firmar la URL', ...detalleDev(e.message) });
   }
 }

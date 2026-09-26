@@ -57,8 +57,12 @@ const ALLOWED_MIME = [
   'image/heif',
 ];
 
-// Máximo 8 MB de string base64 (≈6 MB binario)
-const MAX_BASE64_BYTES = 8 * 1024 * 1024;
+// Máximo 4 MB de string base64 (≈3 MB binario). Antes eran 8 MB, por encima
+// del tope real de body de Vercel (~4,5 MB): un archivo que pasaba este
+// chequeo igual moría en la plataforma con un 413 en texto plano que
+// `apiParse` traducía a "HTTP 413" sin explicación (25-set-2026). Espejado en
+// src/lib/sctr-paquete.js y src/components/jx-calidad.jsx antes de llamar.
+const MAX_BASE64_BYTES = 4 * 1024 * 1024;
 
 // Modelo FUERTE (Sonnet): fallback de visión + certificados de calidad + SCTR
 // (razonamiento/veredicto — no conviene abaratar). Overridable por env.
@@ -493,6 +497,7 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
           system: SYSTEM_PROMPT_ITEMS,
           user: userTexto,
           maxTokens: presupuestoSalida(itemsEstimados),
+          razonamiento: 'bajo',
         }), deadlineOR);
         data = normalizarRespuestaOR(cruda);
         engine = 'mistral-ocr+openrouter';
@@ -511,6 +516,7 @@ async function estructurarItems({ res, isProd, deadline, mistralKey, cleanBase64
               system: SYSTEM_PROMPT_ITEMS,
               user: userTexto,
               maxTokens: presupuestoSalida(itemsEstimados),
+              razonamiento: 'bajo',
             }), deadlineOR);
             data = normalizarRespuestaOR(crudaAuto);
             engine = 'mistral-ocr+openrouter(gratis-fallback)';
@@ -676,8 +682,10 @@ function respondError(e, resReal, isProd, extra = null) {
         : 'El servicio de IA secundario (Claude) no tiene saldo disponible. Revisa que MISTRAL_API_KEY y OPENROUTER_API_KEY estén configuradas en Vercel.',
       code: e.trasOpenRouter ? 'ia_saturada' : 'ia_sin_credito',
       tras_openrouter: e.trasOpenRouter || null,
-      detalle_openrouter: e.trasOpenRouterTexto || null,
-      detail: (e.upstreamText || '').slice(0, 500) || null,
+      ...(process.env.NODE_ENV === 'production' ? {} : {
+        detalle_openrouter: e.trasOpenRouterTexto || null,
+        detail: (e.upstreamText || '').slice(0, 500) || null,
+      }),
     });
   }
   if (e && e.upstreamStatus) {
@@ -687,7 +695,7 @@ function respondError(e, resReal, isProd, extra = null) {
       error: e.upstreamStatus === 429
         ? 'El servicio de IA está saturado (429) — espera unos segundos y pulsa Reintentar'
         : `El servicio de IA (${motor}) respondió ${e.upstreamStatus}`,
-      detail: (e.upstreamText || '').slice(0, 500) || null,
+      ...(process.env.NODE_ENV === 'production' ? {} : { detail: (e.upstreamText || '').slice(0, 500) || null }),
     });
   }
   const sanitized = sanitizeError(e, 'Error consultando la IA');
@@ -1070,8 +1078,13 @@ export default async function handler(req, res) {
               ],
             },
           ],
-          max_tokens: 4000,
+          // Antes 4000 fijo y sin `reasoning` — este cuerpo se arma a mano
+          // (no pasa por construirCuerpoOR) y era el otro origen real de los
+          // truncados: el modelo gratuito razona en voz alta y se comía el
+          // techo pensando. Mismo criterio que las llamadas de texto.
+          max_tokens: presupuestoSalida(itemsEstimados),
           temperature: 0,
+          reasoning: { effort: 'low', exclude: true },
           provider: {
             ...(cfgOR.politica === 'zdr' ? { zdr: true } : { data_collection: 'deny' }),
             allow_fallbacks: true,
@@ -1097,6 +1110,7 @@ export default async function handler(req, res) {
           system: systemPrompt,
           user: content[0].text,
           maxTokens: presupuestoSalida(itemsEstimados),
+          razonamiento: 'bajo',
         }), deadlineOR);
         data = normalizarRespuestaOR(cruda);
         engine = 'mistral-ocr+openrouter';
@@ -1115,6 +1129,7 @@ export default async function handler(req, res) {
               system: systemPrompt,
               user: content[0].text,
               maxTokens: presupuestoSalida(itemsEstimados),
+              razonamiento: 'bajo',
             }), deadlineOR);
             data = normalizarRespuestaOR(crudaAuto);
             engine = 'mistral-ocr+openrouter(gratis-fallback)';
@@ -1265,11 +1280,18 @@ export default async function handler(req, res) {
         + `Todo lo demás —tipo de documento, serie-correlativo, fechas, moneda, emisor, receptor, TOTALES, detracción y nota_ref— extraelo completo y con precisión. `
         + `Responde SOLO con el JSON minificado.\n\n===== TEXTO OCR DEL DOCUMENTO =====\n${ocr.texto}` }];
       const cadenaRescate = armarCadenaOpenRouter(elegidoTexto.auto ? 'auto' : elegidoTexto.modelo, cfgOR);
+      // El rescate pide SIN ítems — sale más corto que la llamada titular que
+      // ya se cortó — pero antes pedía menos tokens (4000) que ese mismo
+      // techo (≥6000) y sin `razonamiento:'bajo'`: el modelo gratuito gastaba
+      // el techo pensando en voz alta y el rescate se truncaba también
+      // (25-set-2026, los 41 "TRUNCADO" medidos). `presupuestoSalida(0)` da el
+      // piso de 6000 que usó la llamada original.
       const dataRescate = usaOpenRouter
         ? normalizarRespuestaOR(await openrouterChat(cfgOR.apiKey, construirCuerpoOR({
             modelo: cadenaRescate.modelo,
             respaldos: cadenaRescate.respaldos, politica: cfgOR.politica,
-            system: systemPrompt, user: contentSinItems[0].text, maxTokens: 4000,
+            system: systemPrompt, user: contentSinItems[0].text, maxTokens: presupuestoSalida(0),
+            razonamiento: 'bajo',
           }), deadline))
         : await anthropicMessages(apiKey, {
             model: CLAUDE_STRUCT_MODEL, max_tokens: 4000,

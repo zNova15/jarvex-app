@@ -15,7 +15,16 @@
 //   2. Si no → fallback a apis.net.pe v1/ruc legacy (gratis sin token,
 //      solo razón social + dirección).
 
-import { requireAuth, rateLimit, sanitizeError, isValidRUC, setCorsHeaders } from '../lib/api-helpers.js';
+import { requireAuth, requireRoleExcept, rateLimit, sanitizeError, isValidRUC, setCorsHeaders } from '../lib/api-helpers.js';
+
+// Sin allowlist antes (25-set-2026): cualquier sesión activa —incluida la
+// cuenta compartida 'campo'— podía agotar la cuota free de Decolecta
+// (100 consultas/mes). Se excluyen 'campo' y 'solo_lectura'; el resto de
+// roles operativos sí consultan RUC/SOAP/tipo de cambio en distintas
+// pantallas (alta de proveedores, comprobantes, tesorería, conciliación).
+const ROLES_EXCLUIDOS = ['campo', 'solo_lectura'];
+
+export const maxDuration = 60;
 
 // ── Mapeo de actividades económicas / CIIU → rubro JARVEX ────
 // El mapeo busca palabras clave en el texto de actividad económica
@@ -72,7 +81,8 @@ async function readJsonBody(req) {
 
 async function handleSendBill(req, res) {
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRoleExcept(ctx, ROLES_EXCLUIDOS);
     rateLimit(req, { windowMs: 60_000, max: 10 });
   } catch (e) {
     const sanitized = sanitizeError(e, 'No autorizado');
@@ -85,8 +95,8 @@ async function handleSendBill(req, res) {
   if (typeof soapEnvelope !== 'string' || !soapEnvelope.trim()) {
     return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope requerido' });
   }
-  if (soapEnvelope.length > 5_000_000 || !/<\w+:?Envelope/i.test(soapEnvelope)) {
-    return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope debe ser un SOAP envelope válido (<5MB)' });
+  if (soapEnvelope.length > 4_000_000 || !/<\w+:?Envelope/i.test(soapEnvelope)) {
+    return res.status(400).json({ ok: false, code: 'BAD_BODY', message: 'soapEnvelope debe ser un SOAP envelope válido (<4MB)' });
   }
   const url = BILL_ENDPOINTS[ambiente];
   if (!url) {
@@ -139,7 +149,8 @@ async function handleSendBill(req, res) {
  */
 async function handleTipoCambio(req, res) {
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRoleExcept(ctx, ROLES_EXCLUIDOS);
     rateLimit(req, { windowMs: 60_000, max: 40 });
 
     const fecha = String((req.query || {}).tipoCambio || '').trim();
@@ -246,7 +257,8 @@ export default async function handler(req, res) {
 
   // GET → consulta de info de RUC vía decolecta/apis.net.pe
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRoleExcept(ctx, ROLES_EXCLUIDOS);
     rateLimit(req, { windowMs: 60_000, max: 30 });
 
     const { ruc } = req.query || {};
@@ -366,12 +378,11 @@ export default async function handler(req, res) {
       _source: source,
     };
 
-    // Cache de 1 hora — los datos de RUC cambian raramente.
-    // Importante: con plan free de 100 cons/mes, esto evita gastar el cuota
-    // si consultás varias veces el mismo RUC en una hora.
-    // Cache 5 min (no 1h): los datos de RUC pueden cambiar (cambio de
-    // condición, domicilio) y un cache muy largo desinforma. SWR de 1h.
-    res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
+    // `s-maxage` cachea en el BORDE de Vercel por path+query, sin distinguir
+    // `Authorization` — un RUC consultado por un rol permitido quedaría servido
+    // desde el CDN a la siguiente request al mismo RUC (25-set-2026). La
+    // respuesta es específica de este endpoint autenticado: no se cachea.
+    res.setHeader('Cache-Control', 'private, no-store');
     return res.status(200).json(normalized);
   } catch (e) {
     if (e.name === 'AbortError') {

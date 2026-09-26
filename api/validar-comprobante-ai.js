@@ -60,7 +60,13 @@ Devuelve SOLO JSON válido (sin markdown, sin texto extra) con esta estructura e
 
 Coloca en errors[] todo lo "high" y "medium". Coloca en warnings[] los "low". confianza alta (>=0.85) cuando los datos son completos y validables sin ambigüedad.`;
 
-import { requireAuth, rateLimit, sanitizeError } from '../lib/api-helpers.js';
+import { requireAuth, requireRole, rateLimit, sanitizeError } from '../lib/api-helpers.js';
+
+// Mismo universo que emite/edita comprobantes electrónicos en jx-comprobantes;
+// sin allowlist antes, cualquier sesión activa podía gastar el crédito.
+const ROLES = ['admin', 'gerente', 'contador', 'ayudante_contador', 'asistente_admin'];
+
+export const maxDuration = 60;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -68,7 +74,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRole(ctx, ROLES);
     rateLimit(req, { windowMs: 60_000, max: 60 });
   } catch (e) {
     const s = sanitizeError(e, 'No autorizado');

@@ -91,9 +91,15 @@ export const maxDuration = 60;
 // roles custom del panel viven en localStorage del cliente y el server no
 // puede confiar en ellos — quedan fuera a propósito, igual que en
 // captura-magica.
-const ROLES = [
-  'admin', 'gerente', 'almacenero', 'almacenera', 'jefe_almacen',
-  'residente', 'ingeniero', 'jefe_compras', 'asistente_admin', 'prevencionista',
+//
+// Hasta el 26-set-2026 esta lista tenía 'almacenera', 'jefe_almacen' y
+// 'residente' — ninguno existe en ROLES_CANONICOS (el rol real es
+// 'ingeniero_residente', que faltaba acá) — así que el residente veía la
+// página en su menú y recibía 403 al usarla. Se valida contra el canon
+// compartido en un test (ver __tests__).
+export const ROLES = [
+  'admin', 'gerente', 'almacenero', 'ingeniero_residente', 'ingeniero',
+  'maestro_obra', 'supervisor', 'jefe_compras', 'asistente_admin', 'prevencionista',
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -118,7 +124,7 @@ const ROLES = [
 //
 // Distinta allowlist de roles: el simulador de órdenes lo usan Gabriel y la
 // contadora en jefe (§8 del plan), no el personal de almacén/obra de arriba.
-const ROLES_ENFOQUES = ['admin', 'gerente', 'contador', 'ayudante_contador'];
+export const ROLES_ENFOQUES = ['admin', 'gerente', 'contador', 'ayudante_contador'];
 
 export function systemPromptEnfoques() {
   return `Sos un asesor de compras de una constructora peruana. Te paso TRES enfoques ya calculados por un motor determinístico para planificar las órdenes de compra de una obra — cada uno con su número real de órdenes, su cobertura y su plata. Vos NO calculás nada nuevo: elegís cuál de los tres conviene más para ESTA obra y explicás por qué, en un párrafo corto y concreto, citando SOLO los números que te paso.

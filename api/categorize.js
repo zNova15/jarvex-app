@@ -71,7 +71,18 @@ Responde SOLO con JSON válido: {"results":[{"id":"<id>","categoria":"<una_categ
 
 // Sanitización: cada nombre que se concatena al prompt se filtra para evitar
 // prompt injection (\n, comillas raras, caracteres de control, etc.).
-import { requireAuth, rateLimit, sanitizeError, sanitizeForPrompt } from '../lib/api-helpers.js';
+import { requireAuth, requireRole, rateLimit, sanitizeError, sanitizeForPrompt, detalleDev } from '../lib/api-helpers.js';
+
+// Sin allowlist antes (25-set-2026): cualquier sesión activa —incluida la
+// cuenta compartida 'campo' con PIN numérico— podía clasificar hasta 200
+// ítems por llamada y quemar crédito de Anthropic. Roles reales de quien usa
+// la clasificación (almacén, compras, contabilidad para conciliación de
+// insumos); se excluye 'campo' y 'solo_lectura'.
+const ROLES = ['admin', 'gerente', 'almacenero', 'asistente_admin', 'contador', 'ayudante_contador', 'jefe_compras'];
+
+// Sin esto el default del proyecto podía matar la función antes de que el
+// AbortController interno (60 s) llegara a disparar.
+export const maxDuration = 60;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -79,7 +90,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    await requireAuth(req);
+    const ctx = await requireAuth(req);
+    requireRole(ctx, ROLES);
     rateLimit(req, { windowMs: 60_000, max: 60 });
   } catch (e) {
     const s = sanitizeError(e, 'No autorizado');
@@ -135,7 +147,7 @@ export default async function handler(req, res) {
       const errText = await upstream.text();
       return res.status(upstream.status).json({
         error: `Claude API respondió ${upstream.status}`,
-        detail: errText.slice(0, 500),
+        ...detalleDev(errText.slice(0, 500)),
       });
     }
 
@@ -154,7 +166,7 @@ export default async function handler(req, res) {
     let parsed;
     try { parsed = JSON.parse(jsonMatch[0]); }
     catch (e) {
-      return res.status(502).json({ error: 'JSON inválido de Claude', detail: e.message });
+      return res.status(502).json({ error: 'JSON inválido de Claude', ...detalleDev(e.message) });
     }
 
     // Anti-alucinación: categoria clampada a la whitelist; subcategoria (solo
@@ -180,6 +192,6 @@ export default async function handler(req, res) {
     if (e.name === 'AbortError') {
       return res.status(504).json({ error: 'Claude tardó demasiado (>60s)' });
     }
-    return res.status(502).json({ error: 'Error consultando Claude', detail: e.message });
+    return res.status(502).json({ error: 'Error consultando Claude', ...detalleDev(e.message) });
   }
 }
