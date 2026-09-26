@@ -1,5 +1,6 @@
 import React from "react";
 import { stripLocalFields, TRIGGER_MANAGED_FIELDS } from "../sync/SyncEngine";
+import { puedeEmpujarTabla } from "../lib/escritura-contable.js";
 const { useState: uSC, useEffect: uEC } = React;
 
 // ── Diff legible de un conflicto ─────────────────────────────────────
@@ -100,6 +101,14 @@ function ConflictsPage({ showToast }) {
   // (su trigger la pisa con OLD+1; sin el espejo, la próxima edición local
   // vuelve a caer en conflicto — era la causa de conflictos reincidentes).
   const forzarLocal = async (c) => {
+    // «Forzar» sube directo al servidor, sin pasar por el push y su
+    // `canPushTabla`: el cerco de escritura (mig 233) se chequea acá también,
+    // para decir por qué en vez de devolver un 42501 crudo.
+    const rolForzar = (() => { try { return localStorage.getItem('jx_user_role_real'); } catch { return null; } })();
+    // null = la tabla no tiene cerco de escritura: no se frena nada.
+    if (rolForzar && puedeEmpujarTabla(c.tabla, rolForzar) === false) {
+      throw new Error(`tu rol no escribe ${c.tabla}: quedate con la versión del servidor o pedíselo a contabilidad`);
+    }
     // Pushear la fila VIVA de Dexie (si el usuario editó después de detectado
     // el conflicto, el snapshot la revertiría), pasada por stripLocalFields:
     // quita _sync_retries y demás campos locales (PGRST204) y los campos

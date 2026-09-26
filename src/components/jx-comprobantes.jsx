@@ -1,5 +1,9 @@
 import React from "react";
 import { validarComprobanteAI } from "../lib/validar-comprobante-ai.js";
+// Estático: deja `window.__sunatUBL` listo. Antes solo existía si alguien había
+// visitado Configuración SUNAT en la sesión, y el XML fallaba con «undefined».
+import "../lib/sunat-ubl.js";
+import { siguienteComprobante } from "../lib/serie-comprobante.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { companyIdsDeObra } from "../lib/consorcio.js";
 import { filtroInicialEmpresa } from "../lib/empresa-activa.js";
@@ -77,11 +81,16 @@ function inferComprobanteFromMov(m) {
   const match = docNum.match(/^([A-Z]{1,4}\d{1,3})[-\s]?(\d{1,8})$/i);
   const serie = match ? match[1].toUpperCase() : null;
   const correlativo = match ? parseInt(match[2], 10) : null;
+  // El estado se lee de DONDE SE ESCRIBE: `notas.estado_comprobante` (lo pone
+  // «Marcar emitido»). Antes se leía `comprobante_estado`/`comprobante_xml`,
+  // columnas que no existen: el ✓ no cambiaba nada y «Emitidos» daba siempre 0.
+  let meta = {};
+  try { meta = typeof m.notas === 'string' ? JSON.parse(m.notas || '{}') : (m.notas || {}); } catch { meta = {}; }
   return {
     tipo,
     serie,
     correlativo,
-    estado: m.comprobante_estado || (m.payment_status === 'cancelled' ? 'anulado' : (m.comprobante_xml ? 'emitido' : 'pendiente_emision')),
+    estado: m.payment_status === 'cancelled' ? 'anulado' : (meta?.estado_comprobante || 'pendiente_emision'),
   };
 }
 
@@ -203,15 +212,12 @@ function ComprobantesElectronicosPage({ showToast }) {
   }, [movs, filtroEmpresa, filtroTipo, filtroEstado, busqueda]);
 
   // Para el correlativo sugerido en "nuevo"
-  const sugerirCorrelativo = (companyId, serie) => {
-    const usados = (movs || [])
-      .filter(m => m.company_id === companyId && m.document_number && String(m.document_number).startsWith(serie))
-      .map(m => {
-        const r = String(m.document_number).match(/(\d+)$/);
-        return r ? parseInt(r[1], 10) : 0;
-      });
-    return (usados.length ? Math.max(...usados) : 0) + 1;
-  };
+  // Solo lo que EMITE la empresa, de ese TIPO y esa serie (tanda D): antes
+  // contaba también las facturas RECIBIDAS de proveedores con la misma serie
+  // (F001 es la más común del país) y proponía un correlativo con salto.
+  const TIPO_NUMERACION = { '01': 'factura', '03': 'boleta', '07': 'nota_credito', '08': 'nota_debito' };
+  const sugerirCorrelativo = (companyId, serie, tipo = '01') =>
+    siguienteComprobante(movs || [], { companyId, serie, tipo: TIPO_NUMERACION[tipo] || 'factura' }).correlativo;
 
   // Empresa emisora (lookup)
   const lookupCompany = (id) => companies?.find(c => c.id === id);
@@ -231,9 +237,10 @@ function ComprobantesElectronicosPage({ showToast }) {
       obra_id: '',
       tipo,
       serie: meta.serie_default,
-      correlativo: sugerirCorrelativo(empresaDef.id, meta.serie_default),
-      fecha: new Date().toISOString().slice(0, 10),
-      vencimiento: new Date().toISOString().slice(0, 10),
+      correlativo: sugerirCorrelativo(empresaDef.id, meta.serie_default, tipo),
+      // Fecha LOCAL (regla 7): desde las 19:00 de Lima el UTC ya es mañana.
+      fecha: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
+      vencimiento: window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10),
       moneda: 'PEN',
       cliente_modo: 'manual', // 'manual' | 'lista'
       cliente_id: '',
@@ -258,7 +265,7 @@ function ComprobantesElectronicosPage({ showToast }) {
       ...prev,
       tipo: nuevoTipo,
       serie: meta.serie_default,
-      correlativo: sugerirCorrelativo(prev.company_id, meta.serie_default),
+      correlativo: sugerirCorrelativo(prev.company_id, meta.serie_default, nuevoTipo),
       // Boleta: tipo doc cliente por default DNI
       cliente_tipo_doc: nuevoTipo === '03' ? '1' : '6',
     }));
@@ -268,7 +275,7 @@ function ComprobantesElectronicosPage({ showToast }) {
     setForm(prev => ({
       ...prev,
       company_id: cid,
-      correlativo: sugerirCorrelativo(cid, prev.serie),
+      correlativo: sugerirCorrelativo(cid, prev.serie, prev.tipo),
     }));
   };
 
@@ -276,7 +283,7 @@ function ComprobantesElectronicosPage({ showToast }) {
     setForm(prev => ({
       ...prev,
       serie: serie.toUpperCase(),
-      correlativo: sugerirCorrelativo(prev.company_id, serie.toUpperCase()),
+      correlativo: sugerirCorrelativo(prev.company_id, serie.toUpperCase(), prev.tipo),
     }));
   };
 
@@ -325,7 +332,15 @@ function ComprobantesElectronicosPage({ showToast }) {
   const r2c = (n) => Math.round(Number(n || 0) * 100) / 100;
 
   // ─── Guardar comprobante (crea movimiento contable) ───────────────
+  // Anti-doble-click (regla 2): dos clicks dejaban dos comprobantes con el
+  // MISMO serie-correlativo, que SUNAT rechaza y hay que anular con una nota.
+  const guardandoCompRef = React.useRef(false);
   const guardarComprobante = async () => {
+    if (guardandoCompRef.current) return;
+    guardandoCompRef.current = true;
+    try { await guardarComprobanteInner(); } finally { guardandoCompRef.current = false; }
+  };
+  const guardarComprobanteInner = async () => {
     if (!form.company_id) { showToast?.('Selecciona empresa emisora', 'red'); return; }
     if (!form.items?.length || !form.items.some(it => Number(it.cantidad) > 0 && Number(it.precio_unitario) >= 0)) {
       showToast?.('Agrega al menos un item con cantidad', 'red');
@@ -695,9 +710,9 @@ function ComprobantesElectronicosPage({ showToast }) {
     }
   };
 
-  const enviarOSE = (m) => {
-    showToast?.('OSE no configurado — configurá en Admin > Integraciones SUNAT', 'amber');
-  };
+  // (Hasta el 25-set había un botón «OSE» que solo mostraba «no configurado».
+  // La emisión electrónica propia es un pendiente a futuro — Gabriel,
+  // respuesta 5 de la revisión — y un botón sin destino confunde.)
 
   // ─── KPIs simples arriba ───────────────────────────────────────────
   const kpis = uM(() => {
@@ -706,7 +721,8 @@ function ComprobantesElectronicosPage({ showToast }) {
       if (m._comp.estado === 'pendiente_emision') k.pendientes++;
       else if (m._comp.estado === 'emitido') k.emitidos++;
       else if (m._comp.estado === 'anulado') k.anulados++;
-      if ((m.currency || 'PEN') === 'PEN') k.total_pen += Number(m.amount || 0);
+      // Lo anulado no suma (antes sí).
+      if ((m.currency || 'PEN') === 'PEN' && m._comp.estado !== 'anulado') k.total_pen += Number(m.amount || 0);
     });
     return k;
   }, [comprobantes]);
@@ -828,9 +844,6 @@ function ComprobantesElectronicosPage({ showToast }) {
                         {canEmitir && (<>
                         <button className="btn btn-ghost btn-xs" title="Generar XML UBL" onClick={()=>generarXMLDeFila(m)}>
                           <Icon name="download" size={11}/>XML
-                        </button>
-                        <button className="btn btn-ghost btn-xs" title="Enviar a OSE" onClick={()=>enviarOSE(m)} style={{ marginLeft:4 }}>
-                          <Icon name="upload" size={11}/>OSE
                         </button>
                         </>)}
                         {canEmitir && m._comp.estado === 'pendiente_emision' && (

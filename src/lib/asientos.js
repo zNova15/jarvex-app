@@ -96,8 +96,9 @@ function desgloseEnSoles(dg, tc) {
 //
 // El caso que lo mide: KOPLAST F003-3388/3395/3412/3417, cuatro facturas en
 // CERO (el descuento del anticipo ya está en el pie) con aplicaciones de
-// US$ 9.294,40 / 9.875,30 / 9.294,40 / 9.294,40. Hasta hoy eran cuatro
-// asientos de S/ 0,00 «cuadrados» y la mercadería no tocaba ninguna 60.
+// US$ 10.967,39 / 11.652,85 / 10.967,39 / 10.967,39 (con IGV, en la unidad
+// del anticipo — tanda D). Hasta hoy eran cuatro asientos de S/ 0,00
+// «cuadrados» y la mercadería no tocaba ninguna 60.
 //
 // La base se saca con la proporción base/total DEL ANTICIPO (lo que se aplica
 // es parte de su total con IGV) y se convierte con el tipo de cambio DEL

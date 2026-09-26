@@ -26,7 +26,9 @@ const ENTREGA_EN_CERO = {
   third_party_ruc: '20100000001', company_id: 'gasomi', description: 'Factura F003-3388 · KOPLAST',
   notas: JSON.stringify({ subtotal: 0, igv: 0, items_factura: [{ descripcion: 'TUBERIA PVC', cantidad: 100, precio_unitario: 78.7661 }] }),
 };
-const APLICACION = { id: 'ap1', anticipo_movimiento_id: 'ant-3384', factura_movimiento_id: 'f-3388', monto: 9294.4, moneda: 'USD', fuente: 'manual' };
+const APLICACION = { id: 'ap1', anticipo_movimiento_id: 'ant-3384', factura_movimiento_id: 'f-3388', monto: 10967.39, moneda: 'USD', fuente: 'manual' };
+// La aplicación va en la unidad del anticipo, CON IGV (tanda D, 25-set): el pie
+// de F003-3388 dice «Monto total del anticipo 10.967,39» = 9.294,40 + IGV.
 
 describe('el Libro Diario se lleva en SOLES (Gabriel, 25-set-2026)', () => {
   it('🔴 una factura en dólares se asienta en soles al TC del comprobante', () => {
@@ -95,8 +97,9 @@ describe('anticipos a proveedores: 422 (Gabriel, 25-set-2026)', () => {
 
   it('🔴 la entrega EN CERO lleva la mercadería a la 60 contra la 422, sin IGV', () => {
     const a = generarAsiento(ENTREGA_EN_CERO, ctx);
-    // 9.294,40 × (67.796,61 / 80.000) = 7.876,61 dólares de base, al TC del ANTICIPO
-    const base = Math.round(9294.4 * (67796.61 / 80000) * 100) / 100;
+    // 10.967,39 × (67.796,61 / 80.000) = 9.294,40 dólares de base, al TC del ANTICIPO
+    const base = Math.round(10967.39 * (67796.61 / 80000) * 100) / 100;
+    expect(base).toBe(9294.4);
     expect(haberDe(a, '422')).toBeCloseTo(Math.round(base * 3.495 * 100) / 100, 2);
     expect(debeDe(a, '4011')).toBe(0);
     expect(a.anticipo.aplicado).toBeCloseTo(haberDe(a, '422'), 2);
@@ -110,7 +113,7 @@ describe('anticipos a proveedores: 422 (Gabriel, 25-set-2026)', () => {
     const entregaOtraTasa = { ...ENTREGA_EN_CERO, tipo_cambio: 3.438 };
     const ctx2 = contextoDeAsientos({ movimientos: [ANTICIPO, entregaOtraTasa], aplicaciones: [APLICACION] });
     const a = generarAsiento(entregaOtraTasa, ctx2);
-    const base = Math.round(9294.4 * (67796.61 / 80000) * 100) / 100;
+    const base = Math.round(10967.39 * (67796.61 / 80000) * 100) / 100;
     expect(haberDe(a, '422')).toBeCloseTo(Math.round(base * 3.495 * 100) / 100, 2);
   });
 

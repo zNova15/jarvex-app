@@ -12,6 +12,7 @@ import {
   saldoDeAnticipo, facturasCandidatas, proponerAplicaciones,
   panelAnticipos, aplicacionNueva, pareceCubiertaPorAnticipo,
   facturasParaAplicarManualmente, valorDeItems,
+  montoCubiertoDeEntrega, cubiertoPorFactura, validarAplicacion, repartirEntreAnticipos,
 } from '../anticipos.js';
 
 const GASOMI = 'gasomi-id';
@@ -429,10 +430,13 @@ describe('la factura en CERO llega con su importe propuesto', () => {
   const CON = [...TODOS, F_CERO_CON_DETALLE];
   const [ant2] = detectarAnticipos(CON, { companyId: GASOMI });
 
-  it('propone el valor del detalle en vez de pedir el PDF', () => {
+  it('propone el valor del detalle en vez de pedir el PDF — llevado a total CON IGV', () => {
+    // Tanda D (25-set): el anticipo se guarda por su total con IGV, así que la
+    // aplicación también. El detalle suma 10.038,73 SIN IGV → 11.845,70.
     const p = proponerAplicaciones(ant2, CON, []);
     const f = p.find(x => x.documento === 'F003-3481');
-    expect(f.monto).toBeCloseTo(10038.73, 2);
+    expect(f.monto).toBeCloseTo(11845.70, 2);
+    expect(f.totalCubierto).toBeCloseTo(11845.70, 2);
     expect(f.pideMonto).toBe(false);
     expect(f.origen).toBe('detalle');
     expect(f.valorItems).toBeCloseTo(10038.73, 2);
@@ -463,5 +467,100 @@ describe('la factura en CERO llega con su importe propuesto', () => {
     expect(p.filter(x => x.origen === 'nota_credito')).toHaveLength(3);
     expect(p.filter(x => x.origen === 'detalle')).toHaveLength(1);
     expect(p.filter(x => x.origen === 'sin_dato')).toHaveLength(1);
+  });
+});
+
+// ── Tanda D (25-set-2026): doble consumo, saldo, unidad y huérfanas ──────
+describe('una entrega no consume dos anticipos por el total', () => {
+  const aplic = (id, ant, fac, monto) => ({ id, anticipo_movimiento_id: ant, factura_movimiento_id: fac, monto, moneda: 'USD', fuente: 'manual', deleted_at: null });
+  const [antA, antB] = detectarAnticipos(TODOS, { companyId: GASOMI }).sort((x, y) => x.documento.localeCompare(y.documento));
+
+  it('🔴 con F003-3409 ya aplicada ENTERA a F003-3384, F003-3385 no la vuelve a proponer', () => {
+    const vivas = [aplic('x1', 'a1', 'f1', 19518.72)];
+    const p = proponerAplicaciones(antB, TODOS, vivas);
+    expect(p.find(x => x.documento === 'F003-3409')).toBeUndefined();
+  });
+
+  it('🔴 si el primer anticipo la cubrió en parte, el otro propone SOLO el resto (regla de Gabriel)', () => {
+    const vivas = [aplic('x1', 'a1', 'f1', 15000)];
+    const p = proponerAplicaciones(antB, TODOS, vivas);
+    const f = p.find(x => x.documento === 'F003-3409');
+    expect(f.monto).toBeCloseTo(4518.72, 2);
+    expect(f.yaCubierto).toBe(15000);
+  });
+
+  it('las propuestas arrancan del SALDO, no del monto del anticipo', () => {
+    const vivas = [aplic('x1', 'a1', 'otra', 79000)];
+    const p = proponerAplicaciones(antA, TODOS, vivas);
+    expect(p.reduce((s, x) => s + x.monto, 0)).toBeLessThanOrEqual(1000 + 0.05);
+  });
+
+  it('cubiertoPorFactura suma lo de TODOS los anticipos', () => {
+    const c = cubiertoPorFactura([aplic('x1', 'a1', 'f1', 100), aplic('x2', 'a2', 'f1', 50)]);
+    expect(c.get('f1').monto).toBe(150);
+    expect(c.get('f1').porAnticipo.get('a2')).toBe(50);
+  });
+});
+
+describe('validarAplicacion: los dos topes', () => {
+  const [antA] = detectarAnticipos(TODOS, { companyId: GASOMI }).filter(a => a.documento === 'F003-3384');
+  it('🔴 no se aplica más que el saldo del anticipo', () => {
+    const r = validarAplicacion({ anticipo: antA, facturaMov: F3409, monto: 80000.5,
+      aplicacionesVivas: [] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/el resto, desde el otro anticipo/);
+  });
+  it('🔴 ni más de lo que le falta cubrir a la factura', () => {
+    const r = validarAplicacion({ anticipo: antA, facturaMov: F3409, monto: 19518.72,
+      aplicacionesVivas: [{ anticipo_movimiento_id: 'a2', factura_movimiento_id: 'f1', monto: 10000, moneda: 'USD' }] });
+    expect(r.ok).toBe(false);
+    expect(r.maximo).toBeCloseTo(9518.72, 2);
+  });
+  it('dentro de los dos topes, pasa', () => {
+    expect(validarAplicacion({ anticipo: antA, facturaMov: F3409, monto: 5000, aplicacionesVivas: [] }).ok).toBe(true);
+  });
+});
+
+describe('la unidad de la entrega en cero', () => {
+  it('🔴 manda lo que dice el PIE (lo descontado del anticipo, con IGV)', () => {
+    const f = mov('z', 'F003-3388', '2026-03-31', 0, { notas: JSON.stringify({ anticipo_monto: 10967.39,
+      items_factura: [{ descripcion: 'TUBO HDPE', cantidad: 1600, precio_unitario: 5.809 }] }) });
+    const c = montoCubiertoDeEntrega(f, ANT_A);
+    expect(c).toEqual({ monto: 10967.39, origen: 'pie', base: 9294.4 });
+  });
+  it('sin pie, los ítems llevados a total con la proporción del anticipo', () => {
+    const antConDesglose = { ...ANT_A, notas: JSON.stringify({ subtotal: 67796.61, igv: 12203.39 }) };
+    const f = mov('z', 'F003-3388', '2026-03-31', 0, conItems([{ descripcion: 'TUBO', cantidad: 1600, precio_unitario: 5.809 }]));
+    expect(montoCubiertoDeEntrega(f, antConDesglose).monto).toBeCloseTo(10967.39, 2);
+  });
+});
+
+describe('aplicaciones huérfanas', () => {
+  it('🔴 una factura borrada deja de consumir saldo y queda marcada', () => {
+    const aplicaciones = [
+      { id: 'x1', anticipo_movimiento_id: 'a1', factura_movimiento_id: 'f1', monto: 19518.72, moneda: 'USD', fuente: 'manual', deleted_at: null },
+    ];
+    const movs = TODOS.map(m => (m.id === 'f1' ? { ...m, deleted_at: '2026-09-25T00:00:00Z' } : m));
+    const panel = panelAnticipos(movs, aplicaciones, { companyId: GASOMI });
+    const a = panel.filas.find(f => f.documento === 'F003-3384');
+    expect(a.saldo).toBe(80000);
+    expect(a.huerfanas).toHaveLength(1);
+    expect(a.aplicaciones[0].facturaBorrada).toBe(true);
+  });
+});
+
+describe('repartirEntreAnticipos (regla de Gabriel, 25-set)', () => {
+  it('🔴 agota el elegido y el resto sale del otro', () => {
+    const r = repartirEntreAnticipos(10000, [
+      { id: 'a1', fecha: '2026-03-31', saldo: 3000 },
+      { id: 'a2', fecha: '2026-03-31', saldo: 70000 },
+    ], 'a1');
+    expect(r.partes.map(p => [p.anticipo.id, p.monto])).toEqual([['a1', 3000], ['a2', 7000]]);
+    expect(r.sobra).toBe(0);
+  });
+  it('lo que no alcanza ningún anticipo vuelve como sobra', () => {
+    const r = repartirEntreAnticipos(10000, [{ id: 'a1', fecha: '2026-03-31', saldo: 2500 }]);
+    expect(r.partes).toHaveLength(1);
+    expect(r.sobra).toBe(7500);
   });
 });

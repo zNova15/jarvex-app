@@ -652,8 +652,9 @@ function FlujoCajaPage({ showToast }) {
         version: (p.version ?? 0) + 1,
         sync_status: p.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
-      // Si está vinculado a un acc_mov, marcar pagado
-      if (p.accounting_movement_id) {
+      // Si está vinculado a un acc_mov, marcar pagado — solo si el rol escribe
+      // contabilidad (cerco de la mig 233): si no, el push rebotaba con 42501.
+      if (p.accounting_movement_id && puedeEscribirContabilidad(myRol)) {
         const am = await window.__db.accounting_movements.get(p.accounting_movement_id);
         if (am) {
           await window.__db.accounting_movements.update(am.id, {

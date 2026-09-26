@@ -96,6 +96,116 @@ export function valorDeItems(mov) {
   return r2(total);
 }
 
+// ── LA UNIDAD DE UNA APLICACIÓN: el total CON IGV (tanda D, 25-set-2026) ──
+// El anticipo se guarda por su TOTAL (US$ 80.000, con IGV) y el saldo es ese
+// total menos lo aplicado. Pero las entregas en cero se proponían por
+// `valorDeItems`, que suma cantidad × precio unitario SIN IGV — así lo guarda
+// Captura Mágica. Medido el 25-set en KOPLAST: la F003-3388 dice en su pie
+// «Monto total del anticipo 10.967,39» y se aplicaron 9.294,40 (= 10.967,39 ÷
+// 1,18). Las 4 aplicaciones estaban un 18 % cortas y el saldo se veía en
+// US$ 42.241,50 cuando es US$ 35.444,98.
+//
+// Regla desde ahora: una aplicación está SIEMPRE en la unidad del anticipo
+// (total con IGV). El importe sale de lo que el pie de la factura dice que se
+// descontó (`notas.anticipo_monto`, lo lee Captura Mágica) y, si no está, de
+// los ítems llevados a total con la misma proporción base/total del anticipo.
+
+function notasObj(mov) {
+  let n = mov?.notas;
+  if (typeof n === 'string') { try { n = JSON.parse(n); } catch { return {}; } }
+  return (n && typeof n === 'object') ? n : {};
+}
+
+/** Proporción total/base del anticipo (1,18 con IGV general; 1 si no hay desglose). */
+function factorConIgv(anticipoMov) {
+  const n = notasObj(anticipoMov);
+  const total = Math.abs(Number(anticipoMov?.amount) || 0);
+  const sub = Number(n.subtotal);
+  if (total > 0 && sub > 0 && sub <= total) return total / sub;
+  return 1.18;
+}
+
+/**
+ * Cuánto del anticipo cubre una entrega en cero, en la unidad del anticipo.
+ * @returns {{ monto:number, origen:'pie'|'detalle'|null, base:number }}
+ */
+export function montoCubiertoDeEntrega(factura, anticipoMov = null) {
+  const n = notasObj(factura);
+  const pie = Math.abs(Number(n.anticipo_monto) || 0);
+  const base = valorDeItems(factura);
+  if (pie > TOLERANCIA) return { monto: r2(pie), origen: 'pie', base };
+  if (base > TOLERANCIA) return { monto: r2(base * factorConIgv(anticipoMov)), origen: 'detalle', base };
+  return { monto: 0, origen: null, base: 0 };
+}
+
+/**
+ * Lo que ya está cubierto de cada factura, sumando las aplicaciones de TODOS
+ * los anticipos. Es lo que impide que la misma entrega consuma dos anticipos
+ * por el total (el hallazgo de la revisión: al abrir F003-3385 se volvían a
+ * proponer las 4 facturas ya aplicadas a F003-3384, doble consumo de
+ * US$ 37.758,50). Gabriel, 25-set-2026: «si una factura consume más que el
+ * saldo de un anticipo, se agota ese y el resto sale del otro» — por eso no se
+ * EXCLUYE la factura: se le propone solo lo que le falta cubrir.
+ *
+ * @returns Map(facturaId → { monto, porAnticipo: Map(anticipoId → monto) })
+ */
+export function cubiertoPorFactura(aplicacionesVivas) {
+  const out = new Map();
+  for (const a of vivos(aplicacionesVivas)) {
+    const e = out.get(a.factura_movimiento_id) || { monto: 0, porAnticipo: new Map() };
+    const m = Number(a.monto) || 0;
+    e.monto = r2(e.monto + m);
+    e.porAnticipo.set(a.anticipo_movimiento_id, r2((e.porAnticipo.get(a.anticipo_movimiento_id) || 0) + m));
+    out.set(a.factura_movimiento_id, e);
+  }
+  return out;
+}
+
+/**
+ * ¿Se puede aplicar ese monto de ese anticipo a esa factura?
+ *
+ * Dos topes, los dos medidos en la unidad del anticipo:
+ *   · el SALDO que le queda al anticipo (sin contar lo que ya se le aplicó a
+ *     esta misma factura, si se está corrigiendo);
+ *   · lo que le FALTA cubrir a la factura, cuando se sabe su valor (una nota
+ *     que la anuló, o lo que dice su pie o su detalle), descontando lo que
+ *     otros anticipos ya le cubrieron.
+ *
+ * @returns {{ ok:boolean, error:string|null, maximo:number|null }}
+ */
+export function validarAplicacion({ anticipo, facturaMov = null, monto, aplicacionesVivas = [], anticipoMov = null, valorFactura = null } = {}) {
+  const m = Number(monto);
+  if (!(m > 0)) return { ok: false, error: 'Escribí cuánto del anticipo cubre esta factura.', maximo: null };
+  const otras = vivos(aplicacionesVivas).filter(a => !(a.anticipo_movimiento_id === anticipo.id && a.factura_movimiento_id === facturaMov?.id));
+  const saldo = saldoDeAnticipo(anticipo, otras).saldo;
+  if (m > saldo + TOLERANCIA) {
+    return { ok: false, maximo: Math.max(0, saldo), error: `Al anticipo ${anticipo.documento || ''} le quedan ${fmtMonto(saldo, anticipo.moneda)}: no alcanza para ${fmtMonto(m, anticipo.moneda)}. Aplicá hasta el saldo y el resto, desde el otro anticipo.` };
+  }
+  const valor = valorFactura != null ? Number(valorFactura) : (facturaMov ? valorParaCubrir(facturaMov, anticipoMov) : null);
+  if (valor != null && valor > TOLERANCIA) {
+    const yaCubierto = cubiertoPorFactura(otras).get(facturaMov?.id)?.monto || 0;
+    const falta = r2(valor - yaCubierto);
+    if (m > falta + TOLERANCIA) {
+      return { ok: false, maximo: Math.max(0, falta), error: `${facturaMov?.document_number || 'La factura'} vale ${fmtMonto(valor, anticipo.moneda)} y otros anticipos ya le cubren ${fmtMonto(yaCubierto, anticipo.moneda)}: le faltan ${fmtMonto(falta, anticipo.moneda)}, no ${fmtMonto(m, anticipo.moneda)}.` };
+    }
+  }
+  return { ok: true, error: null, maximo: null };
+}
+
+const fmtMonto = (n, moneda = 'PEN') =>
+  `${moneda === 'USD' ? 'US$' : 'S/'} ${(Number(n) || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/**
+ * Cuánto de una factura puede cubrir un anticipo, en su unidad: una factura
+ * en cero, lo que dice su pie/detalle; una factura a precio, su total. Null
+ * si no se sabe (una factura en cero sin pie ni precios).
+ */
+function valorParaCubrir(mov, anticipoMov) {
+  if (Math.abs(Number(mov?.amount) || 0) > TOLERANCIA) return r2(Math.abs(Number(mov.amount)));
+  const c = montoCubiertoDeEntrega(mov, anticipoMov);
+  return c.monto > TOLERANCIA ? c.monto : null;
+}
+
 /**
  * ¿Este movimiento ES un anticipo a un proveedor?
  *
@@ -202,11 +312,16 @@ export function resolverAplicaciones(filas, { demo = false } = {}) {
  * Una aplicación en otra moneda sería un dato mal cargado y sumarla mentiría;
  * se cuenta aparte para poder avisarlo.
  */
-export function saldoDeAnticipo(anticipo, aplicaciones) {
+export function saldoDeAnticipo(anticipo, aplicaciones, { facturasVivas = null } = {}) {
   const mias = (aplicaciones || []).filter(a => a.anticipo_movimiento_id === anticipo.id);
   let aplicado = 0;
   let enOtraMoneda = 0;
+  // HUÉRFANAS (tanda D): una aplicación cuya factura ya no existe (borrada o
+  // dada de baja) no puede seguir consumiendo saldo. Solo se sabe si quien
+  // llama pasa el Set de facturas vivas; sin él, cuenta todo como antes.
+  const huerfanas = [];
   for (const a of mias) {
+    if (facturasVivas instanceof Set && !facturasVivas.has(a.factura_movimiento_id)) { huerfanas.push(a); continue; }
     const m = String(a.moneda || 'PEN').trim().toUpperCase();
     if (m === anticipo.moneda) aplicado += Number(a.monto) || 0;
     else enOtraMoneda += 1;
@@ -217,6 +332,7 @@ export function saldoDeAnticipo(anticipo, aplicaciones) {
     saldo,
     enOtraMoneda,
     aplicaciones: mias,
+    huerfanas,
     // «Cerrado» con tolerancia: un centavo de diferencia por redondeo del IGV
     // no puede dejar un anticipo abierto para siempre.
     cerrado: Math.abs(saldo) <= TOLERANCIA,
@@ -285,16 +401,26 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
   );
   const candidatas = facturasCandidatas(anticipo, movimientos, { demo });
   const porNota = notasPorFactura(movimientos);
+  const anticipoMov = vivos(movimientos).find(m => m.id === anticipo.id) || null;
+  // Lo que OTROS anticipos ya cubren de cada factura: se propone solo lo que
+  // falta (Gabriel: lo que no alcanza en uno sale del otro). Antes se volvía a
+  // proponer la factura entera y se consumía dos veces.
+  const cubierto = cubiertoPorFactura(aplicacionesVivas);
   const propuestas = [];
-  let restante = anticipo.monto;
+  // Arranca del SALDO, no del monto: lo ya aplicado de este anticipo no se
+  // puede volver a ofrecer (antes partía de anticipo.monto).
+  let restante = saldoDeAnticipo(anticipo, vivos(aplicacionesVivas)).saldo;
 
   for (const c of candidatas) {
     if (yaAplicadas.has(c.id)) continue;
     if (restante <= TOLERANCIA) break;
 
+    const yaCubierto = cubierto.get(c.id)?.monto || 0;
     const info = porNota.get(c.id);
     if (info?.anulada) {
-      const monto = Math.min(c.monto, r2(restante));
+      const falta = r2(c.monto - yaCubierto);
+      if (falta <= TOLERANCIA) continue;               // otro anticipo ya la cubrió entera
+      const monto = Math.min(falta, r2(restante));
       if (monto > TOLERANCIA) {
         propuestas.push({
           facturaId: c.id, documento: c.documento, fecha: c.fecha,
@@ -305,7 +431,9 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
           // factura en cero es una LECTURA que conviene confirmar contra el PDF.
           // Mezclarlas en un mismo botón de lote aplicaría a ciegas lo segundo.
           origen: 'nota_credito',
-          motivo: `Una nota de crédito anuló ${c.documento} por completo: la mercadería llegó y el anticipo la cubrió.`,
+          motivo: `Una nota de crédito anuló ${c.documento} por completo: la mercadería llegó y el anticipo la cubrió.`
+            + (yaCubierto > TOLERANCIA ? ` Otro anticipo ya cubrió ${fmtMonto(yaCubierto, anticipo.moneda)}: se propone el resto.` : ''),
+          yaCubierto: yaCubierto > TOLERANCIA ? yaCubierto : null,
         });
         restante = r2(restante - monto);
       }
@@ -318,18 +446,32 @@ export function proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, {
       // aplicó, pero las líneas conservan cantidad y precio. Se propone ese
       // valor, acotado al saldo que queda — igual que la rama de la nota de
       // crédito, porque un anticipo no puede consumirse más de lo que tenía.
-      const valor = valorDeItems(c.mov);
-      const propuesto = valor > TOLERANCIA ? Math.min(valor, r2(restante)) : 0;
+      // En la UNIDAD DEL ANTICIPO (con IGV): lo que dice el pie, o los ítems
+      // llevados a total. Ver `montoCubiertoDeEntrega`.
+      const cub = montoCubiertoDeEntrega(c.mov, anticipoMov);
+      const falta = cub.monto > TOLERANCIA ? r2(cub.monto - yaCubierto) : 0;
+      if (cub.monto > TOLERANCIA && falta <= TOLERANCIA) continue;   // ya cubierta por otro anticipo
+      const valor = cub.base;
+      const propuesto = falta > TOLERANCIA ? Math.min(falta, r2(restante)) : 0;
+      const nItems = itemsDe(c.mov).length;
       propuestas.push({
         facturaId: c.id, documento: c.documento, fecha: c.fecha,
         monto: propuesto, moneda: anticipo.moneda,
-        // Cuánto sumaba el detalle ANTES de acotarlo al saldo: sin esto, un
-        // recorte por saldo insuficiente se vería como un importe mal leído.
+        // Cuánto sumaba el detalle (SIN IGV) y el total que cubre (CON IGV),
+        // ANTES de acotarlo al saldo: sin esto, un recorte por saldo
+        // insuficiente se vería como un importe mal leído.
         valorItems: valor > TOLERANCIA ? valor : null,
-        nItems: itemsDe(c.mov).length,
-        origen: valor > TOLERANCIA ? 'detalle' : 'sin_dato',
+        totalCubierto: cub.monto > TOLERANCIA ? cub.monto : null,
+        yaCubierto: yaCubierto > TOLERANCIA ? yaCubierto : null,
+        nItems,
+        origen: cub.origen === 'pie' || cub.origen === 'detalle' ? 'detalle' : 'sin_dato',
         motivo: propuesto > TOLERANCIA
-          ? `${c.documento} vino en CERO: es una entrega ya descontada del anticipo. Su detalle suma ${valor.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} en ${itemsDe(c.mov).length} ${itemsDe(c.mov).length === 1 ? 'ítem' : 'ítems'}— revisalo contra el PDF y confirmá.`
+          ? `${c.documento} vino en CERO: es una entrega ya descontada del anticipo. `
+            + (cub.origen === 'pie'
+              ? `Su pie dice que se descontaron ${fmtMonto(cub.monto, anticipo.moneda)} del anticipo`
+              : `Su detalle suma ${fmtMonto(valor, anticipo.moneda)} sin IGV en ${nItems} ${nItems === 1 ? 'ítem' : 'ítems'} (${fmtMonto(cub.monto, anticipo.moneda)} con IGV)`)
+            + (yaCubierto > TOLERANCIA ? `; otro anticipo ya cubrió ${fmtMonto(yaCubierto, anticipo.moneda)}` : '')
+            + ' — revisalo contra el PDF y confirmá.'
           : `${c.documento} vino en CERO y su detalle tampoco trae precios: el importe está solo en el PDF — escribilo.`,
         pideMonto: propuesto <= TOLERANCIA,
       });
@@ -369,8 +511,16 @@ export function facturasParaAplicarManualmente(anticipo, movimientos, aplicacion
   const enPropuesta = new Set(
     proponerAplicaciones(anticipo, movimientos, aplicacionesVivas, { demo }).map(p => p.facturaId),
   );
+  // Lo que ya cubren otros anticipos se muestra al lado y se descuenta del
+  // importe prellenado: una factura cubierta entera no se ofrece más.
+  const cubierto = cubiertoPorFactura(aplicacionesVivas);
   return facturasCandidatas(anticipo, movimientos, { demo })
-    .filter(c => !yaAplicadas.has(c.id) && !enPropuesta.has(c.id));
+    .filter(c => !yaAplicadas.has(c.id) && !enPropuesta.has(c.id))
+    .map(c => {
+      const yaCubierto = cubierto.get(c.id)?.monto || 0;
+      return { ...c, yaCubierto: yaCubierto > TOLERANCIA ? yaCubierto : null, falta: r2(Math.max(0, c.monto - yaCubierto)) };
+    })
+    .filter(c => !(c.monto > TOLERANCIA && c.falta <= TOLERANCIA));
 }
 
 /**
@@ -379,11 +529,15 @@ export function facturasParaAplicarManualmente(anticipo, movimientos, aplicacion
  */
 export function panelAnticipos(movimientos, aplicacionesFilas, { companyId = null, demo = false } = {}) {
   const anticipos = detectarAnticipos(movimientos, { companyId, demo });
-  const aplicaciones = resolverAplicaciones(aplicacionesFilas, { demo });
+  const aplicacionesTodas = resolverAplicaciones(aplicacionesFilas, { demo });
   const porDoc = new Map(vivos(movimientos).map(m => [m.id, m]));
+  // Una factura borrada o dada de baja no consume saldo (tanda D). Su
+  // aplicación queda a la vista, marcada, con su botón de Quitar.
+  const facturasVivas = new Set(vivos(movimientos).filter(m => m.payment_status !== 'cancelled').map(m => m.id));
+  const aplicaciones = aplicacionesTodas.filter(a => facturasVivas.has(a.factura_movimiento_id));
 
   const filas = anticipos.map(a => {
-    const s = saldoDeAnticipo(a, aplicaciones);
+    const s = saldoDeAnticipo(a, aplicacionesTodas, { facturasVivas });
     return {
       ...a,
       ...s,
@@ -391,6 +545,9 @@ export function panelAnticipos(movimientos, aplicacionesFilas, { companyId = nul
         ...ap,
         facturaDocumento: porDoc.get(ap.factura_movimiento_id)?.document_number || '(comprobante no cargado)',
         facturaFecha: porDoc.get(ap.factura_movimiento_id)?.date || '',
+        // La factura ya no existe (borrada, dada de baja o todavía sin
+        // sincronizar): NO resta del saldo. La pantalla la marca en rojo.
+        facturaBorrada: !facturasVivas.has(ap.factura_movimiento_id),
       })),
       propuestas: proponerAplicaciones(a, movimientos, aplicaciones, { demo }),
       manuales: facturasParaAplicarManualmente(a, movimientos, aplicaciones, { demo }),
@@ -433,4 +590,34 @@ export function aplicacionNueva(anticipo, { facturaId, monto, motivo = null, fue
     nota,
     deleted_at: null,
   };
+}
+
+/**
+ * Reparte lo que cubre una entrega entre los anticipos del proveedor.
+ *
+ * Gabriel, 25-set-2026: «si una factura consume más que el saldo de un
+ * anticipo, se agota ese y el resto sale del otro anticipo». Arranca por el
+ * elegido (si lo hay) y sigue por el más viejo con saldo, que es el orden en
+ * que se consume la mercadería. Lo que no alcanza a cubrir ningún anticipo
+ * vuelve en `sobra`: no se inventa un anticipo que no existe.
+ *
+ * @param monto        lo que cubre la entrega, en la unidad del anticipo
+ * @param candidatos   [{ id, fecha, saldo, ... }] del mismo RUC y moneda
+ * @param primeroId    el anticipo que eligió la persona, o null
+ * @returns {{ partes: [{ anticipo, monto }], sobra: number }}
+ */
+export function repartirEntreAnticipos(monto, candidatos = [], primeroId = null) {
+  let resta = r2(Math.abs(Number(monto) || 0));
+  const orden = [...(candidatos || [])]
+    .filter(a => (Number(a.saldo) || 0) > TOLERANCIA)
+    .sort((a, b) => (a.id === primeroId ? -1 : b.id === primeroId ? 1 : String(a.fecha).localeCompare(String(b.fecha))));
+  const partes = [];
+  for (const a of orden) {
+    if (resta <= TOLERANCIA) break;
+    const m = r2(Math.min(resta, Number(a.saldo)));
+    if (m <= TOLERANCIA) continue;
+    partes.push({ anticipo: a, monto: m });
+    resta = r2(resta - m);
+  }
+  return { partes, sobra: resta > TOLERANCIA ? resta : 0 };
 }

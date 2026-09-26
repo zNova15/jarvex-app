@@ -23,6 +23,7 @@ import { RegistroComprasVentas } from './jx-registro-compras-ventas.jsx';
 
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
+const MOSTRAR_PDT601 = false;
 const MESES_LARGOS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Setiembre','Octubre','Noviembre','Diciembre'];
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function pad2(n) { return String(n || 0).padStart(2, '0'); }
@@ -326,7 +327,7 @@ function LibrosElectronicosPage({ showToast }) {
     <div className="page-wrap">
       <div className="pg-hd frow-sb">
         <div>
-          <div className="pg-title">Libros Electrónicos / PDT 601</div>
+          <div className="pg-title">Libros Electrónicos</div>
           <div className="pg-sub">Exportación SUNAT — PLE 5.x y Planilla Mensual</div>
         </div>
       </div>
@@ -483,8 +484,11 @@ function LibrosElectronicosPage({ showToast }) {
         ))}
       </div>
 
-      {/* Card PDT 601 */}
-      <div className="card card-p" style={{ padding: 16 }}>
+      {/* Card PDT 601 — ARCHIVADA el 25-set-2026 (Gabriel, respuesta 14 de la
+          revisión Ola 1: planillas con 0 filas, el PDT 601 nunca se generó).
+          El generador sigue en sunat-pdt601.js; se vuelve a mostrar poniendo
+          MOSTRAR_PDT601 en true cuando las planillas se usen. */}
+      {MOSTRAR_PDT601 && <div className="card card-p" style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <div style={{
             width: 8, height: 28, background: 'var(--amber)', borderRadius: 4
@@ -526,7 +530,7 @@ function LibrosElectronicosPage({ showToast }) {
             Período: {MESES_LARGOS[mes - 1]} {anio} · Planilla: {planillaPeriodo.id?.slice(0, 8)} · Neto {fmtS(planillaPeriodo.total_neto)}
           </div>
         )}
-      </div>
+      </div>}
 
       <div style={{ marginTop: 16, fontSize: 11, color: 'var(--tm)' }}>
         Los archivos se generan en formato pipe-delimited UTF-8 con terminación CRLF, según especificación PLE 5.x.

@@ -39,6 +39,7 @@ import { nombreTabla10, nombreTabla2 } from "../lib/tablas-sunat.js";
 import { sembrarTiposCambio } from "../lib/tipo-cambio.js";
 import { planDePasada, tasaDeComprobante, validarTasaManual } from "../lib/tipo-cambio-pasada.js";
 import { ejecutarPasada, guardarTasa } from "../lib/tipo-cambio-db.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 import {
   analizarComprobantesParaSire, generateReemplazoPropuestaRCE, generateReemplazoPropuestaRVIE,
   buildSireZipPackage, downloadSireZip, buildSireFilenameBase,
@@ -407,6 +408,8 @@ export function RegistroComprasVentas({
   // segundo se comería el rate limit del primero.
   const correrPasada = async () => {
     if (pasadaRef.current) return;
+    // Estampa el tipo de cambio EN los comprobantes: es escritura contable (mig 233).
+    if (!puedeEscribirContabilidad(rolRegistro)) { showToast?.('Escribir comprobantes contables es de contabilidad (admin, contadora y asistentes): mig 233.', 'red'); return; }
     pasadaRef.current = true;
     setPasada({ corriendo: true, hecho: 0, de: planTC.fechas.length });
     try {

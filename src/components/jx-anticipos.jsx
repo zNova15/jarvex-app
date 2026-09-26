@@ -32,7 +32,7 @@
 // reales de KOPLAST) y la escritura en `src/lib/anticipos-db.js`.
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
-import { panelAnticipos, aplicacionNueva } from "../lib/anticipos.js";
+import { panelAnticipos, aplicacionNueva, validarAplicacion, resolverAplicaciones } from "../lib/anticipos.js";
 import { aplicarAnticipo, aplicarEnLote, quitarAplicacion } from "../lib/anticipos-db.js";
 import { evidenciasDeComprobantes } from "../lib/evidencia-de-comprobante.js";
 import { OjoComprobante, useVisorComprobante } from "./jx-visor-comprobante.jsx";
@@ -72,6 +72,22 @@ const fmtMonto = (n, moneda = 'PEN') =>
   `${moneda === 'USD' ? 'USD ' : moneda === 'PEN' ? 'S/ ' : `${moneda} `}${Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtFecha = (f) => (f ? String(f).split('-').reverse().join('/') : '—');
 
+/**
+ * Un importe tipeado como lo escribe una persona en Perú: «10.038,73» o
+ * «10038.73». Antes el lote leía mal la coma y aplicaba en silencio el valor
+ * del detalle, y la fila la rechazaba (revisión Ola 1).
+ */
+export function leerImporte(v) {
+  const t = String(v ?? '').trim().replace(/\s/g, '');
+  if (!t) return NaN;
+  const norm = /,\d{1,2}$/.test(t) ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  return Number(norm);
+}
+
+// Quién escribe `anticipo_aplicaciones` (RLS de la mig 207). A otro rol la
+// fila le rebotaba con 42501 y quedaba reintentando para siempre.
+const ROLES_ANTICIPOS = ['admin', 'gerente', 'contador', 'ayudante_contador'];
+
 function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, userId = null, onCambio, onIrAFactura = null, showToast: showToastProp = null }) {
   const [abierto, setAbierto] = uS(null);      // id del anticipo expandido
   const [montos, setMontos] = uS({});          // facturaId → monto escrito a mano
@@ -84,6 +100,8 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
   // Anti doble-click (regla crítica 2 del CLAUDE.md): ref SÍNCRONO. Un doble
   // tap en «Aplicar» no puede consumir el anticipo dos veces.
   const enCursoRef = uR(false);
+  const rolAnt = (() => { try { return window.__useAuth?.()?.profile?.rol || null; } catch { return null; } })();
+  const puedeGestionar = ROLES_ANTICIPOS.includes(rolAnt);
 
   // Se calcula DURANTE el render (useMemo), no en un efecto: así el test de
   // montaje ve el panel dibujado de verdad — renderToString no corre efectos.
@@ -148,11 +166,21 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
   };
 
   const aplicar = conGuard(async (ant, prop) => {
-    const monto = Number(montos[prop.facturaId] ?? prop.monto) || 0;
+    if (!puedeGestionar) { setMsg('Aplicar anticipos es de contabilidad (admin, gerente, contadora y asistentes).'); return; }
+    const escrito = montos[prop.facturaId];
+    const monto = (escrito !== undefined && escrito !== '') ? (leerImporte(escrito) || 0) : (Number(prop.monto) || 0);
     if (!(monto > 0)) {
       setMsg('Escribí cuánto de este anticipo cubre esa entrega — el importe está en el PDF de la factura.');
       return;
     }
+    // Los dos topes (tanda D): el saldo del anticipo y lo que le falta cubrir a
+    // la factura, contando lo que otros anticipos ya le cubrieron. Antes la
+    // misma entrega podía consumir los dos anticipos de KOPLAST por el total.
+    const v = validarAplicacion({
+      anticipo: ant, facturaMov: movDe(prop.facturaId), monto,
+      aplicacionesVivas: resolverAplicaciones(aplicaciones || [], { demo }), anticipoMov: movDe(ant.id),
+    });
+    if (!v.ok) { setMsg(v.error); return; }
     await aplicarAnticipo(aplicacionNueva(ant, {
       facturaId: prop.facturaId, monto, motivo: prop.motivo, fuente: 'manual',
     }), { userId });
@@ -162,6 +190,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
   });
 
   const aplicarLasAnuladas = conGuard(async (ant) => {
+    if (!puedeGestionar) { setMsg('Aplicar anticipos es de contabilidad.'); return; }
     // Solo las que anuló una nota de crédito. El filtro era «todo lo que no
     // pide monto» y desde que las facturas en cero traen su importe leído del
     // detalle (15-set) eso habría metido las dos señales en el mismo botón.
@@ -185,6 +214,7 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
    * antes, y quitar después.
    */
   const aplicarLasDeDetalle = conGuard(async (ant, listas) => {
+    if (!puedeGestionar) { setMsg('Aplicar anticipos es de contabilidad.'); return; }
     const filas = (listas || []).filter(p => p.monto > 0);
     if (!filas.length) return;
     const total = filas.reduce((acc, p) => acc + Number(p.monto || 0), 0);
@@ -202,7 +232,12 @@ function PanelAnticipos({ movs, aplicaciones, companyId = null, demo = false, us
     onCambio?.();
   });
 
-  const quitar = conGuard(async (id) => { await quitarAplicacion(id); onCambio?.(); });
+  const quitar = conGuard(async (id) => {
+    if (!puedeGestionar) { setMsg('Quitar una aplicación es de contabilidad.'); return; }
+    // Quitar libera saldo del anticipo: se confirma (antes era un click suelto).
+    if (typeof confirm === 'function' && !confirm('¿Quitar esta aplicación? El saldo del anticipo vuelve a quedar libre por ese importe.')) return;
+    await quitarAplicacion(id); onCambio?.();
+  });
 
   // Sin anticipos no hay nada que decir: el panel no se dibuja. La enorme
   // mayoría de las empresas del grupo no tiene ninguno.
@@ -396,7 +431,7 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
   // fila apliquen SIEMPRE el mismo número.
   const montoDe = (p) => {
     const escrito = montos[p.facturaId];
-    const n = Number(String(escrito ?? '').replace(',', '.'));
+    const n = leerImporte(escrito);
     return (escrito !== undefined && escrito !== '' && Number.isFinite(n) && n > 0) ? n : p.monto;
   };
   // `manuales` es nuevo (13-set): un `a` armado a mano (tests, o un caller
@@ -412,6 +447,12 @@ function DetalleAnticipo({ a, montos, setMontos, onAplicar, onAplicarLasAnuladas
           {a.aplicaciones.map(ap => (
             <div key={ap.id} style={{ fontSize: 11.5, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0' }}>
               <span style={{ minWidth: 120 }}>{ap.facturaDocumento}</span>
+              {ap.facturaBorrada && (
+                <span className="badge b-red" style={{ fontSize: 9.5 }}
+                  title="La factura de esta aplicación está borrada, dada de baja o todavía no sincronizó en esta PC. No descuenta del saldo: si ya no existe, quitala.">
+                  factura sin vigencia · no resta
+                </span>
+              )}
               {acciones(ap.factura_movimiento_id, ap.facturaDocumento)}
               <span style={{ color: 'var(--tm)' }}>{fmtFecha(ap.facturaFecha)}</span>
               <strong>{fmtMonto(ap.monto, ap.moneda)}</strong>

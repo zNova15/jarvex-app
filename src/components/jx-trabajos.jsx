@@ -1089,11 +1089,8 @@ function PanelObraPage({ showToast, onNav }) {
                 <div style={{ fontSize: 11, color: 'var(--tm)', marginTop: 8, lineHeight: 1.5 }}>
                   {conta.movsOtras} de {conta.total} comprobantes están a nombre de OTRAS empresas del grupo, no del titular.
                   Eso es la cadena intercompany: las empresas compran y le cargan a la ejecutora.
-                  {canSee('trazabilidad') && (
-                    <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6 }} onClick={() => abrir('trazabilidad')}>
-                      Ver cadenas →
-                    </button>
-                  )}
+                  {/* «Ver cadenas →» se sacó el 25-set-2026: Trazabilidad quedó
+                      archivada (respuesta 14 de la revisión). */}
                 </div>
               )}
               {conta.enUsd > 0 && (

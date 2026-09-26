@@ -56,8 +56,12 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
 
   // «Está bien»: se guarda la decisión humana, no el hallazgo. La próxima
   // pasada lo recalcula igual y lo salta por esta fila.
+  // Guard SÍNCRONO (regla 2): `guardando` es estado y recién se ve en el
+  // render siguiente; un doble click guardaba dos descartes iguales.
+  const marcandoRef = React.useRef(false);
   const marcarRevisado = async (h) => {
-    if (!canWrite || guardando) return;
+    if (!canWrite || guardando || marcandoRef.current) return;
+    marcandoRef.current = true;
     setGuardando(claveDescarte(h.movimiento_id, h.regla));
     try {
       const now = new Date().toISOString();
@@ -80,7 +84,7 @@ function RevisionFacturasModal({ movs, descartes, companies, onClose, onAbrirMov
       showToast?.('Marcado como revisado', 'green');
     } catch (e) {
       showToast?.('No se pudo guardar: ' + (e.message || e), 'red');
-    } finally { setGuardando(null); }
+    } finally { setGuardando(null); marcandoRef.current = false; }
   };
 
   const Pestaña = ({ nivel, label, n, color }) => (

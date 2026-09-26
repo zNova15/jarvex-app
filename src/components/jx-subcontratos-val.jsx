@@ -1,6 +1,7 @@
 import React from "react";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { liquidarValorizacion, DETRACCION_OBRA } from "../lib/detraccion.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -225,6 +226,8 @@ function SubcontratoValorizacionesPage({ showToast }) {
       showToast('Esta valorización ya tiene movimiento contable', 'amber');
       return;
     }
+    // Cerco de escritura contable (mig 233): el costo lo registra contabilidad.
+    if (!puedeEscribirContabilidad(auth?.profile?.rol)) { showToast('Escribir comprobantes contables es de contabilidad (admin, contadora y asistentes): mig 233.', 'red'); return; }
     const company = (companies||[]).find(c => c.status === 'activa');
     if (!company) { showToast('No hay empresa activa para registrar el costo', 'red'); return; }
     if (!confirm(`¿Aprobar y registrar movimiento de COSTO por ${fmtS(v.monto_total)} en ${company.name}?`)) return;

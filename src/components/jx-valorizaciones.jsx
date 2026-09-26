@@ -2,6 +2,7 @@ import React from "react";
 import { useBusy } from "../hooks/useBusy.js";
 import { derivarTypeContable } from "../lib/clasificacion-contable.js";
 import { liquidarValorizacion, DETRACCION_OBRA } from "../lib/detraccion.js";
+import { puedeEscribirContabilidad } from "../lib/escritura-contable.js";
 const { useState: uS, useMemo: uM, useEffect: uE } = React;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -286,6 +287,8 @@ function ValorizacionesPage({ showToast }) {
 
   // Generar accounting_movement al aprobar/facturar
   const generarMovContable = async (val) => {
+    // Cerco de escritura contable (mig 233): el movimiento lo crea contabilidad.
+    if (!puedeEscribirContabilidad(myRol)) { showToast('Escribir comprobantes contables es de contabilidad (admin, contadora y asistentes): mig 233.', 'red'); return; }
     if (val.accounting_movement_id) {
       showToast('Esta valorización ya tiene movimiento contable asociado', 'amber');
       return;

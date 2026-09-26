@@ -196,8 +196,10 @@ export const GRUPOS_TRABAJO = [
     // por las cuentas del consorcio que la ejecuta. Por eso acá el titular no
     // se elige — es `obras.ejecutora_company_id`, clavado como el resto del
     // workspace.
+    // 'trazabilidad' SALIÓ el 25-set-2026: archivada del menú (respuesta 14
+    // de la revisión Ola 1). La ruta sigue existiendo.
     items: ['movimientos-contables', 'conciliacion-insumos', 'pagos', 'movimientos-bancarios',
-      'trazabilidad', 'intercompany', 'abastecimiento', 'ordenes'],
+      'intercompany', 'abastecimiento', 'ordenes'],
   },
 ];
 

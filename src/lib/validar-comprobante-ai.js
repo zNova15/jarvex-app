@@ -5,6 +5,7 @@
 // caller decide si saltar la validación o bloquear la emisión.
 // ═══════════════════════════════════════════════════════════════════
 
+import { apiFetch } from './api-client.js';
 const ENDPOINT = '/api/validar-comprobante-ai';
 const REQ_TIMEOUT_MS = 15000;
 
@@ -31,8 +32,12 @@ export async function validarComprobanteAI(comprobante) {
 
   let res;
   try {
-    res = await fetch(ENDPOINT, {
+    // `apiFetch` manda el JWT (tanda D). Con `fetch` pelado el endpoint
+    // respondía 401 y la pantalla decía «emitiendo igualmente»: la validación
+    // IA no corrió nunca.
+    res = await apiFetch(ENDPOINT, {
       method: 'POST',
+      timeout: REQ_TIMEOUT_MS + 1000,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ comprobante }),
       signal: controller.signal,

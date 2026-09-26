@@ -67,7 +67,8 @@ describe('desglose-obra — estructura de los grupos', () => {
 
   it('grupoDePagina resuelve las nuevas de la entrega B', () => {
     expect(grupoDePagina('movimientos-contables')).toBe('contabilidad-obra');
-    expect(grupoDePagina('trazabilidad')).toBe('contabilidad-obra');
+    // Archivada del menú el 25-set-2026 (respuesta 14 de la revisión).
+    expect(grupoDePagina('trazabilidad')).toBe(null);
     // Tanda 6: el registro documental de órdenes va con los movimientos que
     // respalda, NO en Logística — ahí vive 'ordenes-compra', que es el
     // circuito requisición→OC→recepción del almacén y es otra pantalla.

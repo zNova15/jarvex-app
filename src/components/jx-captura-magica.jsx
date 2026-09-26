@@ -7,6 +7,8 @@ import { normalizarRuc, normalizarComprobante, esRucPersonaNatural, dniDeRuc } f
 import { claveSinRuc } from "../lib/dedupe-movs-contables.js";
 import { matchAsegurados } from "../lib/sctr-paquete.js";
 import { getCurrentMode } from "../lib/app-mode-core.js";
+import { tasaDeComprobante } from "../lib/tipo-cambio-pasada.js";
+import { montoDetraccion } from "../lib/detraccion.js";
 import { supabase } from "../lib/supabase";
 import { descargarEvidencia } from "../lib/evidencias-url.js";
 import { derivarTypeContable, destinoDesdeSelector } from "../lib/clasificacion-contable.js";
@@ -43,7 +45,7 @@ import { evaluarRecepcionAlmacen } from "../lib/recepcion-almacen.js";
 // anticipo correcto sin salir del modal. La lógica pura vive en anticipos.js
 // (la usa también el panel de Inventario de la empresa); acá solo se dispara
 // la detección y se escribe la aplicación al confirmar.
-import { detectarAnticipos, saldoDeAnticipo, resolverAplicaciones, aplicacionNueva, pareceCubiertaPorAnticipo } from "../lib/anticipos.js";
+import { detectarAnticipos, saldoDeAnticipo, resolverAplicaciones, aplicacionNueva, pareceCubiertaPorAnticipo, repartirEntreAnticipos } from "../lib/anticipos.js";
 import { aplicarAnticipo } from "../lib/anticipos-db.js";
 
 // Nombre de persona natural en formato SUNAT ("APELLIDO1 APELLIDO2 NOMBRES"):
@@ -660,6 +662,10 @@ function CapturaMagicaPage({ showToast }) {
   // Son decenas de filas, se traen enteras (mismo criterio que el panel de
   // Inventario de la empresa).
   const { data: aplicacionesAnticipo } = window.__hooks?.useAnticipoAplicaciones?.() || { data: [] };
+  // Tipos de cambio de SUNAT por fecha (mig 222): un comprobante en dólares
+  // nace con la tasa de su fecha de emisión estampada (tanda D, 25-set-2026).
+  // Antes nacía sin tasa y el libro no lo podía pasar a soles.
+  const { data: tasasTc } = window.__hooks?.useTiposCambio?.() || { data: [] };
   // Dedup de trabajadores creados en ESTE lote/sesión (dni/RUC → personal_id):
   // si suben varios recibos de la misma persona, se crea UNA sola vez (el hook
   // `personal` puede tardar en refrescar entre confirmaciones seguidas).
@@ -1595,7 +1601,12 @@ function CapturaMagicaPage({ showToast }) {
           monto_anticipo_leido: montoAnticipoLeido,
           // El VALOR REAL de esta entrega — no el Total, que es 0 a propósito —
           // es lo que hay que descontar del saldo del anticipo. Prefill editable.
-          anticipo_monto_cubierto: Math.round(((montoAnticipoLeido || sumaItems || 0)) * 100) / 100,
+          // En la UNIDAD DEL ANTICIPO, que es su total CON IGV (tanda D,
+          // 25-set-2026). Lo leído del pie ya viene con IGV; la suma de los
+          // ítems no (el precio unitario se guarda sin IGV) y se lleva a
+          // total. Antes se prellenaba la suma pelada y cada entrega consumía
+          // el anticipo un 18 % de menos (F003-3388: 9.294,40 en vez de 10.967,39).
+          anticipo_monto_cubierto: Math.round(((montoAnticipoLeido || (sumaItems * 1.18) || 0)) * 100) / 100,
           anticipo_vinculado_id: anticipoSugerido?.id || '',
         };
       })(),
@@ -2530,6 +2541,12 @@ function CapturaMagicaPage({ showToast }) {
       const docLabel = TIPO_DOC_MAP[r.tipo_documento]?.label || 'Factura';
       // NC resta (monto negativo); ND y el resto se registran con el total tal cual.
       const montoFinal = esNotaCredito ? -Math.abs(Number(r.total) || 0) : (Number(r.total) || 0);
+      // La tasa SUNAT de la fecha de emisión, estampada en el comprobante (queda
+      // congelada: es la que se declara). Una COMPRA usa la de venta y una
+      // VENTA la de compra — lo resuelve `tasaDeComprobante`. Sin tasa guardada
+      // para esa fecha queda null y la pasada de tipos de cambio la completa.
+      const tcDelComprobante = String(r.moneda || 'PEN').toUpperCase() === 'PEN' ? null
+        : (tasaDeComprobante({ date: r.fecha_emision, currency: r.moneda, clase: esVenta ? 'venta' : 'compra' }, tasasTc || [])?.valor || null);
       await window.__db.accounting_movements.add({
         id: accId,
         company_id: companyIdFinal,
@@ -2553,7 +2570,15 @@ function CapturaMagicaPage({ showToast }) {
         // tildarla): sin este cerco quedaban "⏳ falta depósito" eternas.
         detraccion_aplica: !esNota && !!r.detraccion_aplica,
         detraccion_pct: !esNota && r.detraccion_aplica && r.detraccion_pct != null && r.detraccion_pct !== '' ? Number(r.detraccion_pct) : null,
-        detraccion_monto: !esNota && r.detraccion_aplica && r.detraccion_monto != null && r.detraccion_monto !== '' ? Number(r.detraccion_monto) : null,
+        // Sin monto no se deposita nada (Gabriel, 25-set: «recalcular»): si la
+        // asistente dejó el monto vacío pero hay porcentaje, se calcula acá, en
+        // SOLES al tipo de cambio de la emisión y a 2 decimales. Así nacieron
+        // las 21 detracciones sin monto que había el 25-set.
+        detraccion_monto: !esNota && r.detraccion_aplica
+          ? ((r.detraccion_monto != null && r.detraccion_monto !== '' && Number(r.detraccion_monto) > 0)
+            ? Number(r.detraccion_monto)
+            : montoDetraccion({ total: r.total, moneda: r.moneda || 'PEN', tipoCambio: tcDelComprobante, pct: r.detraccion_pct }))
+          : null,
         detraccion_codigo: !esNota && r.detraccion_aplica ? (String(r.detraccion_codigo || '').trim() || null) : null,
         detraccion_estado: !esNota && r.detraccion_aplica ? 'pendiente' : null,
         date: r.fecha_emision,
@@ -2562,6 +2587,7 @@ function CapturaMagicaPage({ showToast }) {
         description: `${docLabel} ${r.serie_correlativo} · ${terceroNombre || ''}`,
         amount: montoFinal,
         currency: r.moneda || 'PEN',
+        tipo_cambio: tcDelComprobante,
         third_party_name: terceroNombre,
         third_party_ruc: terceroRuc,
         // Nuevos: método y estado de pago (registrados desde la UI).
@@ -2729,6 +2755,7 @@ function CapturaMagicaPage({ showToast }) {
               description: `${docLabel} ${r.serie_correlativo} · ${vendedora?.name || ''} (contraparte automática)`,
               amount: Number(r.total) || 0,
               currency: r.moneda || 'PEN',
+              tipo_cambio: tcDelComprobante,
               third_party_name: vendedora?.name || null,
               third_party_ruc: vendedora?.ruc || null,
               metodo_pago: null,
@@ -2992,19 +3019,32 @@ function CapturaMagicaPage({ showToast }) {
           const montoCubierto = Number(r.anticipo_monto_cubierto) || 0;
           if (anticipoMov && montoCubierto > 0) {
             const monedaAnt = String(anticipoMov.currency || 'PEN').trim().toUpperCase();
-            await aplicarAnticipo(aplicacionNueva({
-              id: anticipoMov.id,
-              companyId: anticipoMov.company_id || null,
-              fecha: anticipoMov.date || '',
-              moneda: monedaAnt,
-              monto: Math.abs(Number(anticipoMov.amount) || 0),
-            }, {
-              facturaId: accId,
-              monto: montoCubierto,
-              motivo: `Entrega en cero (${r.serie_correlativo}) cubierta por el anticipo ${anticipoMov.document_number || ''} — vinculada desde Captura Mágica.`,
-              fuente: 'manual',
-            }), { userId });
-            showToast(`✓ Vinculada al anticipo ${anticipoMov.document_number || ''} por ${fmtCurMagic(montoCubierto, monedaAnt)}.`, 'green');
+            // Gabriel, 25-set-2026: «si una factura consume más que el saldo de
+            // un anticipo, se agota ese y el resto sale del otro». Se reparte
+            // entre los anticipos del mismo proveedor y moneda, empezando por
+            // el elegido; lo que no alcanza ninguno se avisa, no se inventa.
+            const esPruebaAnt = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
+            const aplicVivas = resolverAplicaciones(aplicacionesAnticipo || [], { demo: esPruebaAnt });
+            const rucAnt = String(anticipoMov.third_party_ruc || '').replace(/\D/g, '');
+            const candidatos = detectarAnticipos(movs, { companyId: anticipoMov.company_id || null, demo: esPruebaAnt })
+              .filter(a => a.proveedorRuc === rucAnt && a.moneda === monedaAnt)
+              .map(a => ({ ...a, ...saldoDeAnticipo(a, aplicVivas) }));
+            const { partes, sobra } = repartirEntreAnticipos(montoCubierto, candidatos, anticipoMov.id);
+            for (const parte of partes) {
+              await aplicarAnticipo(aplicacionNueva(parte.anticipo, {
+                facturaId: accId,
+                monto: parte.monto,
+                motivo: `Entrega en cero (${r.serie_correlativo}) cubierta por el anticipo ${parte.anticipo.documento || ''} — vinculada desde Captura Mágica`
+                  + (partes.length > 1 ? ' (el saldo de un anticipo no alcanzaba: el resto salió del otro).' : '.'),
+                fuente: 'manual',
+              }), { userId });
+            }
+            if (partes.length) {
+              showToast(`✓ Vinculada ${partes.map(pp => `al anticipo ${pp.anticipo.documento || ''} por ${fmtCurMagic(pp.monto, monedaAnt)}`).join(' y ')}.`
+                + (sobra ? ` Quedaron ${fmtCurMagic(sobra, monedaAnt)} sin anticipo que los cubra: revisalo en Anticipos.` : ''), sobra ? 'amber' : 'green');
+            } else {
+              showToast(`El anticipo ${anticipoMov.document_number || ''} no tiene saldo: la entrega quedó sin vincular.`, 'amber');
+            }
           }
         } catch (e) {
           console.warn('[captura-magica] vincular anticipo', e);
@@ -4760,11 +4800,11 @@ function ReviewModal({ item, companies, personal, obras, consorcios = [], consor
                 <>
                   <div className="g2" style={{ marginTop:8 }}>
                     <div>
-                      <label className="flabel">Valor real de esta entrega *</label>
+                      <label className="flabel">Valor real de esta entrega (con IGV) *</label>
                       <input className="fi" type="number" step="0.01" value={r.anticipo_monto_cubierto ?? ''}
                         onChange={e=>upd({ anticipo_monto_cubierto: e.target.value })}/>
                       <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
-                        Es lo que se descuenta del saldo del anticipo — no el Total de arriba, que quedó en 0 a propósito.
+                        Es lo que se descuenta del saldo del anticipo — no el Total de arriba, que quedó en 0 a propósito. Va CON IGV, igual que el anticipo; si no alcanza el saldo del elegido, el resto sale del otro anticipo del mismo proveedor.
                       </div>
                     </div>
                     <div>

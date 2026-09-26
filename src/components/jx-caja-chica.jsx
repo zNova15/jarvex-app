@@ -26,7 +26,9 @@ const TIPO_EVI_CAJA = 'caja_chica_respaldo';
 const MAX_RESPALDO_MB = 10;
 
 const fmtS = (n) => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const hoyISO = () => new Date().toISOString().slice(0, 10);
+// Fecha LOCAL (regla 7): con toISOString, desde las 19:00 de Lima el gasto
+// quedaba para mañana y el saldo corrido cambiaba de orden.
+const hoyISO = () => window.__fecha?.hoyLocal?.() || new Date().toISOString().slice(0, 10);
 
 function CajaChicaPage({ showToast }) {
   const auth = window.__useAuth ? window.__useAuth() : null;
@@ -46,6 +48,10 @@ function CajaChicaPage({ showToast }) {
   const [editingId, setEditingId] = uS(null); // id si estamos editando (Super Admin)
   const [form, setForm] = uS({});
   const [busy, setBusy] = uS(false);
+  // Anti-doble-click (regla 2): el estado `busy` recién se ve en el render
+  // siguiente; un segundo click en la ventana de 35-400 ms entraba igual
+  // (una parte de pago o un gasto duplicado). El ref corta en el mismo tick.
+  const busyRef = React.useRef(false);
   const [requestTarget, setRequestTarget] = uS(null); // movimiento para "Solicitar Cambio" (rol almacén)
   // Respaldos adjuntos: Map(movimiento_id → [evidencia]). Se leen de Dexie, que
   // es lo que hay offline; el archivo en sí lo sube el EvidenceUploader.
@@ -186,14 +192,14 @@ function CajaChicaPage({ showToast }) {
   };
 
   const guardar = async () => {
-    if (busy) return;
+    if (busy || busyRef.current) return;
     if (!obraId) { showToast('No hay obra activa', 'red'); return; }
     const monto = parseFloat(form.monto);
     if (!(monto > 0)) { showToast('Ingresá un monto mayor a 0', 'red'); return; }
     if (!editingId && form.tipo_movimiento === 'salida' && monto > saldo) {
       if (!confirm(`El gasto (${fmtS(monto)}) supera el saldo actual (${fmtS(saldo)}). El saldo quedará negativo. ¿Registrar igual?`)) return;
     }
-    setBusy(true);
+    setBusy(true); busyRef.current = true;
     try {
       const fields = {
         obra_id: obraId,
@@ -219,7 +225,7 @@ function CajaChicaPage({ showToast }) {
       refresh?.();
     } catch (e) {
       showToast('Error: ' + (e.message || e), 'red');
-    } finally { setBusy(false); }
+    } finally { setBusy(false); busyRef.current = false; }
   };
 
   if (!obraId) return <SinObraEmpty icon="dollar" />;

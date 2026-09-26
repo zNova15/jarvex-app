@@ -272,7 +272,10 @@ const NAV = [
   // proveedores. Son los pagos AL PERSONAL (planilla, recibos por honorarios) y
   // a subcontratos, y el rótulo ahora lo dice.
   { id: 'pagos', label: 'Pagos a Personal', icon: 'dollar' },
-  { id: 'trazabilidad', label: 'Trazabilidad de insumos (cadenas)', icon: 'compare' },
+  // 'trazabilidad' se ARCHIVÓ del menú el 25-set-2026 (Gabriel, respuesta 14
+  // de la revisión): 0 cadenas en su historia y sus facturas «borrador»
+  // contaban como reales. La ruta sigue registrada; se rehace con el diseño
+  // nuevo cuando la trazabilidad se mueva al desglose de cada obra.
   // Mudado del bloque general (tanda 4, D1): una jugada intercompany es de
   // UNA obra, no del grupo. desglose-obra.js con test. El panel de la
   // empresa las sigue mostrando (solo lectura): desglose-empresa.js.
@@ -327,7 +330,7 @@ const NAV = [
   { id: 'balance-general', label: 'Balance General', icon: 'compare' },
   { id: 'estado-resultados', label: 'Estado de Resultados', icon: 'dollar' },
   { id: 'comprobantes', label: 'Comprobantes Electrónicos SUNAT', icon: 'list' },
-  { id: 'libros-electronicos', label: 'Libros Electrónicos PLE / PDT', icon: 'list' },
+  { id: 'libros-electronicos', label: 'Libros Electrónicos PLE', icon: 'list' },
   { id: 'config-sunat', label: 'Configuración SUNAT', icon: 'settings' },
   { id: 'comparativo-periodos', label: 'Comparativo Periodos', icon: 'compare' },
 

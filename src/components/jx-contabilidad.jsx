@@ -50,7 +50,10 @@ const { useState: uSC, useMemo: uMC, useEffect: uEC, useRef: uRC } = React;
 // Criterio de la contadora (6-sep-2026), a raíz de F001-000818 — S/ 54 con 12%
 // de detracción cargada. Se usa para avisar, nunca para borrar el dato solo.
 // Desde la tanda C (25-set) vive en `detraccion.js`: había dos copias.
-import { UMBRAL_DETRACCION } from "../lib/detraccion.js";
+import { UMBRAL_DETRACCION, montoDetraccion, totalEnSoles } from "../lib/detraccion.js";
+import { validarComprobante, necesitaBancarizacion, consecuenciasDeEditar, planDeBorrado } from "../lib/movimiento-contable-form.js";
+import { tasaDeComprobante } from "../lib/tipo-cambio-pasada.js";
+import { SYNC_STATUS as SYNC_STATUS_DB, newIdempotencyKey } from "../db/jarvex.db";
 
 // Etiqueta humana de un mes 'YYYY-MM' → 'Junio 2026' (filtro de período).
 const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -232,15 +235,22 @@ function EmpresasPage({ showToast }) {
   const [sunatData, setSunatData] = uSC(null);
   const [sunatLoading, setSunatLoading] = uSC(false);
 
+  // Por MONEDA y sin lo dado de baja (tanda D, 25-set-2026). Antes sumaba
+  // dólares y soles en una sola cifra con «S/» (KOPLAST metía US$ 150.000 en
+  // la utilidad de GASOMI como si fueran soles) y contaba los anulados.
   const resumenes = uMC(() => {
     const map = new Map();
     (movs || []).forEach(m => {
-      const r = map.get(m.company_id) || { ingresos:0, costos:0, gastos:0 };
+      if (!m || m.deleted_at || m.payment_status === 'cancelled') return;
+      const porMon = map.get(m.company_id) || new Map();
+      const mon = String(m.currency || 'PEN').toUpperCase();
+      const r = porMon.get(mon) || { ingresos:0, costos:0, gastos:0 };
       const amt = Number(m.amount || 0);
       if (m.type === 'income')  r.ingresos += amt;
       if (m.type === 'cost')    r.costos += amt;
       if (m.type === 'expense') r.gastos += amt;
-      map.set(m.company_id, r);
+      porMon.set(mon, r);
+      map.set(m.company_id, porMon);
     });
     return map;
   }, [movs]);
@@ -309,7 +319,15 @@ function EmpresasPage({ showToast }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companies]);
 
+  // Anti-doble-click (regla 2): un segundo click en la ventana de 35-400 ms
+  // creaba dos empresas con el mismo RUC.
+  const guardandoEmpresaRef = uRC(false);
   const guardar = async () => {
+    if (guardandoEmpresaRef.current) return;
+    guardandoEmpresaRef.current = true;
+    try { await guardarEmpresaInner(); } finally { guardandoEmpresaRef.current = false; }
+  };
+  const guardarEmpresaInner = async () => {
     if (!form.name?.trim()) { showToast('Nombre requerido', 'red'); return; }
     const now = new Date().toISOString();
     try {
@@ -379,7 +397,10 @@ function EmpresasPage({ showToast }) {
             const mv = (movs || []).find(x => x.id === mid);
             await window.__db.accounting_movements.update(mid, {
               is_intercompany: false,
-              updated_at: now,
+              updated_at: now, updated_by: userId,
+              // Sin subir la versión el push viaja con la vieja y cae en
+              // conflicto o pisa un cambio ajeno (revisión Ola 1).
+              version: (mv?.version ?? 0) + 1,
               sync_status: mv?.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             });
             desmarcadas++;
@@ -574,9 +595,9 @@ function EmpresasPage({ showToast }) {
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
                 {g.empresas.map(c => {
-                  const r = resumenes.get(c.id) || { ingresos:0, costos:0, gastos:0 };
-                  const egresos = r.costos + r.gastos;
-                  const utilidad = r.ingresos - egresos;
+                  // Una fila por moneda: soles y dólares no se suman (regla 11).
+                  const porMoneda = [...(resumenes.get(c.id) || new Map()).entries()]
+                    .sort(([a], [b]) => (a === 'PEN' ? -1 : b === 'PEN' ? 1 : a.localeCompare(b)));
                   const obrasDeRol = rolesPorObra.get(c.id) || [];
                   const obrasEjecutora = obrasDeRol.filter(x => x.rol === 'ejecutora' || x.rol === 'miembro_consorcio');
                   // Un consorcio no se administra acá: vive en su obra
@@ -618,13 +639,18 @@ function EmpresasPage({ showToast }) {
                       </button>
                       {/* A un TERCERO no se le llevan libros: mostrarle una
                           utilidad sería inventarle una contabilidad nuestra. */}
-                      {c.tipo_entidad !== 'tercero' && (
-                        <div style={{ display:'flex', gap:12, flexWrap:'wrap', fontSize:11, borderTop:'1px solid var(--border)', paddingTop:8 }}>
-                          <span style={{ color:'var(--tm)' }}>Ingresos <strong style={{ color:'var(--green)' }}>{fmtCurK(r.ingresos)}</strong></span>
-                          <span style={{ color:'var(--tm)' }}>Egresos <strong style={{ color:'var(--red)' }}>{fmtCurK(egresos)}</strong></span>
-                          <span style={{ color:'var(--tm)' }}>Utilidad <strong style={{ color: utilidad>=0?'var(--blue)':'var(--red)' }}>{fmtCurK(utilidad)}</strong></span>
-                        </div>
-                      )}
+                      {c.tipo_entidad !== 'tercero' && (porMoneda.length ? porMoneda : [['PEN', { ingresos:0, costos:0, gastos:0 }]]).map(([mon, r]) => {
+                        const egresos = r.costos + r.gastos;
+                        const utilidad = r.ingresos - egresos;
+                        return (
+                          <div key={mon} style={{ display:'flex', gap:12, flexWrap:'wrap', fontSize:11, borderTop:'1px solid var(--border)', paddingTop:8 }}>
+                            {porMoneda.length > 1 && <span className="badge b-gray" style={{ fontSize:9 }}>{mon}</span>}
+                            <span style={{ color:'var(--tm)' }}>Ingresos <strong style={{ color:'var(--green)' }}>{fmtCurK(r.ingresos, mon)}</strong></span>
+                            <span style={{ color:'var(--tm)' }}>Egresos <strong style={{ color:'var(--red)' }}>{fmtCurK(egresos, mon)}</strong></span>
+                            <span style={{ color:'var(--tm)' }}>Utilidad <strong style={{ color: utilidad>=0?'var(--blue)':'var(--red)' }}>{fmtCurK(utilidad, mon)}</strong></span>
+                          </div>
+                        );
+                      })}
                       <div style={{ display:'flex', gap:6, alignItems:'center', marginTop:'auto' }}>
                         <button className="btn btn-ghost btn-xs" onClick={entrar}>
                           {c.tipo_entidad === 'consorcio'
@@ -1072,6 +1098,23 @@ function MovimientosContablesPage({ showToast }) {
   const lookupCompany = (id) => (companies || []).find(c => c.id === id);
   const { data: movs } = window.__hooks.useAccountingMovements();
   const { data: obras } = window.__hooks.useObras();
+  // Tanda D (25-set-2026): la tasa SUNAT de cada fecha (para prellenar el tipo
+  // de cambio de un comprobante en dólares y pasar la detracción a soles) y
+  // las aplicaciones de anticipo (para no borrar ni editar a ciegas lo que un
+  // anticipo ya cubrió).
+  const { data: tasasTc } = window.__hooks.useTiposCambio?.() || { data: [] };
+  const { data: aplicacionesAnticipo } = window.__hooks.useAnticipoAplicaciones?.() || { data: [] };
+  /** La tasa de un comprobante: la estampada, o la de SUNAT para su fecha. */
+  const tcDeMov = (m) => {
+    if (String(m?.currency || 'PEN').toUpperCase() === 'PEN') return 1;
+    if (Number(m?.tipo_cambio) > 0) return Number(m.tipo_cambio);
+    return tasaDeComprobante(m, tasasTc || [])?.valor || null;
+  };
+  /** La detracción de ese comprobante a ese %, en SOLES y a 2 decimales (o '' si no hay tasa). */
+  const montoDetrDe = (m, pct) => {
+    const v = montoDetraccion({ total: m?.amount, moneda: m?.currency || 'PEN', tipoCambio: tcDeMov(m), pct });
+    return v != null ? v.toFixed(2) : '';
+  };
 
   // Obras a las que el usuario está asignado (para enlazar la compra/factura a la obra).
   // Admin/gerente ven todas; el resto, solo sus obras (obra_usuarios). Sin asignación = todas.
@@ -1393,7 +1436,10 @@ function MovimientosContablesPage({ showToast }) {
   };
 
   // Fase 2 — enviar una consulta a almacén por una línea (referencia SIN costos).
+  const preguntarRef = uRC(false);
   const preguntarAlmacen = async (fac, g) => {
+    if (preguntarRef.current) return;   // doble click = dos consultas (regla 2)
+    preguntarRef.current = true;
     try {
       const it = g.item;
       await crearConsulta({
@@ -1404,6 +1450,7 @@ function MovimientosContablesPage({ showToast }) {
       });
       showToast?.('Consulta enviada a almacén 💬', 'green');
     } catch (e) { showToast?.('Error al enviar la consulta: ' + (e?.message || e), 'red'); }
+    finally { preguntarRef.current = false; }
   };
 
   // ── Insumos para VENTA: escritor genérico del estado de un ítem ──
@@ -1621,12 +1668,11 @@ function MovimientosContablesPage({ showToast }) {
   };
 
   // Política auto-apply: confianza >= 0.85 sin advertencias críticas → aplica directo
-  const aplicarSugerenciaAuto = (sug) => {
-    if (!sug?.result?.cuenta_sugerida) return false;
-    const conf = Number(sug.confianza || 0);
-    const advCriticas = (sug.advertencias || []).some(a => /alucin|inv[aá]lida|no v[aá]lida|fuera de cat/i.test(String(a)));
-    return conf >= 0.85 && !advCriticas;
-  };
+  // Tanda D (25-set-2026): la cuenta NUNCA se aplica sola. La mig 220 dice que
+  // una cuenta puesta a mano le gana a la app para siempre y va firmada; una
+  // puesta por la IA con 85 % y sin que nadie mirara no puede ganar igual.
+  // Ahora la sugerencia siempre pide «Aplicar» (y ese click es la firma).
+  const aplicarSugerenciaAuto = () => false;
 
   const sugerirCuenta = async () => {
     if (!form.description?.trim() && !form.category?.trim()) {
@@ -1743,7 +1789,8 @@ function MovimientosContablesPage({ showToast }) {
       const now = new Date().toISOString();
       await window.__db.accounting_movements.update(mov.id, {
         ...patch,
-        updated_at: now,
+        updated_at: now, updated_by: userId,
+        version: (mov.version ?? 0) + 1,
         sync_status: mov.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
       });
       try { await window.__logAudit?.({ action:'update', table:'accounting_movements', recordId: mov.id,
@@ -1860,7 +1907,9 @@ function MovimientosContablesPage({ showToast }) {
   };
   const faltaBancarizacion = (m) => {
     if (!puedeVerBanc) return false;
-    if (!requiereBancarizacion(m.amount, m.currency, m.tipo_cambio, m.date)) return false;
+    // UNA sola regla en toda la pantalla (tanda D): desde S/ 2.000 o US$ 500,
+    // sin notas de crédito ni facturas anuladas por su nota.
+    if (!necesitaBancarizacion(m, { notasMap: notasDeFactura })) return false;
     if (bancarizadoDirecto(m)) return false;
     // La contraparte interco ya la tiene → esta pata está cubierta.
     return !parIntercoBancarizado(m);
@@ -2068,7 +2117,7 @@ function MovimientosContablesPage({ showToast }) {
     if (filtroTipoDoc === '_con_guia') f = f.filter(m => (guiasPorMov.get(m.id) || []).length > 0);
     else if (filtroTipoDoc !== 'todos') f = f.filter(m => (m.document_type || 'otro') === filtroTipoDoc);
     if (filtroBanc !== 'todos' && puedeVerBanc) {
-      const necesita = (m) => m.currency === 'PEN' && Number(m.amount) > 2000;
+      const necesita = (m) => necesitaBancarizacion(m, { notasMap: notasDeFactura });
       if (filtroBanc === 'falta') f = f.filter(faltaBancarizacion);
       else if (filtroBanc === 'ok') f = f.filter(m => necesita(m) && !faltaBancarizacion(m));
       else if (filtroBanc === 'no_aplica') f = f.filter(m => !necesita(m));
@@ -2143,6 +2192,7 @@ function MovimientosContablesPage({ showToast }) {
       description: '',
       amount: '',
       currency: 'PEN',
+      tipo_cambio: '',
       third_party_name: '',
       payment_status: 'pending',
       document_type: 'factura',
@@ -2189,6 +2239,10 @@ function MovimientosContablesPage({ showToast }) {
       description: m.description || '',
       amount: m.amount,
       currency: m.currency || 'PEN',
+      // La estampada; si no tiene (los 6 de antes de la tanda D), la de SUNAT
+      // para su fecha como propuesta: guardar la deja estampada.
+      tipo_cambio: (m.currency || 'PEN') === 'PEN' ? ''
+        : String(Number(m.tipo_cambio) > 0 ? m.tipo_cambio : (tasaDeComprobante(m, tasasTc || [])?.valor || '')),
       third_party_name: m.third_party_name || '',
       third_party_ruc: m.third_party_ruc || '',
       payment_status: m.payment_status || 'pending',
@@ -2226,13 +2280,32 @@ function MovimientosContablesPage({ showToast }) {
     }
   }, [pendingAutoEditId, movs, canEditExisting, esAyudante]);
 
+  // Anti-doble-click (regla 2, revisión Ola 1): el primer await es Dexie y un
+  // segundo click en la ventana de 35-400 ms entraba con el mismo form y creaba
+  // DOS comprobantes idénticos que el servidor aceptaba.
+  const guardandoMovRef = uRC(false);
+  const [guardandoMov, setGuardandoMov] = uSC(false);
   const guardar = async () => {
-    if (!form.company_id || !form.amount || !form.date) {
-      showToast('Empresa, fecha y monto son requeridos', 'red');
-      return;
+    if (guardandoMovRef.current) return;
+    guardandoMovRef.current = true;
+    setGuardandoMov(true);
+    try { await guardarMovInner(); } finally { guardandoMovRef.current = false; setGuardandoMov(false); }
+  };
+  const guardarMovInner = async () => {
+    // Las reglas viven en movimiento-contable-form.js (tanda D): la nota de
+    // crédito se guarda NEGATIVA y se puede editar; la factura en cero se
+    // acepta con aviso; un comprobante en dólares exige su tipo de cambio.
+    const val = validarComprobante(form, { hoy: window.__fecha?.hoyLocal?.() || null });
+    if (!val.ok) { showToast(val.error, 'red'); return; }
+    const monto = val.monto;
+    for (const a of val.avisos) {
+      if (/posterior a hoy/.test(a)) { if (!confirm(a + '\n\n¿Guardar igual?')) return; }
+      else showToast(a, 'amber');
     }
-    const monto = parseFloat(form.amount);
-    if (!Number.isFinite(monto) || monto < 0) { showToast('Monto inválido', 'red'); return; }
+    // «— Sin vinculación —» ya no es un costo invisible: cae en la bandeja de
+    // la Contadora (sin_clasificar) para que alguien lo resuelva.
+    const destinoFinal = form.obra_id ? 'obra'
+      : (form.destino_contable || (form.trabajo_id ? 'contabilidad_neta' : 'sin_clasificar'));
     // El desglose de IGV es OPCIONAL (vacío = automático), pero si se escribió
     // algo, tiene que ser un número válido — no dejar pasar "12a" en silencio
     // a una columna que declara crédito fiscal.
@@ -2243,6 +2316,22 @@ function MovimientosContablesPage({ showToast }) {
     try {
       if (editingId) {
         const orig = movs.find(m => m.id === editingId);
+        // Lo que arrastra el cambio: la detracción calculada sobre el monto
+        // viejo, los pagos ya aplicados, el anticipo, el espejo (tanda D).
+        const consec = consecuenciasDeEditar(orig || {}, {
+          amount: monto, currency: form.currency || 'PEN', tipo_cambio: val.tipoCambio, company_id: form.company_id,
+        }, {
+          partes: partesPorMov.get(editingId) || [],
+          aplicaciones: (aplicacionesAnticipo || []).filter(a => !a.deleted_at
+            && (a.factura_movimiento_id === editingId || a.anticipo_movimiento_id === editingId)),
+        });
+        if (consec.bloqueos.length) { showToast(consec.bloqueos[0], 'red'); return; }
+        if (consec.confirmar.length && !confirm(consec.confirmar.map(c => '• ' + c).join('\n') + '\n\n¿Guardar?')) return;
+        // La cuenta PCGE cambiada a mano va FIRMADA (mig 220): quién y cuándo.
+        const cuentaNueva = form.cuenta_pcge || null;
+        const firmaCuenta = cuentaNueva !== (orig?.cuenta_pcge || null)
+          ? { cuenta_pcge_por: cuentaNueva && userId !== 'offline' ? userId : null, cuenta_pcge_at: cuentaNueva ? now : null }
+          : {};
         // COSTO vs GASTO se DERIVA de clase + vinculación (nunca se teclea) y,
         // si la contadora lo ajustó a mano, manda su ajuste:
         // src/lib/clasificacion-contable.js. is_intercompany sale de la fila
@@ -2264,15 +2353,18 @@ function MovimientosContablesPage({ showToast }) {
           // Excluyente con obra_id en la práctica — el selector deja elegir uno
           // u otro, nunca los dos.
           trabajo_id: form.trabajo_id || null,
-          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          destino_contable: destinoFinal,
           // '' → null: volver a "Automático" borra el ajuste manual (mig 163).
           clasificacion_manual: form.clasificacion_manual || null,
           type: typeDerivado,
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
+          ...firmaCuenta,
+          ...consec.patch,
           description: form.description || null,
           amount: monto,
           currency: form.currency || 'PEN',
+          tipo_cambio: val.tipoCambio,
           third_party_name: form.third_party_name || null,
           third_party_ruc: form.third_party_ruc || null,
           payment_status: form.payment_status,
@@ -2308,22 +2400,24 @@ function MovimientosContablesPage({ showToast }) {
           // Excluyente con obra_id en la práctica — el selector deja elegir uno
           // u otro, nunca los dos.
           trabajo_id: form.trabajo_id || null,
-          destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+          destino_contable: destinoFinal,
           clasificacion_manual: form.clasificacion_manual || null,
           // Derivado de clase + vinculación + ajuste manual (ver el UPDATE de arriba).
           type: derivarTypeContable({
             clase: form.clase || null,
             type: form.type,
             obra_id: form.obra_id || null,
-            destino_contable: form.obra_id ? 'obra' : (form.destino_contable || null),
+            destino_contable: destinoFinal,
             clasificacion_manual: form.clasificacion_manual || null,
             is_intercompany: false,
           }),
           category: form.category || null,
           cuenta_pcge: form.cuenta_pcge || null,
+          ...(form.cuenta_pcge ? { cuenta_pcge_por: userId !== 'offline' ? userId : null, cuenta_pcge_at: now } : {}),
           description: form.description || null,
           amount: monto,
           currency: form.currency || 'PEN',
+          tipo_cambio: val.tipoCambio,
           third_party_name: form.third_party_name || null,
           third_party_ruc: form.third_party_ruc || null,
           payment_status: form.payment_status,
@@ -2375,13 +2469,48 @@ function MovimientosContablesPage({ showToast }) {
     try { espejoAuto = !!(JSON.parse(m.notas || '{}')?.intercompany_auto); } catch {}
     const gate = puedeEliminarMovimiento(m, movsConParInterco, { esEspejoAuto: espejoAuto });
     if (!gate.puede) { showToast(gate.motivo, 'amber'); return; }
-    if (!confirm(`¿Eliminar movimiento de ${fmtCur(m.amount, m.currency)}?`)) return;
+    // Tanda D (25-set-2026): antes era un soft-delete plano que dejaba colgando
+    // pagos, guías, recepciones, anticipos y el espejo. Ahora se dice qué se
+    // desvincula ANTES de confirmar, y se desvincula.
+    const db = window.__db;
+    const leer = async (tabla, campo) => {
+      try { return await db[tabla].filter(x => !x.deleted_at && x[campo] === m.id).toArray(); } catch { return []; }
+    };
+    const plan = planDeBorrado(m, {
+      movs: movs || [],
+      partes: await leer('pagos_partes', 'accounting_movement_id'),
+      guiaFactura: await leer('guia_factura', 'accounting_movement_id'),
+      guias: await leer('guias_remision', 'accounting_movement_id'),
+      recepciones: await leer('movimientos_materiales', 'accounting_movement_id'),
+      aplicaciones: (aplicacionesAnticipo || []),
+    });
+    if (plan.bloqueos.length) { showToast(plan.bloqueos[0], 'amber'); return; }
+    if (!confirm(`¿Eliminar movimiento de ${fmtCur(m.amount, m.currency)}?`
+      + (plan.resumen.length ? `\n\nAl borrarlo:\n${plan.resumen.map(r => '• ' + r).join('\n')}` : ''))) return;
     try {
+      const now = new Date().toISOString();
+      const marcar = (x) => ({ updated_at: now, updated_by: userId, version: (x.version ?? 0) + 1,
+        sync_status: x.sync_status === 'pending_create' ? 'pending_create' : 'pending_update' });
+      const tocar = async (tabla, ids, patchDe) => {
+        for (const id of ids) {
+          try {
+            const x = await db[tabla].get(id);
+            if (x) await db[tabla].update(id, { ...patchDe(x), ...marcar(x) });
+          } catch (e) { console.warn('[eliminar · desvincular]', tabla, id, e); }
+        }
+      };
+      await tocar('pagos_partes', plan.acciones.partes, () => ({ deleted_at: now }));
+      await tocar('guia_factura', plan.acciones.guiaFactura, () => ({ deleted_at: now }));
+      await tocar('guias_remision', plan.acciones.guias, () => ({ accounting_movement_id: null }));
+      await tocar('movimientos_materiales', plan.acciones.recepciones, () => ({ accounting_movement_id: null }));
+      await tocar('anticipo_aplicaciones', plan.acciones.aplicaciones, () => ({ deleted_at: now }));
+      await tocar('accounting_movements', plan.acciones.espejos, () => ({ related_movement_id: null }));
       await window.__db.accounting_movements.update(m.id, {
-        deleted_at: new Date().toISOString(),
+        deleted_at: now, updated_at: now, updated_by: userId, version: (m.version ?? 0) + 1,
         sync_status: m.sync_status === 'pending_create' ? 'pending_create' : 'pending_delete',
       });
-      try { await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId:m.id, oldData:m }); } catch {}
+      try { await window.__logAudit?.({ action:'delete', table:'accounting_movements', recordId:m.id, oldData:m,
+        reason: plan.resumen.length ? `Eliminado con desvinculación: ${plan.resumen.join('; ')}` : undefined }); } catch {}
       try { window.dispatchEvent(new CustomEvent('jx_data_changed', { detail:{ tabla:'accounting_movements' } })); } catch {}
       showToast('Movimiento eliminado', 'amber');
     } catch (e) { showToast('Error: ' + (e.message||e), 'red'); }
@@ -2411,7 +2540,8 @@ function MovimientosContablesPage({ showToast }) {
           if (venta && venta.related_movement_id === m.id) {
             await window.__db.accounting_movements.update(ventaId, {
               related_movement_id: null,
-              updated_at: now,
+              updated_at: now, updated_by: userId,
+              version: (venta.version ?? 0) + 1,
               sync_status: venta.sync_status === 'pending_create' ? 'pending_create' : 'pending_update',
             });
           }
@@ -2546,7 +2676,11 @@ function MovimientosContablesPage({ showToast }) {
   // el destino correcto (obra / gastos generales / contabilidad neta) — así
   // las asistentes no adivinan ni alteran los reportes.
   const esRevisorDestino = isAdmin || myRol === 'contador';
-  const sinClasificar = uMC(() => (movs || []).filter(m => !m.deleted_at && m.destino_contable === 'sin_clasificar'), [movs]);
+  // También lo que quedó sin obra, sin trabajo y sin destino (tanda D): el
+  // viejo «— Sin vinculación —» lo guardaba así y no aparecía en ningún lado
+  // (27 comprobantes el 25-set-2026).
+  const sinClasificar = uMC(() => (movs || []).filter(m => !m.deleted_at && m.payment_status !== 'cancelled'
+    && (m.destino_contable === 'sin_clasificar' || (!m.destino_contable && !m.obra_id && !m.trabajo_id))), [movs]);
   const [bandejaOpen, setBandejaOpen] = uSC(false);
   const [bandejaSel, setBandejaSel] = uSC(() => new Map()); // mov_id → destino elegido ('' | obra_id | '__empresa__' | '__otros__')
   const asignarDestino = async (m, eleccion) => {
@@ -2699,10 +2833,10 @@ function MovimientosContablesPage({ showToast }) {
     setDetrCodigo(codigoActual || (sug ? sug.codigo : ''));
     if ((m.detraccion_pct == null || m.detraccion_pct === '') && sug?.tasaUnica) {
       setDetrPct(String(sug.tasaUnica));
-      const tot = Number(m.amount) || 0;
-      if (tot > 0 && (m.detraccion_monto == null || m.detraccion_monto === '')) {
-        setDetrMonto((tot * sug.tasaUnica / 100).toFixed(2));
-      }
+      if (m.detraccion_monto == null || m.detraccion_monto === '') setDetrMonto(montoDetrDe(m, sug.tasaUnica));
+    } else if ((m.detraccion_monto == null || m.detraccion_monto === '' || Number(m.detraccion_monto) === 0) && Number(m.detraccion_pct) > 0) {
+      // Marcada con % y sin monto (las 21 del 25-set): se propone, en soles.
+      setDetrMonto(montoDetrDe(m, m.detraccion_pct));
     }
   };
 
@@ -2715,9 +2849,11 @@ function MovimientosContablesPage({ showToast }) {
       if (!(monto > 0)) { showToast('Ingresá el monto de la detracción.', 'red'); return; }
       // Guard bruto/neto: la detracción es un % del total (típ. 4–12%), NO el neto.
       // Si el monto es ≥ la mitad del total, casi seguro cargaron el neto por error.
-      const _tot = Number(m.amount) || 0;
+      // En SOLES: la detracción se deposita en soles aunque la factura sea en
+      // dólares, así que el total se compara convertido (tanda D).
+      const _tot = totalEnSoles({ total: m.amount, moneda: m.currency || 'PEN', tipoCambio: tcDeMov(m) }) || 0;
       if (_tot > 0 && monto >= _tot * 0.5) {
-        if (!window.confirm(`⚠ El monto de detracción (S/ ${monto.toFixed(2)}) es demasiado alto para el total de la factura (S/ ${_tot.toFixed(2)}).\n\nLa detracción es un PORCENTAJE del total (normalmente 4% a 12%), no el neto a pagar. ${pct ? `Al ${pct}% serían S/ ${(_tot * pct / 100).toFixed(2)}.` : ''}\n\n¿Confirmás igual?`)) return;
+        if (!window.confirm(`⚠ El monto de detracción (S/ ${monto.toFixed(2)}) es demasiado alto para el total de la factura (S/ ${_tot.toFixed(2)}).\n\nLa detracción es un PORCENTAJE del total (normalmente 4% a 12%), no el neto a pagar. ${pct ? `Al ${pct}% serían S/ ${montoDetrDe(m, pct)}.` : ''}\n\n¿Confirmás igual?`)) return;
       }
     } else if (!window.confirm('¿Marcar que esta factura NO tiene detracción? Se quitarán sus datos de detracción del movimiento.')) {
       return;
@@ -2800,7 +2936,7 @@ function MovimientosContablesPage({ showToast }) {
     const msj = `¿Eliminar el pago de ${fmtCur(p.monto, bancTarget?.currency)}${p.deposito_id ? ' (aplicado desde un voucher — su saldo se libera)' : ''}?\n\nDespués registrá la bancarización correcta (otro monto u otro tipo). Si la factura quedó "Pagado" por esta cobertura, ajustá el estado a mano si corresponde.`;
     if (!window.confirm(msj)) return;
     try {
-      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const SYNC_STATUS = SYNC_STATUS_DB;   // estático: import() de un módulo eager es la regla 1
       const now = new Date().toISOString();
       const p0 = await window.__db.pagos_partes.get(p.id);
       if (!p0) return;
@@ -2850,7 +2986,8 @@ function MovimientosContablesPage({ showToast }) {
       return;
     }
 
-    const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+    const newId = window.__newId;
+    const SYNC_STATUS = SYNC_STATUS_DB;
     const esPrueba = (() => { try { return getCurrentMode() === 'prueba'; } catch { return false; } })();
     // Modo PRUEBA (o movimiento demo): NADA sube al server — antes la evidencia
     // se guardaba sin flag demo y el uploader la subía al Storage REAL apuntando
@@ -3583,7 +3720,7 @@ function MovimientosContablesPage({ showToast }) {
                             title={`Ajustado a mano como ${TYPE_LABEL[m.type] || m.type}: por su vinculación habría sido lo contrario. Se cambia en Editar Movimiento.`}>
                             ✋ {TYPE_LABEL[m.type] || m.type} (manual)</span></div>
                         )}
-                        {puedeVerBanc && m.currency === 'PEN' && Number(m.amount) > 2000 && (() => {
+                        {puedeVerBanc && necesitaBancarizacion(m, { notasMap: notasDeFactura }) && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
                           // Suma de PARTES registradas (bancarización parcial y/o depósitos).
                           const _partes = partesPorMov.get(m.id) || [];
@@ -3661,9 +3798,9 @@ function MovimientosContablesPage({ showToast }) {
                           }
                           return <div style={{ fontSize:10, color:'var(--amber)' }} title="Monto > S/2000 sin evidencia de bancarización">⚠ Falta bancarización{subirBtn}{_tagPartes}</div>;
                         })()}
-                        {/* ≤ S/2,000 (o moneda extranjera): evidencia de pago OPCIONAL —
+                        {/* Debajo de S/ 2.000 / US$ 500: evidencia de pago OPCIONAL —
                             no es exigencia de bancarización, pero pueden adjuntarla. */}
-                        {puedeVerBanc && !(m.currency === 'PEN' && Number(m.amount) > 2000) && (() => {
+                        {puedeVerBanc && !necesitaBancarizacion(m, { notasMap: notasDeFactura }) && (() => {
                           const evB = bancarizacionPorMov.get(m.id);
                           if (evB) return (
                             <div style={{ fontSize:10, color:'var(--green)' }}>
@@ -4288,7 +4425,7 @@ function MovimientosContablesPage({ showToast }) {
           {/* Umbral SPOT: por debajo de S/ 700 la operación no está sujeta a
               detracción. Avisa, no bloquea — el dato histórico se corrige a
               mano y una regla dura borraría casos legítimos en otra moneda. */}
-          {(detrTarget.currency || 'PEN') === 'PEN' && (Number(detrTarget.amount) || 0) <= UMBRAL_DETRACCION && (
+          {(() => { const t = totalEnSoles({ total: detrTarget.amount, moneda: detrTarget.currency || 'PEN', tipoCambio: tcDeMov(detrTarget) }); return t != null && t <= UMBRAL_DETRACCION; })() && (
             <div className="card card-p" style={{ marginBottom:10, borderLeft:'3px solid var(--amber)', fontSize:11.5, color:'var(--ts)' }}>
               Esta operación es de {fmtCur(detrTarget.amount, detrTarget.currency)}. Las de
               S/ {UMBRAL_DETRACCION.toLocaleString('es-PE')} o menos <strong>no están sujetas a detracción</strong>,
@@ -4308,8 +4445,7 @@ function MovimientosContablesPage({ showToast }) {
                     const val = e.target.value;
                     setDetrPct(val);
                     const num = Number(val);
-                    const tot = Number(detrTarget.amount) || 0;
-                    if (tot > 0 && num > 0) setDetrMonto((tot * num / 100).toFixed(2));
+                    if (num > 0) setDetrMonto(montoDetrDe(detrTarget, num));
                   }}/>
                 </div>
                 <div>
@@ -4319,7 +4455,7 @@ function MovimientosContablesPage({ showToast }) {
                 <div>
                   <label className="flabel">Código SPOT SUNAT</label>
                   <div style={{ display:'flex', gap:4 }}>
-                    <input className="fi" style={{ width:75, flexShrink:0 }} value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="037" maxLength={6}/>
+                    <input className="fi" style={{ width:75, flexShrink:0 }} value={detrCodigo} onChange={e=>setDetrCodigo(e.target.value)} placeholder="030" maxLength={6}/>
                     <select
                       className="fi"
                       style={{ flex:1, minWidth:0, textOverflow:'ellipsis' }}
@@ -4331,8 +4467,7 @@ function MovimientosContablesPage({ showToast }) {
                           const tasa = tasaOficialSpot(val);
                           if (tasa != null) {
                             setDetrPct(String(tasa));
-                            const tot = Number(detrTarget.amount) || 0;
-                            if (tot > 0) setDetrMonto((tot * tasa / 100).toFixed(2));
+                            setDetrMonto(montoDetrDe(detrTarget, tasa));
                           }
                         }
                       }}
@@ -4376,8 +4511,7 @@ function MovimientosContablesPage({ showToast }) {
                       const tasa = detrSugerencia.tasaUnica || (detrSugerencia.tasasPosibles?.[0]?.tasa);
                       if (tasa != null) {
                         setDetrPct(String(tasa));
-                        const tot = Number(detrTarget.amount) || 0;
-                        if (tot > 0) setDetrMonto((tot * tasa / 100).toFixed(2));
+                        setDetrMonto(montoDetrDe(detrTarget, tasa));
                       }
                     }}
                   >
@@ -4386,7 +4520,11 @@ function MovimientosContablesPage({ showToast }) {
                 </div>
               )}
               <div style={{ marginTop:6, fontSize:11, color:'var(--tm)' }}>
-                Neto a pagar al proveedor: <b>{fmtCur(Math.max(0, (Number(detrTarget.amount)||0) - (Number(detrMonto)||0)), detrTarget.currency)}</b>
+                {(detrTarget.currency || 'PEN') === 'PEN'
+                  ? <>Neto a pagar al proveedor: <b>{fmtCur(Math.max(0, (Number(detrTarget.amount)||0) - (Number(detrMonto)||0)), 'PEN')}</b></>
+                  : tcDeMov(detrTarget)
+                    ? <>La detracción se deposita en SOLES (al TC {tcDeMov(detrTarget)} de la emisión). Neto a pagar al proveedor: <b>{fmtCur(Math.max(0, (Number(detrTarget.amount)||0) - (Number(detrMonto)||0) / tcDeMov(detrTarget)), detrTarget.currency)}</b></>
+                    : <span style={{ color:'var(--amber)' }}>Falta el tipo de cambio de la fecha de emisión: sin él no se puede calcular la detracción en soles.</span>}
               </div>
               <div style={{ marginTop:12, paddingTop:10, borderTop:'1px solid var(--border)' }}>
                 <label className="flabel">Constancia del depósito (Banco de la Nación) — opcional</label>
@@ -4871,7 +5009,7 @@ function MovimientosContablesPage({ showToast }) {
                     else if (v.startsWith('__t__')) setForm({...form, obra_id:'', trabajo_id: v.slice(5), destino_contable:'contabilidad_neta'});
                     else setForm({...form, obra_id:v, trabajo_id:'', destino_contable: v ? 'obra' : null});
                   }}>
-                    <option value="">— Sin vinculación —</option>
+                    <option value="">— Sin vinculación (va a la bandeja de la Contadora) —</option>
                     <optgroup label="🏗 Obras">
                       {obrasParaSelector.map(o => <option key={o.id} value={o.id}>🏗 {o.nombre_obra}</option>)}
                     </optgroup>
@@ -5075,15 +5213,40 @@ function MovimientosContablesPage({ showToast }) {
             </div>
             <div>
               <label className="flabel">Monto *</label>
-              <input className="fi" type="number" min="0" step="0.01" value={form.amount||''} onChange={e=>setForm({...form, amount:e.target.value})}/>
+              <input className="fi" type="number" step="0.01" value={form.amount ?? ''} onChange={e=>setForm({...form, amount:e.target.value})}/>
+              {form.document_type === 'nota_credito' && (
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>Nota de crédito: se guarda en NEGATIVO (resta), aunque escribas el importe del papel.</div>
+              )}
             </div>
             <div>
               <label className="flabel">Moneda</label>
-              <select className="fi" value={form.currency||'PEN'} onChange={e=>setForm({...form, currency:e.target.value})}>
+              <select className="fi" value={form.currency||'PEN'} onChange={e=>{
+                const cur = e.target.value;
+                // Al pasar a dólares se propone la tasa SUNAT de la fecha (si está guardada).
+                const sugerida = cur === 'PEN' ? '' : (form.tipo_cambio || String(tasaDeComprobante({ date: form.date, currency: cur, clase: form.clase || 'compra' }, tasasTc || [])?.valor || ''));
+                setForm({...form, currency: cur, tipo_cambio: sugerida});
+              }}>
                 <option value="PEN">S/ (PEN)</option>
                 <option value="USD">USD</option>
               </select>
             </div>
+            {(form.currency || 'PEN') !== 'PEN' && (
+              <div>
+                <label className="flabel">Tipo de cambio *</label>
+                <input className="fi" inputMode="decimal" value={form.tipo_cambio || ''}
+                  placeholder="ej. 3,412"
+                  onChange={e=>setForm({...form, tipo_cambio: e.target.value})}/>
+                <div style={{ fontSize:10, color:'var(--tm)', marginTop:2 }}>
+                  El de SUNAT del día de emisión (compra → venta; venta → compra). El libro se lleva en soles con esta tasa.
+                  {(() => {
+                    const t = tasaDeComprobante({ date: form.date, currency: form.currency, clase: form.clase || 'compra' }, tasasTc || []);
+                    return t && String(t.valor) !== String(form.tipo_cambio || '')
+                      ? <> SUNAT para {form.date}: <button type="button" className="btn btn-ghost btn-xs" style={{ fontSize:10, padding:'0 4px' }} onClick={()=>setForm(f => ({ ...f, tipo_cambio: String(t.valor) }))}>{t.valor}</button></>
+                      : null;
+                  })()}
+                </div>
+              </div>
+            )}
             <div>
               <label className="flabel">Cliente / Proveedor</label>
               <input className="fi" value={form.third_party_name||''} onChange={e=>setForm({...form, third_party_name:e.target.value})}/>
@@ -5127,7 +5290,8 @@ function MovimientosContablesPage({ showToast }) {
               const montoM = Number(orig.amount) || 0;
               // Umbral SPOT: por debajo de S/ 700 la operación no está sujeta a
               // detracción (criterio de la contadora, 6-sep-2026).
-              const bajoUmbral = (orig.currency || 'PEN') === 'PEN' && montoM <= UMBRAL_DETRACCION;
+              const totS = totalEnSoles({ total: montoM, moneda: orig.currency || 'PEN', tipoCambio: tcDeMov(orig) });
+              const bajoUmbral = totS != null && totS <= UMBRAL_DETRACCION;
               return (
                 <div style={{ gridColumn:'1/-1', border:'1px solid var(--border)', borderRadius:8, padding:'10px 12px' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
@@ -5135,7 +5299,7 @@ function MovimientosContablesPage({ showToast }) {
                       <span className="flabel" style={{ marginRight:6 }}>Detracción (SPOT)</span>
                       {orig.detraccion_aplica ? (
                         <span style={{ color:'var(--ts)' }}>
-                          {fmtCur(orig.detraccion_monto || 0, orig.currency)}
+                          {fmtCur(orig.detraccion_monto || 0, 'PEN')}
                           {orig.detraccion_pct != null ? ` · ${orig.detraccion_pct}%` : ''}
                           {orig.detraccion_codigo ? ` · código ${orig.detraccion_codigo}` : ' · sin código'}
                           {orig.detraccion_estado === 'depositada' ? ' · depositada' : ' · falta depósito'}
@@ -5299,14 +5463,17 @@ function MovimientosContablesPage({ showToast }) {
               </div>
             )}
             {(() => {
-              const monto = parseFloat(form.amount);
-              const requiere = form.currency === 'PEN' && Number.isFinite(monto) && monto > 2000;
+              const monto = parseFloat(String(form.amount ?? '').replace(',', '.'));
+              const requiere = Number.isFinite(monto) && necesitaBancarizacion({
+                id: editingId || '_nuevo', amount: monto, currency: form.currency || 'PEN',
+                tipo_cambio: Number(form.tipo_cambio) || null, date: form.date, document_type: form.document_type,
+              }, { notasMap: notasDeFactura });
               if (!requiere) return null;
               const evBanc = editingId && bancarizacionPorMov.get(editingId);
               return (
                 <div style={{ gridColumn:'1/-1', padding:'10px 12px', borderRadius:6, background:'rgba(242,183,5,0.06)', border:'1px solid rgba(242,183,5,0.3)' }}>
                   <div style={{ fontSize:12, fontWeight:600, color:'var(--amber)', marginBottom:6, display:'flex', alignItems:'center', gap:6 }}>
-                    <JxIcon name="alert" size={13} color="var(--amber)"/> Bancarización requerida (monto &gt; S/2000)
+                    <JxIcon name="alert" size={13} color="var(--amber)"/> Bancarización requerida (desde S/ 2.000 o US$ 500)
                   </div>
                   {evBanc && (
                     <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6, fontSize:12, color:'var(--green)' }}>
@@ -5315,16 +5482,15 @@ function MovimientosContablesPage({ showToast }) {
                     </div>
                   )}
                   <input className="fi" type="file" accept="image/*,application/pdf" onChange={e=>setForm({...form, _bancFile: (e.target.files||[])[0] || null})}/>
-                  {form._bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {form._bancFile.name} — se subirá al guardar{!form.obra_id ? ' (asigná una obra para poder subirla)' : ''}</div>}
-                  {!form.obra_id && <div style={{ fontSize:11, color:'var(--tm)', marginTop:4 }}>Tip: elegí la obra arriba para subir la foto/voucher de la bancarización.</div>}
+                  {form._bancFile && <div style={{ fontSize:11, color:'var(--green)', marginTop:4 }}>📎 {form._bancFile.name} — se subirá al guardar</div>}
                 </div>
               );
             })()}
           </div>
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={()=>{setModal(null); setEditingId(null);}}>Cancelar</button>
-            <button className="btn btn-amber" onClick={guardar}>
-              <JxIcon name="check" size={13}/>{editingId ? 'Guardar Cambios' : 'Registrar'}
+            <button className="btn btn-amber" onClick={guardar} disabled={guardandoMov}>
+              <JxIcon name="check" size={13}/>{guardandoMov ? 'Guardando…' : (editingId ? 'Guardar Cambios' : 'Registrar')}
             </button>
           </div>
         </Modal>
@@ -5385,7 +5551,15 @@ function IntercompanyPage({ showToast }) {
   };
 
   // Crear: 1 transacción IC + 2 movimientos contables (ingreso vendedor + costo comprador) enlazados
+  // Anti-doble-click (regla 2): cada click escribe 3 awaits de Dexie antes de
+  // cerrar el modal; dos clicks dejaban 2 operaciones y 4 comprobantes iguales.
+  const guardandoIcRef = uRC(false);
   const guardar = async () => {
+    if (guardandoIcRef.current) return;
+    guardandoIcRef.current = true;
+    try { await guardarIcInner(); } finally { guardandoIcRef.current = false; }
+  };
+  const guardarIcInner = async () => {
     if (!form.seller_company_id || !form.buyer_company_id) { showToast('Selecciona vendedor y comprador', 'red'); return; }
     if (form.seller_company_id === form.buyer_company_id) { showToast('El vendedor y el comprador no pueden ser la misma empresa', 'red'); return; }
     const monto = parseFloat(form.amount);
@@ -6074,7 +6248,7 @@ function ContabilidadDashboardPage({ showToast }) {
                         <div style={{ minWidth:0 }}>
                           <div style={{ fontWeight:700, color:'var(--tp)' }}>
                             {f.document_number || 'sin n°'}
-                            <span style={{ fontWeight:400, color:'var(--tm)', marginLeft:6, fontSize:10.5 }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · S/ {Number(f.amount || 0).toLocaleString('es-PE')}</span>
+                            <span style={{ fontWeight:400, color:'var(--tm)', marginLeft:6, fontSize:10.5 }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · {fmtCur(f.amount, f.currency)}</span>
                           </div>
                           {/* El ÍTEM exacto de la factura que cuadra con el ingreso */}
                           <div style={{ fontSize:11.5, color:'var(--ts)', marginTop:3 }}>
@@ -6111,7 +6285,7 @@ function ContabilidadDashboardPage({ showToast }) {
                       <div style={{ display:'flex', justifyContent:'space-between', gap:8, fontSize:12 }}>
                         <div style={{ minWidth:0 }}>
                           <div style={{ fontWeight:700, color:'var(--tp)' }}>{f.document_number || 'sin n°'}</div>
-                          <div style={{ fontSize:10.5, color:'var(--tm)' }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · S/ {Number(f.amount || 0).toLocaleString('es-PE')}</div>
+                          <div style={{ fontSize:10.5, color:'var(--tm)' }}>{f.date} · {f.third_party_name || provName(f.proveedor_id)} · {fmtCur(f.amount, f.currency)}</div>
                           {/* Ítems de la factura (hasta 3) para no vincular a ciegas */}
                           {items.length > 0 && (
                             <div style={{ fontSize:10.5, color:'var(--ts)', marginTop:3 }}>

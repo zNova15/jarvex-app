@@ -16,6 +16,7 @@
 // Página del plano OBRA, módulo 'Planillas' (contadora jefe + admin).
 // ═══════════════════════════════════════════════════════════════════
 import React from "react";
+import * as JXDB from "../db/jarvex.db";
 import { getCurrentMode } from "../lib/app-mode-core.js";
 import { MODOS_PAGO, MODO_PAGO_LABEL, METODOS_PARTE, METODO_PARTE_LABEL, ESTADOS_PAGO, calcularEstadoPago, validarParte, evidenciasRequeridas, checklistPago } from "../lib/pagos.js";
 import { etiquetaPersona } from "../lib/destino-mov.js";
@@ -96,6 +97,10 @@ function PagosPage({ showToast }) {
   const [partes, setPartes] = uS([]);
   const [evidencias, setEvidencias] = uS([]);
   const [busy, setBusy] = uS(false);
+  // Anti-doble-click (regla 2): el estado `busy` recién se ve en el render
+  // siguiente; un segundo click en la ventana de 35-400 ms entraba igual
+  // (una parte de pago o un gasto duplicado). El ref corta en el mismo tick.
+  const busyRef = React.useRef(false);
   const [nuevoPago, setNuevoPago] = uS(null);     // { beneficiario_tipo, personal?, subcontrato? }
   const [detalleId, setDetalleId] = uS(null);     // pago abierto
   // ── Pestaña "Recibos": filtros (empresa pagadora / mes / modo / búsqueda) ──
@@ -199,10 +204,10 @@ function PagosPage({ showToast }) {
   };
 
   const crearPago = async ({ beneficiario_tipo, personal_id, subcontrato_id, beneficiario_nombre, concepto, modo_pago, monto_acordado, periodo }) => {
-    if (busy) return;
-    setBusy(true);
+    if (busy || busyRef.current) return;
+    setBusy(true); busyRef.current = true;
     try {
-      const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+      const { newId, newIdempotencyKey, SYNC_STATUS } = JXDB;   // estático: import() de un módulo eager es la regla 1
       const now = new Date().toISOString();
       const id = newId();
       await window.__db.pagos.add({
@@ -223,13 +228,13 @@ function PagosPage({ showToast }) {
       setNuevoPago(null);
       setDetalleId(id);
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); busyRef.current = false; }
   };
 
   // Persistir el estado derivado en el pago (para filtros/listas en otras vistas).
   const syncEstadoPago = async (pagoId) => {
     try {
-      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const { SYNC_STATUS } = JXDB;   // estático: import() de un módulo eager es la regla 1
       const fresh = await window.__db.pagos.get(pagoId);
       if (!fresh || fresh.estado === 'anulado') return;
       const pps = await window.__db.pagos_partes.where('pago_id').equals(pagoId).filter(p => !p.deleted_at && filaDelModo(p)).toArray();
@@ -245,8 +250,8 @@ function PagosPage({ showToast }) {
   };
 
   const agregarParte = async (pago, { fecha, monto, metodo, referencia, archivo, cuenta_id }) => {
-    if (busy) return;
-    setBusy(true);
+    if (busy || busyRef.current) return;
+    setBusy(true); busyRef.current = true;
     try {
       const partesVivas = (partesDe.get(pago.id) || []);
       const { falta } = calcularEstadoPago(pago.monto_acordado, partesVivas);
@@ -256,7 +261,7 @@ function PagosPage({ showToast }) {
       if (duros.length) { toast(duros[0], 'red'); return; }
       if (aviso && !window.confirm(`Esta parte EXCEDE lo acordado por S/ ${aviso.split(':')[1]}. ¿Registrar igual?`)) return;
 
-      const { newId, newIdempotencyKey, SYNC_STATUS } = await import('../db/jarvex.db');
+      const { newId, newIdempotencyKey, SYNC_STATUS } = JXDB;   // estático: import() de un módulo eager es la regla 1
       const now = new Date().toISOString();
       const parteId = newId();
       let evidenciaId = null;
@@ -289,14 +294,14 @@ function PagosPage({ showToast }) {
       try { window.dispatchEvent(new Event('online')); } catch {}
       toast(archivo ? 'Parte registrada con su evidencia' : 'Parte registrada — subí la constancia cuando la tengas', archivo ? 'green' : 'amber');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); busyRef.current = false; }
   };
 
   // Adjunta una evidencia al PAGO (modulo 'pagos', ej. el recibo RxH) o a una
   // PARTE concreta (modulo 'pagos_partes', la constancia de esa transferencia).
   const subirEvidenciaPago = async (target, tipo, archivo, modulo = 'pagos') => {
-    if (busy || !archivo) return;
-    setBusy(true);
+    if (busy || busyRef.current || !archivo) return;
+    setBusy(true); busyRef.current = true;
     try {
       await window.__saveEvidenciaLocal({
         id: window.__newId(), obra_id: obraId, tipo_evidencia: tipo, modulo_relacionado: modulo,
@@ -307,15 +312,15 @@ function PagosPage({ showToast }) {
       window.dispatchEvent(new CustomEvent('jx_data_changed', { detail: { tabla: 'evidencias' } }));
       toast('Evidencia guardada', 'green');
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); busyRef.current = false; }
   };
 
   const anularPago = async (pago) => {
-    if (!isAdmin || busy) return;
+    if (!isAdmin || busy || busyRef.current) return;
     if (!window.confirm(`¿Anular el pago "${pago.concepto || fmtS(pago.monto_acordado)}"? Las partes registradas quedan en el historial.`)) return;
-    setBusy(true);
+    setBusy(true); busyRef.current = true;
     try {
-      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const { SYNC_STATUS } = JXDB;   // estático: import() de un módulo eager es la regla 1
       const fresh = await window.__db.pagos.get(pago.id);
       await window.__db.pagos.update(pago.id, {
         estado: 'anulado', updated_at: new Date().toISOString(), updated_by: userId,
@@ -327,7 +332,7 @@ function PagosPage({ showToast }) {
       toast('Pago anulado', 'amber');
       setDetalleId(null);
     } catch (e) { toast('Error: ' + (e.message || e), 'red'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); busyRef.current = false; }
   };
 
   const nombrePago = (p) => {
@@ -374,7 +379,7 @@ function PagosPage({ showToast }) {
   const asignarEmpresaPago = async (p, companyId) => {
     if (!canGestionar || busy) return;
     try {
-      const { SYNC_STATUS } = await import('../db/jarvex.db');
+      const { SYNC_STATUS } = JXDB;   // estático: import() de un módulo eager es la regla 1
       const fresh = await window.__db.pagos.get(p.id);
       const emp = companiesActivasRec.find(c => c.id === companyId) || null;
       const notas = notasDe(fresh || p);
